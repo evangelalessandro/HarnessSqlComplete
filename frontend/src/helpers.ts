@@ -128,13 +128,22 @@ export interface InsertSlot {
   text: string
 }
 
+/** Tupla di valori (VALUES) o lista del SELECT: parens dell'insieme + slot. */
+export interface InsertTuple {
+  /** Offset della parentesi aperta (-1 per la forma INSERT...SELECT). */
+  open: number
+  /** Offset della parentesi chiusa (null se non ancora chiusa). */
+  close: number | null
+  slots: InsertSlot[]
+}
+
 export interface InsertContext {
   schema: string | null
   table: string
   colOpen: number
   colClose: number | null
   columnSlots: InsertSlot[]
-  valueTuples: InsertSlot[][]
+  valueTuples: InsertTuple[]
 }
 
 /** Trova la parentesi chiusa corrispondente, ignorando stringhe, N'...' e identificatori [..]. */
@@ -270,7 +279,7 @@ export function parseInsertContext(text: string, base = 0): InsertContext | null
     }
   }
 
-  const valueTuples: InsertSlot[][] = []
+  const valueTuples: InsertTuple[] = []
   if (valuesIdx !== -1) {
     let i = valuesIdx + 'VALUES'.length
     while (i < text.length) {
@@ -282,7 +291,7 @@ export function parseInsertContext(text: string, base = 0): InsertContext | null
           end: i + 1 + s.end + base,
           text: s.text,
         }))
-        valueTuples.push(slots)
+        valueTuples.push({ open: i + base, close: close === null ? null : close + base, slots })
         i = (close ?? end) + 1
       } else {
         i += 1
@@ -296,7 +305,7 @@ export function parseInsertContext(text: string, base = 0): InsertContext | null
       end: afterSelect + s.end + base,
       text: s.text,
     }))
-    valueTuples.push(slots)
+    valueTuples.push({ open: -1, close: -1, slots })
   }
 
   return {
@@ -324,7 +333,7 @@ export function findInsertStatementAt(text: string, offset: number): { start: nu
 }
 
 /** Indice dello slot che contiene l'offset; altrimenti lo slot successivo (o l'ultimo). */
-function slotIndexAt(slots: InsertSlot[], offset: number): number {
+export function insertSlotIndexAt(slots: InsertSlot[], offset: number): number {
   for (let i = 0; i < slots.length; i++) {
     if (offset >= slots[i].start && offset <= slots[i].end) return i
   }
@@ -349,23 +358,84 @@ export function insertCorrespondingTarget(text: string, cursorOffset: number): {
   const inColumnList =
     ctx.colOpen !== -1 && cursorOffset >= ctx.colOpen && (ctx.colClose === null || cursorOffset <= ctx.colClose)
   if (inColumnList && ctx.columnSlots.length > 0) {
-    const idx = slotIndexAt(ctx.columnSlots, cursorOffset)
-    const target = ctx.valueTuples[0]?.[idx]
+    const idx = insertSlotIndexAt(ctx.columnSlots, cursorOffset)
+    const target = ctx.valueTuples[0]?.slots[idx]
     return target ? { start: target.start, end: target.end } : null
   }
 
   for (const tuple of ctx.valueTuples) {
-    if (tuple.length === 0) continue
-    const tupleStart = tuple[0].start
-    const tupleEnd = tuple[tuple.length - 1].end
+    if (tuple.slots.length === 0) continue
+    const tupleStart = tuple.slots[0].start
+    const tupleEnd = tuple.slots[tuple.slots.length - 1].end
     if (cursorOffset >= tupleStart && cursorOffset <= tupleEnd) {
-      const idx = slotIndexAt(tuple, cursorOffset)
+      const idx = insertSlotIndexAt(tuple.slots, cursorOffset)
       const target = ctx.columnSlots[idx]
       return target ? { start: target.start, end: target.end } : null
     }
   }
 
   return null
+}
+
+// ---------- Valori di default per INSERT (aiuto sui VALUES) ----------
+
+/** Valore di default SQL per un tipo di colonna (NULL se nullable). */
+export function sqlDefaultForType(dataType: string, nullable: boolean): string {
+  if (nullable) return 'NULL'
+  const t = dataType.toLowerCase()
+  if (t.includes('int') || t.includes('bit')) return '0'
+  if (t.includes('decimal') || t.includes('numeric') || t.includes('money') || t.includes('float') || t.includes('real')) return '0'
+  if (t.includes('char') || t.includes('text') || t.includes('sysname')) return "''"
+  if (t.includes('datetime') || t.includes('date') || t.includes('time')) return 'GETDATE()'
+  if (t.includes('uniqueidentifier')) return 'NEWID()'
+  if (t.includes('binary') || t.includes('image')) return '0x'
+  return 'NULL'
+}
+
+/** Elenco valori di default (uno per colonna), per lo snippet "tutti i valori". */
+export function buildInsertValues(columns: ColumnInfo[]): string {
+  return columns.map(c => sqlDefaultForType(c.dataType, c.isNullable)).join(', ')
+}
+
+/** Colonna corrispondente allo slot i-esimo della tupla (per la lista colonne o per posizione). */
+export function columnForInsertSlot(
+  ctx: InsertContext,
+  table: TableInfo | null,
+  slotIdx: number,
+): ColumnInfo | null {
+  const columns = table?.columns ?? []
+  if (ctx.columnSlots.length > 0) {
+    const slot = ctx.columnSlots[slotIdx]
+    if (!slot) return columns[slotIdx] ?? null
+    const name = slot.text.replace(/[\[\]\s]/g, '')
+    return columns.find(c => c.name.toLowerCase() === name.toLowerCase()) ?? columns[slotIdx] ?? null
+  }
+  return columns[slotIdx] ?? null
+}
+
+/** Tupla di valori che contiene l'offset (o null). */
+export function insertTupleAt(ctx: InsertContext, offset: number): InsertTuple | null {
+  for (const tuple of ctx.valueTuples) {
+    if (tuple.open >= 0) {
+      if (offset >= tuple.open && (tuple.close === null || offset <= tuple.close)) return tuple
+    } else if (tuple.slots.length > 0) {
+      const start = tuple.slots[0].start
+      const end = tuple.slots[tuple.slots.length - 1].end
+      if (offset >= start && offset <= end) return tuple
+    }
+  }
+  return null
+}
+
+/** Range interno della tupla (dentro le parentesi) da sostituire con i valori di default. */
+export function insertTupleInnerRange(tuple: InsertTuple): { start: number; end: number } {
+  if (tuple.open >= 0) {
+    const lastSlotEnd = tuple.slots[tuple.slots.length - 1]?.end ?? tuple.open + 1
+    return { start: tuple.open + 1, end: tuple.close ?? lastSlotEnd }
+  }
+  // INSERT ... SELECT: sostituisce l'intera lista finora digitata
+  if (tuple.slots.length === 0) return { start: -1, end: -1 }
+  return { start: tuple.slots[0].start, end: tuple.slots[tuple.slots.length - 1].end }
 }
 
 // ---------- Parsing EXEC (autocompletamento parametri delle stored procedure) ----------
@@ -617,6 +687,39 @@ export function completionSortText(rank: number): string {
   return String(rank).padStart(5, '0')
 }
 
+/**
+ * filterText per l'item di espansione '*': quando il cursore è DOPO l'asterisco,
+ * Monaco filtra col testo tra '*' e cursore; restituiamo lo stesso testo per
+ * garantire il match (altrimenti l'item sparisce dal widget).
+ */
+export function starFilterText(stmtText: string, starOffset: number, cursorRel: number): string | undefined {
+  return cursorRel > starOffset ? stmtText.slice(starOffset, cursorRel) : undefined
+}
+
+// ---------- Colore delle tab in base al database ----------
+
+const DB_TAB_COLORS = [
+  '#f59e0b',
+  '#38bdf8',
+  '#34d399',
+  '#a78bfa',
+  '#fb7185',
+  '#2dd4bf',
+  '#fb923c',
+  '#a3e635',
+  '#22d3ee',
+  '#e879f9',
+  '#facc15',
+  '#818cf8',
+]
+
+/** Colore stabile della tab in base al nome del database associato. */
+export function dbTabColor(dbName: string): string {
+  let h = 0
+  for (let i = 0; i < dbName.length; i++) h = (h * 31 + dbName.charCodeAt(i)) >>> 0
+  return DB_TAB_COLORS[h % DB_TAB_COLORS.length]
+}
+
 // ---------- Raggruppamento tabelle per prefisso ----------
 
 export interface TableGroup {
@@ -782,9 +885,11 @@ export interface SelectListColumn {
 }
 
 export interface SelectListSuggestions {
-  /** Testo che espande "*" con tutte le colonne (null se non applicabile). */
+  /** Testo con tutti i campi dello statement (null se nessuna tabella referenziata). */
   starText: string | null
   starCount: number
+  /** Offset dell'asterisco dentro stmtText; -1 = nessun '*': il testo va inserito al cursore. */
+  starOffset: number
   /** Colonne suggeribili singolarmente (escluse quelle già scritte nella select-list). */
   columns: SelectListColumn[]
 }
@@ -792,7 +897,9 @@ export interface SelectListSuggestions {
 /**
  * Calcola i suggerimenti per la select-list di uno statement:
  * colonne delle tabelle referenziate (anche dopo il cursore), deduplicate,
- * con l'eventuale testo di espansione dell'asterisco.
+ * con l'eventuale testo di espansione dell'asterisco. L'asterisco viene cercato
+ * in TUTTA la select-list (prima di FROM), quindi il suggerimento "tutti i campi"
+ * compare con Ctrl+Spazio sia prima che dopo il cursore.
  */
 export function buildSelectListSuggestions(
   stmtText: string,
@@ -825,9 +932,25 @@ export function buildSelectListSuggestions(
 
   let starText: string | null = null
   let starCount = 0
-  const starIdx = stmtBefore.lastIndexOf('*')
-  const starUsable = starIdx !== -1 && (starIdx === 0 || stmtBefore[starIdx - 1] !== '(')
-  if (starUsable) {
+  let starOffset = -1
+  // il '*' deve comparire con Ctrl+Spazio PRIMA, SUL o DOPO il cursore:
+  // cerca il primo asterisco "usabile" in tutta la select-list (prima di FROM)
+  const starSelMatch = /\bSELECT\b/i.exec(stmtText)
+  const selectListStart = starSelMatch ? starSelMatch.index + starSelMatch[0].length : 0
+  const fromRel = /\bFROM\b/i.exec(stmtText.slice(selectListStart))
+  const selectListEnd = fromRel ? selectListStart + fromRel.index : stmtText.length
+  let starIdx = -1
+  for (let i = selectListStart; i < selectListEnd && i < stmtText.length; i++) {
+    if (stmtText[i] === '*' && (i === 0 || stmtText[i - 1] !== '(')) {
+      starIdx = i
+      break
+    }
+  }
+  const starUsable = starIdx !== -1
+  if (starUsable) starOffset = starIdx
+  // "tutti i campi": proposto SEMPRE nella select-list (con '*' lo sostituisce,
+  // senza '*' inserisce tutti i campi al cursore), escludendo quelli già scritti
+  {
     const parts: string[] = []
     for (const { r, table } of refTables) {
       const alias = r.alias ?? table.name
@@ -876,7 +999,7 @@ export function buildSelectListSuggestions(
       ),
     })
   }
-  return { starText, starCount, columns }
+  return { starText, starCount, starOffset, columns }
 }
 
 // ---------- Parametri EXEC ----------

@@ -15,14 +15,15 @@ function applyAndCollect(sql: string, summary: ReturnType<typeof wsbritvicLikeSu
       model.getPositionAt(Math.max(d.start, d.end - 1)).lineNumber,
       model.getPositionAt(Math.max(d.start, d.end - 1)).column + 1,
     ),
-    options: { className: d.className, fontWeight: d.fontWeight },
+    // inlineClassName: è la proprietà che Monaco 0.56 piega nello span del token
+    options: { inlineClassName: d.className, fontWeight: d.fontWeight },
   }))
   model.deltaDecorations([], items)
   const decos = model.getDecorationsInRange(model.getFullModelRange())
   const byText = new Map<string, string>()
   for (const d of decos) {
-    if (!d.options.className?.startsWith('sql-tbl-')) continue
-    byText.set(model.getValueInRange(d.range), d.options.className)
+    if (!d.options.inlineClassName?.startsWith('sql-tbl-')) continue
+    byText.set(model.getValueInRange(d.range), d.options.inlineClassName)
   }
   model.dispose()
   return byText
@@ -55,7 +56,7 @@ describe('colorizer: decorazioni applicate al modello Monaco', () => {
         model.getPositionAt(Math.max(d.start, d.end - 1)).lineNumber,
         model.getPositionAt(Math.max(d.start, d.end - 1)).column + 1,
       ),
-      options: { className: d.className },
+      options: { inlineClassName: d.className },
     }))
     model.deltaDecorations([], items)
     const decos = model.getDecorationsInRange(model.getFullModelRange())
@@ -66,12 +67,16 @@ describe('colorizer: decorazioni applicate al modello Monaco', () => {
     model.dispose()
   })
 
-  it('il payload invia fontWeight 600 sui nomi tabella (non sulle colonne)', () => {
+  it('il payload invia inlineClassName (classe che colora il testo) sui nomi tabella', () => {
     const specs = buildColorDecorations(SQL, summary)
     const byStart = new Map(specs.map(s => [SQL.slice(s.start, s.end), s]))
     expect(byStart.get('RUN_MISSIONI')?.fontWeight).toBe('600')
     expect(byStart.get('DAT_UDC')?.fontWeight).toBe('600')
     expect(byStart.get('MIS_UDC')?.fontWeight).toBeUndefined()
     expect(byStart.get('UDC_CORRIDOIO')?.fontWeight).toBeUndefined()
+    // le classi devono essere valide inline (sql-tbl-N)
+    for (const s of specs) {
+      expect(s.className).toMatch(/^sql-tbl-\d+$/)
+    }
   })
 })

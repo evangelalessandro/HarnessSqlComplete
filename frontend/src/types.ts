@@ -175,3 +175,18 @@ export interface AutocompleteStatus {
 }
 
 export type ObjectKind = 'table' | 'view' | 'procedure' | 'function' | 'trigger'
+
+/** Tab dell'editor (query o definizione oggetto). */
+export interface EditorTab {
+  id: string
+  title: string
+  sql: string
+  /** Tab appuntata: resta in testa e non è chiudibile. */
+  pinned?: boolean
+  /** Database associato alla tab (per il colore). */
+  database?: string
+  /** Tab nata da un file (nome = file). */
+  fromFile?: boolean
+  /** Handle del file aperto col picker: permette di sovrascrivere l'originale. */
+  fileHandle?: FileSystemFileHandle | null
+}

@@ -43,6 +43,13 @@ export const api = {
   connectSaved: (id: number) =>
     http<ConnectResponse>(`/connections/saved/${id}/connect`, { method: 'POST' }),
 
+  /** Cambia il database della sessione corrente (la password resta sul server). */
+  switchDatabase: (connectionId: string, database: string) =>
+    http<ConnectResponse>(`/connections/${connectionId}/switch-database`, {
+      method: 'POST',
+      body: JSON.stringify({ database }),
+    }),
+
   deleteConnection: (id: number) =>
     http<void>(`/connections/${id}`, { method: 'DELETE' }),
 

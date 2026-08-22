@@ -45,7 +45,9 @@ export function registerTableColorizer(
       const end = model.getPositionAt(Math.max(d.start, d.end - 1))
       items.push({
         range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column + 1),
-        options: { className: d.className, fontWeight: d.fontWeight },
+        // inlineClassName (non className): è ciò che Monaco 0.56 piega nello span del
+        // token, permettendo di colorare il testo (className rende solo un overlay vuoto).
+        options: { inlineClassName: d.className, fontWeight: d.fontWeight },
       })
     }
     collection.set(items)

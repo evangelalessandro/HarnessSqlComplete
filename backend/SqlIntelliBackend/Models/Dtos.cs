@@ -33,6 +33,8 @@ public record SavedConnectionDto(
     string? Username,
     DateTime UpdatedAt);
 
+public record SwitchDatabaseRequest(string Database);
+
 public record DatabaseInfo(string Name);
 
 // ---------- Metadati ----------

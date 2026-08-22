@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { qualified, sqlIdent } from '../helpers'
+import { dbTabColor, qualified, sqlIdent } from '../helpers'
 
 describe('parentesi quadre intelligenti', () => {
   it('nomi semplici senza parentesi', () => {
@@ -26,5 +26,20 @@ describe('parentesi quadre intelligenti', () => {
     expect(qualified('sales', 'Ordini')).toBe('sales.Ordini')
     expect(qualified('dbo', 'Order Details')).toBe('[Order Details]')
     expect(qualified('my schema', 'Tabella')).toBe('[my schema].Tabella')
+  })
+})
+
+describe('dbTabColor: colore tab in base al database', () => {
+  it('stesso database → stesso colore (stabile)', () => {
+    expect(dbTabColor('WSBRITVIC')).toBe(dbTabColor('WSBRITVIC'))
+    expect(dbTabColor('master')).toBe(dbTabColor('master'))
+  })
+
+  it('database diversi → colori validi esadecimali', () => {
+    const colors = ['WSBRITVIC', 'master', 'model', 'msdb', 'tempdb'].map(dbTabColor)
+    for (const c of colors) {
+      expect(c).toMatch(/^#[0-9a-f]{6}$/i)
+    }
+    expect(new Set(colors).size).toBeGreaterThan(1)
   })
 })

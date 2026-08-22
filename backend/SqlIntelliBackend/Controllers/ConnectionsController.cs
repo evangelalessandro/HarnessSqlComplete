@@ -115,6 +115,35 @@ public class ConnectionsController(AppDbContext db, ConnectionHub hub, MetadataS
         return NoContent();
     }
 
+    /// <summary>Cambia il database della sessione corrente (la password resta sul server).</summary>
+    [HttpPost("{connectionId}/switch-database")]
+    public async Task<ActionResult<ConnectResponse>> SwitchDatabase(
+        string connectionId, [FromBody] SwitchDatabaseRequest req, CancellationToken ct)
+    {
+        var cs = hub.Get(connectionId);
+        if (cs is null)
+            return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
+        if (string.IsNullOrWhiteSpace(req.Database))
+            return BadRequest(new ConnectResponse("", "", "", [], "Database obbligatorio."));
+
+        var builder = new SqlConnectionStringBuilder(cs) { InitialCatalog = req.Database.Trim() };
+        var newCs = builder.ConnectionString;
+        try
+        {
+            await using var conn = new SqlConnection(newCs);
+            await conn.OpenAsync(ct);
+        }
+        catch (SqlException ex)
+        {
+            return BadRequest(new ConnectResponse("", builder.DataSource, "", [], ex.Message));
+        }
+
+        var dbs = await metadata.ListDatabasesAsync(newCs, ct);
+        var newId = hub.Register(newCs);
+        hub.Remove(connectionId);
+        return Ok(new ConnectResponse(newId, builder.DataSource, req.Database.Trim(), dbs.ToArray(), "Database cambiato."));
+    }
+
     private static string DefaultName(ConnectionRequest req) =>
         $"{req.Server}{(req.Port is > 0 and not 1433 ? $",{req.Port}" : "")}" +
         (string.IsNullOrWhiteSpace(req.Database) ? "" : $" · {req.Database}") +

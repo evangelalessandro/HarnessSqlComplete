@@ -28,6 +28,8 @@ interface Props {
   onInsertText: (text: string) => void
   /** Apre la preview (SELECT TOP 100 *) in una nuova tab dell'editor. */
   onPreviewInEditor?: (sql: string) => void
+  /** Cambia il database attivo (nuova connessione con lo stesso server). */
+  onSwitchDatabase?: (database: string) => void
   /** Apre una stored procedure / funzione: 'alter' genera ALTER, 'open' la definizione CREATE. */
   onOpenObject?: (kind: 'procedure' | 'function', schema: string, name: string, mode: 'alter' | 'open') => void
 }
@@ -46,6 +48,7 @@ export default function Sidebar({
   onInsertText,
   onPreviewInEditor,
   onOpenObject,
+  onSwitchDatabase,
 }: Props) {
   const [query, setQuery] = useState('')
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
@@ -353,15 +356,19 @@ export default function Sidebar({
               onToggle={() => toggle('databases')}
             >
               {summary.databases.map(d => (
-                <div
+                <button
                   key={d.name}
-                  className={`flex items-center gap-2 px-2 py-0.5 pl-7 text-xs ${
-                    d.name === activeDatabase ? 'text-sky-300' : 'text-zinc-500'
+                  onClick={() => onSwitchDatabase?.(d.name)}
+                  className={`flex w-full items-center gap-2 rounded px-2 py-0.5 pl-7 text-left text-xs transition-colors ${
+                    d.name === activeDatabase
+                      ? 'text-sky-300'
+                      : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300'
                   }`}
+                  title={d.name === activeDatabase ? 'Database attivo' : `Passa al database ${d.name}`}
                 >
                   <span className="truncate font-mono">{d.name}</span>
                   {d.name === activeDatabase && <Badge tone="sky">attivo</Badge>}
-                </div>
+                </button>
               ))}
             </Section>
           </div>

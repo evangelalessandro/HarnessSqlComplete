@@ -1,24 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Database as DbIcon, FilePlus2, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Database as DbIcon, FilePlus2, Pin, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
-import { toAlterStatement } from './helpers'
-import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, QueryResult } from './types'
+import { dbTabColor, toAlterStatement } from './helpers'
+import { openSqlFiles, saveSqlFile } from './fileSave'
+import { loadPersistedTabs, persistTabs } from './tabStorage'
+import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryResult } from './types'
 import LoginScreen from './components/LoginScreen'
 import Sidebar from './components/Sidebar'
 import SqlEditor, { DEFAULT_SQL } from './components/SqlEditor'
 import ResultsPanel from './components/ResultsPanel'
 import PrintPanel from './components/PrintPanel'
+import { FileDropZone } from './components/FileDropZone'
 import { Badge } from './components/ui'
 
 type Tab = 'results' | 'print'
-
-interface EditorTab {
-  id: string
-  title: string
-  sql: string
-}
 
 const firstTab = (): EditorTab => ({ id: 'tab-1', title: 'Query 1', sql: DEFAULT_SQL })
 
@@ -34,10 +31,53 @@ export default function App() {
   const [banner, setBanner] = useState<string | null>(null)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
 
-  // --- Tab dell'editor (multi-tab) ---
-  const [editorTabs, setEditorTabs] = useState<EditorTab[]>([firstTab()])
-  const [activeEditorTab, setActiveEditorTab] = useState('tab-1')
+  // --- Tab dell'editor (multi-tab), ripristinate da localStorage all'apertura ---
+  const persisted = useMemo(() => loadPersistedTabs(), [])
+  const [editorTabs, setEditorTabs] = useState<EditorTab[]>(() => persisted?.tabs ?? [firstTab()])
+  const [activeEditorTab, setActiveEditorTab] = useState(
+    () => (persisted && persisted.tabs.some(t => t.id === persisted.active) ? persisted.active : 'tab-1'),
+  )
   const tabCounter = useRef(2)
+  for (const t of editorTabs) {
+    const n = Number(t.id.replace(/^tab-/, ''))
+    if (!Number.isNaN(n) && n >= tabCounter.current) tabCounter.current = n + 1
+  }
+
+  // Salva le tab (ultima query inclusa) a ogni modifica
+  useEffect(() => {
+    persistTabs(editorTabs, activeEditorTab)
+  }, [editorTabs, activeEditorTab])
+
+  // Alla chiusura/ricarica della pagina salva subito il contenuto corrente dell'editor
+  useEffect(() => {
+    const flush = () => {
+      const current = editor?.getValue()
+      const tabs =
+        current !== undefined
+          ? editorTabs.map(t => (t.id === activeEditorTab ? { ...t, sql: current } : t))
+          : editorTabs
+      persistTabs(tabs, activeEditorTab)
+    }
+    window.addEventListener('beforeunload', flush)
+    return () => window.removeEventListener('beforeunload', flush)
+  }, [editor, editorTabs, activeEditorTab])
+
+  // Sincronizza il contenuto della tab attiva mentre si digita (debounce 600 ms)
+  const contentSyncTimer = useRef<number | null>(null)
+  const handleContentChange = useCallback(
+    (sql: string) => {
+      if (contentSyncTimer.current !== null) window.clearTimeout(contentSyncTimer.current)
+      contentSyncTimer.current = window.setTimeout(() => {
+        setEditorTabs(prev => prev.map(t => (t.id === activeEditorTab ? { ...t, sql } : t)))
+      }, 600)
+    },
+    [activeEditorTab],
+  )
+  useEffect(() => {
+    return () => {
+      if (contentSyncTimer.current !== null) window.clearTimeout(contentSyncTimer.current)
+    }
+  }, [])
 
   // Quando cambia la tab attiva (o arriva l'editor), mostra il contenuto della tab
   useEffect(() => {
@@ -61,25 +101,44 @@ export default function App() {
     [activeEditorTab, saveActiveEditor],
   )
 
-  const newEditorTab = useCallback((title?: string, sql: string = DEFAULT_SQL) => {
-    const n = tabCounter.current++
-    const tab: EditorTab = { id: `tab-${n}`, title: title ?? `Query ${n}`, sql }
-    setEditorTabs(prev => [...prev, tab])
-    setActiveEditorTab(tab.id)
-  }, [])
+  const newEditorTab = useCallback(
+    (
+      title?: string,
+      sql: string = DEFAULT_SQL,
+      database?: string,
+      fromFile = false,
+      fileHandle: FileSystemFileHandle | null = null,
+    ) => {
+      // il progressivo si azzera quando non c'è nessuna tab
+      if (editorTabs.length === 0) tabCounter.current = 1
+      const n = tabCounter.current++
+      const tab: EditorTab = {
+        id: `tab-${n}`,
+        title: title ?? `Query ${n}`,
+        sql,
+        pinned: false,
+        database: database ?? connection?.database ?? '',
+        fromFile,
+        fileHandle,
+      }
+      setEditorTabs(prev => [...prev, tab])
+      setActiveEditorTab(tab.id)
+    },
+    [editorTabs.length, connection],
+  )
 
   const closeEditorTab = useCallback(
     (id: string) => {
       setEditorTabs(prev => {
-        const idx = prev.findIndex(t => t.id === id)
-        if (idx === -1) return prev
+        const target = prev.find(t => t.id === id)
+        if (!target || target.pinned) return prev // le tab appuntate non si chiudono
         const next = prev.filter(t => t.id !== id)
         if (next.length === 0) {
-          const fresh = { id: `tab-${tabCounter.current++}`, title: 'Query 1', sql: DEFAULT_SQL }
-          setActiveEditorTab(fresh.id)
-          return [fresh]
+          setActiveEditorTab('') // tutte chiuse: stato vuoto, il prossimo progressivo riparte da 1
+          return []
         }
         if (id === activeEditorTab) {
+          const idx = prev.findIndex(t => t.id === id)
           setActiveEditorTab(next[Math.min(idx, next.length - 1)].id)
         }
         return next
@@ -88,10 +147,34 @@ export default function App() {
     [activeEditorTab],
   )
 
-  const resetTabs = useCallback(() => {
-    tabCounter.current = 2
-    setEditorTabs([firstTab()])
-    setActiveEditorTab('tab-1')
+  const togglePin = useCallback((id: string) => {
+    setEditorTabs(prev => {
+      const t = prev.find(x => x.id === id)
+      if (!t) return prev
+      const others = prev.filter(x => x.id !== id)
+      const updated = { ...t, pinned: !t.pinned }
+      if (updated.pinned) {
+        // appunta: sposta in testa al gruppo delle appuntate
+        const firstUnpinned = others.findIndex(x => !x.pinned)
+        const insertAt = firstUnpinned === -1 ? others.length : firstUnpinned
+        return [...others.slice(0, insertAt), updated, ...others.slice(insertAt)]
+      }
+      // togli il pin: va in fondo
+      return [...others, updated]
+    })
+  }, [])
+
+  const moveTab = useCallback((fromId: string, toId: string) => {
+    if (fromId === toId) return
+    setEditorTabs(prev => {
+      const fromIdx = prev.findIndex(t => t.id === fromId)
+      const toIdx = prev.findIndex(t => t.id === toId)
+      if (fromIdx === -1 || toIdx === -1) return prev
+      const next = [...prev]
+      const [moved] = next.splice(fromIdx, 1)
+      next.splice(toIdx, 0, moved)
+      return next
+    })
   }, [])
 
   const handleConnected = useCallback(
@@ -99,7 +182,6 @@ export default function App() {
       setConnection(res)
       setResult(null)
       setActiveTab('results')
-      resetTabs()
       setLoadingSummary(true)
       try {
         setSummary(await api.getSummary(res.connectionId))
@@ -114,7 +196,7 @@ export default function App() {
         setAiStatus(null)
       }
     },
-    [resetTabs],
+    [],
   )
 
   const handleExecute = useCallback(
@@ -149,8 +231,7 @@ export default function App() {
     setBanner(null)
     setAiStatus(null)
     setEditor(null)
-    resetTabs()
-  }, [connection, resetTabs])
+  }, [connection])
 
   const handleInsertText = useCallback(
     (text: string) => {
@@ -164,6 +245,29 @@ export default function App() {
       }
     },
     [editor],
+  )
+
+  /** Cambia database: nuova connessione (stesse credenziali) + metadati aggiornati. */
+  const handleSwitchDatabase = useCallback(
+    async (database: string) => {
+      if (!connection || database === connection.database) return
+      setBanner(null)
+      setLoadingSummary(true)
+      try {
+        const res = await api.switchDatabase(connection.connectionId, database)
+        setConnection(res)
+        setResult(null)
+        setActiveTab('results')
+        setSummary(await api.getSummary(res.connectionId))
+        // la tab attiva segue il database selezionato
+        setEditorTabs(prev => prev.map(t => (t.id === activeEditorTab ? { ...t, database: res.database } : t)))
+      } catch (e) {
+        setBanner(e instanceof Error ? e.message : String(e))
+      } finally {
+        setLoadingSummary(false)
+      }
+    },
+    [connection],
   )
 
   /** Apre la preview (SELECT TOP 100 *) in una nuova tab dell'editor. */
@@ -183,7 +287,7 @@ export default function App() {
         const { definition } = await api.getObjectDefinition(connection.connectionId, schema, name)
         const sql = mode === 'alter' ? toAlterStatement(definition) : definition
         const title = `${mode === 'alter' ? 'ALTER ' : ''}${schema === 'dbo' ? name : `${schema}.${name}`}`
-        newEditorTab(title, sql)
+        newEditorTab(title, sql, connection?.database)
       } catch (e) {
         setBanner(e instanceof Error ? e.message : String(e))
       }
@@ -191,8 +295,58 @@ export default function App() {
     [connection, newEditorTab],
   )
 
+  /** Apre i file SQL trascinati (drag & drop) in nuove tab (nome = file, sovrascrittura via picker). */
+  const handleOpenFiles = useCallback(
+    (files: { name: string; content: string }[]) => {
+      for (const f of files) {
+        newEditorTab(f.name.replace(/\.sql$/i, ''), f.content, connection?.database, true)
+      }
+    },
+    [newEditorTab, connection],
+  )
+
+  /** Salva la tab attiva: sovrascrive l'originale se la tab ha l'handle, altrimenti apre il picker. */
+  const saveActiveTab = useCallback(async () => {
+    if (!editor) return
+    const tab = editorTabs.find(t => t.id === activeEditorTab)
+    if (!tab) return
+    const sql = editor.getValue()
+    setEditorTabs(prev => prev.map(t => (t.id === activeEditorTab ? { ...t, sql } : t)))
+    const suggestedName = /\.sql$/i.test(tab.title) ? tab.title : `${tab.title}.sql`
+    setBanner(null)
+    try {
+      // l'handle potrebbe essere stato perso dopo un reload (JSON): verifica che sia reale
+      const handle =
+        tab.fileHandle && typeof tab.fileHandle.createWritable === 'function' ? tab.fileHandle : null
+      await saveSqlFile(suggestedName, sql, handle)
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === 'AbortError')) {
+        setBanner(e instanceof Error ? e.message : String(e))
+      }
+    }
+  }, [editor, editorTabs, activeEditorTab])
+
+  /** Apre file .sql con il picker: la tab conserva l'handle per sovrascrivere l'originale. */
+  const handleOpenFilePicker = useCallback(async () => {
+    setBanner(null)
+    try {
+      const files = await openSqlFiles()
+      for (const f of files) {
+        newEditorTab(f.name.replace(/\.sql$/i, ''), f.content, connection?.database, true, f.handle)
+      }
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === 'AbortError')) {
+        setBanner(e instanceof Error ? e.message : String(e))
+      }
+    }
+  }, [newEditorTab, connection])
+
   if (!connection) {
-    return <LoginScreen onConnected={handleConnected} />
+    return (
+      <FileDropZone onFiles={handleOpenFiles}>
+        <LoginScreen onConnected={handleConnected} />
+      </FileDropZone>
+    )
   }
 
   const aiConfigured = aiStatus?.configured ?? false
@@ -201,9 +355,12 @@ export default function App() {
       ? `DeepSeek ${aiStatus.model}`
       : 'DeepSeek: chiave non configurata'
     : 'IA: stato sconosciuto'
+  const dbNames = summary?.databases.map(d => d.name) ?? []
+  const dbOptions = dbNames.includes(connection.database) ? dbNames : [connection.database, ...dbNames]
 
   return (
-    <div className="flex h-full flex-col">
+    <FileDropZone onFiles={handleOpenFiles}>
+      <div className="flex h-full flex-col">
       <header className="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/70 px-4 py-2">
         <div className="flex items-center gap-2 font-semibold text-zinc-100">
           <DbIcon className="h-5 w-5 text-sky-400" />
@@ -234,35 +391,76 @@ export default function App() {
             onInsertText={handleInsertText}
             onPreviewInEditor={handlePreviewInEditor}
             onOpenObject={handleOpenObject}
+            onSwitchDatabase={handleSwitchDatabase}
           />
         </aside>
 
         <main className="flex min-w-0 flex-1 flex-col">
           {/* Barra delle tab dell'editor */}
-          <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-zinc-800 bg-zinc-900/60 px-1">
+          <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-zinc-800 bg-zinc-900/60 px-1">
+            <select
+              value={connection.database}
+              onChange={e => void handleSwitchDatabase(e.target.value)}
+              className="mr-1 shrink-0 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-1 text-xs font-medium text-sky-300 hover:border-sky-700 focus:border-sky-500 focus:outline-none"
+              title="Database attivo — seleziona per cambiare"
+            >
+              {(dbOptions).map(d => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
             {editorTabs.map(t => (
               <div
                 key={t.id}
-                className={`group flex shrink-0 items-center gap-1 border-r border-zinc-800 px-2 py-1.5 text-xs ${
+                draggable
+                onDragStart={e => {
+                  e.dataTransfer.setData('text/tab-id', t.id)
+                  e.dataTransfer.effectAllowed = 'move'
+                }}
+                onDragOver={e => {
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                }}
+                onDrop={e => {
+                  e.preventDefault()
+                  const fromId = e.dataTransfer.getData('text/tab-id')
+                  if (fromId) moveTab(fromId, t.id)
+                }}
+                className={`group flex shrink-0 cursor-grab items-center gap-1 border-t-2 border-r border-zinc-800 px-2 py-1 text-xs active:cursor-grabbing ${
                   t.id === activeEditorTab
                     ? 'bg-zinc-800/80 text-zinc-100'
                     : 'text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300'
                 }`}
+                style={{ borderTopColor: dbTabColor(t.database ?? connection.database) }}
+                title={`${t.title} · db: ${t.database || connection.database}${t.pinned ? ' (appuntata)' : ''}${t.id === activeEditorTab ? ' — trascina per riordinare' : ''}`}
               >
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: dbTabColor(t.database ?? connection.database) }} />
                 <button
                   onClick={() => switchEditorTab(t.id)}
-                  className="max-w-44 truncate font-medium"
+                  className="max-w-40 truncate font-medium"
                   title={t.title}
                 >
                   {t.title}
                 </button>
                 <button
-                  onClick={() => closeEditorTab(t.id)}
-                  className="rounded p-0.5 opacity-0 transition-opacity hover:bg-zinc-700 group-hover:opacity-100"
-                  title="Chiudi tab"
+                  onClick={() => togglePin(t.id)}
+                  className={`rounded p-0.5 opacity-0 transition-opacity hover:bg-zinc-700 group-hover:opacity-100 ${
+                    t.pinned ? '!opacity-100 text-amber-400' : 'text-zinc-400'
+                  }`}
+                  title={t.pinned ? 'Togli il pin' : 'Appunta la tab'}
                 >
-                  <X className="h-3 w-3" />
+                  <Pin className="h-3 w-3" />
                 </button>
+                {!t.pinned && (
+                  <button
+                    onClick={() => closeEditorTab(t.id)}
+                    className="rounded p-0.5 opacity-0 transition-opacity hover:bg-zinc-700 group-hover:opacity-100"
+                    title="Chiudi tab"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
               </div>
             ))}
             <button
@@ -275,17 +473,34 @@ export default function App() {
           </div>
 
           <div className="h-[52%] min-h-44 shrink-0 border-b border-zinc-800">
-            <SqlEditor
-              connectionId={connection.connectionId}
-              summary={summary}
-              executing={executing}
-              aiEnabled={aiEnabled}
-              onAiEnabledChange={setAiEnabled}
-              aiConfigured={aiConfigured}
-              aiStatusText={aiStatusText}
-              onExecute={(sql: string) => void handleExecute(sql)}
-              registerEditor={setEditor}
-            />
+            {activeEditorTab ? (
+              <SqlEditor
+                connectionId={connection.connectionId}
+                summary={summary}
+                executing={executing}
+                aiEnabled={aiEnabled}
+                onAiEnabledChange={setAiEnabled}
+                aiConfigured={aiConfigured}
+                aiStatusText={aiStatusText}
+                onExecute={(sql: string) => void handleExecute(sql)}
+                onContentChange={handleContentChange}
+                onSave={saveActiveTab}
+                onOpenFile={handleOpenFilePicker}
+                registerEditor={setEditor}
+              />
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-zinc-600">
+                <FilePlus2 className="h-8 w-8 text-zinc-700" />
+                <p>Nessuna query aperta.</p>
+                <button
+                  onClick={() => newEditorTab()}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-sky-500"
+                >
+                  <FilePlus2 className="h-4 w-4" /> Nuova query
+                </button>
+                <p className="text-xs text-zinc-700">…oppure trascina un file .sql qui</p>
+              </div>
+            )}
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col">
@@ -315,7 +530,8 @@ export default function App() {
           </div>
         </main>
       </div>
-    </div>
+      </div>
+    </FileDropZone>
   )
 }
 

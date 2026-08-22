@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { Eraser, Play, Wand2 } from 'lucide-react'
+import { Eraser, FolderOpen, Play, Save, Wand2 } from 'lucide-react'
 import { format } from 'sql-formatter'
 import monaco from '../monacoSetup'
 import { api } from '../api'
-import type { DatabaseSummary, TableInfo } from '../types'
-import { buildExecParamSnippet, buildJoinText, buildSelectListSuggestions, columnInfoMarkdown, completionSortText, filterUnusedParams, findExecContext, findTableRefs, parseInsertContext, qualified, rankTablesForJoin, sqlIdent, statementRangeAt, usageDetail } from '../helpers'
+import type { ColumnInfo, DatabaseSummary, TableInfo } from '../types'
+import { buildExecParamSnippet, buildInsertValues, buildJoinText, buildSelectListSuggestions, columnForInsertSlot, columnInfoMarkdown, completionSortText, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, parseInsertContext, qualified, rankTablesForJoin, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
 import { registerInsertHighlight } from '../sqlInsertHighlight'
 import { registerTableColorizer } from '../sqlTableColors'
 import { registerSqlHover } from '../sqlHover'
@@ -20,6 +20,12 @@ interface Props {
   aiConfigured: boolean
   aiStatusText: string
   onExecute: (sql: string) => void
+  /** Notifica il contenuto dell'editor mentre si digita (per la persistenza). */
+  onContentChange?: (sql: string) => void
+  /** Salva la tab attiva (sovrascrive l'originale se aperta da file). */
+  onSave?: () => void
+  /** Apre file .sql con il picker (handle per la sovrascrittura). */
+  onOpenFile?: () => void
   registerEditor: (editor: monaco.editor.IStandaloneCodeEditor) => void
 }
 
@@ -54,12 +60,17 @@ export default function SqlEditor({
   aiConfigured,
   aiStatusText,
   onExecute,
+  onContentChange,
+  onSave,
+  onOpenFile,
   registerEditor,
 }: Props) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const disposablesRef = useRef<monaco.IDisposable[]>([])
   const stateRef = useRef({ connectionId, summary, aiEnabled, onExecute })
   stateRef.current = { connectionId, summary, aiEnabled, onExecute }
+  const onSaveRef = useRef(onSave)
+  onSaveRef.current = onSave
   // L'istanza editor in stato React: l'effect del colorizer si (ri)registra
   // automaticamente quando editor o schema cambiano (pulizia inclusa)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
@@ -120,6 +131,8 @@ export default function SqlEditor({
     // Esegui: F5 e Ctrl+Invio
     editor.addCommand(monaco.KeyCode.F5, () => stateRef.current.onExecute(editor.getValue()))
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => stateRef.current.onExecute(editor.getValue()))
+    // Salva: Ctrl+S
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => onSaveRef.current?.())
     // Formatta: Ctrl+Shift+F
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF, handleFormat)
 
@@ -137,7 +150,7 @@ export default function SqlEditor({
   const registerSchemaCompletions = () => {
     disposablesRef.current.push(
       monaco.languages.registerCompletionItemProvider('sql', {
-        triggerCharacters: ['.', ' ', '[', '"', '('],
+        triggerCharacters: ['.', ' ', '[', '"', '(', '*'],
         provideCompletionItems: (model, position) => {
           const st = stateRef.current
           const word = model.getWordUntilPosition(position)
@@ -159,18 +172,21 @@ export default function SqlEditor({
 
           if (st.summary) {
             // Aiuto INSERT: dentro la lista colonne di "INSERT INTO tab (" →
-            // suggerisce le colonne della tabella, con opzione "tutte le colonne"
+            // suggerisce le colonne della tabella, con opzione "tutte le colonne";
+            // dentro i VALUES → suggerisce i valori di default per la colonna corrente
             const insertCtx = parseInsertContext(textBefore)
+            const insTable = insertCtx
+              ? st.summary.tables.find(
+                  t =>
+                    t.name.toLowerCase() === insertCtx.table.toLowerCase() &&
+                    (!insertCtx.schema || t.schema.toLowerCase() === insertCtx.schema.toLowerCase()),
+                )
+              : undefined
             if (insertCtx && insertCtx.colOpen !== -1) {
               const cursorOffset = model.getOffsetAt(position)
               const inInsertColumns =
                 insertCtx.colClose === null || cursorOffset <= insertCtx.colClose
               if (inInsertColumns) {
-                const insTable = st.summary.tables.find(
-                  t =>
-                    t.name.toLowerCase() === insertCtx.table.toLowerCase() &&
-                    (!insertCtx.schema || t.schema.toLowerCase() === insertCtx.schema.toLowerCase()),
-                )
                 if (insTable?.columns && insTable.columns.length > 0) {
                   if (word.word.length === 0) {
                     push({
@@ -194,6 +210,75 @@ export default function SqlEditor({
                   }
                   return { suggestions }
                 }
+              }
+            }
+
+            // Aiuto VALUES: dentro VALUES (...)/INSERT...SELECT → valori di default per la colonna corrente
+            if (insertCtx && insertCtx.valueTuples.length > 0) {
+              const cursorOffset = model.getOffsetAt(position)
+              const tuple = insertTupleAt(insertCtx, cursorOffset)
+              if (tuple) {
+                const slotIdx = Math.max(0, insertSlotIndexAt(tuple.slots, cursorOffset))
+                const column = columnForInsertSlot(insertCtx, insTable ?? null, slotIdx)
+
+                // snippet "tutti i valori" (un default per colonna, in ordine)
+                let valueColumns: ColumnInfo[] = []
+                if (insertCtx.columnSlots.length > 0 && insTable) {
+                  valueColumns = insertCtx.columnSlots
+                    .map((_, i) => columnForInsertSlot(insertCtx, insTable, i))
+                    .filter((c): c is ColumnInfo => c !== null)
+                } else if (insTable?.columns) {
+                  valueColumns = insTable.columns
+                }
+                if (valueColumns.length > 0) {
+                  const inner = insertTupleInnerRange(tuple)
+                  if (inner.start >= 0) {
+                    const startPos = model.getPositionAt(inner.start)
+                    const endPos = model.getPositionAt(inner.end)
+                    const tupleRange = new monaco.Range(
+                      startPos.lineNumber,
+                      startPos.column,
+                      endPos.lineNumber,
+                      endPos.column,
+                    )
+                    push({
+                      label: `— tutti i valori (${valueColumns.length}) —`,
+                      detail: 'inserisce un valore di default per ogni colonna',
+                      kind: monaco.languages.CompletionItemKind.Snippet,
+                      insertText: buildInsertValues(valueColumns),
+                      range: tupleRange,
+                    })
+                  }
+                }
+
+                // valori suggeriti per la colonna corrente
+                if (column) {
+                  const def = sqlDefaultForType(column.dataType, column.isNullable)
+                  const candidates = new Set<string>([def])
+                  if (def !== 'NULL') candidates.add('NULL')
+                  const t = column.dataType.toLowerCase()
+                  if (t.includes('char') || t.includes('text')) candidates.add("N''")
+                  const slot = tuple.slots[slotIdx]
+                  const slotRange = slot
+                    ? new monaco.Range(
+                        model.getPositionAt(slot.start).lineNumber,
+                        model.getPositionAt(slot.start).column,
+                        model.getPositionAt(Math.max(slot.start, slot.end - 1)).lineNumber,
+                        model.getPositionAt(Math.max(slot.start, slot.end - 1)).column + 1,
+                      )
+                    : range
+                  for (const v of candidates) {
+                    push({
+                      label: v,
+                      detail: `valore per ${column.name} · ${column.dataType}`,
+                      kind: monaco.languages.CompletionItemKind.Constant,
+                      insertText: v,
+                      range: slotRange,
+                      filterText: v,
+                    })
+                  }
+                }
+                return { suggestions }
               }
             }
 
@@ -252,20 +337,29 @@ export default function SqlEditor({
             if (inSelectList) {
               const sel = buildSelectListSuggestions(stmtText, stmtBefore, st.summary)
               if (sel.starText) {
-                const starIdx = stmtBefore.lastIndexOf('*')
-                const starPos = model.getPositionAt(stmtRange.start + starIdx)
-                const starRange = new monaco.Range(
-                  starPos.lineNumber,
-                  starPos.column,
-                  position.lineNumber,
-                  position.column,
-                )
+                // con '*' il range copre l'asterisco; senza '*' inserisce al cursore
+                let itemRange = range
+                let filterText: string | undefined
+                if (sel.starOffset >= 0) {
+                  const starPos = model.getPositionAt(stmtRange.start + sel.starOffset)
+                  const starEndPos = model.getPositionAt(stmtRange.start + sel.starOffset + 1)
+                  itemRange = new monaco.Range(
+                    starPos.lineNumber,
+                    starPos.column,
+                    starEndPos.lineNumber,
+                    starEndPos.column,
+                  )
+                  filterText = starFilterText(stmtText, sel.starOffset, cursorOffset - stmtRange.start)
+                }
                 push({
                   label: `— tutti i campi (${sel.starCount}) —`,
-                  detail: 'espande * con le colonne delle tabelle dello statement',
+                  detail: sel.starOffset >= 0
+                    ? 'espande * con le colonne delle tabelle dello statement'
+                    : 'inserisce tutte le colonne delle tabelle dello statement',
                   kind: monaco.languages.CompletionItemKind.Snippet,
                   insertText: sel.starText,
-                  range: starRange,
+                  filterText,
+                  range: itemRange,
                 })
               }
               for (const col of sel.columns) {
@@ -413,6 +507,12 @@ export default function SqlEditor({
           <Button variant="primary" onClick={() => onExecute(editorRef.current?.getValue() ?? '')} loading={executing}>
             <Play className="h-4 w-4" /> Esegui
           </Button>
+          <Button variant="secondary" onClick={() => onSave?.()} title="Salva la query (Ctrl+S) — sovrascrive il file originale se aperto">
+            <Save className="h-4 w-4" /> Salva
+          </Button>
+          <Button variant="ghost" onClick={() => onOpenFile?.()} title="Apri file .sql (permette di sovrascrivere l'originale)">
+            <FolderOpen className="h-4 w-4" /> Apri file
+          </Button>
           <Button variant="secondary" onClick={handleFormat}>
             <Wand2 className="h-4 w-4" /> Formatta
           </Button>
@@ -433,6 +533,7 @@ export default function SqlEditor({
           path="sql-intelli://main.sql"
           defaultValue={DEFAULT_SQL}
           onMount={handleMount}
+          onChange={value => onContentChange?.(value ?? '')}
           loading={
             <div className="flex h-full items-center justify-center gap-2 text-sm text-zinc-500">
               <Spinner /> Caricamento editor…
