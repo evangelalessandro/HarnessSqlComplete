@@ -1,0 +1,108 @@
+namespace SqlIntelliBackend.Models;
+
+// ---------- Connessioni / Login ----------
+
+public record ConnectionRequest(
+    string? Name,
+    string Server,
+    int Port,
+    string? Database,
+    bool UseWindowsAuth,
+    string? Username,
+    string? Password,
+    bool Save,
+    bool? Encrypt,
+    bool? TrustServerCertificate);
+
+public record ConnectionTestResult(bool Success, string Message, string[]? Databases);
+
+public record ConnectResponse(
+    string ConnectionId,
+    string Server,
+    string Database,
+    string[] Databases,
+    string Message);
+
+public record SavedConnectionDto(
+    int Id,
+    string Name,
+    string Server,
+    int Port,
+    string? Database,
+    bool UseWindowsAuth,
+    string? Username,
+    DateTime UpdatedAt);
+
+public record DatabaseInfo(string Name);
+
+// ---------- Metadati ----------
+
+public record ColumnInfo(
+    string Name,
+    string DataType,
+    bool IsNullable,
+    bool IsIdentity,
+    bool IsComputed,
+    int? MaxLength,
+    string? Description);
+
+public record TableInfo(
+    string Schema,
+    string Name,
+    int ColumnCount,
+    DateTime? CreateDate,
+    List<ColumnInfo>? Columns = null);
+
+public record ViewInfo(string Schema, string Name, DateTime? CreateDate);
+
+public record ProcParamInfo(string Name, string DataType, string Mode);
+
+public record ProcedureInfo(
+    string Schema,
+    string Name,
+    DateTime? CreateDate,
+    List<ProcParamInfo>? Parameters = null);
+
+public record TriggerInfo(string Schema, string TableName, string Name);
+
+public record FunctionInfo(string Schema, string Name, string Type);
+
+public record SearchResult(string Schema, string Name, string ObjectType);
+
+public record DatabaseSummary(
+    List<TableInfo> Tables,
+    List<ViewInfo> Views,
+    List<ProcedureInfo> Procedures,
+    List<TriggerInfo> Triggers,
+    List<FunctionInfo> Functions,
+    List<DatabaseInfo> Databases);
+
+// ---------- Query ----------
+
+public record ExecuteRequest(string Sql, int? TimeoutSeconds);
+
+public record ColumnResult(string Name, string DataType);
+
+public record QueryResultSet(
+    List<ColumnResult> Columns,
+    List<List<object?>> Rows,
+    long RowCount,
+    long AffectedRows,
+    bool Truncated);
+
+public record QueryResult(
+    List<QueryResultSet> ResultSets,
+    long TotalAffectedRows,
+    List<string> Messages,
+    long ElapsedMs,
+    string? Error);
+
+// ---------- Autocompletamento IA ----------
+
+public record AutocompleteRequest(string Sql, string? ApiKey, int? MaxTokens);
+
+public record SuggestionItem(string Text, string? Reason);
+
+public record AutocompleteResponse(List<SuggestionItem>? Suggestions, string? Error);
+
+public record AutocompleteStatus(bool Configured, string Model, string BaseUrl, bool HasApiKeyOverride);

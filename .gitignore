@@ -1,0 +1,25 @@
+# .NET
+bin/
+obj/
+*.user
+*.db
+*.db-shm
+*.db-wal
+
+# Node
+node_modules/
+dist/
+*.local
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Logs
+*.log

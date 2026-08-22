@@ -1,0 +1,149 @@
+// Tipi speculari ai DTO del backend (camelCase)
+
+export interface ConnectionRequest {
+  name?: string
+  server: string
+  port: number
+  database?: string
+  useWindowsAuth: boolean
+  username?: string
+  password?: string
+  save: boolean
+  encrypt?: boolean
+  trustServerCertificate?: boolean
+}
+
+export interface ConnectionTestResult {
+  success: boolean
+  message: string
+  databases: string[] | null
+}
+
+export interface ConnectResponse {
+  connectionId: string
+  server: string
+  database: string
+  databases: string[]
+  message: string
+}
+
+export interface SavedConnectionDto {
+  id: number
+  name: string
+  server: string
+  port: number
+  database: string | null
+  useWindowsAuth: boolean
+  username: string | null
+  updatedAt: string
+}
+
+export interface ColumnInfo {
+  name: string
+  dataType: string
+  isNullable: boolean
+  isIdentity: boolean
+  isComputed: boolean
+  maxLength: number | null
+  description: string | null
+}
+
+export interface TableInfo {
+  schema: string
+  name: string
+  columnCount: number
+  createDate: string | null
+  columns: ColumnInfo[] | null
+}
+
+export interface ViewInfo {
+  schema: string
+  name: string
+  createDate: string | null
+}
+
+export interface ProcParamInfo {
+  name: string
+  dataType: string
+  mode: string
+}
+
+export interface ProcedureInfo {
+  schema: string
+  name: string
+  createDate: string | null
+  parameters: ProcParamInfo[] | null
+}
+
+export interface TriggerInfo {
+  schema: string
+  tableName: string
+  name: string
+}
+
+export interface FunctionInfo {
+  schema: string
+  name: string
+  type: string
+}
+
+export interface DatabaseInfo {
+  name: string
+}
+
+export interface DatabaseSummary {
+  tables: TableInfo[]
+  views: ViewInfo[]
+  procedures: ProcedureInfo[]
+  triggers: TriggerInfo[]
+  functions: FunctionInfo[]
+  databases: DatabaseInfo[]
+}
+
+export interface SearchResult {
+  schema: string
+  name: string
+  objectType: string
+}
+
+export interface ColumnResult {
+  name: string
+  dataType: string
+}
+
+export type CellValue = unknown
+
+export interface QueryResultSet {
+  columns: ColumnResult[]
+  rows: CellValue[][]
+  rowCount: number
+  affectedRows: number
+  truncated: boolean
+}
+
+export interface QueryResult {
+  resultSets: QueryResultSet[]
+  totalAffectedRows: number
+  messages: string[]
+  elapsedMs: number
+  error: string | null
+}
+
+export interface SuggestionItem {
+  text: string
+  reason: string | null
+}
+
+export interface AutocompleteResponse {
+  suggestions: SuggestionItem[] | null
+  error: string | null
+}
+
+export interface AutocompleteStatus {
+  configured: boolean
+  model: string
+  baseUrl: string
+  hasApiKeyOverride: boolean
+}
+
+export type ObjectKind = 'table' | 'view' | 'procedure' | 'function' | 'trigger'
