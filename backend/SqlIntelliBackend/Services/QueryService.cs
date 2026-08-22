@@ -107,7 +107,11 @@ public class QueryService
             TimeSpan ts => ts.ToString("c", CultureInfo.InvariantCulture),
             Guid g => g.ToString(),
             System.Data.SqlTypes.SqlXml xml => xml.Value,
-            _ => value,
+            // Oggetti non gestiti (geography, geometry, hierarchyid, sql_variant, CLR…):
+            // li converte in stringa invece di restituirli (non serializzabili in JSON).
+            _ => value is string or decimal or bool or byte or sbyte or short or ushort or int or uint or long or ulong or float or double or char
+                ? value
+                : Convert.ToString(value, CultureInfo.InvariantCulture) ?? value.ToString() ?? "",
         };
     }
 }

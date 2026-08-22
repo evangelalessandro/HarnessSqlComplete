@@ -37,6 +37,15 @@ public record DatabaseInfo(string Name);
 
 // ---------- Metadati ----------
 
+/// <summary>Metriche di utilizzo di una tabella nel database (per ranking dei suggerimenti JOIN).</summary>
+public record TableUsage(int FkIncoming, int FkOutgoing, int DependencyCount, long RowCount);
+
+/// <summary>Relazione di foreign key (prima coppia di colonne per FK composite).</summary>
+public record ForeignKeyInfo(string Schema, string Table, string Column, string RefSchema, string RefTable, string RefColumn);
+
+/// <summary>Proprietà estesa (sys.extended_properties) di un oggetto o colonna.</summary>
+public record ExtendedProperty(string Name, string Value);
+
 public record ColumnInfo(
     string Name,
     string DataType,
@@ -44,14 +53,17 @@ public record ColumnInfo(
     bool IsIdentity,
     bool IsComputed,
     int? MaxLength,
-    string? Description);
+    string? Description,
+    List<ExtendedProperty>? ExtendedProperties = null);
 
 public record TableInfo(
     string Schema,
     string Name,
     int ColumnCount,
     DateTime? CreateDate,
-    List<ColumnInfo>? Columns = null);
+    List<ColumnInfo>? Columns = null,
+    TableUsage? Usage = null,
+    List<ExtendedProperty>? ExtendedProperties = null);
 
 public record ViewInfo(string Schema, string Name, DateTime? CreateDate);
 
@@ -69,12 +81,16 @@ public record FunctionInfo(string Schema, string Name, string Type);
 
 public record SearchResult(string Schema, string Name, string ObjectType);
 
+/// <summary>Definizione (testo) di un oggetto: stored procedure, funzione, vista, trigger.</summary>
+public record ObjectDefinitionResponse(string Definition);
+
 public record DatabaseSummary(
     List<TableInfo> Tables,
     List<ViewInfo> Views,
     List<ProcedureInfo> Procedures,
     List<TriggerInfo> Triggers,
     List<FunctionInfo> Functions,
+    List<ForeignKeyInfo> ForeignKeys,
     List<DatabaseInfo> Databases);
 
 // ---------- Query ----------

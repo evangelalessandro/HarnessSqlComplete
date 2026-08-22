@@ -38,6 +38,12 @@ export interface SavedConnectionDto {
   updatedAt: string
 }
 
+/** Proprietà estesa (MS_Description e altre) di tabella o colonna. */
+export interface ExtendedProperty {
+  name: string
+  value: string
+}
+
 export interface ColumnInfo {
   name: string
   dataType: string
@@ -46,6 +52,25 @@ export interface ColumnInfo {
   isComputed: boolean
   maxLength: number | null
   description: string | null
+  extendedProperties: ExtendedProperty[] | null
+}
+
+/** Metriche di utilizzo reale di una tabella nel database (per ranking dei suggerimenti). */
+export interface TableUsage {
+  fkIncoming: number
+  fkOutgoing: number
+  dependencyCount: number
+  rowCount: number
+}
+
+/** Relazione di foreign key tra due tabelle (per i suggerimenti JOIN con clausola ON). */
+export interface ForeignKeyInfo {
+  schema: string
+  table: string
+  column: string
+  refSchema: string
+  refTable: string
+  refColumn: string
 }
 
 export interface TableInfo {
@@ -54,6 +79,8 @@ export interface TableInfo {
   columnCount: number
   createDate: string | null
   columns: ColumnInfo[] | null
+  usage: TableUsage | null
+  extendedProperties: ExtendedProperty[] | null
 }
 
 export interface ViewInfo {
@@ -97,6 +124,7 @@ export interface DatabaseSummary {
   procedures: ProcedureInfo[]
   triggers: TriggerInfo[]
   functions: FunctionInfo[]
+  foreignKeys: ForeignKeyInfo[]
   databases: DatabaseInfo[]
 }
 

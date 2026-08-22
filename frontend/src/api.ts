@@ -52,8 +52,20 @@ export const api = {
   getSummary: (connectionId: string) =>
     http<DatabaseSummary>(`/metadata/${connectionId}/summary`),
 
+  /** Anteprima dati di una tabella (SELECT TOP n *). */
+  previewTable: (connectionId: string, schema: string, table: string, top = 30) =>
+    http<QueryResult>(
+      `/metadata/${connectionId}/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}/preview?top=${top}`,
+    ),
+
   searchObjects: (connectionId: string, q: string) =>
     http<SearchResult[]>(`/metadata/${connectionId}/search?q=${encodeURIComponent(q)}`),
+
+  /** Definizione (testo) di una stored procedure / funzione / vista / trigger. */
+  getObjectDefinition: (connectionId: string, schema: string, name: string) =>
+    http<{ definition: string }>(
+      `/metadata/${connectionId}/objects/${encodeURIComponent(schema)}/${encodeURIComponent(name)}/definition`,
+    ),
 
   execute: (connectionId: string, sql: string, timeoutSeconds?: number) =>
     http<QueryResult>(`/query/${connectionId}/execute`, {

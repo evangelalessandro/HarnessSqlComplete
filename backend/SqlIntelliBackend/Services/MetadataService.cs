@@ -31,6 +31,9 @@ public class MetadataService
         var procParams = new Dictionary<(string, string), List<ProcParamInfo>>();
         var triggers = new List<TriggerInfo>();
         var functions = new List<FunctionInfo>();
+        var foreignKeys = new List<ForeignKeyInfo>();
+        var dependencyCounts = new Dictionary<(string, string), int>();
+        var rowCounts = new Dictionary<(string, string), long>();
 
         // Tabelle
         await using (var cmd = conn.CreateCommand())
@@ -53,14 +56,11 @@ public class MetadataService
         {
             cmd.CommandText = """
                 SELECT s.name, t.name, c.name, ty.name, c.max_length, c.precision, c.scale,
-                       c.is_nullable, c.is_identity, c.is_computed,
-                       ISNULL(CONVERT(nvarchar(4000), ep.value), '')
+                       c.is_nullable, c.is_identity, c.is_computed
                 FROM sys.columns c
                 INNER JOIN sys.tables t ON c.object_id = t.object_id
                 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
                 INNER JOIN sys.types ty ON c.user_type_id = ty.user_type_id
-                LEFT JOIN sys.extended_properties ep
-                       ON ep.major_id = c.object_id AND ep.minor_id = c.column_id AND ep.name = 'MS_Description'
                 WHERE t.is_ms_shipped = 0
                 ORDER BY s.name, t.name, c.column_id;
                 """;
@@ -77,7 +77,52 @@ public class MetadataService
                     r.GetBoolean(8),
                     r.GetBoolean(9),
                     r.IsDBNull(4) ? null : (int)r.GetInt16(4),
-                    r.IsDBNull(10) ? null : r.GetString(10)));
+                    Description: null));
+            }
+        }
+
+        // Proprietà estese a livello di tabella
+        var tableProps = new Dictionary<(string, string), List<ExtendedProperty>>();
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT s.name, t.name, ep.name, ISNULL(CONVERT(nvarchar(4000), ep.value), '')
+                FROM sys.extended_properties ep
+                INNER JOIN sys.tables t ON ep.major_id = t.object_id AND t.is_ms_shipped = 0
+                INNER JOIN sys.schemas s ON s.schema_id = t.schema_id
+                WHERE ep.class = 1 AND ep.minor_id = 0
+                ORDER BY s.name, t.name, ep.name;
+                """;
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                var key = (r.GetString(0), r.GetString(1));
+                if (!tableProps.TryGetValue(key, out var list))
+                    tableProps[key] = list = [];
+                list.Add(new ExtendedProperty(r.GetString(2), r.GetString(3)));
+            }
+        }
+
+        // Proprietà estese a livello di colonna
+        var columnProps = new Dictionary<(string, string, string), List<ExtendedProperty>>();
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT s.name, t.name, c.name, ep.name, ISNULL(CONVERT(nvarchar(4000), ep.value), '')
+                FROM sys.extended_properties ep
+                INNER JOIN sys.tables t ON ep.major_id = t.object_id AND t.is_ms_shipped = 0
+                INNER JOIN sys.schemas s ON s.schema_id = t.schema_id
+                INNER JOIN sys.columns c ON c.object_id = ep.major_id AND c.column_id = ep.minor_id
+                WHERE ep.class = 1 AND ep.minor_id > 0
+                ORDER BY s.name, t.name, c.column_id, ep.name;
+                """;
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                var key = (r.GetString(0), r.GetString(1), r.GetString(2));
+                if (!columnProps.TryGetValue(key, out var list))
+                    columnProps[key] = list = [];
+                list.Add(new ExtendedProperty(r.GetString(3), r.GetString(4)));
             }
         }
 
@@ -85,7 +130,21 @@ public class MetadataService
         {
             var t = tables[i];
             if (columns.TryGetValue((t.Schema, t.Name), out var cols))
-                tables[i] = t with { Columns = cols };
+            {
+                var withProps = cols.Select(c =>
+                {
+                    if (!columnProps.TryGetValue((t.Schema, t.Name, c.Name), out var props))
+                        return c;
+                    var description = props.FirstOrDefault(p => p.Name == "MS_Description")?.Value;
+                    return c with { Description = description, ExtendedProperties = props };
+                }).ToList();
+                cols = withProps;
+            }
+            tables[i] = t with
+            {
+                Columns = cols,
+                ExtendedProperties = tableProps.GetValueOrDefault((t.Schema, t.Name)),
+            };
         }
 
         // Viste
@@ -176,8 +235,86 @@ public class MetadataService
                 functions.Add(new FunctionInfo(r.GetString(0), r.GetString(1), r.GetString(2)));
         }
 
+        // Foreign key (una riga per vincolo, prima coppia di colonne per le composite)
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT OBJECT_SCHEMA_NAME(fk.parent_object_id), OBJECT_NAME(fk.parent_object_id),
+                       OBJECT_SCHEMA_NAME(fk.referenced_object_id), OBJECT_NAME(fk.referenced_object_id),
+                       pc.name, rc.name
+                FROM sys.foreign_keys fk
+                INNER JOIN sys.foreign_key_columns fkc
+                        ON fkc.constraint_object_id = fk.object_id AND fkc.constraint_column_id = 1
+                INNER JOIN sys.columns pc ON pc.object_id = fk.parent_object_id AND pc.column_id = fkc.parent_column_id
+                INNER JOIN sys.columns rc ON rc.object_id = fk.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+                WHERE fk.is_ms_shipped = 0
+                ORDER BY 1, 2;
+                """;
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                foreignKeys.Add(new ForeignKeyInfo(
+                    r.GetString(0), r.GetString(1), r.GetString(4),
+                    r.GetString(2), r.GetString(3), r.GetString(5)));
+        }
+
+        // Numero di oggetti (viste, procedure, funzioni, trigger) che referenziano ogni tabella
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT o.name, s.name, d.cnt
+                FROM (
+                    SELECT referenced_id AS oid, COUNT(DISTINCT referencing_id) AS cnt
+                    FROM sys.sql_expression_dependencies
+                    WHERE referenced_class = 1 AND referenced_id IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM sys.objects ro
+                          WHERE ro.object_id = referencing_id AND ro.type IN ('F','D'))
+                    GROUP BY referenced_id
+                ) d
+                INNER JOIN sys.objects o ON o.object_id = d.oid
+                INNER JOIN sys.schemas s ON s.schema_id = o.schema_id
+                WHERE o.type = 'U' AND o.is_ms_shipped = 0;
+                """;
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                dependencyCounts[(r.GetString(1), r.GetString(0))] = r.GetInt32(2);
+        }
+
+        // Righe stimate per tabella (heap index_id 0 + clustered index_id 1)
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT s.name, o.name, SUM(p.rows)
+                FROM sys.partitions p
+                INNER JOIN sys.objects o ON o.object_id = p.object_id
+                INNER JOIN sys.schemas s ON s.schema_id = o.schema_id
+                WHERE p.index_id IN (0, 1) AND o.type = 'U' AND o.is_ms_shipped = 0
+                GROUP BY s.name, o.name;
+                """;
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                rowCounts[(r.GetString(0), r.GetString(1))] = r.GetInt64(2);
+        }
+
+        // Metriche di utilizzo per tabella
+        var fkOutgoing = foreignKeys.GroupBy(f => (f.Schema, f.Table)).ToDictionary(g => g.Key, g => g.Count());
+        var fkIncoming = foreignKeys.GroupBy(f => (f.RefSchema, f.RefTable)).ToDictionary(g => g.Key, g => g.Count());
+        for (var i = 0; i < tables.Count; i++)
+        {
+            var t = tables[i];
+            var key = (t.Schema, t.Name);
+            tables[i] = t with
+            {
+                Usage = new TableUsage(
+                    fkIncoming.GetValueOrDefault(key),
+                    fkOutgoing.GetValueOrDefault(key),
+                    dependencyCounts.GetValueOrDefault(key),
+                    rowCounts.GetValueOrDefault(key)),
+            };
+        }
+
         var databases = (await ListDatabasesAsync(connectionString, ct)).Select(d => new DatabaseInfo(d)).ToList();
-        return new DatabaseSummary(tables, views, procs, triggers, functions, databases);
+        return new DatabaseSummary(tables, views, procs, triggers, functions, foreignKeys, databases);
     }
 
     public async Task<List<ColumnInfo>> GetTableColumnsAsync(string connectionString, string schema, string table, CancellationToken ct = default)
