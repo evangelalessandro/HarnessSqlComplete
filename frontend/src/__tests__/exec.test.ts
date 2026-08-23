@@ -32,8 +32,8 @@ describe('EXEC: parametri delle stored procedure', () => {
     expect(filterUnusedParams(params, ' ').length).toBe(3)
   })
 
-  it('snippet "tutti i parametri" con tab-stop', () => {
-    expect(buildExecParamSnippet(proc.parameters!)).toBe('@id=${1}, @nome=${2}, @flag=${3}')
+  it('snippet "tutti i parametri": IN con tab-stop, OUTPUT senza valore', () => {
+    expect(buildExecParamSnippet(proc.parameters!)).toBe('@id=${1}, @nome=${2}, @flag OUTPUT')
   })
 
   it('scenario end-to-end del provider: testo prima del cursore', () => {

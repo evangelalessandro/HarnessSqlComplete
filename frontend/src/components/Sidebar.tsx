@@ -1,21 +1,41 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
 import {
+  Braces,
   ChevronDown,
   ChevronRight,
-  Database as DbIcon,
   Eye,
-  ExternalLink,
   FileCode2,
   Flame,
   FolderOpen,
+  GitMerge,
+  Play,
+  Plus,
+  Rows3,
   Search,
   SquarePen,
   Table2,
+  Trash2,
   Zap,
 } from 'lucide-react'
-import type { ColumnInfo, DatabaseSummary, TableInfo } from '../types'
-import { groupTablesByPrefix, qualified, sqlIdent, usageDetail } from '../helpers'
+import type { ColumnInfo, DatabaseSummary, ProcedureInfo, TableInfo, TriggerInfo, ViewInfo } from '../types'
+import {
+  dbColorPalette,
+  dbTabColor,
+  groupTablesByPrefix,
+  qualified,
+  scriptCreateTable,
+  scriptDeleteTable,
+  scriptDropObject,
+  scriptExecProcedure,
+  scriptInsertTable,
+  scriptMergeTable,
+  scriptSelectTable,
+  scriptUpdateTable,
+  searchMatches,
+  sqlIdent,
+  usageDetail,
+} from '../helpers'
 import { useDebounce } from '../hooks/useDebounce'
 import { Badge, Spinner } from './ui'
 import { ColumnHoverCard, TableHoverCard } from './HoverCards'
@@ -28,17 +48,46 @@ interface Props {
   onInsertText: (text: string) => void
   /** Apre la preview (SELECT TOP 100 *) in una nuova tab dell'editor. */
   onPreviewInEditor?: (sql: string) => void
+  /** Apre uno script generato (CREATE/MERGE) in una nuova tab con titolo. */
+  onOpenScript?: (title: string, sql: string) => void
   /** Cambia il database attivo (nuova connessione con lo stesso server). */
   onSwitchDatabase?: (database: string) => void
-  /** Apre una stored procedure / funzione: 'alter' genera ALTER, 'open' la definizione CREATE. */
-  onOpenObject?: (kind: 'procedure' | 'function', schema: string, name: string, mode: 'alter' | 'open') => void
+  /** Colori personalizzati per database. */
+  dbColors?: Record<string, string>
+  /** Imposta/rimuove (null) il colore personalizzato di un database. */
+  onSetDbColor?: (database: string, color: string | null) => void
+  /** Apre una stored procedure / funzione / vista / trigger: 'alter' genera ALTER, 'open' la definizione CREATE. */
+  onOpenObject?: (
+    kind: 'procedure' | 'function' | 'view' | 'trigger',
+    schema: string,
+    name: string,
+    mode: 'alter' | 'open',
+  ) => void
 }
 
+type HitKind = 'tabella' | 'vista' | 'procedura' | 'funzione' | 'trigger'
+
 interface SearchHit {
-  kind: string
+  kind: HitKind
   schema: string
   name: string
   detail?: string
+  /** Oggetto completo quando disponibile (per generare script CREATE/MERGE/EXEC). */
+  table?: TableInfo
+  proc?: ProcedureInfo
+  view?: ViewInfo
+  trigger?: TriggerInfo
+}
+
+/** Voce del menu contestuale (SSMS): azione foglia oppure sottomenu "Script ...". */
+interface ObjectAction {
+  id: string
+  label: string
+  icon?: ReactNode
+  hint?: string
+  danger?: boolean
+  run?: () => void
+  submenu?: ObjectAction[]
 }
 
 export default function Sidebar({
@@ -47,17 +96,38 @@ export default function Sidebar({
   activeDatabase,
   onInsertText,
   onPreviewInEditor,
+  onOpenScript,
   onOpenObject,
   onSwitchDatabase,
+  dbColors,
+  onSetDbColor,
 }: Props) {
   const [query, setQuery] = useState('')
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     tables: true,
     views: true,
+    programmability: true,
     procedures: true,
+    functions: true,
+    triggers: true,
   })
   const [hover, setHover] = useState<HoverTarget | null>(null)
   const closeTimer = useRef<number | null>(null)
+  // Menu contestuale colore database (tasto destro)
+  const [colorMenu, setColorMenu] = useState<{ db: string; x: number; y: number } | null>(null)
+  // Menu contestuale oggetti (tasto destro su risultati di ricerca e nodi della tree view)
+  const [objectMenu, setObjectMenu] = useState<{ hit: SearchHit; x: number; y: number } | null>(null)
+  // Nodo del database attivo: true = oggetti nascosti (nodo chiuso)
+  const [collapsedDb, setCollapsedDb] = useState(false)
+
+  const toggleDbNode = (name: string) => {
+    if (name === activeDatabase) {
+      setCollapsedDb(v => !v)
+    } else {
+      setCollapsedDb(false)
+      onSwitchDatabase?.(name)
+    }
+  }
   // Tabelle: gruppi di prefisso e campi delle tabelle chiusi di default
   const [expandedTables, setExpandedTables] = useState<Set<string>>(() => new Set())
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set())
@@ -66,6 +136,26 @@ export default function Sidebar({
     () => (summary ? groupTablesByPrefix(summary.tables) : []),
     [summary],
   )
+
+  // Trigger annidati sotto la loro tabella (stile SSMS); i trigger senza tabella restano "orfani".
+  const triggersByTable = useMemo(() => {
+    const map = new Map<string, TriggerInfo[]>()
+    const orphans: TriggerInfo[] = []
+    if (!summary) return { map, orphans }
+    const tableByKey = new Map(summary.tables.map(t => [`${t.schema}.${t.name}`.toLowerCase(), t]))
+    for (const trg of summary.triggers) {
+      const t = tableByKey.get(`${trg.schema}.${trg.tableName}`.toLowerCase())
+      if (t) {
+        const key = `${t.schema}.${t.name}`
+        const arr = map.get(key) ?? []
+        arr.push(trg)
+        map.set(key, arr)
+      } else {
+        orphans.push(trg)
+      }
+    }
+    return { map, orphans }
+  }, [summary])
 
   const toggleTable = (key: string) =>
     setExpandedTables(prev => {
@@ -89,7 +179,7 @@ export default function Sidebar({
     }
   }, [])
 
-  const q = useDebounce(query.trim().toLowerCase(), 200)
+  const q = useDebounce(query.trim(), 200)
 
   const clearCloseTimer = () => {
     if (closeTimer.current !== null) {
@@ -119,17 +209,158 @@ export default function Sidebar({
   }
 
   const quickPreviewSql = (t: TableInfo) => `SELECT TOP 100 * FROM ${qualified(t.schema, t.name)};\n`
+  const select1000 = (schema: string, name: string) => `SELECT TOP (1000) * FROM ${qualified(schema, name)};\n`
+
+  const openObjectMenu = (e: MouseEvent<HTMLElement>, hit: SearchHit) => {
+    e.preventDefault()
+    setObjectMenu({ hit, x: e.clientX, y: e.clientY })
+  }
+
+  /** Azioni contestuali in stile SSMS per il tipo di oggetto. */
+  const objectActions = (hit: SearchHit): ObjectAction[] => {
+    const qname = qualified(hit.schema, hit.name)
+    switch (hit.kind) {
+      case 'tabella': {
+        const t = hit.table!
+        return [
+          {
+            id: 'select',
+            label: 'Seleziona le prime 1000 righe',
+            icon: <Rows3 className="h-3.5 w-3.5" />,
+            hint: 'SELECT TOP (1000) in una nuova tab',
+            run: () => onOpenScript?.(`SELECT ${qname}`, scriptSelectTable(t)),
+          },
+          {
+            id: 'script',
+            label: 'Script tabella',
+            icon: <FileCode2 className="h-3.5 w-3.5" />,
+            hint: 'Genera lo script della tabella',
+            submenu: [
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`CREATE ${qname}`, scriptCreateTable(t)) },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('table', hit.schema, hit.name)) },
+              { id: 'select', label: 'SELECT', icon: <Rows3 className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`SELECT ${qname}`, scriptSelectTable(t)) },
+              { id: 'insert', label: 'INSERT', icon: <Plus className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`INSERT ${qname}`, scriptInsertTable(t)) },
+              { id: 'update', label: 'UPDATE', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`UPDATE ${qname}`, scriptUpdateTable(t)) },
+              { id: 'delete', label: 'DELETE', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DELETE ${qname}`, scriptDeleteTable(t)) },
+              { id: 'merge', label: 'MERGE', icon: <GitMerge className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`MERGE ${qname}`, scriptMergeTable(t)) },
+            ],
+          },
+        ]
+      }
+      case 'vista':
+        return [
+          {
+            id: 'select',
+            label: 'Seleziona le prime 1000 righe',
+            icon: <Rows3 className="h-3.5 w-3.5" />,
+            hint: 'SELECT TOP (1000) in una nuova tab',
+            run: () => onOpenScript?.(`SELECT ${qname}`, select1000(hit.schema, hit.name)),
+          },
+          {
+            id: 'script',
+            label: 'Script vista',
+            icon: <FileCode2 className="h-3.5 w-3.5" />,
+            hint: 'Genera lo script della vista',
+            submenu: [
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('view', hit.schema, hit.name, 'open') },
+              { id: 'alter', label: 'ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('view', hit.schema, hit.name, 'alter') },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('view', hit.schema, hit.name)) },
+              { id: 'select', label: 'SELECT', icon: <Rows3 className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`SELECT ${qname}`, select1000(hit.schema, hit.name)) },
+            ],
+          },
+        ]
+      case 'procedura': {
+        const p = hit.proc!
+        return [
+          {
+            id: 'exec',
+            label: 'Esegui stored procedure',
+            icon: <Play className="h-3.5 w-3.5" />,
+            hint: 'Inserisci EXEC con i parametri',
+            run: () => onInsertText(scriptExecProcedure(p)),
+          },
+          {
+            id: 'modify',
+            label: 'Modifica',
+            icon: <SquarePen className="h-3.5 w-3.5" />,
+            hint: 'Genera ALTER PROCEDURE in una nuova tab',
+            run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'alter'),
+          },
+          {
+            id: 'script',
+            label: 'Script stored procedure',
+            icon: <FileCode2 className="h-3.5 w-3.5" />,
+            hint: 'Genera lo script della stored procedure',
+            submenu: [
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'open') },
+              { id: 'alter', label: 'ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'alter') },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('procedure', hit.schema, hit.name)) },
+              { id: 'execute', label: 'EXECUTE', icon: <Play className="h-3.5 w-3.5" />, run: () => onInsertText(scriptExecProcedure(p)) },
+            ],
+          },
+        ]
+      }
+      case 'funzione':
+        return [
+          {
+            id: 'modify',
+            label: 'Modifica',
+            icon: <SquarePen className="h-3.5 w-3.5" />,
+            hint: 'Genera ALTER FUNCTION in una nuova tab',
+            run: () => onOpenObject?.('function', hit.schema, hit.name, 'alter'),
+          },
+          {
+            id: 'script',
+            label: 'Script funzione',
+            icon: <FileCode2 className="h-3.5 w-3.5" />,
+            hint: 'Genera lo script della funzione',
+            submenu: [
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('function', hit.schema, hit.name, 'open') },
+              { id: 'alter', label: 'ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('function', hit.schema, hit.name, 'alter') },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('function', hit.schema, hit.name)) },
+            ],
+          },
+        ]
+      case 'trigger':
+        return [
+          {
+            id: 'modify',
+            label: 'Modifica',
+            icon: <SquarePen className="h-3.5 w-3.5" />,
+            hint: 'Genera ALTER TRIGGER in una nuova tab',
+            run: () => onOpenObject?.('trigger', hit.schema, hit.name, 'alter'),
+          },
+          {
+            id: 'script',
+            label: 'Script trigger',
+            icon: <FileCode2 className="h-3.5 w-3.5" />,
+            hint: 'Genera lo script del trigger',
+            submenu: [
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('trigger', hit.schema, hit.name, 'open') },
+              { id: 'alter', label: 'ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('trigger', hit.schema, hit.name, 'alter') },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('trigger', hit.schema, hit.name)) },
+            ],
+          },
+        ]
+    }
+  }
 
   const hits = useMemo<SearchHit[]>(() => {
     if (!summary || !q) return []
-    const match = (schema: string, name: string) =>
-      name.toLowerCase().includes(q) || schema.toLowerCase().includes(q)
+    const match = (schema: string, name: string) => searchMatches(q, name, schema)
     const out: SearchHit[] = []
-    for (const t of summary.tables) if (match(t.schema, t.name)) out.push({ kind: 'tabella', schema: t.schema, name: t.name, detail: `${t.columnCount} col.` })
-    for (const v of summary.views) if (match(v.schema, v.name)) out.push({ kind: 'vista', schema: v.schema, name: v.name })
-    for (const p of summary.procedures) if (match(p.schema, p.name)) out.push({ kind: 'procedura', schema: p.schema, name: p.name })
-    for (const f of summary.functions) if (match(f.schema, f.name)) out.push({ kind: 'funzione', schema: f.schema, name: f.name })
-    for (const t of summary.triggers) if (match(t.schema, t.name)) out.push({ kind: 'trigger', schema: t.schema, name: t.name, detail: t.tableName })
+    for (const t of summary.tables)
+      if (match(t.schema, t.name))
+        out.push({ kind: 'tabella', schema: t.schema, name: t.name, detail: `${t.columnCount} col.`, table: t })
+    for (const v of summary.views)
+      if (match(v.schema, v.name)) out.push({ kind: 'vista', schema: v.schema, name: v.name, view: v })
+    for (const p of summary.procedures)
+      if (match(p.schema, p.name)) out.push({ kind: 'procedura', schema: p.schema, name: p.name, proc: p })
+    for (const f of summary.functions)
+      if (match(f.schema, f.name)) out.push({ kind: 'funzione', schema: f.schema, name: f.name })
+    for (const t of summary.triggers)
+      if (match(t.schema, t.name))
+        out.push({ kind: 'trigger', schema: t.schema, name: t.name, detail: t.tableName, trigger: t })
     return out.slice(0, 100)
   }, [summary, q])
 
@@ -155,17 +386,10 @@ export default function Sidebar({
           <input
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="Cerca tabella, proc, vista…"
+            placeholder="Cerca (spazio = %): tabella, proc…"
             className="w-full rounded-md border border-zinc-700 bg-zinc-900 py-1.5 pl-8 pr-3 text-sm text-zinc-100 placeholder-zinc-500 focus:border-sky-500 focus:outline-none"
           />
         </div>
-        {!q && (
-          <div className="mt-2 flex items-center gap-1.5 text-xs text-zinc-500">
-            <DbIcon className="h-3.5 w-3.5 text-sky-500" />
-            <span className="truncate">{activeDatabase}</span>
-            <span className="ml-auto">{summary.databases.length} db</span>
-          </div>
-        )}
       </div>
 
       <div
@@ -175,15 +399,64 @@ export default function Sidebar({
           setHover(null)
         }}
       >
+        {/* Database dell'istanza (in alto): il nodo attivo si espande con i suoi oggetti */}
+        <div className="mb-1 space-y-0.5">
+          {summary.databases.map(d => {
+            const isActive = d.name === activeDatabase
+            const isOpen = isActive && !collapsedDb
+            const objectCount =
+              isActive
+                ? summary.tables.length +
+                  summary.views.length +
+                  summary.procedures.length +
+                  summary.functions.length +
+                  summary.triggers.length
+                : 0
+            return (
+              <div key={d.name}>
+                <button
+                  onClick={() => toggleDbNode(d.name)}
+                  onContextMenu={e => {
+                    e.preventDefault()
+                    setColorMenu({ db: d.name, x: e.clientX, y: e.clientY })
+                  }}
+                  className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs font-semibold transition-colors ${
+                    isActive ? 'text-sky-300' : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200'
+                  }`}
+                  title={`${d.name}${isActive ? ' (attivo)' : ''} — click per ${isActive ? 'aprire/chiudere gli oggetti' : 'attivare'}, tasto destro per il colore`}
+                >
+                  {isOpen ? (
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+                  )}
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: dbTabColor(d.name, dbColors) }}
+                  />
+                  <span className="truncate font-mono">{d.name}</span>
+                  {isActive && <Badge tone="sky">attivo</Badge>}
+                  {isActive && objectCount > 0 && (
+                    <span className="ml-auto rounded-full bg-zinc-800 px-1.5 text-[10px] text-zinc-400">
+                      {objectCount}
+                    </span>
+                  )}
+                </button>
+              </div>
+            )
+          })}
+        </div>
+
         {q ? (
-          <div className="space-y-0.5">
+          <div className="space-y-0.5 border-t border-zinc-800 pt-2">
             {hits.length === 0 && <p className="p-3 text-sm text-zinc-600">Nessun oggetto trovato.</p>}
             {hits.map((h, i) => (
               <button
                 key={`${h.kind}-${h.schema}-${h.name}-${i}`}
                 onClick={() => onInsertText(qualified(h.schema, h.name))}
+                onContextMenu={e => openObjectMenu(e, h)}
                 className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800"
-                title="Clicca per inserire nel editor"
+                title="Clicca per inserire nel editor — tasto destro per le azioni"
               >
                 <KindIcon kind={h.kind} />
                 <span className="truncate font-mono">{h.name}</span>
@@ -194,8 +467,8 @@ export default function Sidebar({
               </button>
             ))}
           </div>
-        ) : (
-          <div className="space-y-1">
+        ) : !collapsedDb ? (
+          <div className="space-y-1 border-t border-zinc-800 pt-2 pl-2">
             <Section
               title="Tabelle"
               icon={<Table2 className="h-4 w-4 text-sky-400" />}
@@ -227,6 +500,7 @@ export default function Sidebar({
                         {g.tables.map(t => {
                           const tKey = `${t.schema}.${t.name}`
                           const expanded = expandedTables.has(tKey)
+                          const tableTriggers = triggersByTable.map.get(tKey) ?? []
                           return (
                             <TableRow
                               key={tKey}
@@ -239,22 +513,50 @@ export default function Sidebar({
                               onHover={e => hoverTable(e, t)}
                               onHoverLeave={scheduleClose}
                               onQuickPreview={onPreviewInEditor ? () => onPreviewInEditor(quickPreviewSql(t)) : undefined}
+                              onContextMenu={e =>
+                                openObjectMenu(e, { kind: 'tabella', schema: t.schema, name: t.name, table: t })
+                              }
                             >
-                              {expanded &&
-                                t.columns?.map(c => (
-                                  <button
-                                    key={c.name}
-                                    onClick={() => onInsertText(sqlIdent(c.name))}
-                                    onMouseEnter={e => hoverColumn(e, t.name, c)}
-                                    onMouseLeave={scheduleClose}
-                                    className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-                                    title={`${c.dataType}${c.isNullable ? ' NULL' : ''}${c.isIdentity ? ' IDENTITY' : ''}`}
-                                  >
-                                    <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${c.isIdentity ? 'bg-amber-400' : c.isNullable ? 'bg-zinc-600' : 'bg-emerald-500'}`} />
-                                    <span className="truncate font-mono">{c.name}</span>
-                                    <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">{c.dataType}</span>
-                                  </button>
-                                ))}
+                              {expanded && (
+                                <>
+                                  <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
+                                    Colonne
+                                  </div>
+                                  {t.columns?.map(c => (
+                                    <button
+                                      key={c.name}
+                                      onClick={() => onInsertText(sqlIdent(c.name))}
+                                      onMouseEnter={e => hoverColumn(e, t.name, c)}
+                                      onMouseLeave={scheduleClose}
+                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                                      title={`${c.dataType}${c.isNullable ? ' NULL' : ''}${c.isIdentity ? ' IDENTITY' : ''}`}
+                                    >
+                                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${c.isIdentity ? 'bg-amber-400' : c.isNullable ? 'bg-zinc-600' : 'bg-emerald-500'}`} />
+                                      <span className="truncate font-mono">{c.name}</span>
+                                      <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">{c.dataType}</span>
+                                    </button>
+                                  ))}
+                                  {tableTriggers.length > 0 && (
+                                    <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
+                                      Trigger
+                                    </div>
+                                  )}
+                                  {tableTriggers.map(trg => (
+                                    <button
+                                      key={trg.name}
+                                      onClick={() => onInsertText(qualified(trg.schema, trg.name))}
+                                      onContextMenu={e =>
+                                        openObjectMenu(e, { kind: 'trigger', schema: trg.schema, name: trg.name, detail: trg.tableName, trigger: trg })
+                                      }
+                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                                      title="Clicca per inserire — tasto destro per le azioni"
+                                    >
+                                      <Flame className="h-3 w-3 shrink-0 text-rose-400/70" />
+                                      <span className="truncate font-mono">{trg.name}</span>
+                                    </button>
+                                  ))}
+                                </>
+                              )}
                             </TableRow>
                           )
                         })}
@@ -277,102 +579,96 @@ export default function Sidebar({
                   key={`${v.schema}.${v.name}`}
                   label={v.schema !== 'dbo' ? `${v.schema}.${v.name}` : v.name}
                   onInsert={() => onInsertText(qualified(v.schema, v.name))}
+                  onContextMenu={e =>
+                    openObjectMenu(e, { kind: 'vista', schema: v.schema, name: v.name, view: v })
+                  }
                 />
               ))}
             </Section>
 
             <Section
-              title="Stored Procedure"
-              icon={<FileCode2 className="h-4 w-4 text-emerald-400" />}
-              count={summary.procedures.length}
-              open={!!openSections.procedures}
-              onToggle={() => toggle('procedures')}
+              title="Programmabilità"
+              icon={<Braces className="h-4 w-4 text-indigo-400" />}
+              count={summary.procedures.length + summary.functions.length + summary.triggers.length}
+              open={!!openSections.programmability}
+              onToggle={() => toggle('programmability')}
             >
-              {summary.procedures.map(p => (
-                <ObjectRow
-                  key={`${p.schema}.${p.name}`}
-                  label={p.schema !== 'dbo' ? `${p.schema}.${p.name}` : p.name}
-                  onInsert={() => onInsertText(qualified(p.schema, p.name))}
+              <div className="space-y-1 pl-2">
+                <Section
+                  title="Stored Procedure"
+                  icon={<FileCode2 className="h-3.5 w-3.5 text-emerald-400" />}
+                  count={summary.procedures.length}
+                  open={!!openSections.procedures}
+                  onToggle={() => toggle('procedures')}
+                  nested
                 >
-                  {p.parameters?.map(par => (
-                    <div key={par.name} className="flex items-center gap-2 py-0.5 pl-7 text-xs text-zinc-500">
-                      <span className="font-mono text-zinc-400">@{par.name}</span>
-                      <span className="font-mono text-[10px] text-zinc-600">
-                        {par.dataType} {par.mode}
-                      </span>
-                    </div>
+                  {summary.procedures.map(p => (
+                    <ObjectRow
+                      key={`${p.schema}.${p.name}`}
+                      label={p.schema !== 'dbo' ? `${p.schema}.${p.name}` : p.name}
+                      onInsert={() => onInsertText(qualified(p.schema, p.name))}
+                      onContextMenu={e =>
+                        openObjectMenu(e, { kind: 'procedura', schema: p.schema, name: p.name, proc: p })
+                      }
+                    >
+                      {p.parameters?.map(par => (
+                        <div key={par.name} className="flex items-center gap-2 py-0.5 pl-9 text-xs text-zinc-500">
+                          <span className="font-mono text-zinc-400">@{par.name}</span>
+                          <span className="font-mono text-[10px] text-zinc-600">
+                            {par.dataType} {par.mode}
+                          </span>
+                        </div>
+                      ))}
+                    </ObjectRow>
                   ))}
-                  <ObjectActions
-                    onAlter={() => onOpenObject?.('procedure', p.schema, p.name, 'alter')}
-                    onOpen={() => onOpenObject?.('procedure', p.schema, p.name, 'open')}
-                  />
-                </ObjectRow>
-              ))}
-            </Section>
+                </Section>
 
-            <Section
-              title="Funzioni"
-              icon={<Zap className="h-4 w-4 text-amber-400" />}
-              count={summary.functions.length}
-              open={!!openSections.functions}
-              onToggle={() => toggle('functions')}
-            >
-              {summary.functions.map(f => (
-                <ObjectRow
-                  key={`${f.schema}.${f.name}`}
-                  label={f.schema !== 'dbo' ? `${f.schema}.${f.name}` : f.name}
-                  onInsert={() => onInsertText(qualified(f.schema, f.name))}
+                <Section
+                  title="Funzioni"
+                  icon={<Zap className="h-3.5 w-3.5 text-amber-400" />}
+                  count={summary.functions.length}
+                  open={!!openSections.functions}
+                  onToggle={() => toggle('functions')}
+                  nested
                 >
-                  <ObjectActions
-                    onAlter={() => onOpenObject?.('function', f.schema, f.name, 'alter')}
-                    onOpen={() => onOpenObject?.('function', f.schema, f.name, 'open')}
-                  />
-                </ObjectRow>
-              ))}
-            </Section>
+                  {summary.functions.map(f => (
+                    <ObjectRow
+                      key={`${f.schema}.${f.name}`}
+                      label={f.schema !== 'dbo' ? `${f.schema}.${f.name}` : f.name}
+                      onInsert={() => onInsertText(qualified(f.schema, f.name))}
+                      onContextMenu={e =>
+                        openObjectMenu(e, { kind: 'funzione', schema: f.schema, name: f.name })
+                      }
+                    />
+                  ))}
+                </Section>
 
-            <Section
-              title="Trigger"
-              icon={<Flame className="h-4 w-4 text-rose-400" />}
-              count={summary.triggers.length}
-              open={!!openSections.triggers}
-              onToggle={() => toggle('triggers')}
-            >
-              {summary.triggers.map(t => (
-                <ObjectRow
-                  key={`${t.schema}.${t.tableName}.${t.name}`}
-                  label={t.name}
-                  detail={t.schema !== 'dbo' ? `${t.schema}.${t.tableName}` : t.tableName}
-                  onInsert={() => onInsertText(qualified(t.schema, t.name))}
-                />
-              ))}
-            </Section>
-
-            <Section
-              title="Database"
-              icon={<DbIcon className="h-4 w-4 text-zinc-400" />}
-              count={summary.databases.length}
-              open={!!openSections.databases}
-              onToggle={() => toggle('databases')}
-            >
-              {summary.databases.map(d => (
-                <button
-                  key={d.name}
-                  onClick={() => onSwitchDatabase?.(d.name)}
-                  className={`flex w-full items-center gap-2 rounded px-2 py-0.5 pl-7 text-left text-xs transition-colors ${
-                    d.name === activeDatabase
-                      ? 'text-sky-300'
-                      : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300'
-                  }`}
-                  title={d.name === activeDatabase ? 'Database attivo' : `Passa al database ${d.name}`}
-                >
-                  <span className="truncate font-mono">{d.name}</span>
-                  {d.name === activeDatabase && <Badge tone="sky">attivo</Badge>}
-                </button>
-              ))}
+                {triggersByTable.orphans.length > 0 && (
+                  <Section
+                    title="Trigger"
+                    icon={<Flame className="h-3.5 w-3.5 text-rose-400" />}
+                    count={triggersByTable.orphans.length}
+                    open={!!openSections.triggers}
+                    onToggle={() => toggle('triggers')}
+                    nested
+                  >
+                    {triggersByTable.orphans.map(t => (
+                      <ObjectRow
+                        key={`${t.schema}.${t.tableName}.${t.name}`}
+                        label={t.name}
+                        detail={t.schema !== 'dbo' ? `${t.schema}.${t.tableName}` : t.tableName}
+                        onInsert={() => onInsertText(qualified(t.schema, t.name))}
+                        onContextMenu={e =>
+                          openObjectMenu(e, { kind: 'trigger', schema: t.schema, name: t.name, detail: t.tableName, trigger: t })
+                        }
+                      />
+                    ))}
+                  </Section>
+                )}
+              </div>
             </Section>
           </div>
-        )}
+        ) : null}
       </div>
 
       {hover?.kind === 'table' && (
@@ -393,7 +689,170 @@ export default function Sidebar({
           onHoverLeave={scheduleClose}
         />
       )}
+
+      {colorMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-[59]"
+            onClick={() => setColorMenu(null)}
+            onContextMenu={e => {
+              e.preventDefault()
+              setColorMenu(null)
+            }}
+          />
+          <div
+            className="fixed z-[60] w-44 rounded-lg border border-zinc-700 bg-zinc-900 p-2 shadow-2xl"
+            style={{
+              left: Math.min(colorMenu.x, window.innerWidth - 180),
+              top: Math.min(colorMenu.y, window.innerHeight - 180),
+            }}
+          >
+            <div className="mb-1.5 truncate border-b border-zinc-800 pb-1 text-xs font-semibold text-zinc-300">
+              Colore per {colorMenu.db}
+            </div>
+            <div className="grid grid-cols-6 gap-1">
+              {dbColorPalette.map(c => (
+                <button
+                  key={c}
+                  onClick={() => {
+                    onSetDbColor?.(colorMenu.db, c)
+                    setColorMenu(null)
+                  }}
+                  className="h-5 w-5 rounded-full border border-zinc-700 transition-transform hover:scale-110"
+                  style={{ backgroundColor: c }}
+                  title={c}
+                />
+              ))}
+            </div>
+            <button
+              onClick={() => {
+                onSetDbColor?.(colorMenu.db, null)
+                setColorMenu(null)
+              }}
+              className="mt-2 w-full rounded px-2 py-1 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+              title="Ripristina il colore automatico"
+            >
+              Ripristina default
+            </button>
+          </div>
+        </>
+      )}
+
+      {objectMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-[61]"
+            onClick={() => setObjectMenu(null)}
+            onContextMenu={e => {
+              e.preventDefault()
+              setObjectMenu(null)
+            }}
+          />
+          <ObjectMenu
+            x={objectMenu.x}
+            y={objectMenu.y}
+            title={`${objectMenu.hit.schema}.${objectMenu.hit.name}`}
+            subtitle={objectMenu.hit.kind}
+            actions={objectActions(objectMenu.hit)}
+            onClose={() => setObjectMenu(null)}
+          />
+        </>
+      )}
     </div>
+  )
+}
+
+function ObjectMenu({
+  x,
+  y,
+  title,
+  subtitle,
+  actions,
+  onClose,
+}: {
+  x: number
+  y: number
+  title: string
+  subtitle: string
+  actions: ObjectAction[]
+  onClose: () => void
+}) {
+  const [sub, setSub] = useState<{ id: string; x: number; y: number; items: ObjectAction[] } | null>(null)
+  const clamp = (px: number, py: number, w: number, h: number) => ({
+    left: Math.max(4, Math.min(px, window.innerWidth - w - 4)),
+    top: Math.max(4, Math.min(py, window.innerHeight - h - 4)),
+  })
+  const mainPos = clamp(x, y, 288, 360)
+  const subPos = sub ? clamp(sub.x, sub.y, 220, 300) : null
+
+  return (
+    <>
+      <div
+        className="fixed z-[62] w-72 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl"
+        style={mainPos}
+      >
+        <div className="mb-1 truncate border-b border-zinc-800 px-2 pb-1.5 pt-0.5 text-xs font-semibold text-zinc-300">
+          {title}
+          <span className="ml-1.5 font-normal capitalize text-zinc-500">{subtitle}</span>
+        </div>
+        {actions.map(a =>
+          a.submenu ? (
+            <button
+              key={a.id}
+              onMouseEnter={e => {
+                const r = e.currentTarget.getBoundingClientRect()
+                setSub({ id: a.id, x: r.right + 4, y: r.top, items: a.submenu! })
+              }}
+              title={a.hint}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800 hover:text-white"
+            >
+              {a.icon && <span className="text-zinc-400">{a.icon}</span>}
+              <span className="flex-1">{a.label}</span>
+              <ChevronRight className="h-3.5 w-3.5 text-zinc-500" />
+            </button>
+          ) : (
+            <button
+              key={a.id}
+              onClick={() => {
+                a.run?.()
+                onClose()
+              }}
+              onMouseEnter={() => setSub(null)}
+              title={a.hint}
+              className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-zinc-800 ${
+                a.danger ? 'text-rose-300 hover:text-rose-200' : 'text-zinc-200 hover:text-white'
+              }`}
+            >
+              {a.icon && <span className={a.danger ? 'text-rose-400/80' : 'text-zinc-400'}>{a.icon}</span>}
+              <span>{a.label}</span>
+            </button>
+          ),
+        )}
+      </div>
+      {sub && subPos && (
+        <div
+          className="fixed z-[63] w-52 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl"
+          style={subPos}
+        >
+          {sub.items.map(s => (
+            <button
+              key={s.id}
+              onClick={() => {
+                s.run?.()
+                onClose()
+              }}
+              title={s.hint}
+              className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-zinc-800 ${
+                s.danger ? 'text-rose-300 hover:text-rose-200' : 'text-zinc-200 hover:text-white'
+              }`}
+            >
+              {s.icon && <span className={s.danger ? 'text-rose-400/80' : 'text-zinc-400'}>{s.icon}</span>}
+              <span>{s.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </>
   )
 }
 
@@ -404,6 +863,7 @@ function Section({
   open,
   onToggle,
   children,
+  nested = false,
 }: {
   title: string
   icon: ReactNode
@@ -411,12 +871,15 @@ function Section({
   open: boolean
   onToggle: () => void
   children: ReactNode
+  nested?: boolean
 }) {
   return (
     <div>
       <button
         onClick={onToggle}
-        className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs font-semibold uppercase tracking-wide text-zinc-400 transition-colors hover:bg-zinc-800/70 hover:text-zinc-200"
+        className={`flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs font-semibold transition-colors hover:bg-zinc-800/70 hover:text-zinc-200 ${
+          nested ? 'normal-case tracking-normal text-zinc-400' : 'uppercase tracking-wide text-zinc-400'
+        }`}
       >
         {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
         {icon}
@@ -432,19 +895,22 @@ function ObjectRow({
   label,
   detail,
   onInsert,
+  onContextMenu,
   children,
 }: {
   label: string
   detail?: string
   onInsert: () => void
+  onContextMenu?: (e: MouseEvent<HTMLElement>) => void
   children?: ReactNode
 }) {
   return (
     <div>
       <button
         onClick={onInsert}
+        onContextMenu={onContextMenu}
         className="flex w-full items-center gap-2 rounded px-2 py-1 pl-7 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800"
-        title="Clicca per inserire nel editor"
+        title="Clicca per inserire nel editor — tasto destro per le azioni"
       >
         <span className="truncate font-mono">{label}</span>
         {detail && <span className="truncate text-[11px] text-zinc-500">{detail}</span>}
@@ -464,6 +930,7 @@ function TableRow({
   onHover,
   onHoverLeave,
   onQuickPreview,
+  onContextMenu,
   children,
 }: {
   label: string
@@ -475,6 +942,7 @@ function TableRow({
   onHover: (e: MouseEvent<HTMLElement>) => void
   onHoverLeave: () => void
   onQuickPreview?: () => void
+  onContextMenu?: (e: MouseEvent<HTMLElement>) => void
   children?: ReactNode
 }) {
   return (
@@ -491,8 +959,9 @@ function TableRow({
           onClick={onInsert}
           onMouseEnter={onHover}
           onMouseLeave={onHoverLeave}
+          onContextMenu={onContextMenu}
           className="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800"
-          title={usageText ? `${usageText} — clicca per inserire, passa sopra per l'anteprima` : 'Passa sopra per l\'anteprima dati, clicca per inserire'}
+          title={usageText ? `${usageText} — clicca per inserire, tasto destro per le azioni` : 'Clicca per inserire, tasto destro per le azioni'}
         >
           <span className="truncate font-mono">{label}</span>
           {badge && <span className="ml-auto shrink-0 rounded bg-zinc-800 px-1 text-[10px] text-zinc-500">{badge}</span>}
@@ -514,29 +983,7 @@ function TableRow({
   )
 }
 
-/** Azioni su stored procedure e funzioni: Alter (genera ALTER) e Apri (definizione in nuova tab). */
-function ObjectActions({ onAlter, onOpen }: { onAlter: () => void; onOpen: () => void }) {
-  return (
-    <div className="flex items-center justify-end gap-1 px-2 pb-1">
-      <button
-        onClick={onAlter}
-        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-amber-300/90 transition-colors hover:bg-amber-950/60 hover:text-amber-200"
-        title="Genera ALTER PROCEDURE/FUNCTION in una nuova tab"
-      >
-        <SquarePen className="h-3 w-3" /> Alter
-      </button>
-      <button
-        onClick={onOpen}
-        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-sky-300/90 transition-colors hover:bg-sky-950/60 hover:text-sky-200"
-        title="Apri la definizione in una nuova tab"
-      >
-        <ExternalLink className="h-3 w-3" /> Apri
-      </button>
-    </div>
-  )
-}
-
-function KindIcon({ kind }: { kind: string }) {
+function KindIcon({ kind }: { kind: HitKind }) {
   switch (kind) {
     case 'tabella':
       return <Table2 className="h-3.5 w-3.5 shrink-0 text-sky-400" />

@@ -144,7 +144,7 @@ describe('aiuto sui VALORI: default per tipo e snippet "tutti i valori"', () => 
     const ctx = parseInsertContext(sql)!
     const tuple = insertTupleAt(ctx, sql.indexOf("'x'") + 1)!
     expect(tuple.slots.length).toBe(2)
-    expect(tuple.open).toBe(sql.indexOf('(') + 0) // '(' di VALUES
+    expect(tuple.open).toBe(sql.indexOf('(1')) // '(' di VALUES
     const inner = insertTupleInnerRange(tuple)
     expect(sql.slice(inner.start, inner.end)).toBe("1, 'x'")
     // tupla non chiusa: range fino all'ultimo slot

@@ -235,7 +235,8 @@ public class MetadataService
                 functions.Add(new FunctionInfo(r.GetString(0), r.GetString(1), r.GetString(2)));
         }
 
-        // Foreign key (una riga per vincolo, prima coppia di colonne per le composite)
+        // Foreign key (TUTTE le coppie di colonne: le composite generano più righe,
+        // così ogni relazione utilizzabile — es. MIS_D_CELLA = CEL_CELLA — è suggeribile)
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = """
@@ -244,7 +245,7 @@ public class MetadataService
                        pc.name, rc.name
                 FROM sys.foreign_keys fk
                 INNER JOIN sys.foreign_key_columns fkc
-                        ON fkc.constraint_object_id = fk.object_id AND fkc.constraint_column_id = 1
+                        ON fkc.constraint_object_id = fk.object_id
                 INNER JOIN sys.columns pc ON pc.object_id = fk.parent_object_id AND pc.column_id = fkc.parent_column_id
                 INNER JOIN sys.columns rc ON rc.object_id = fk.referenced_object_id AND rc.column_id = fkc.referenced_column_id
                 WHERE fk.is_ms_shipped = 0

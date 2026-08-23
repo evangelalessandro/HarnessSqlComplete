@@ -27,17 +27,22 @@ function picker<T extends 'save' | 'open'>(kind: T): T extends 'save' ? SaveFile
 
 const SQL_TYPES = [{ description: 'File SQL', accept: { 'text/plain': ['.sql', '.txt'] } }]
 
-/** Salva il contenuto: sovrascrive l'handle se disponibile, altrimenti apre il picker; fallback download. */
-export async function saveSqlFile(suggestedName: string, content: string, handle: FileSystemFileHandle | null = null): Promise<void> {
+/** Salva il contenuto: sovrascrive l'handle se disponibile, altrimenti apre il picker; fallback download.
+ *  Restituisce l'handle usato (o null col fallback download). */
+export async function saveSqlFile(
+  suggestedName: string,
+  content: string,
+  handle: FileSystemFileHandle | null = null,
+): Promise<FileSystemFileHandle | null> {
   if (handle) {
     await writeFileHandle(handle, content)
-    return
+    return handle
   }
   const savePicker = picker('save')
   if (savePicker) {
     const target = await savePicker({ suggestedName, types: SQL_TYPES })
     await writeFileHandle(target, content)
-    return
+    return target
   }
   // fallback: download
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
@@ -47,6 +52,7 @@ export async function saveSqlFile(suggestedName: string, content: string, handle
   a.download = suggestedName
   a.click()
   URL.revokeObjectURL(url)
+  return null
 }
 
 export async function writeFileHandle(handle: FileSystemFileHandle, content: string): Promise<void> {

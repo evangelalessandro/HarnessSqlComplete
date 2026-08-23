@@ -36,10 +36,16 @@ describe('dbTabColor: colore tab in base al database', () => {
   })
 
   it('database diversi → colori validi esadecimali', () => {
-    const colors = ['WSBRITVIC', 'master', 'model', 'msdb', 'tempdb'].map(dbTabColor)
+    const colors = ['WSBRITVIC', 'master', 'model', 'msdb', 'tempdb'].map(d => dbTabColor(d))
     for (const c of colors) {
       expect(c).toMatch(/^#[0-9a-f]{6}$/i)
     }
     expect(new Set(colors).size).toBeGreaterThan(1)
+  })
+
+  it('override personalizzato: vince sul colore automatico', () => {
+    expect(dbTabColor('WSBRITVIC', { WSBRITVIC: '#123456' })).toBe('#123456')
+    // senza override usa l'hash automatico
+    expect(dbTabColor('WSBRITVIC')).not.toBe('#123456')
   })
 })

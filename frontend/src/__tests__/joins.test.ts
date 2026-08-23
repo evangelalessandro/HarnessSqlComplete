@@ -22,9 +22,9 @@ describe('JOIN: suggerimenti e clausola ON', () => {
     expect(ranked[0].table.name).toBe('RUN_MISSIONI')
     expect(ranked[0].hints.length).toBe(1)
 
-    // scenario esatto dell'utente: niente prefisso per colonne univoche, niente parentesi
+    // scenario esatto dell'utente: niente prefisso per colonne univoche, parentesi sull'ON (stile SP reali)
     const text = buildJoinText(ranked[0].table, ranked[0].hints[0], [...ctxInfos, ranked[0].table])
-    expect(text).toBe('RUN_MISSIONI ON UDC_UDC = MIS_UDC')
+    expect(text).toBe('RUN_MISSIONI ON (UDC_UDC = MIS_UDC)')
   })
 
   it('JOIN da RUN_MISSIONI: propone DAT_UDC', () => {
@@ -35,7 +35,7 @@ describe('JOIN: suggerimenti e clausola ON', () => {
     const ranked = rankTablesForJoin(summary.tables, summary.foreignKeys, ctx)
     expect(ranked[0].table.name).toBe('DAT_UDC')
     const text = buildJoinText(ranked[0].table, ranked[0].hints[0], [...ctxInfos, ranked[0].table])
-    expect(text).toBe('DAT_UDC ON MIS_UDC = UDC_UDC')
+    expect(text).toBe('DAT_UDC ON (MIS_UDC = UDC_UDC)')
   })
 
   it('colonna condivisa tra le tabelle in scope: prefisso necessario', () => {
@@ -44,7 +44,7 @@ describe('JOIN: suggerimenti e clausola ON', () => {
     const fk = summary.foreignKeys.find(f => f.table === 'Ordini')!
     // scope: Clienti + Ordini; 'id' è in entrambe → qualificata, ma senza parentesi
     const text = buildJoinText(ordini, { fk, direction: 'out' }, [clienti, ordini])
-    expect(text).toBe('Ordini ON Clienti.id = customer_id')
+    expect(text).toBe('Ordini ON (Clienti.id = customer_id)')
   })
 
   it('colonna con nome pericoloso: parentesi solo per quella', () => {
@@ -52,7 +52,7 @@ describe('JOIN: suggerimenti e clausola ON', () => {
     const ordini = mkTbl('dbo', 'Ordini', [mkCol('customer_id'), mkCol('totale')])
     const fk = { schema: 'dbo', table: 'Ordini', column: 'customer_id', refSchema: 'dbo', refTable: 'Order Details', refColumn: 'id' }
     const text = buildJoinText(we, { fk, direction: 'in' }, [ordini, we])
-    expect(text).toBe('[Order Details] ON customer_id = id')
+    expect(text).toBe('[Order Details] ON (customer_id = id)')
   })
 
   it('usageScore: molte FK in entrata battono una tabella grande ma isolata', () => {

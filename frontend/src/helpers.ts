@@ -1,4 +1,4 @@
-import type { CellValue, ColumnInfo, DatabaseSummary, ForeignKeyInfo, ProcParamInfo, TableInfo, TableUsage } from './types'
+import type { CellValue, ColumnInfo, DatabaseSummary, ForeignKeyInfo, ProcParamInfo, ProcedureInfo, TableInfo, TableUsage } from './types'
 
 /**
  * Identificatore SQL: restituisce il nome senza parentesi quadre se è "sicuro"
@@ -438,6 +438,507 @@ export function insertTupleInnerRange(tuple: InsertTuple): { start: number; end:
   return { start: tuple.slots[0].start, end: tuple.slots[tuple.slots.length - 1].end }
 }
 
+// ---------- Generazione script (tasto destro) ----------
+
+function columnTypeSql(c: ColumnInfo): string {
+  const t = c.dataType.toLowerCase()
+  const base = /^[a-z0-9_]+/.exec(t)?.[0] ?? t
+  if (['nvarchar', 'nchar'].includes(base)) {
+    return c.maxLength != null ? (c.maxLength === -1 ? 'nvarchar(max)' : `nvarchar(${Math.max(1, Math.floor(c.maxLength / 2))})`) : t
+  }
+  if (['varchar', 'char', 'varbinary', 'binary'].includes(base)) {
+    return c.maxLength != null ? (c.maxLength === -1 ? `${base}(max)` : `${base}(${c.maxLength})`) : t
+  }
+  return t
+}
+
+/** Script CREATE TABLE generato dai metadati (colonne, identità, nullabilità). */
+export function scriptCreateTable(table: TableInfo): string {
+  const defs = (table.columns ?? []).map(c => {
+    const parts = [`    ${sqlIdent(c.name)}`, columnTypeSql(c)]
+    if (c.isIdentity) parts.push('IDENTITY(1,1)')
+    if (!c.isNullable) parts.push('NOT NULL')
+    return parts.join(' ')
+  })
+  return `CREATE TABLE ${qualified(table.schema, table.name)} (\n${defs.join(',\n')}\n);\n`
+}
+
+/** Script MERGE generato: chiave = colonna IDENTITY (o la prima), sorgente con valori di default. */
+export function scriptMergeTable(table: TableInfo): string {
+  const cols = table.columns ?? []
+  const pk = cols.find(c => c.isIdentity) ?? cols[0]
+  const target = qualified(table.schema, table.name)
+  const pkName = pk?.name ?? ''
+  const colList = cols.map(c => sqlIdent(c.name)).join(', ')
+  const srcCols = cols.map(c => `${sqlDefaultForType(c.dataType, false)} AS ${sqlIdent(c.name)}`).join(', ')
+  const updateSet = cols
+    .filter(c => c !== pk)
+    .map(c => `    ${sqlIdent(c.name)} = src.${sqlIdent(c.name)}`)
+    .join(',\n')
+  return [
+    `MERGE INTO ${target} AS tgt`,
+    `USING (SELECT ${srcCols}) AS src`,
+    `ON tgt.${sqlIdent(pkName)} = src.${sqlIdent(pkName)}`,
+    'WHEN MATCHED THEN UPDATE SET',
+    updateSet || '    -- nessuna colonna da aggiornare',
+    `WHEN NOT MATCHED THEN INSERT (${colList})`,
+    `VALUES (${cols.map(c => `src.${sqlIdent(c.name)}`).join(', ')});`,
+  ].join('\n')
+}
+
+/** Script EXEC di una stored procedure: IN → @nome = , OUTPUT → @nome OUTPUT (sintassi reale). */
+export function scriptExecProcedure(proc: ProcedureInfo): string {
+  const params = proc.parameters ?? []
+  const args = params
+    .map(p => (p.mode === 'OUTPUT' ? `@${p.name} OUTPUT` : `@${p.name} = `))
+    .join(', ')
+  return `EXEC ${qualified(proc.schema, proc.name)} ${args};\n`
+}
+
+// ---------- Script "as" stile SSMS (tasto destro) ----------
+
+export type ScriptableKind = 'table' | 'view' | 'procedure' | 'function' | 'trigger'
+
+/** Colonna chiave di una tabella: la prima IDENTITY, altrimenti la prima colonna. */
+export function scriptKeyColumn(table: TableInfo): ColumnInfo | null {
+  const cols = table.columns ?? []
+  return cols.find(c => c.isIdentity) ?? cols[0] ?? null
+}
+
+/** Colonne "scrivibili" per INSERT/UPDATE: esclude identity e computed. */
+export function scriptWritableColumns(table: TableInfo): ColumnInfo[] {
+  return (table.columns ?? []).filter(c => !c.isIdentity && !c.isComputed)
+}
+
+/** SELECT TOP (n) * — stile SSMS "Select Top 1000 Rows". */
+export function scriptSelectTable(table: TableInfo, top = 1000): string {
+  return `SELECT TOP (${top}) * FROM ${qualified(table.schema, table.name)};\n`
+}
+
+/** DROP per qualunque tipo di oggetto scriptabile. */
+export function scriptDropObject(kind: ScriptableKind, schema: string, name: string): string {
+  const kw =
+    kind === 'table'
+      ? 'TABLE'
+      : kind === 'view'
+        ? 'VIEW'
+        : kind === 'procedure'
+          ? 'PROCEDURE'
+          : kind === 'function'
+            ? 'FUNCTION'
+            : 'TRIGGER'
+  return `DROP ${kw} ${qualified(schema, name)};\n`
+}
+
+/** INSERT INTO (colonne) VALUES (default) — esclude identity/computed. */
+export function scriptInsertTable(table: TableInfo): string {
+  const cols = scriptWritableColumns(table)
+  const colList = cols.map(c => sqlIdent(c.name)).join(', ')
+  const vals = cols.map(c => sqlDefaultForType(c.dataType, c.isNullable)).join(', ')
+  return `INSERT INTO ${qualified(table.schema, table.name)} (${colList})\nVALUES (${vals});\n`
+}
+
+/** UPDATE t SET col = default WHERE chiave = default — esclude identity/computed e la chiave. */
+export function scriptUpdateTable(table: TableInfo): string {
+  const key = scriptKeyColumn(table)
+  const cols = scriptWritableColumns(table).filter(c => c !== key)
+  const sets = cols
+    .map(c => `    ${sqlIdent(c.name)} = ${sqlDefaultForType(c.dataType, c.isNullable)}`)
+    .join(',\n')
+  const where = key
+    ? `WHERE ${sqlIdent(key.name)} = ${sqlDefaultForType(key.dataType, key.isNullable)}`
+    : 'WHERE /* chiave */'
+  return `UPDATE ${qualified(table.schema, table.name)}\nSET\n${sets || '    -- nessuna colonna da aggiornare'}\n${where};\n`
+}
+
+/** DELETE FROM t WHERE chiave = default. */
+export function scriptDeleteTable(table: TableInfo): string {
+  const key = scriptKeyColumn(table)
+  const where = key
+    ? `WHERE ${sqlIdent(key.name)} = ${sqlDefaultForType(key.dataType, key.isNullable)}`
+    : 'WHERE /* chiave */'
+  return `DELETE FROM ${qualified(table.schema, table.name)} ${where};\n`
+}
+
+// ---------- Ricerca: gli spazi valgono come % (LIKE) ----------
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** Pattern di ricerca: gli spazi separano token che devono comparire in ordine (come %token%). */
+export function searchPatternFromQuery(query: string): RegExp | null {
+  const tokens = query
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(t => escapeRegex(t))
+  if (tokens.length === 0) return null
+  return new RegExp(tokens.join('.*'), 'i')
+}
+
+/** True se una delle candidate corrisponde alla query (spazi = %). */
+export function searchMatches(query: string, ...candidates: string[]): boolean {
+  const re = searchPatternFromQuery(query)
+  if (!re) return false
+  return candidates.some(c => re.test(c))
+}
+
+// ---------- Affinità colonne digitate (autocompletamento) ----------
+
+function nameTokens(name: string): string[] {
+  return name.toLowerCase().split('_').filter(Boolean)
+}
+
+/**
+ * Punteggio di affinità tra il testo digitato e un nome di colonna:
+ * - prefisso esatto: il più alto;
+ * - sottostringa nel mezzo (es. "corr" dentro "corridoio");
+ * - allineamento ordinato dei token separati da "_" (es. "mis_corr" → "mis_d_corridoio").
+ * Restituisce 0 quando non c'è alcuna affinità.
+ */
+export function columnMatchScore(typed: string, columnName: string): number {
+  const t = typed.trim().toLowerCase()
+  const n = columnName.toLowerCase()
+  if (!t) return 0
+  if (n.startsWith(t)) return 1000 + t.length * 10
+  if (n.includes(t)) return 700 + t.length * 5
+  const tt = nameTokens(t)
+  const nt = nameTokens(n)
+  if (tt.length === 0 || nt.length === 0) return 0
+  // ogni token digitato deve essere prefisso di un token colonna, in ordine
+  let i = 0
+  let j = 0
+  let score = 0
+  let gaps = 0
+  while (i < tt.length && j < nt.length) {
+    if (nt[j].startsWith(tt[i])) {
+      score += 100 + Math.min(40, tt[i].length * 4)
+      i++
+      j++
+    } else {
+      gaps++
+      j++
+    }
+  }
+  if (i < tt.length) return 0 // non tutti i token digitati sono stati trovati
+  if (nt[0].startsWith(tt[0])) score += 60
+  return Math.max(0, score - gaps * 25)
+}
+
+/** Colonna sinistra di un confronto: "ON a.col = " / "WHERE col = " (prima del cursore). */
+export interface OnLeftColumn {
+  name: string
+  /** Qualificatore se presente (alias o nome tabella). */
+  qualifier: string | null
+}
+
+/**
+ * Colonna sinistra di un confronto: "ON a.col = " / "WHERE col = " (prima del cursore).
+ * Accetta anche una parola già avviata dopo "=" (es. "ON mis_corr = cel") per poter
+ * suggerire la controparte mentre si digita.
+ */
+export function detectLeftColumnInOn(textBefore: string): OnLeftColumn | null {
+  const re = /(?:ON|AND|OR|WHERE|HAVING)\s+(?:\[?([A-Za-z_][\w]*)\]?\s*\.\s*)?\[?([A-Za-z_][\w]*)\]?\s*=\s*(?:\[?[A-Za-z_][\w]*\]?)?$/i
+  const m = re.exec(textBefore)
+  if (!m) return null
+  return { name: m[2], qualifier: m[1] ?? null }
+}
+
+/** Colonna "corrispondente" su un'altra tabella (controparte di un JOIN). */
+export interface JoinCounterpart {
+  column: ColumnInfo
+  table: TableInfo
+  score: number
+  viaFk: boolean
+}
+
+/** Condizione aggiuntiva di JOIN suggerita: "AND colA = colB". */
+export interface JoinConditionSuggestion {
+  text: string
+  left: string
+  right: string
+  score: number
+}
+
+/** Token iniziali condivisi (famiglia): "mis_d_corridoio" e "mis_d_cella" → ["mis","d"]. */
+function sharedLeadingTokens(a: string, b: string): number {
+  const ta = a.toLowerCase().split('_').filter(Boolean)
+  const tb = b.toLowerCase().split('_').filter(Boolean)
+  let n = 0
+  while (n < ta.length && n < tb.length && ta[n] === tb[n]) n++
+  return n
+}
+
+/**
+ * Condizioni di JOIN aggiuntive per la clausola ON corrente:
+ * quando l'ON ha già "MIS_D_CORRIDOIO = CEL_CORRIDOIO" propone le altre coppie FK
+ * tra le stesse tabelle ("AND MIS_D_CELLA = CEL_CELLA"), dando priorità a quelle
+ * della stessa relazione (stessa famiglia di token, es. MIS_D_*), come Visual Studio.
+ */
+export function buildJoinConditionSuggestions(
+  stmtText: string,
+  stmtBefore: string,
+  summary: DatabaseSummary,
+): JoinConditionSuggestion[] {
+  const refs = extractStatementTableRefs(stmtText)
+    .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
+    .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined)
+  if (refs.length < 2) return []
+
+  // testo dell'ultima clausola ON (dopo l'ultima parola ON nel testo prima del cursore)
+  const onMatches = [...stmtBefore.matchAll(/\bON\b/gi)]
+  if (onMatches.length === 0) return []
+  const onText = stmtBefore.slice(onMatches[onMatches.length - 1].index)
+
+  // coppie già scritte dentro l'ON (in qualsiasi ordine)
+  const used = new Set<string>()
+  for (const m of onText.matchAll(/([A-Za-z_][\w]*)\s*=\s*([A-Za-z_][\w]*)/gi)) {
+    used.add([m[1].toLowerCase(), m[2].toLowerCase()].sort().join('='))
+  }
+
+  // nomi colonna per tabella (minuscoli) per decidere la qualifica
+  const colByKey = new Map<string, Set<string>>()
+  for (const { table } of refs) {
+    const key = `${table.schema}.${table.name}`
+    colByKey.set(key, new Set((table.columns ?? []).map(c => c.name.toLowerCase())))
+  }
+
+  const out: JoinConditionSuggestion[] = []
+  const seen = new Set<string>()
+  const scope = refs.map(x => x.table)
+
+  // famiglia dell'ultima coppia scritta (per dare priorità alla stessa relazione)
+  let lastLeft = ''
+  for (const m of onText.matchAll(/([A-Za-z_][\w]*)\s*=\s*([A-Za-z_][\w]*)/gi)) lastLeft = m[1]
+
+  for (const fk of summary.foreignKeys) {
+    const parent = refs.find(r => `${r.table.schema}.${r.table.name}`.toLowerCase() === `${fk.schema}.${fk.table}`.toLowerCase())
+    const child = refs.find(r => `${r.table.schema}.${r.table.name}`.toLowerCase() === `${fk.refSchema}.${fk.refTable}`.toLowerCase())
+    if (!parent || !child) continue
+    // colonna della tabella che referenzia a sinistra (come scrive l'utente: MIS_* = CEL_*)
+    const left = fk.column
+    const right = fk.refColumn
+    const key = [left.toLowerCase(), right.toLowerCase()].sort().join('=')
+    if (used.has(key) || seen.has(key)) continue
+    seen.add(key)
+
+    const parentCols = colByKey.get(`${parent.table.schema}.${parent.table.name}`) ?? new Set()
+    const childCols = colByKey.get(`${child.table.schema}.${child.table.name}`) ?? new Set()
+    const leftPart = parentCols.has(left.toLowerCase()) && !childCols.has(left.toLowerCase()) ? left : `${parent.table.name}.${left}`
+    const rightPart = childCols.has(right.toLowerCase()) && !parentCols.has(right.toLowerCase()) ? right : `${child.table.name}.${right}`
+
+    const famScore = lastLeft ? sharedLeadingTokens(lastLeft, left) * 400 : 0
+    out.push({
+      text: `AND ${sqlIdent(leftPart)} = ${sqlIdent(rightPart)}`,
+      left,
+      right,
+      score: 1000 + famScore,
+    })
+  }
+
+  return out.sort((a, b) => b.score - a.score)
+}
+
+/**
+ * Controparti di una colonna tra le tabelle dello statement:
+ * prima le FK esatte (colonna sinistra = colonna di una FK → colonna referenziata),
+ * poi le colonne che condividono almeno un token di nome (es. "mis_d_cella" → "cel_cella").
+ */
+export function findJoinCounterparts(
+  leftColumnName: string,
+  leftTable: TableInfo | null,
+  statementTables: TableInfo[],
+  foreignKeys: ForeignKeyInfo[],
+): JoinCounterpart[] {
+  const out: JoinCounterpart[] = []
+  const seen = new Set<string>()
+  const leftKey = leftTable ? `${leftTable.schema}.${leftTable.name}` : ''
+  const add = (c: ColumnInfo, t: TableInfo, score: number, viaFk: boolean) => {
+    const key = `${t.schema}.${t.name}.${c.name}`
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({ column: c, table: t, score, viaFk })
+  }
+  if (leftTable) {
+    for (const fk of foreignKeys) {
+      const fkMatch =
+        fk.schema.toLowerCase() === leftTable.schema.toLowerCase() &&
+        fk.table.toLowerCase() === leftTable.name.toLowerCase() &&
+        fk.column.toLowerCase() === leftColumnName.toLowerCase()
+      if (!fkMatch) continue
+      const refTable = statementTables.find(
+        t =>
+          t.schema.toLowerCase() === fk.refSchema.toLowerCase() &&
+          t.name.toLowerCase() === fk.refTable.toLowerCase(),
+      )
+      const refCol = refTable?.columns?.find(
+        c => c.name.toLowerCase() === fk.refColumn.toLowerCase(),
+      )
+      if (refTable && refCol) add(refCol, refTable, 2000, true)
+    }
+  }
+  const leftTokens = nameTokens(leftColumnName).filter(tok => tok.length >= 3)
+  if (leftTokens.length > 0) {
+    for (const t of statementTables) {
+      if (leftTable && `${t.schema}.${t.name}` === leftKey) continue
+      for (const c of t.columns ?? []) {
+        const cTokens = nameTokens(c.name).filter(tok => tok.length >= 3)
+        let shared = 0
+        for (const lt of leftTokens) {
+          if (cTokens.some(ct => ct.startsWith(lt) || lt.startsWith(ct))) shared++
+        }
+        if (shared > 0 && c.name.toLowerCase() !== leftColumnName.toLowerCase()) {
+          add(c, t, 100 + shared * 50, false)
+        }
+      }
+    }
+  }
+  return out.sort((a, b) => b.score - a.score)
+}
+
+/** Suggerimento di colonna per i contesti WHERE/ON/HAVING/GROUP/ORDER/SET. */
+export interface ColumnContextSuggestion {
+  name: string
+  insertText: string
+  dataType: string
+  isNullable: boolean
+  isIdentity: boolean
+  ownerLabel: string
+  shared: boolean
+  documentation: string
+  score: number
+  /** True se è una controparte di JOIN (FK o token condiviso), non una colonna dello statement. */
+  counterpart: boolean
+}
+
+/** Nomi (minuscoli) delle colonne coinvolte in foreign key: sono le "chiavi" usate nei JOIN/WHERE reali. */
+export function fkColumnNames(foreignKeys: ForeignKeyInfo[]): Set<string> {
+  const set = new Set<string>()
+  for (const fk of foreignKeys) {
+    set.add(fk.column.toLowerCase())
+    set.add(fk.refColumn.toLowerCase())
+  }
+  return set
+}
+
+/**
+ * Elenco ordinato di colonne per il contesto colonna corrente:
+ * - se c'è una colonna sinistra in "ON/WHERE ... = " → prima le sue controparti (FK, poi token);
+ * - se il cursore è dentro una parola → solo le colonne con affinità, ordinate per punteggio;
+ * - altrimenti tutte le colonne delle tabelle dello statement.
+ */
+export function buildColumnContextSuggestions(
+  stmtText: string,
+  stmtBefore: string,
+  typedWord: string,
+  summary: DatabaseSummary,
+): ColumnContextSuggestion[] {
+  const refTables = extractStatementTableRefs(stmtText)
+    .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
+    .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined)
+
+  // proprietari per nome colonna (label = alias o nome tabella) e chiave per alias/tabella
+  const colOwners = new Map<string, { col: ColumnInfo; table: TableInfo; label: string }[]>()
+  const aliasToKey = new Map<string, string>()
+  for (const { r, table } of refTables) {
+    const label = r.alias ?? table.name
+    aliasToKey.set(label.toLowerCase(), `${table.schema}.${table.name}`)
+    for (const c of table.columns ?? []) {
+      const lower = c.name.toLowerCase()
+      const list = colOwners.get(lower)
+      if (list) list.push({ col: c, table, label })
+      else colOwners.set(lower, [{ col: c, table, label }])
+    }
+  }
+
+  const statementTables = refTables.map(x => x.table)
+
+  // controparti (FK esatte + token condivisi) della colonna sinistra se presente
+  const left = detectLeftColumnInOn(stmtBefore)
+  let leftTable: TableInfo | null = null
+  if (left) {
+    if (left.qualifier) {
+      const key = aliasToKey.get(left.qualifier.toLowerCase())
+      leftTable = statementTables.find(t => `${t.schema}.${t.name}` === key) ?? null
+    }
+    if (!leftTable) {
+      const owners = colOwners.get(left.name.toLowerCase())
+      if (owners && owners.length === 1) leftTable = owners[0].table
+    }
+  }
+  const counterpartKey = new Set<string>()
+  const counterpartList: JoinCounterpart[] = left
+    ? findJoinCounterparts(left.name, leftTable, statementTables, summary.foreignKeys)
+    : []
+  for (const cp of counterpartList) counterpartKey.add(`${cp.table.schema}.${cp.table.name}.${cp.column.name}`)
+
+  const insertTextFor = (c: ColumnInfo, t: TableInfo): string => {
+    const owners = colOwners.get(c.name.toLowerCase()) ?? []
+    const shared = owners.length > 1
+    if (!shared) return sqlIdent(c.name)
+    const entry = owners.find(o => `${o.table.schema}.${o.table.name}` === `${t.schema}.${t.name}`)
+    return `${sqlIdent(entry?.label ?? t.name)}.${sqlIdent(c.name)}`
+  }
+
+  const docFor = (c: ColumnInfo, t: TableInfo): string => {
+    const owners = colOwners.get(c.name.toLowerCase()) ?? []
+    return columnInfoMarkdown(
+      t,
+      c,
+      owners.map(o => ({ table: o.table, alias: o.label !== o.table.name ? o.label : null })),
+    )
+  }
+
+  const out: ColumnContextSuggestion[] = []
+  // 1) controparti del JOIN (filtrate per affinità se si sta già digitando una parola)
+  const wantTyped = typedWord.trim().length > 0
+  for (const cp of counterpartList) {
+    if (wantTyped && columnMatchScore(typedWord, cp.column.name) <= 0) continue
+    out.push({
+      name: cp.column.name,
+      insertText: insertTextFor(cp.column, cp.table),
+      dataType: cp.column.dataType,
+      isNullable: cp.column.isNullable,
+      isIdentity: cp.column.isIdentity,
+      ownerLabel: `${cp.table.schema}.${cp.table.name}${cp.viaFk ? ' · FK' : ' · corrispondente'}`,
+      shared: (colOwners.get(cp.column.name.toLowerCase()) ?? []).length > 1,
+      documentation: docFor(cp.column, cp.table),
+      score: cp.score,
+      counterpart: true,
+    })
+  }
+  // 2) colonne dello statement (con affinità se si sta digitando)
+  const fkCols = fkColumnNames(summary.foreignKeys)
+  const ranked: { s: ColumnContextSuggestion }[] = []
+  for (const [, owners] of colOwners) {
+    const first = owners[0]
+    const key = `${first.table.schema}.${first.table.name}.${first.col.name}`
+    if (counterpartKey.has(key)) continue
+    const base = wantTyped ? columnMatchScore(typedWord, first.col.name) : 1
+    if (base <= 0) continue
+    const fkBoost = fkCols.has(first.col.name.toLowerCase()) ? 150 : 0
+    ranked.push({
+      s: {
+        name: first.col.name,
+        insertText: insertTextFor(first.col, first.table),
+        dataType: first.col.dataType,
+        isNullable: first.col.isNullable,
+        isIdentity: first.col.isIdentity,
+        ownerLabel:
+          owners.length === 1 ? owners[0].label : owners.map(o => o.label).join(', '),
+        shared: owners.length > 1,
+        documentation: docFor(first.col, first.table),
+        score: base + fkBoost,
+        counterpart: false,
+      },
+    })
+  }
+  ranked.sort((a, b) => b.s.score - a.s.score)
+  out.push(...ranked.map(x => x.s))
+  return out
+}
+
 // ---------- Parsing EXEC (autocompletamento parametri delle stored procedure) ----------
 
 export interface ExecContext {
@@ -713,8 +1214,16 @@ const DB_TAB_COLORS = [
   '#818cf8',
 ]
 
-/** Colore stabile della tab in base al nome del database associato. */
-export function dbTabColor(dbName: string): string {
+/** Palette dei colori disponibili (per il selettore colore dei database). */
+export const dbColorPalette = DB_TAB_COLORS
+
+/**
+ * Colore stabile della tab in base al nome del database associato;
+ * se esiste un colore personalizzato (override) vince quello.
+ */
+export function dbTabColor(dbName: string, overrides?: Record<string, string>): string {
+  const custom = overrides?.[dbName]
+  if (custom) return custom
   let h = 0
   for (let i = 0; i < dbName.length; i++) h = (h * 31 + dbName.charCodeAt(i)) >>> 0
   return DB_TAB_COLORS[h % DB_TAB_COLORS.length]
@@ -882,6 +1391,8 @@ export interface SelectListColumn {
   shared: boolean
   /** Markdown con descrizione e proprietà estese (per il widget suggerimenti). */
   documentation: string
+  /** True se la colonna è coinvolta in una foreign key (chiave usata nei JOIN). */
+  isFk: boolean
 }
 
 export interface SelectListSuggestions {
@@ -983,6 +1494,7 @@ export function buildSelectListSuggestions(
     }
   }
   const columns: SelectListColumn[] = []
+  const fkCols = fkColumnNames(summary.foreignKeys)
   for (const [, entry] of colMap) {
     columns.push({
       name: entry.c.name,
@@ -997,8 +1509,11 @@ export function buildSelectListSuggestions(
         entry.c,
         entry.owners.map(o => ({ table: o.table, alias: null })),
       ),
+      isFk: fkCols.has(entry.c.name.toLowerCase()),
     })
   }
+  // Colonne coinvolte in FK (chiavi) prima delle altre: sono quelle usate nei JOIN reali
+  columns.sort((a, b) => (b.isFk ? 1 : 0) - (a.isFk ? 1 : 0))
   return { starText, starCount, starOffset, columns }
 }
 
@@ -1010,9 +1525,11 @@ export function filterUnusedParams(parameters: ProcParamInfo[], afterProc: strin
   return parameters.filter(p => !used.has(p.name.toLowerCase()))
 }
 
-/** Snippet "tutti i parametri": @p1=${1}, @p2=${2}, ... (con tab-stop). */
+/** Snippet "tutti i parametri": IN → @p1=${1} (tab-stop), OUTPUT → @nome OUTPUT (senza valore). */
 export function buildExecParamSnippet(parameters: ProcParamInfo[]): string {
-  return parameters.map((par, i) => `@${par.name}=\${${i + 1}}`).join(', ')
+  return parameters
+    .map((par, i) => (par.mode === 'OUTPUT' ? `@${par.name} OUTPUT` : `@${par.name}=\${${i + 1}}`))
+    .join(', ')
 }
 
 // ---------- Definizioni oggetti (Alter) ----------
@@ -1028,10 +1545,27 @@ export function toAlterStatement(definition: string): string {
   return 'ALTER ' + definition.slice(m[0].length)
 }
 
+/** Parole chiave che non possono essere alias di tabella: se seguono il nome, la tabella non ha alias. */
+const TABLE_ALIAS_BLOCK =
+  'JOIN|INNER|LEFT|RIGHT|CROSS|FULL|OUTER|ON|WHERE|AND|OR|NOT|GROUP|ORDER|BY|HAVING|UNION|ALL|' +
+  'SET|VALUES|INTO|FROM|UPDATE|DELETE|INSERT|SELECT|GO|WITH|WHEN|THEN|ELSE|END|CASE|IN|IS|' +
+  'LIKE|BETWEEN|EXISTS|TOP|DISTINCT|USE|EXEC|EXECUTE|RETURN|MERGE|TRUNCATE|TABLE|AS'
+
+/**
+ * Regex condivisa per estrarre i riferimenti a tabelle (FROM/JOIN/UPDATE/INTO/TABLE):
+ * il gruppo alias è preceduto da un lookahead negativo che blocca le parole chiave,
+ * così "FROM a JOIN b" NON cattura JOIN come alias di a (bug che nascondeva b).
+ */
+const TABLE_REF_RE = new RegExp(
+  '\\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\\s+' +
+    '((?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*(?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*))?)' +
+    '(?:\\s+(?:AS\\s+)?(?!(?:' + TABLE_ALIAS_BLOCK + ')\\b)([A-Za-z_][A-Za-z0-9_]*))?',
+  'gi',
+)
+
 /** Estrae le tabelle referenziate (FROM/JOIN/UPDATE/INTO) da un intero statement, con eventuale alias. */
 export function extractStatementTableRefs(text: string): StatementTableRef[] {
-  const re =
-    /\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?/gi
+  const re = TABLE_REF_RE
   const out: StatementTableRef[] = []
   for (const m of text.matchAll(re)) {
     const parts = m[1].replace(/[\[\]\s]/g, '').split('.')
@@ -1091,8 +1625,7 @@ export function colorizeSqlTokens(text: string, summary: DatabaseSummary): Color
     const slice = text.slice(start, end)
     const tables = new Set<string>()
     const aliases = new Map<string, string>()
-    const re =
-      /\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?/gi
+    const re = TABLE_REF_RE
     let m: RegExpExecArray | null
     while ((m = re.exec(slice)) !== null) {
       const parts = m[1].replace(/[\[\]\s]/g, '').split('.')
@@ -1172,9 +1705,10 @@ export function colorizeSqlTokens(text: string, summary: DatabaseSummary): Color
 }
 
 /**
- * Costruisce la clausola ON del JOIN dalla FK: "ON tabellaContesto.col = candidata.col".
+ * Costruisce la clausola ON del JOIN dalla FK: "ON (tabellaContesto.col = candidata.col)".
+ * Le parentesi seguono la convenzione dominante nelle stored procedure reali (~2/3 degli ON).
  * Se un nome di colonna è univoco tra le tabelle in scope della query, il prefisso
- * con il nome della tabella viene omesso (es. "ON UDC_UDC = MIS_UDC"). Le parentesi
+ * con il nome della tabella viene omesso (es. "ON (UDC_UDC = MIS_UDC)"). Le parentesi
  * quadre compaiono solo quando il nome lo richiede (spazi, parole riservate, ecc.).
  */
 export function buildJoinText(candidate: TableInfo, hint: JoinHint, scope: TableInfo[]): string {
@@ -1191,7 +1725,7 @@ export function buildJoinText(candidate: TableInfo, hint: JoinHint, scope: Table
     columnAppearsIn(scope, candColumn) === 1
       ? sqlIdent(candColumn)
       : `${sqlIdent(candidate.name)}.${sqlIdent(candColumn)}`
-  return `${qualified(candidate.schema, candidate.name)} ON ${ctxPart} = ${candPart}`
+  return `${qualified(candidate.schema, candidate.name)} ON (${ctxPart} = ${candPart})`
 }
 
 /** Quante tabelle dello scope contengono una colonna con quel nome. */
@@ -1202,4 +1736,61 @@ function columnAppearsIn(scope: TableInfo[], columnName: string): number {
     if (t.columns?.some(c => c.name.toLowerCase() === lower)) count += 1
   }
   return count
+}
+
+/** Voce di completamento per una relazione (JOIN) selezionabile. */
+export interface JoinSuggestionItem {
+  /** Testo mostrato nel widget (nome tabella + eventuale colonna della relazione). */
+  label: string
+  /** Dettaglio: quale FK/colonna collega. */
+  detail: string
+  /** Testo inserito: nome tabella oppure "tabella ON (a.x = b.y)" in posizione JOIN. */
+  insertText: string
+  /** Testo usato da Monaco per il filtro (nome tabella). */
+  filterText: string
+}
+
+/**
+ * Costruisce le voci di completamento per una tabella candidata:
+ * - in posizione JOIN, UNA voce per ogni relazione FK verso le tabelle del contesto
+ *   (ognuna con la propria clausola ON), come Visual Studio che propone i casi possibili;
+ * - con una sola relazione (o fuori da JOIN) una voce unica con la tabella.
+ */
+export function buildJoinSuggestions(
+  candidate: RankedTable,
+  contextTableInfos: TableInfo[],
+  isJoinPosition: boolean,
+): JoinSuggestionItem[] {
+  const t = candidate.table
+  const base = qualified(t.schema, t.name)
+  const scope = [...contextTableInfos, t]
+
+  if (!isJoinPosition || candidate.hints.length === 0) {
+    return [
+      {
+        label: base,
+        detail:
+          candidate.hints.length === 1
+            ? `${candidate.hints[0].fk.column} = ${candidate.hints[0].fk.refColumn}`
+            : `${candidate.hints.length} relazioni disponibili`,
+        insertText: base,
+        filterText: t.name,
+      },
+    ]
+  }
+
+  return candidate.hints.map(h => {
+    const fk = h.fk
+    const ctxColumn = h.direction === 'out' ? fk.refColumn : fk.column
+    const candColumn = h.direction === 'out' ? fk.column : fk.refColumn
+    const ctxTableName = h.direction === 'out' ? fk.refTable : fk.table
+    const src = columnAppearsIn(scope, ctxColumn) === 1 ? ctxColumn : `${ctxTableName}.${ctxColumn}`
+    return {
+      // con più relazioni la label distingue la colonna del contesto (es. via MIS_D_CELLA)
+      label: candidate.hints.length > 1 ? `${base} · via ${ctxColumn}` : base,
+      detail: `JOIN su ${src} = ${candColumn}`,
+      insertText: buildJoinText(t, h, scope),
+      filterText: t.name,
+    }
+  })
 }

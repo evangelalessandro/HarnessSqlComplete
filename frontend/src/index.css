@@ -28,6 +28,31 @@ body {
   background: transparent;
 }
 
+/* Tema chiaro: ridefinisce le variabili della palette zinc usate da Tailwind v4.
+   Così tutte le utility (incluse opacità e hover) si adattano automaticamente. */
+.theme-light {
+  --color-zinc-50: #09090b;
+  --color-zinc-100: #18181b;
+  --color-zinc-200: #27272a;
+  --color-zinc-300: #3f3f46;
+  --color-zinc-400: #52525b;
+  --color-zinc-500: #71717a;
+  --color-zinc-600: #a1a1aa;
+  --color-zinc-700: #d4d4d8;
+  --color-zinc-800: #e4e4e7;
+  --color-zinc-900: #ffffff;
+  --color-zinc-950: #f8fafc;
+}
+.theme-light {
+  scrollbar-color: rgb(203 213 225) transparent;
+}
+.theme-light * {
+  scrollbar-color: rgb(203 213 225) transparent;
+}
+.theme-light *::-webkit-scrollbar-thumb {
+  background: rgb(203 213 225);
+}
+
 /* Evidenziazione del campo corrispondente negli INSERT (colonna <-> valore) */
 .monaco-editor .sql-pair-highlight {
   background-color: rgba(245, 158, 11, 0.2);

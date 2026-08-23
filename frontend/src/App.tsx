@@ -5,6 +5,9 @@ import monaco from './monacoSetup'
 import { api } from './api'
 import { dbTabColor, toAlterStatement } from './helpers'
 import { openSqlFiles, saveSqlFile } from './fileSave'
+import { loadDbColors, saveDbColors } from './dbColors'
+import { loadSettings, saveSettings } from './settings'
+import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
 import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryResult } from './types'
 import LoginScreen from './components/LoginScreen'
@@ -30,6 +33,43 @@ export default function App() {
   const [aiStatus, setAiStatus] = useState<AutocompleteStatus | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
+
+  // Colori personalizzati per database (persistiti in localStorage)
+  const [dbColors, setDbColors] = useState<Record<string, string>>(() => loadDbColors())
+
+  // Impostazioni editor (font e tema)
+  const [settings, setSettings] = useState<EditorSettings>(() => loadSettings())
+
+  const zoomFont = useCallback((delta: number) => {
+    setSettings(prev => {
+      const next: EditorSettings = { ...prev, fontSize: Math.min(40, Math.max(8, prev.fontSize + delta)) }
+      saveSettings(next)
+      return next
+    })
+  }, [])
+
+  const toggleTheme = useCallback(() => {
+    setSettings(prev => {
+      const next: EditorSettings = { ...prev, theme: prev.theme === 'vs-dark' ? 'vs' : 'vs-dark' }
+      saveSettings(next)
+      return next
+    })
+  }, [])
+
+  // Applica il tema all'intera pagina (html.theme-light) e all'editor Monaco
+  useEffect(() => {
+    document.documentElement.classList.toggle('theme-light', settings.theme === 'vs')
+  }, [settings.theme])
+
+  const handleSetDbColor = useCallback((db: string, color: string | null) => {
+    setDbColors(prev => {
+      const next = { ...prev }
+      if (color) next[db] = color
+      else delete next[db]
+      saveDbColors(next)
+      return next
+    })
+  }, [])
 
   // --- Tab dell'editor (multi-tab), ripristinate da localStorage all'apertura ---
   const persisted = useMemo(() => loadPersistedTabs(), [])
@@ -92,13 +132,41 @@ export default function App() {
     setEditorTabs(prev => prev.map(t => (t.id === activeEditorTab ? { ...t, sql: editor.getValue() } : t)))
   }, [editor, activeEditorTab])
 
+  /** Cambia database della connessione (e lo lega alla tab indicata o a quella attiva). */
+  const switchDatabase = useCallback(
+    async (database: string, tabId?: string) => {
+      if (!connection || database === connection.database) return
+      setBanner(null)
+      setLoadingSummary(true)
+      try {
+        const res = await api.switchDatabase(connection.connectionId, database)
+        setConnection(res)
+        setResult(null)
+        setActiveTab('results')
+        setSummary(await api.getSummary(res.connectionId))
+        const targetTab = tabId ?? activeEditorTab
+        setEditorTabs(prev => prev.map(t => (t.id === targetTab ? { ...t, database: res.database } : t)))
+      } catch (e) {
+        setBanner(e instanceof Error ? e.message : String(e))
+      } finally {
+        setLoadingSummary(false)
+      }
+    },
+    [connection, activeEditorTab],
+  )
+
   const switchEditorTab = useCallback(
     (id: string) => {
       if (id === activeEditorTab) return
+      const target = editorTabs.find(t => t.id === id)
       saveActiveEditor()
       setActiveEditorTab(id)
+      // il DB è legato alla tab: cambia connessione al database di quella tab
+      if (target?.database && target.database !== connection?.database) {
+        void switchDatabase(target.database, id)
+      }
     },
-    [activeEditorTab, saveActiveEditor],
+    [activeEditorTab, editorTabs, connection, saveActiveEditor, switchDatabase],
   )
 
   const newEditorTab = useCallback(
@@ -247,27 +315,12 @@ export default function App() {
     [editor],
   )
 
-  /** Cambia database: nuova connessione (stesse credenziali) + metadati aggiornati. */
+  /** Cambia database dalla combo/treeview: lega il db alla tab attiva. */
   const handleSwitchDatabase = useCallback(
-    async (database: string) => {
-      if (!connection || database === connection.database) return
-      setBanner(null)
-      setLoadingSummary(true)
-      try {
-        const res = await api.switchDatabase(connection.connectionId, database)
-        setConnection(res)
-        setResult(null)
-        setActiveTab('results')
-        setSummary(await api.getSummary(res.connectionId))
-        // la tab attiva segue il database selezionato
-        setEditorTabs(prev => prev.map(t => (t.id === activeEditorTab ? { ...t, database: res.database } : t)))
-      } catch (e) {
-        setBanner(e instanceof Error ? e.message : String(e))
-      } finally {
-        setLoadingSummary(false)
-      }
+    (database: string) => {
+      void switchDatabase(database)
     },
-    [connection],
+    [switchDatabase],
   )
 
   /** Apre la preview (SELECT TOP 100 *) in una nuova tab dell'editor. */
@@ -278,9 +331,17 @@ export default function App() {
     [newEditorTab],
   )
 
-  /** Apre una stored procedure / funzione: 'alter' genera ALTER, 'open' la definizione CREATE. */
+  /** Apre uno script generato (CREATE/MERGE) in una nuova tab con titolo. */
+  const handleOpenScript = useCallback(
+    (title: string, sql: string) => {
+      newEditorTab(title, sql, connection?.database)
+    },
+    [newEditorTab, connection],
+  )
+
+  /** Apre una stored procedure / funzione / vista / trigger: 'alter' genera ALTER, 'open' la definizione CREATE. */
   const handleOpenObject = useCallback(
-    async (_kind: 'procedure' | 'function', schema: string, name: string, mode: 'alter' | 'open') => {
+    async (_kind: 'procedure' | 'function' | 'view' | 'trigger', schema: string, name: string, mode: 'alter' | 'open') => {
       if (!connection) return
       setBanner(null)
       try {
@@ -306,25 +367,46 @@ export default function App() {
   )
 
   /** Salva la tab attiva: sovrascrive l'originale se la tab ha l'handle, altrimenti apre il picker. */
-  const saveActiveTab = useCallback(async () => {
-    if (!editor) return
-    const tab = editorTabs.find(t => t.id === activeEditorTab)
-    if (!tab) return
-    const sql = editor.getValue()
-    setEditorTabs(prev => prev.map(t => (t.id === activeEditorTab ? { ...t, sql } : t)))
-    const suggestedName = /\.sql$/i.test(tab.title) ? tab.title : `${tab.title}.sql`
-    setBanner(null)
-    try {
+  const saveActiveTab = useCallback(
+    async (saveAs = false) => {
+      if (!editor) return
+      const tab = editorTabs.find(t => t.id === activeEditorTab)
+      if (!tab) return
+      const sql = editor.getValue()
+      setBanner(null)
+      const suggestedName = /\.sql$/i.test(tab.title) ? tab.title : `${tab.title}.sql`
       // l'handle potrebbe essere stato perso dopo un reload (JSON): verifica che sia reale
       const handle =
-        tab.fileHandle && typeof tab.fileHandle.createWritable === 'function' ? tab.fileHandle : null
-      await saveSqlFile(suggestedName, sql, handle)
-    } catch (e) {
-      if (!(e instanceof DOMException && e.name === 'AbortError')) {
-        setBanner(e instanceof Error ? e.message : String(e))
+        !saveAs && tab.fileHandle && typeof tab.fileHandle.createWritable === 'function'
+          ? tab.fileHandle
+          : null
+      try {
+        const savedHandle = await saveSqlFile(suggestedName, sql, handle)
+        let newTitle: string | undefined
+        if (savedHandle) {
+          const file = await savedHandle.getFile()
+          newTitle = file.name.replace(/\.sql$/i, '')
+        }
+        setEditorTabs(prev =>
+          prev.map(t => {
+            if (t.id !== activeEditorTab) return t
+            return {
+              ...t,
+              sql,
+              fileHandle: savedHandle ?? t.fileHandle,
+              fromFile: savedHandle ? true : t.fromFile,
+              title: newTitle && !saveAs ? newTitle : t.title,
+            }
+          }),
+        )
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) {
+          setBanner(e instanceof Error ? e.message : String(e))
+        }
       }
-    }
-  }, [editor, editorTabs, activeEditorTab])
+    },
+    [editor, editorTabs, activeEditorTab],
+  )
 
   /** Apre file .sql con il picker: la tab conserva l'handle per sovrascrivere l'originale. */
   const handleOpenFilePicker = useCallback(async () => {
@@ -357,6 +439,9 @@ export default function App() {
     : 'IA: stato sconosciuto'
   const dbNames = summary?.databases.map(d => d.name) ?? []
   const dbOptions = dbNames.includes(connection.database) ? dbNames : [connection.database, ...dbNames]
+  const activeTabInfo = editorTabs.find(t => t.id === activeEditorTab)
+  const activeDbName = activeTabInfo?.database || connection.database
+  const activeDbColor = dbTabColor(activeDbName, dbColors)
 
   return (
     <FileDropZone onFiles={handleOpenFiles}>
@@ -390,8 +475,11 @@ export default function App() {
             activeDatabase={connection.database}
             onInsertText={handleInsertText}
             onPreviewInEditor={handlePreviewInEditor}
+            onOpenScript={handleOpenScript}
             onOpenObject={handleOpenObject}
             onSwitchDatabase={handleSwitchDatabase}
+            dbColors={dbColors}
+            onSetDbColor={handleSetDbColor}
           />
         </aside>
 
@@ -401,7 +489,8 @@ export default function App() {
             <select
               value={connection.database}
               onChange={e => void handleSwitchDatabase(e.target.value)}
-              className="mr-1 shrink-0 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-1 text-xs font-medium text-sky-300 hover:border-sky-700 focus:border-sky-500 focus:outline-none"
+              className="mr-1 shrink-0 rounded border bg-zinc-900 px-1.5 py-1 text-xs font-semibold hover:border-sky-700 focus:outline-none"
+              style={{ borderColor: activeDbColor, color: activeDbColor }}
               title="Database attivo — seleziona per cambiare"
             >
               {(dbOptions).map(d => (
@@ -432,10 +521,10 @@ export default function App() {
                     ? 'bg-zinc-800/80 text-zinc-100'
                     : 'text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300'
                 }`}
-                style={{ borderTopColor: dbTabColor(t.database ?? connection.database) }}
+                style={{ borderTopColor: dbTabColor(t.database ?? connection.database, dbColors) }}
                 title={`${t.title} · db: ${t.database || connection.database}${t.pinned ? ' (appuntata)' : ''}${t.id === activeEditorTab ? ' — trascina per riordinare' : ''}`}
               >
-                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: dbTabColor(t.database ?? connection.database) }} />
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: dbTabColor(t.database ?? connection.database, dbColors) }} />
                 <button
                   onClick={() => switchEditorTab(t.id)}
                   className="max-w-40 truncate font-medium"
@@ -472,7 +561,11 @@ export default function App() {
             </button>
           </div>
 
-          <div className="h-[52%] min-h-44 shrink-0 border-b border-zinc-800">
+          <div
+            className="h-[52%] min-h-44 shrink-0"
+            style={{ border: `2px solid ${activeDbColor}` }}
+            title={`Query su database: ${activeDbName}`}
+          >
             {activeEditorTab ? (
               <SqlEditor
                 connectionId={connection.connectionId}
@@ -484,8 +577,13 @@ export default function App() {
                 aiStatusText={aiStatusText}
                 onExecute={(sql: string) => void handleExecute(sql)}
                 onContentChange={handleContentChange}
-                onSave={saveActiveTab}
+                onSave={() => saveActiveTab(false)}
+                onSaveAs={() => saveActiveTab(true)}
                 onOpenFile={handleOpenFilePicker}
+                fontSize={settings.fontSize}
+                theme={settings.theme}
+                onZoomFont={zoomFont}
+                onToggleTheme={toggleTheme}
                 registerEditor={setEditor}
               />
             ) : (
