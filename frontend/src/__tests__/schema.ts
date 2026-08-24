@@ -98,6 +98,7 @@ export function wsbritvicLikeSummary(): DatabaseSummary {
     functions: [],
     foreignKeys: [
       {
+        name: 'FK_RUN_MISSIONI_DAT_UDC',
         schema: 'dbo',
         table: 'RUN_MISSIONI',
         column: 'MIS_UDC',
@@ -106,6 +107,7 @@ export function wsbritvicLikeSummary(): DatabaseSummary {
         refColumn: 'UDC_UDC',
       },
       {
+        name: 'FK_ORDINI_CLIENTI',
         schema: 'dbo',
         table: 'Ordini',
         column: 'customer_id',

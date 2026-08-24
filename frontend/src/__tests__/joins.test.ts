@@ -50,7 +50,7 @@ describe('JOIN: suggerimenti e clausola ON', () => {
   it('colonna con nome pericoloso: parentesi solo per quella', () => {
     const we = mkTbl('dbo', 'Order Details', [mkCol('id')])
     const ordini = mkTbl('dbo', 'Ordini', [mkCol('customer_id'), mkCol('totale')])
-    const fk = { schema: 'dbo', table: 'Ordini', column: 'customer_id', refSchema: 'dbo', refTable: 'Order Details', refColumn: 'id' }
+    const fk = { name: 'FK_ORDINI_ORDERDETAILS', schema: 'dbo', table: 'Ordini', column: 'customer_id', refSchema: 'dbo', refTable: 'Order Details', refColumn: 'id' }
     const text = buildJoinText(we, { fk, direction: 'in' }, [ordini, we])
     expect(text).toBe('[Order Details] ON (customer_id = id)')
   })

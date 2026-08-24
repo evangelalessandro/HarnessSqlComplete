@@ -204,6 +204,36 @@ public class MetadataService
                 procs[i] = p with { Parameters = pars };
         }
 
+        // Default dei parametri: sys.parameters.has_default_value è inaffidabile su alcuni server
+        // (restituisce 0 anche con "= 0" esplicito), quindi estraiamo i default dalla DEFINIZIONE.
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT s.name, p.name, m.definition
+                FROM sys.procedures p
+                INNER JOIN sys.schemas s ON p.schema_id = s.schema_id
+                INNER JOIN sys.sql_modules m ON p.object_id = m.object_id
+                WHERE p.is_ms_shipped = 0
+                  AND EXISTS (SELECT 1 FROM sys.parameters par
+                              WHERE par.object_id = p.object_id AND par.parameter_id > 0);
+                """;
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                var schema = r.GetString(0);
+                var name = r.GetString(1);
+                var definition = r.GetString(2);
+                if (!procParams.TryGetValue((schema, name), out var pars)) continue;
+                var defaults = ExtractParameterDefaults(definition);
+                if (defaults.Count == 0) continue;
+                for (var i = 0; i < pars.Count; i++)
+                {
+                    if (defaults.TryGetValue(pars[i].Name.ToLowerInvariant(), out var def))
+                        pars[i] = pars[i] with { DefaultValue = def };
+                }
+            }
+        }
+
         // Trigger
         await using (var cmd = conn.CreateCommand())
         {
@@ -235,12 +265,13 @@ public class MetadataService
                 functions.Add(new FunctionInfo(r.GetString(0), r.GetString(1), r.GetString(2)));
         }
 
-        // Foreign key (TUTTE le coppie di colonne: le composite generano più righe,
+        // Foreign key (TUTTE le coppie di colonne: le composite generano più righe con lo stesso Name,
         // così ogni relazione utilizzabile — es. MIS_D_CELLA = CEL_CELLA — è suggeribile)
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = """
-                SELECT OBJECT_SCHEMA_NAME(fk.parent_object_id), OBJECT_NAME(fk.parent_object_id),
+                SELECT fk.name,
+                       OBJECT_SCHEMA_NAME(fk.parent_object_id), OBJECT_NAME(fk.parent_object_id),
                        OBJECT_SCHEMA_NAME(fk.referenced_object_id), OBJECT_NAME(fk.referenced_object_id),
                        pc.name, rc.name
                 FROM sys.foreign_keys fk
@@ -254,8 +285,9 @@ public class MetadataService
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
                 foreignKeys.Add(new ForeignKeyInfo(
-                    r.GetString(0), r.GetString(1), r.GetString(4),
-                    r.GetString(2), r.GetString(3), r.GetString(5)));
+                    r.GetString(0),
+                    r.GetString(1), r.GetString(2), r.GetString(5),
+                    r.GetString(3), r.GetString(4), r.GetString(6)));
         }
 
         // Numero di oggetti (viste, procedure, funzioni, trigger) che referenziano ogni tabella
@@ -314,8 +346,42 @@ public class MetadataService
             };
         }
 
+        // Co-occorrenza: coppie di tabelle che compaiono negli stessi JOIN delle definizioni
+        // (procedure + viste + funzioni). Base per i suggerimenti "quali tabelle si uniscono insieme".
+        var cooccurrencePairs = new Dictionary<string, int>();
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT m.definition
+                FROM sys.sql_modules m
+                INNER JOIN sys.objects o ON o.object_id = m.object_id
+                WHERE o.is_ms_shipped = 0
+                  AND o.type IN ('P', 'V', 'FN', 'IF', 'TF');
+                """;
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                var definition = r.GetString(0);
+                foreach (var pair in ExtractCooccurrencePairs(definition))
+                {
+                    var key = pair.Item1 + "|" + pair.Item2;
+                    cooccurrencePairs[key] = cooccurrencePairs.GetValueOrDefault(key) + 1;
+                }
+            }
+        }
+        var cooccurrences = cooccurrencePairs
+            .Where(kv => kv.Value >= 2) // solo relazioni ricorrenti (almeno 2 volte nel codice)
+            .Select(kv =>
+            {
+                var parts = kv.Key.Split('|');
+                return new TableCooccurrence(parts[0], parts[1], kv.Value);
+            })
+            .OrderByDescending(c => c.Count)
+            .Take(500)
+            .ToList();
+
         var databases = (await ListDatabasesAsync(connectionString, ct)).Select(d => new DatabaseInfo(d)).ToList();
-        return new DatabaseSummary(tables, views, procs, triggers, functions, foreignKeys, databases);
+        return new DatabaseSummary(tables, views, procs, triggers, functions, foreignKeys, databases, cooccurrences);
     }
 
     public async Task<List<ColumnInfo>> GetTableColumnsAsync(string connectionString, string schema, string table, CancellationToken ct = default)
@@ -374,5 +440,158 @@ public class MetadataService
         while (await r.ReadAsync(ct))
             results.Add(new SearchResult(r.GetString(0), r.GetString(1), r.GetString(2)));
         return results;
+    }
+
+    /// <summary>
+    /// Estrae i valori di default dei parametri dalla definizione CREATE PROCEDURE
+    /// (sys.parameters.has_default_value è inaffidabile: restituisce 0 anche con default espliciti).
+    /// Gestisce tipi con parentesi (nvarchar(50)), OUTPUT, commenti e virgole nei default (es. GETDATE()).
+    /// </summary>
+    internal static Dictionary<string, string> ExtractParameterDefaults(string definition)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(definition)) return result;
+
+        // Trova la prima parentesi aperta dopo il nome della procedura (inizio della lista parametri)
+        var openIdx = definition.IndexOf('(');
+        if (openIdx < 0) return result;
+        // Chiude bilanciando le parentesi (i default possono contenere chiamate con parentesi)
+        var depth = 0;
+        var closeIdx = -1;
+        for (var i = openIdx; i < definition.Length; i++)
+        {
+            var ch = definition[i];
+            if (ch == '(') depth++;
+            else if (ch == ')')
+            {
+                depth--;
+                if (depth == 0) { closeIdx = i; break; }
+            }
+        }
+        if (closeIdx < 0) return result;
+
+        var signature = definition.Substring(openIdx + 1, closeIdx - openIdx - 1);
+        // Divide in parametri: virgole fuori da parentesi e stringhe
+        foreach (var raw in SplitSignatureParams(signature))
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(
+                raw,
+                @"@\s*([A-Za-z_][A-Za-z0-9_]*)\s+([^=]+?)\s*=\s*(.+?)\s*$",
+                System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (!m.Success) continue;
+            var defaultValue = m.Groups[3].Value.Trim();
+            // toglie OUTPUT/READONLY residui dal default (raro ma possibile)
+            defaultValue = System.Text.RegularExpressions.Regex.Replace(
+                defaultValue, @"\s+(OUTPUT|READONLY)\s*$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            result[m.Groups[1].Value.Trim()] = defaultValue;
+        }
+        return result;
+    }
+
+    /// <summary>Divide la firma in segmenti (parametri) rispettando parentesi e stringhe.</summary>
+    private static IEnumerable<string> SplitSignatureParams(string signature)
+    {
+        var parts = new List<string>();
+        var start = 0;
+        var depth = 0;
+        var inString = false;
+        for (var i = 0; i < signature.Length; i++)
+        {
+            var ch = signature[i];
+            if (ch == '\'')
+            {
+                // gestisce '' come escape
+                inString = !inString && (i == 0 || signature[i - 1] != '\'');
+            }
+            else if (!inString)
+            {
+                if (ch == '(') depth++;
+                else if (ch == ')') depth--;
+                else if (ch == ',' && depth == 0)
+                {
+                    parts.Add(signature.Substring(start, i - start));
+                    start = i + 1;
+                }
+            }
+        }
+        parts.Add(signature.Substring(start));
+        return parts;
+    }
+
+    /// <summary>
+    /// Estrae le coppie ordinate (A,B) di tabelle che compaiono nello stesso statement
+    /// (FROM A ... JOIN B): in pratica quali tabelle vengono unite insieme nel codice.
+    /// </summary>
+    internal static IEnumerable<(string, string)> ExtractCooccurrencePairs(string definition)
+    {
+        // estrae la sequenza di tabelle referenziate (FROM/JOIN/UPDATE/INTO/TABLE) ignorando commenti e stringhe
+        var clean = StripCommentsAndStrings(definition);
+        var re = new System.Text.RegularExpressions.Regex(
+            @"\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var names = new List<string>();
+        foreach (System.Text.RegularExpressions.Match m in re.Matches(clean))
+        {
+            var token = m.Groups[1].Value.Replace("[", "").Replace("]", "").Trim();
+            if (token.Length == 0) continue;
+            var parts = token.Split('.');
+            var name = parts[parts.Length - 1];
+            if (name.Length > 0 && !IsSqlKeyword(name)) names.Add(name);
+        }
+        // coppie consecutive nella sequenza (la tabella A è unita a B nel JOIN successivo)
+        var pairs = new List<(string, string)>();
+        for (var i = 1; i < names.Count; i++)
+            pairs.Add((names[i - 1], names[i]));
+        return pairs;
+    }
+
+    private static bool IsSqlKeyword(string word)
+    {
+        return word.Equals("SELECT", StringComparison.OrdinalIgnoreCase)
+            || word.Equals("WHERE", StringComparison.OrdinalIgnoreCase)
+            || word.Equals("ON", StringComparison.OrdinalIgnoreCase)
+            || word.Equals("SET", StringComparison.OrdinalIgnoreCase)
+            || word.Equals("VALUES", StringComparison.OrdinalIgnoreCase)
+            || word.Equals("GROUP", StringComparison.OrdinalIgnoreCase)
+            || word.Equals("ORDER", StringComparison.OrdinalIgnoreCase)
+            || word.Equals("BY", StringComparison.OrdinalIgnoreCase)
+            || word.Equals("TOP", StringComparison.OrdinalIgnoreCase)
+            || word.Equals("DISTINCT", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Rimuove commenti (-- e /* */) e stringhe (tra apici) da una definizione SQL.</summary>
+    private static string StripCommentsAndStrings(string sql)
+    {
+        var sb = new System.Text.StringBuilder(sql.Length);
+        var i = 0;
+        var n = sql.Length;
+        while (i < n)
+        {
+            var ch = sql[i];
+            if (ch == '\'' && i + 1 < n && sql[i + 1] == '\'') { sb.Append("  "); i += 2; continue; } // '' escape
+            if (ch == '\'')
+            {
+                sb.Append(' ');
+                i++;
+                while (i < n && !(sql[i] == '\'' && (i + 1 >= n || sql[i + 1] != '\''))) i++;
+                if (i < n) { sb.Append(' '); i++; }
+                continue;
+            }
+            if (ch == '-' && i + 1 < n && sql[i + 1] == '-')
+            {
+                while (i < n && sql[i] != '\n') { sb.Append(' '); i++; }
+                continue;
+            }
+            if (ch == '/' && i + 1 < n && sql[i + 1] == '*')
+            {
+                i += 2;
+                while (i + 1 < n && !(sql[i] == '*' && sql[i + 1] == '/')) i++;
+                i = Math.Min(n, i + 2);
+                continue;
+            }
+            sb.Append(ch);
+            i++;
+        }
+        return sb.ToString();
     }
 }

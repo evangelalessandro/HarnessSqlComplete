@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildJoinConditionSuggestions, buildJoinSuggestions, buildJoinText, rankTablesForJoin } from '../helpers'
+import { buildJoinConditionSuggestions, buildJoinSuggestions, buildJoinText, buildQualifiedColumnSuggestions, rankTablesForJoin, tableAlias } from '../helpers'
 import type { DatabaseSummary, ForeignKeyInfo, TableInfo } from '../types'
 
 // --- Costruttori ---
@@ -26,9 +26,10 @@ function mkTbl(schema: string, name: string, cols: string[]): TableInfo {
 
 /**
  * Summary realistico con relazioni MULTIPLE come nel DB reale:
- * - RUN_MISSIONI → MAG_CELLE: 2 FK (MIS_D_CELLA→CEL_CELLA, MIS_S_CELLA→CEL_CELLA)
- * - RUN_MISSIONI → GESTORI: 2 FK (MIS_GES_GESTORE→GES_GESTORE, MIS_L1_GESTORE→GES_GESTORE)
- * - RUN_MISSIONI → GESTORI_MODULI: 2 FK (sorgente/destinazione)
+ * - RUN_MISSIONI → MAG_CELLE: FK composita DEST (MIS_D_CELLA→CEL_CELLA) + SORG (MIS_S_CELLA→CEL_CELLA)
+ *   (ogni vincolo con le proprie coppie, come le FK composite reali)
+ * - RUN_MISSIONI → GESTORI: 2 vincoli (MIS_GES_GESTORE→GES_GESTORE, MIS_L1_GESTORE→GES_GESTORE)
+ * - RUN_MISSIONI → GESTORI_MODULI: 2 vincoli (sorgente/destinazione)
  * - self-FK GESTORI_MODULI (modulo → modulo padre)
  */
 function multiRelSummary(): DatabaseSummary {
@@ -42,17 +43,17 @@ function multiRelSummary(): DatabaseSummary {
     mkTbl('dbo', 'GESTORI_MODULI', ['GMG_MODULO', 'GMG_MODULO_PADRE']),
   ]
   const foreignKeys: ForeignKeyInfo[] = [
-    // RUN_MISSIONI → MAG_CELLE (2 relazioni, stessa colonna target)
-    { schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_D_CELLA', refSchema: 'dbo', refTable: 'MAG_CELLE', refColumn: 'CEL_CELLA' },
-    { schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_S_CELLA', refSchema: 'dbo', refTable: 'MAG_CELLE', refColumn: 'CEL_CELLA' },
-    // RUN_MISSIONI → GESTORI (2 relazioni, stessa colonna target)
-    { schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_GES_GESTORE', refSchema: 'dbo', refTable: 'GESTORI', refColumn: 'GES_GESTORE' },
-    { schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_L1_GESTORE', refSchema: 'dbo', refTable: 'GESTORI', refColumn: 'GES_GESTORE' },
-    // RUN_MISSIONI → GESTORI_MODULI (2 relazioni)
-    { schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_GES_MODULO_SORG', refSchema: 'dbo', refTable: 'GESTORI_MODULI', refColumn: 'GMG_MODULO' },
-    { schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_GES_MODULO_DEST', refSchema: 'dbo', refTable: 'GESTORI_MODULI', refColumn: 'GMG_MODULO' },
+    // RUN_MISSIONI → MAG_CELLE (2 vincoli distinti)
+    { name: 'FK_DEST', schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_D_CELLA', refSchema: 'dbo', refTable: 'MAG_CELLE', refColumn: 'CEL_CELLA' },
+    { name: 'FK_SORG', schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_S_CELLA', refSchema: 'dbo', refTable: 'MAG_CELLE', refColumn: 'CEL_CELLA' },
+    // RUN_MISSIONI → GESTORI (2 vincoli distinti)
+    { name: 'FK_GESTORE', schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_GES_GESTORE', refSchema: 'dbo', refTable: 'GESTORI', refColumn: 'GES_GESTORE' },
+    { name: 'FK_L1', schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_L1_GESTORE', refSchema: 'dbo', refTable: 'GESTORI', refColumn: 'GES_GESTORE' },
+    // RUN_MISSIONI → GESTORI_MODULI (2 vincoli distinti)
+    { name: 'FK_MOD_SORG', schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_GES_MODULO_SORG', refSchema: 'dbo', refTable: 'GESTORI_MODULI', refColumn: 'GMG_MODULO' },
+    { name: 'FK_MOD_DEST', schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_GES_MODULO_DEST', refSchema: 'dbo', refTable: 'GESTORI_MODULI', refColumn: 'GMG_MODULO' },
     // self-FK GESTORI_MODULI
-    { schema: 'dbo', table: 'GESTORI_MODULI', column: 'GMG_MODULO_PADRE', refSchema: 'dbo', refTable: 'GESTORI_MODULI', refColumn: 'GMG_MODULO' },
+    { name: 'FK_SELF_PADRE', schema: 'dbo', table: 'GESTORI_MODULI', column: 'GMG_MODULO_PADRE', refSchema: 'dbo', refTable: 'GESTORI_MODULI', refColumn: 'GMG_MODULO' },
   ]
   return {
     tables,
@@ -134,7 +135,7 @@ describe('JOIN con relazioni MULTIPLE (stile DB reale)', () => {
       triggers: [],
       functions: [],
       foreignKeys: [
-        { schema: 'dbo', table: 'Ordini', column: 'cli_id', refSchema: 'dbo', refTable: 'Clienti', refColumn: 'cli_id' },
+        { name: 'FK_ORDINI_CLIENTI', schema: 'dbo', table: 'Ordini', column: 'cli_id', refSchema: 'dbo', refTable: 'Clienti', refColumn: 'cli_id' },
       ],
       databases: [],
     } as unknown as DatabaseSummary
@@ -153,6 +154,31 @@ describe('JOIN con relazioni MULTIPLE (stile DB reale)', () => {
     // la self-FK deve dare un hint
     const moduli = ranked.find(r => r.table.name === 'GESTORI_MODULI')
     expect(moduli?.hints.length ?? 0).toBeGreaterThanOrEqual(0)
+  })
+
+  it('co-occorrenza: le tabelle unite nei JOIN reali salgono nel ranking', () => {
+    const tables = [
+      mkTbl('dbo', 'A', ['id']),
+      mkTbl('dbo', 'B', ['id', 'a_id']),
+      mkTbl('dbo', 'C', ['id']),
+      mkTbl('dbo', 'D', ['id']),
+    ]
+    const fks: ForeignKeyInfo[] = [
+      { name: 'FK_B_A', schema: 'dbo', table: 'B', column: 'a_id', refSchema: 'dbo', refTable: 'A', refColumn: 'id' },
+    ]
+    // senza co-occorrenza: B è prima (ha la FK); C e D in fondo
+    const without = rankTablesForJoin(tables, fks, ['a'])
+    const idxB = without.findIndex(r => r.table.name === 'B')
+    const idxC = without.findIndex(r => r.table.name === 'C')
+    const idxD = without.findIndex(r => r.table.name === 'D')
+    expect(idxB).toBeLessThan(idxC)
+    expect(idxC).toBeLessThan(idxD)
+    // con co-occorrenza forte A+C: C sale sopra D (tabella senza legami)
+    const co = [{ tableA: 'A', tableB: 'C', count: 500 }]
+    const withCo = rankTablesForJoin(tables, fks, ['a'], co)
+    expect(withCo.findIndex(r => r.table.name === 'C')).toBeLessThan(withCo.findIndex(r => r.table.name === 'D'))
+    // B (FK) resta sopra C (co-occorrenza): la FK pesa di più
+    expect(withCo.findIndex(r => r.table.name === 'B')).toBeLessThan(withCo.findIndex(r => r.table.name === 'C'))
   })
 })
 
@@ -200,7 +226,7 @@ describe('buildJoinSuggestions: una voce per ogni relazione (stile Visual Studio
       triggers: [],
       functions: [],
       foreignKeys: [
-        { schema: 'dbo', table: 'Ordini', column: 'cli_id', refSchema: 'dbo', refTable: 'Clienti', refColumn: 'cli_id' },
+        { name: 'FK_ORDINI_CLIENTI', schema: 'dbo', table: 'Ordini', column: 'cli_id', refSchema: 'dbo', refTable: 'Clienti', refColumn: 'cli_id' },
       ],
       databases: [],
     } as unknown as DatabaseSummary
@@ -243,50 +269,145 @@ describe('buildJoinConditionSuggestions: altre condizioni dello stesso JOIN', ()
       mkTbl('dbo', 'MAG_CELLE', ['CEL_CORRIDOIO', 'CEL_CELLA']),
     ]
     const foreignKeys: ForeignKeyInfo[] = [
-      // FK composita DEST: due coppie
-      { schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_D_CORRIDOIO', refSchema: 'dbo', refTable: 'MAG_CELLE', refColumn: 'CEL_CORRIDOIO' },
-      { schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_D_CELLA', refSchema: 'dbo', refTable: 'MAG_CELLE', refColumn: 'CEL_CELLA' },
-      // FK composita SORG: due coppie
-      { schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_S_CORRIDOIO', refSchema: 'dbo', refTable: 'MAG_CELLE', refColumn: 'CEL_CORRIDOIO' },
-      { schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_S_CELLA', refSchema: 'dbo', refTable: 'MAG_CELLE', refColumn: 'CEL_CELLA' },
+      // FK composita DEST: due coppie (stesso nome vincolo)
+      { name: 'FK_DEST', schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_D_CORRIDOIO', refSchema: 'dbo', refTable: 'MAG_CELLE', refColumn: 'CEL_CORRIDOIO' },
+      { name: 'FK_DEST', schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_D_CELLA', refSchema: 'dbo', refTable: 'MAG_CELLE', refColumn: 'CEL_CELLA' },
+      // FK composita SORG: due coppie (stesso nome vincolo)
+      { name: 'FK_SORG', schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_S_CORRIDOIO', refSchema: 'dbo', refTable: 'MAG_CELLE', refColumn: 'CEL_CORRIDOIO' },
+      { name: 'FK_SORG', schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_S_CELLA', refSchema: 'dbo', refTable: 'MAG_CELLE', refColumn: 'CEL_CELLA' },
     ]
     return { tables, views: [], procedures: [], triggers: [], functions: [], foreignKeys, databases: [] } as DatabaseSummary
   })()
 
-  it('scenario utente: dopo "ON (MIS_D_CORRIDOIO = CEL_CORRIDOIO)" propone "AND MIS_D_CELLA = CEL_CELLA"', () => {
+  it('scenario utente: dopo "ON (MIS_D_CORRIDOIO = CEL_CORRIDOIO)" propone UN vincolo per voce', () => {
     const stmt =
       'SELECT * FROM dbo.RUN_MISSIONI inner join MAG_CELLE ON (MIS_D_CORRIDOIO = CEL_CORRIDOIO)'
     const before =
       'SELECT * FROM dbo.RUN_MISSIONI inner join MAG_CELLE ON (MIS_D_CORRIDOIO = CEL_CORRIDOIO)'
     const res = buildJoinConditionSuggestions(stmt, before, condSummary)
-    // la stessa relazione (MIS_D_*) viene prima
+    // UNA voce per vincolo: la parte mancante di DEST + l'intero vincolo SORG = 2 voci
+    expect(res.length).toBe(2)
+    // la stessa relazione (DEST) viene prima, con solo la coppia mancante
     expect(res[0].text).toBe('AND MIS_D_CELLA = CEL_CELLA')
-    expect(res[0].left).toBe('MIS_D_CELLA')
+    // il vincolo SORG propone ENTRAMBE le sue coppie insieme
+    expect(res[1].text).toBe('AND MIS_S_CORRIDOIO = CEL_CORRIDOIO AND MIS_S_CELLA = CEL_CELLA')
     // la coppia già scritta NON viene riproposta
     expect(res.some(r => r.text.includes('MIS_D_CORRIDOIO'))).toBe(false)
-    // le altre relazioni (MIS_S_*) compaiono comunque
-    expect(res.some(r => r.text === 'AND MIS_S_CELLA = CEL_CELLA')).toBe(true)
-    expect(res.some(r => r.text === 'AND MIS_S_CORRIDOIO = CEL_CORRIDOIO')).toBe(true)
   })
 
-  it('senza condizioni già scritte nell\'ON: propone comunque le coppie disponibili', () => {
+  it('senza condizioni già scritte nell\'ON: una voce per vincolo con tutte le coppie', () => {
     const stmt = 'SELECT * FROM RUN_MISSIONI JOIN MAG_CELLE ON '
     const before = 'SELECT * FROM RUN_MISSIONI JOIN MAG_CELLE ON '
     const res = buildJoinConditionSuggestions(stmt, before, condSummary)
-    expect(res.length).toBeGreaterThanOrEqual(4)
+    expect(res.length).toBe(2)
+    expect(res.some(r => r.text === 'AND MIS_D_CORRIDOIO = CEL_CORRIDOIO AND MIS_D_CELLA = CEL_CELLA')).toBe(true)
+    expect(res.some(r => r.text === 'AND MIS_S_CORRIDOIO = CEL_CORRIDOIO AND MIS_S_CELLA = CEL_CELLA')).toBe(true)
   })
 
   it('le coppie già scritte vengono escluse in entrambi gli ordini', () => {
-    // scritto "CEL_CELLA = MIS_D_CELLA" (ordine invertito) → non riproporre MIS_D_CELLA = CEL_CELLA
+    // scritto "CEL_CELLA = MIS_D_CELLA" (ordine invertito) → DEST non ripropone la cella
     const stmt =
       'SELECT * FROM RUN_MISSIONI JOIN MAG_CELLE ON (MIS_D_CORRIDOIO = CEL_CORRIDOIO AND CEL_CELLA = MIS_D_CELLA)'
     const before =
       'SELECT * FROM RUN_MISSIONI JOIN MAG_CELLE ON (MIS_D_CORRIDOIO = CEL_CORRIDOIO AND CEL_CELLA = MIS_D_CELLA)'
     const res = buildJoinConditionSuggestions(stmt, before, condSummary)
-    expect(res.some(r => r.left === 'MIS_D_CELLA')).toBe(false)
+    // DEST ha tutte le coppie scritte → non compare; resta solo SORG
+    expect(res.length).toBe(1)
+    expect(res[0].text).toBe('AND MIS_S_CORRIDOIO = CEL_CORRIDOIO AND MIS_S_CELLA = CEL_CELLA')
   })
 
   it('senza tabelle multiple → nessun suggerimento', () => {
     expect(buildJoinConditionSuggestions('SELECT * FROM RUN_MISSIONI', 'SELECT * FROM RUN_MISSIONI', condSummary)).toEqual([])
+  })
+})
+
+describe('B3: alias automatici e colonne qualificate', () => {
+  const aliasSummary = (() => {
+    const tables = [
+      mkTbl('dbo', 'RUN_MISSIONI', ['MIS_D_CELLA', 'MIS_UDC', 'MIS_MISSIONE']),
+      mkTbl('dbo', 'MAG_CELLE', ['CEL_CELLA', 'CEL_CORRIDOIO']),
+    ]
+    const foreignKeys: ForeignKeyInfo[] = [
+      { name: 'FK_DEST', schema: 'dbo', table: 'RUN_MISSIONI', column: 'MIS_D_CELLA', refSchema: 'dbo', refTable: 'MAG_CELLE', refColumn: 'CEL_CELLA' },
+    ]
+    return { tables, views: [], procedures: [], triggers: [], functions: [], foreignKeys, databases: [] } as DatabaseSummary
+  })()
+
+  it('tableAlias genera alias brevi (RUN_MISSIONI → rm, MAG_CELLE → mc)', () => {
+    expect(tableAlias('RUN_MISSIONI')).toBe('rm')
+    expect(tableAlias('MAG_CELLE')).toBe('mc')
+    expect(tableAlias('Ordini')).toBe('or')
+  })
+
+  it('buildJoinSuggestions con useAliases genera ON qualificato con alias', () => {
+    const ranked = rankTablesForJoin(aliasSummary.tables, aliasSummary.foreignKeys, ['run_missioni'])
+    const celle = ranked.find(r => r.table.name === 'MAG_CELLE')!
+    const missioni = aliasSummary.tables.find(t => t.name === 'RUN_MISSIONI')!
+    const items = buildJoinSuggestions(celle, [missioni], true, true)
+    expect(items[0].insertText).toBe('MAG_CELLE AS mc ON (rm.MIS_D_CELLA = mc.CEL_CELLA)')
+  })
+
+  it('senza useAliases il JOIN resta come prima (nessuna regressione)', () => {
+    const ranked = rankTablesForJoin(aliasSummary.tables, aliasSummary.foreignKeys, ['run_missioni'])
+    const celle = ranked.find(r => r.table.name === 'MAG_CELLE')!
+    const missioni = aliasSummary.tables.find(t => t.name === 'RUN_MISSIONI')!
+    const items = buildJoinSuggestions(celle, [missioni], true, false)
+    expect(items[0].insertText).toBe('MAG_CELLE ON (MIS_D_CELLA = CEL_CELLA)')
+  })
+
+  it('buildQualifiedColumnSuggestions: dopo "r." propone r.colonna', () => {
+    const stmt = 'SELECT * FROM RUN_MISSIONI r WHERE r.'
+    const res = buildQualifiedColumnSuggestions(stmt, 'SELECT * FROM RUN_MISSIONI r WHERE r.', aliasSummary)
+    expect(res.some(c => c.insertText === 'r.MIS_D_CELLA')).toBe(true)
+    expect(res.every(c => c.insertText.startsWith('r.'))).toBe(true)
+  })
+
+  it('buildQualifiedColumnSuggestions: qualificatore sconosciuto → vuoto', () => {
+    const res = buildQualifiedColumnSuggestions('SELECT * FROM RUN_MISSIONI r WHERE x.', 'SELECT * FROM RUN_MISSIONI r WHERE x.', aliasSummary)
+    expect(res).toEqual([])
+  })
+})
+
+describe('B4: join transitivi (A→B→C)', () => {
+  const transSummary = (() => {
+    const tables = [
+      mkTbl('dbo', 'A', ['id']),
+      mkTbl('dbo', 'B', ['id', 'a_id']),
+      mkTbl('dbo', 'C', ['id', 'b_id']),
+      mkTbl('dbo', 'D', ['id']),
+    ]
+    const foreignKeys: ForeignKeyInfo[] = [
+      { name: 'FK_B_A', schema: 'dbo', table: 'B', column: 'a_id', refSchema: 'dbo', refTable: 'A', refColumn: 'id' },
+      { name: 'FK_C_B', schema: 'dbo', table: 'C', column: 'b_id', refSchema: 'dbo', refTable: 'B', refColumn: 'id' },
+    ]
+    return { tables, views: [], procedures: [], triggers: [], functions: [], foreignKeys, databases: [] } as DatabaseSummary
+  })()
+
+  it('C è raggiungibile transitivamente via B (A→B→C) e marcata', () => {
+    const ranked = rankTablesForJoin(transSummary.tables, transSummary.foreignKeys, ['a'])
+    const c = ranked.find(r => r.table.name === 'C')
+    expect(c).toBeDefined()
+    expect(c!.viaTable).toBe('B')
+    expect(c!.hints.length).toBe(0)
+  })
+
+  it('B (collegata diretta) viene prima di C (transitiva)', () => {
+    const ranked = rankTablesForJoin(transSummary.tables, transSummary.foreignKeys, ['a'])
+    const idxB = ranked.findIndex(r => r.table.name === 'B')
+    const idxC = ranked.findIndex(r => r.table.name === 'C')
+    expect(idxB).toBeLessThan(idxC)
+  })
+
+  it('D (isolata) non ha percorso transitivo', () => {
+    const ranked = rankTablesForJoin(transSummary.tables, transSummary.foreignKeys, ['a'])
+    const d = ranked.find(r => r.table.name === 'D')
+    expect(d?.viaTable).toBeUndefined()
+  })
+
+  it('buildJoinSuggestions mostra "raggiungibile via B" per la transitiva', () => {
+    const ranked = rankTablesForJoin(transSummary.tables, transSummary.foreignKeys, ['a'])
+    const c = ranked.find(r => r.table.name === 'C')!
+    const items = buildJoinSuggestions(c, [transSummary.tables[0]], true)
+    expect(items[0].detail).toContain('via B')
   })
 })

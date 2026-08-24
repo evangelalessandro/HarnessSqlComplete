@@ -32,8 +32,17 @@ describe('EXEC: parametri delle stored procedure', () => {
     expect(filterUnusedParams(params, ' ').length).toBe(3)
   })
 
-  it('snippet "tutti i parametri": IN con tab-stop, OUTPUT senza valore', () => {
+  it('snippet "tutti i parametri": IN con tab-stop e default, OUTPUT senza valore', () => {
     expect(buildExecParamSnippet(proc.parameters!)).toBe('@id=${1}, @nome=${2}, @flag OUTPUT')
+  })
+
+  it('snippet precompila i default noti', () => {
+    const withDef = [
+      { name: 'id', dataType: 'int', mode: 'IN', defaultValue: '0' },
+      { name: 'caus', dataType: 'nvarchar', mode: 'IN', defaultValue: "N'IN'" },
+      { name: 'flag', dataType: 'bit', mode: 'OUTPUT' },
+    ]
+    expect(buildExecParamSnippet(withDef)).toBe("@id=${1:0}, @caus=${2:N'IN'}, @flag OUTPUT")
   })
 
   it('scenario end-to-end del provider: testo prima del cursore', () => {

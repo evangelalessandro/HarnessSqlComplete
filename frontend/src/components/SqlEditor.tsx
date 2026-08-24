@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { Eraser, FolderOpen, Moon, Play, Save, Sun, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
-import { format } from 'sql-formatter'
+import { Eraser, FolderOpen, Moon, Play, Save, Settings2, Sun, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
 import monaco from '../monacoSetup'
 import { api } from '../api'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from '../types'
-import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildSelectListSuggestions, columnForInsertSlot, columnInfoMarkdown, columnMatchScore, completionSortText, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, parseInsertContext, qualified, rankTablesForJoin, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
+import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, columnMatchScore, completionSortText, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, parseInsertContext, qualified, rankTablesForJoin, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
 import { registerInsertHighlight } from '../sqlInsertHighlight'
+import { positionAt, runSqlDiagnostics } from '../sqlDiagnostics'
 import { registerTableColorizer } from '../sqlTableColors'
+import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../history'
 import { registerSqlHover } from '../sqlHover'
+import { buildFormatProfile, loadFormatProfileXml } from '../formatProfile'
+import { formatSqlWithProfile } from '../tsqlFormatter'
+import FormatProfilePanel from './FormatProfilePanel'
 import { Badge, Button, Spinner, Toggle } from './ui'
 
 interface Props {
@@ -100,6 +104,8 @@ export default function SqlEditor({
   // L'istanza editor in stato React: l'effect del colorizer si (ri)registra
   // automaticamente quando editor o schema cambiano (pulizia inclusa)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
+  // Pannello impostazioni di formattazione
+  const [profileOpen, setProfileOpen] = useState(false)
   // Registrazione robusta del colorizer, copre ogni ordine di mount/summary
   const colorizerRef = useRef<{
     ed: monaco.editor.IStandaloneCodeEditor
@@ -136,12 +142,9 @@ export default function SqlEditor({
     const model = ed?.getModel()
     if (!ed || !model) return
     try {
-      const formatted = format(model.getValue(), {
-        language: 'sql',
-        keywordCase: 'upper',
-        tabWidth: 2,
-        useTabs: false,
-      })
+      const profileXml = loadFormatProfileXml()
+      const profile = buildFormatProfile(profileXml)
+      const formatted = formatSqlWithProfile(model.getValue(), profile)
       ed.executeEdits('format', [{ range: model.getFullModelRange(), text: formatted }])
     } catch {
       /* SQL non valido: nessuna azione */
@@ -154,9 +157,13 @@ export default function SqlEditor({
     setEditor(editor)
     ensureColorizer()
 
-    // Esegui: F5 e Ctrl+Invio
-    editor.addCommand(monaco.KeyCode.F5, () => stateRef.current.onExecute(editor.getValue()))
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => stateRef.current.onExecute(editor.getValue()))
+    // Esegui: F5 e Ctrl+Invio (registra nella cronologia le tabelle usate)
+    const runQuery = (sql: string) => {
+      recordTablesFromSql(sql)
+      stateRef.current.onExecute(sql)
+    }
+    editor.addCommand(monaco.KeyCode.F5, () => runQuery(editor.getValue()))
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => runQuery(editor.getValue()))
     // Salva: Ctrl+S
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => onSaveRef.current?.())
     // Salva con nome: Ctrl+Shift+S
@@ -166,6 +173,7 @@ export default function SqlEditor({
 
     registerSchemaCompletions()
     registerInlineCompletions()
+    registerSqlDiagnostics()
     disposablesRef.current.push(...registerInsertHighlight(editor))
     disposablesRef.current.push(
       registerSqlHover(() => ({
@@ -218,6 +226,25 @@ export default function SqlEditor({
           }
 
           if (st.summary) {
+            // Snippet statement completi: a inizio statement (dopo ';', GO o vuoto),
+            // digitando "ins"/"sel"/"upd"/"del"/"mer" propone il template con tab-stop
+            {
+              const atStatementStart =
+                /(?:^|;|\bGO\b|\n\s*\n)\s*$/i.test(prefix) && word.word.length >= 2
+              if (atStatementStart) {
+                for (const sn of buildStatementSnippets(word.word)) {
+                  push({
+                    label: sn.label,
+                    detail: sn.detail,
+                    kind: monaco.languages.CompletionItemKind.Snippet,
+                    insertText: sn.insertText,
+                    insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                    range,
+                    filterText: word.word,
+                  })
+                }
+              }
+            }
             // Aiuto INSERT: dentro la lista colonne di "INSERT INTO tab (" →
             // suggerisce le colonne della tabella, con opzione "tutte le colonne";
             // dentro i VALUES → suggerisce i valori di default per la colonna corrente
@@ -356,9 +383,10 @@ export default function SqlEditor({
                     }
                     for (const par of available) {
                       const isOut = par.mode === 'OUTPUT'
+                      const defText = par.defaultValue ? ` · default ${par.defaultValue}` : ''
                       push({
                         label: `@${par.name}`,
-                        detail: `${par.dataType}${isOut ? ' · OUTPUT' : ''} · ${execProc.schema}.${execProc.name}`,
+                        detail: `${par.dataType}${isOut ? ' · OUTPUT' : ''}${defText} · ${execProc.schema}.${execProc.name}`,
                         kind: monaco.languages.CompletionItemKind.Variable,
                         insertText: atSign ? `${par.name}${isOut ? ' OUTPUT' : ''}` : `@${par.name}${isOut ? ' OUTPUT' : ''}`,
                         range,
@@ -449,7 +477,7 @@ export default function SqlEditor({
             const contextTableInfos = contextTables
               .map(name => summaryTables.find(x => x.name.toLowerCase() === name))
               .filter((x): x is TableInfo => x !== undefined)
-            const rankedTables = rankTablesForJoin(st.summary.tables, st.summary.foreignKeys, contextTables)
+            const rankedTables = rankTablesForJoin(st.summary.tables, st.summary.foreignKeys, contextTables, st.summary.cooccurrences ?? undefined, historyTableBoost)
 
             // Dopo EXEC: SOLO le stored procedure (chiamabili)
             if (isExecPosition) {
@@ -472,6 +500,26 @@ export default function SqlEditor({
               return { suggestions }
             }
 
+            // Colonne qualificate con alias/tabella: dopo "r." o "RUN_MISSIONI." suggerisce
+            // le colonne di quella tabella (es. "FROM RUN_MISSIONI r WHERE r.")
+            {
+              const qualified = buildQualifiedColumnSuggestions(stmtText, textBefore, st.summary)
+              if (qualified.length > 0) {
+                for (const col of qualified) {
+                  push({
+                    label: col.name,
+                    detail: `${col.dataType}${col.isNullable ? ' NULL' : ''} · colonna qualificata`,
+                    documentation: col.documentation,
+                    kind: monaco.languages.CompletionItemKind.Field,
+                    insertText: col.insertText,
+                    range,
+                    filterText: col.name,
+                  })
+                }
+                return { suggestions }
+              }
+            }
+
             // Contesti di colonne (WHERE/ON/HAVING/GROUP BY/ORDER BY/SET/AND/OR/=):
             // SOLO colonne delle tabelle dello statement + funzioni SQL.
             // Con una parola in corso: solo le colonne con affinità, ordinate per punteggio,
@@ -492,7 +540,7 @@ export default function SqlEditor({
                   })
                 }
               }
-              const ctxCols = buildColumnContextSuggestions(stmtText, stmtBefore, word.word, st.summary)
+              const ctxCols = buildColumnContextSuggestions(stmtText, stmtBefore, word.word, st.summary, historyColumnBoost)
               for (const col of ctxCols) {
                 push({
                   label: col.name,
@@ -512,13 +560,27 @@ export default function SqlEditor({
                   range,
                 })
               }
+              // Funzioni utente del database (scalari e table-valued): molto usate nelle SP reali
+              // (es. dbo.fn_td, dbo.fn_InsTextStr, dbo.fn_getAbiFromFunzion)
+              for (const fn of st.summary.functions) {
+                push({
+                  label: `${fn.schema}.${fn.name}`,
+                  detail: fn.type === 'FN' ? 'funzione scalare' : fn.type === 'IF' ? 'funzione inline' : 'funzione tabella',
+                  kind: monaco.languages.CompletionItemKind.Function,
+                  insertText: qualified(fn.schema, fn.name),
+                  range,
+                  filterText: fn.name,
+                })
+              }
               return { suggestions }
             }
 
             // Tabelle: prima quelle collegabili via FK (con clausola ON), poi per utilizzo reale.
-            // In posizione JOIN ogni relazione FK diventa una voce selezionabile (come Visual Studio).
+            // In posizione JOIN ogni relazione FK diventa una voce selezionabile (come Visual Studio);
+            // se la query usa già alias, il JOIN viene generato con alias brevi.
+            const queryUsesAliases = /(?:FROM|JOIN)\s+[^\s,;]+\s+(?:AS\s+)?[A-Za-z_][A-Za-z0-9_]*\s+(?:JOIN|ON|WHERE|,)/i.test(stmtText)
             for (const ranked of rankedTables) {
-              for (const item of buildJoinSuggestions(ranked, contextTableInfos, isJoinPosition)) {
+              for (const item of buildJoinSuggestions(ranked, contextTableInfos, isJoinPosition, queryUsesAliases)) {
                 const details = [usageDetail(ranked.table.usage)]
                 if (ranked.hints.length > 0) details.push(`${ranked.hints.length} FK`)
                 const detail = details.filter(Boolean).join(' · ') || `tabella · ${ranked.table.columnCount} colonne`
@@ -639,11 +701,53 @@ export default function SqlEditor({
     )
   }
 
+  /** Diagnostica in tempo reale: sottolinea parentesi/apici non bilanciati e colonne inesistenti. */
+  const registerSqlDiagnostics = () => {
+    const model = editorRef.current?.getModel()
+    if (!model) return
+    disposablesRef.current.push(
+      monaco.languages.registerCodeLensProvider('sql', {
+        provideCodeLenses: () => ({ lenses: [] }),
+      }),
+    )
+    const update = () => {
+      const ed = editorRef.current
+      const m = ed?.getModel()
+      if (!ed || !m) return
+      const text = m.getValue()
+      const diags = runSqlDiagnostics(text, { summary: stateRef.current.summary })
+      const markers: monaco.editor.IMarkerData[] = diags.map(d => {
+        const start = positionAt(text, d.start)
+        const end = positionAt(text, d.end)
+        return {
+          startLineNumber: start.lineNumber,
+          startColumn: start.column,
+          endLineNumber: end.lineNumber,
+          endColumn: Math.max(end.column, start.column + 1),
+          message: d.message,
+          severity: d.severity === 'error' ? monaco.MarkerSeverity.Error : monaco.MarkerSeverity.Warning,
+        }
+      })
+      monaco.editor.setModelMarkers(m, 'sql-diag', markers)
+    }
+    const sub = model.onDidChangeContent(() => update())
+    disposablesRef.current.push({ dispose: () => sub.dispose() })
+    update()
+  }
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2">
         <div className="flex items-center gap-2">
-          <Button variant="primary" onClick={() => onExecute(editorRef.current?.getValue() ?? '')} loading={executing}>
+          <Button
+            variant="primary"
+            onClick={() => {
+              const sql = editorRef.current?.getValue() ?? ''
+              recordTablesFromSql(sql)
+              onExecute(sql)
+            }}
+            loading={executing}
+          >
             <Play className="h-4 w-4" /> Esegui
           </Button>
           <Button variant="secondary" onClick={() => onSave?.()} title="Salva la query (Ctrl+S) — sovrascrive il file originale se aperto">
@@ -657,6 +761,13 @@ export default function SqlEditor({
           </Button>
           <Button variant="secondary" onClick={handleFormat}>
             <Wand2 className="h-4 w-4" /> Formatta
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => setProfileOpen(true)}
+            title="Impostazioni di formattazione (importa/edita/esporta il profilo T-SQL)"
+          >
+            <Settings2 className="h-4 w-4" />
           </Button>
           <Button variant="ghost" onClick={() => editorRef.current?.setValue('')}>
             <Eraser className="h-4 w-4" /> Svuota
@@ -712,6 +823,7 @@ export default function SqlEditor({
           }}
         />
       </div>
+      {profileOpen && <FormatProfilePanel onClose={() => setProfileOpen(false)} />}
     </div>
   )
 }

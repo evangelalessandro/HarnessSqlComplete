@@ -79,7 +79,7 @@ describe('findJoinCounterparts: controparti di JOIN', () => {
   const udc = mkTbl('dbo', 'DAT_UDC', [mkCol('udc_udc', 'nvarchar'), mkCol('udc_descr', 'nvarchar')])
   const celle = mkTbl('dbo', 'MAG_CELLE', [mkCol('cel_cella', 'nvarchar'), mkCol('cel_corridoio', 'nvarchar')])
   const fks = [
-    { schema: 'dbo', table: 'RUN_MISSIONI', column: 'mis_udc', refSchema: 'dbo', refTable: 'DAT_UDC', refColumn: 'udc_udc' },
+    { name: 'FK_RUN_MISSIONI_DAT_UDC', schema: 'dbo', table: 'RUN_MISSIONI', column: 'mis_udc', refSchema: 'dbo', refTable: 'DAT_UDC', refColumn: 'udc_udc' },
   ]
 
   it('FK esatta → colonna referenziata al primo posto', () => {
@@ -130,7 +130,7 @@ describe('buildColumnContextSuggestions: suggerimenti per WHERE/ON', () => {
     triggers: [],
     functions: [],
     foreignKeys: [
-      { schema: 'dbo', table: 'RUN_MISSIONI', column: 'mis_udc', refSchema: 'dbo', refTable: 'DAT_UDC', refColumn: 'udc_udc' },
+      { name: 'FK_RUN_MISSIONI_DAT_UDC', schema: 'dbo', table: 'RUN_MISSIONI', column: 'mis_udc', refSchema: 'dbo', refTable: 'DAT_UDC', refColumn: 'udc_udc' },
     ],
     databases: [],
   }

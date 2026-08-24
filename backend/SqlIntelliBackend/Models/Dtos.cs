@@ -42,8 +42,15 @@ public record DatabaseInfo(string Name);
 /// <summary>Metriche di utilizzo di una tabella nel database (per ranking dei suggerimenti JOIN).</summary>
 public record TableUsage(int FkIncoming, int FkOutgoing, int DependencyCount, long RowCount);
 
-/// <summary>Relazione di foreign key (prima coppia di colonne per FK composite).</summary>
-public record ForeignKeyInfo(string Schema, string Table, string Column, string RefSchema, string RefTable, string RefColumn);
+/// <summary>Relazione di foreign key (una riga per COPPIA di colonne; le FK composite hanno lo stesso Name).</summary>
+public record ForeignKeyInfo(
+    string Name,
+    string Schema,
+    string Table,
+    string Column,
+    string RefSchema,
+    string RefTable,
+    string RefColumn);
 
 /// <summary>Proprietà estesa (sys.extended_properties) di un oggetto o colonna.</summary>
 public record ExtendedProperty(string Name, string Value);
@@ -69,7 +76,7 @@ public record TableInfo(
 
 public record ViewInfo(string Schema, string Name, DateTime? CreateDate);
 
-public record ProcParamInfo(string Name, string DataType, string Mode);
+public record ProcParamInfo(string Name, string DataType, string Mode, string? DefaultValue = null);
 
 public record ProcedureInfo(
     string Schema,
@@ -93,7 +100,11 @@ public record DatabaseSummary(
     List<TriggerInfo> Triggers,
     List<FunctionInfo> Functions,
     List<ForeignKeyInfo> ForeignKeys,
-    List<DatabaseInfo> Databases);
+    List<DatabaseInfo> Databases,
+    List<TableCooccurrence>? Cooccurrences = null);
+
+/// <summary>Coppia di tabelle che compaiono insieme nei JOIN reali delle stored procedure (per ranking).</summary>
+public record TableCooccurrence(string TableA, string TableB, int Count);
 
 // ---------- Query ----------
 

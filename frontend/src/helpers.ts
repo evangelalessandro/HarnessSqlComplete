@@ -1,4 +1,4 @@
-import type { CellValue, ColumnInfo, DatabaseSummary, ForeignKeyInfo, ProcParamInfo, ProcedureInfo, TableInfo, TableUsage } from './types'
+import type { CellValue, ColumnInfo, DatabaseSummary, ForeignKeyInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableUsage } from './types'
 
 /**
  * Identificatore SQL: restituisce il nome senza parentesi quadre se è "sicuro"
@@ -67,19 +67,53 @@ export interface RankedTable {
   table: TableInfo
   score: number
   hints: JoinHint[]
+  /** Percorso transitivo: tabella intermedia quando la candidata non è collegata direttamente (B4). */
+  viaTable?: string
 }
 
 /**
  * Ordina le tabelle per i suggerimenti di completamento:
  * 1) quelle collegate da FK alle tabelle già presenti nella query (boost forte),
- * 2) poi tutte le altre in base al punteggio di utilizzo reale nel database.
+ * 2) quelle raggiungibili in 2 hop (A→B→C) tramite un'altra tabella collegata (join transitivi),
+ * 3) poi quelle che nei JOIN reali delle stored procedure compaiono insieme (co-occorrenza),
+ * 4) infine tutte le altre in base al punteggio di utilizzo reale nel database.
  */
 export function rankTablesForJoin(
   tables: TableInfo[],
   foreignKeys: ForeignKeyInfo[],
   contextTables: string[],
+  cooccurrences: TableCooccurrence[] = [],
+  historyBoost: (tableName: string) => number = () => 0,
 ): RankedTable[] {
   const ctx = new Set(contextTables.map(t => t.trim().toLowerCase()))
+  // adiacenza tra tabelle (bidirezionale) dalle FK: per i join transitivi
+  const adj = new Map<string, Set<string>>()
+  for (const fk of foreignKeys) {
+    const a = fk.table.toLowerCase()
+    const b = fk.refTable.toLowerCase()
+    if (!adj.has(a)) adj.set(a, new Set())
+    if (!adj.has(b)) adj.set(b, new Set())
+    adj.get(a)!.add(b)
+    adj.get(b)!.add(a)
+  }
+  // tabella intermedia per chi è a distanza 2 dal contesto
+  const via = new Map<string, string>()
+  for (const t of tables) {
+    const name = t.name.toLowerCase()
+    if (ctx.has(name)) continue
+    for (const c of ctx) {
+      if (adj.get(name)?.has(c)) continue // già collegata direttamente
+      for (const mid of adj.get(name) ?? []) {
+        if (adj.get(mid)?.has(c)) {
+          const midName = tables.find(x => x.name.toLowerCase() === mid)?.name ?? mid
+          via.set(name, midName)
+          break
+        }
+      }
+      if (via.has(name)) break
+    }
+  }
+
   return tables
     .filter(t => !ctx.has(t.name.toLowerCase()))
     .map(t => {
@@ -91,8 +125,19 @@ export function rankTablesForJoin(
         else if (fk.refTable.toLowerCase() === name && ctx.has(fk.table.toLowerCase()))
           hints.push({ fk, direction: 'in' })
       }
-      const score = hints.length * 1000 + usageScore(t.usage)
-      return { table: t, score, hints }
+      // co-occorrenza: quanto spesso questa tabella compare nei JOIN insieme alle tabelle del contesto
+      let coScore = 0
+      for (const co of cooccurrences) {
+        if (!ctx.has(co.tableA.toLowerCase()) && !ctx.has(co.tableB.toLowerCase())) continue
+        if (co.tableA.toLowerCase() === name || co.tableB.toLowerCase() === name)
+          coScore += co.count
+      }
+      // join transitivo: raggiungibile tramite una tabella intermedia (peso minore delle FK dirette)
+      const transitiva = hints.length === 0 ? via.get(name) : undefined
+      const transitiveScore = transitiva ? 400 : 0
+      const histScore = historyBoost(t.name) * 300
+      const score = hints.length * 1000 + transitiveScore + coScore + histScore + usageScore(t.usage)
+      return { table: t, score, hints, viaTable: transitiva }
     })
     .sort((a, b) => b.score - a.score)
 }
@@ -486,11 +531,15 @@ export function scriptMergeTable(table: TableInfo): string {
   ].join('\n')
 }
 
-/** Script EXEC di una stored procedure: IN → @nome = , OUTPUT → @nome OUTPUT (sintassi reale). */
+/** Script EXEC di una stored procedure: IN → @nome = valore (default se noto), OUTPUT → @nome OUTPUT. */
 export function scriptExecProcedure(proc: ProcedureInfo): string {
   const params = proc.parameters ?? []
   const args = params
-    .map(p => (p.mode === 'OUTPUT' ? `@${p.name} OUTPUT` : `@${p.name} = `))
+    .map(p => {
+      if (p.mode === 'OUTPUT') return `@${p.name} OUTPUT`
+      const def = p.defaultValue
+      return `@${p.name} = ${def !== undefined && def !== null && def !== '' ? def : ''}`
+    })
     .join(', ')
   return `EXEC ${qualified(proc.schema, proc.name)} ${args};\n`
 }
@@ -558,6 +607,52 @@ export function scriptDeleteTable(table: TableInfo): string {
     ? `WHERE ${sqlIdent(key.name)} = ${sqlDefaultForType(key.dataType, key.isNullable)}`
     : 'WHERE /* chiave */'
   return `DELETE FROM ${qualified(table.schema, table.name)} ${where};\n`
+}
+
+// ---------- Snippet statement completi (stile Visual Studio) ----------
+
+export interface StatementSnippet {
+  label: string
+  detail: string
+  insertText: string
+}
+
+const STATEMENT_SNIPPETS: StatementSnippet[] = [
+  {
+    label: 'SELECT',
+    detail: 'SELECT ... FROM ... (snippet completo)',
+    insertText: 'SELECT ${1:*}\nFROM ${2:[schema.]tabella}\nWHERE ${3:/* condizione */}\nORDER BY ${4:1} DESC;\n',
+  },
+  {
+    label: 'INSERT INTO',
+    detail: 'INSERT INTO ... (colonne) VALUES (...)',
+    insertText: 'INSERT INTO ${1:[schema.]tabella} (${2:col1, col2})\nVALUES (${3:val1, val2});\n',
+  },
+  {
+    label: 'UPDATE',
+    detail: 'UPDATE ... SET ... WHERE ...',
+    insertText: 'UPDATE ${1:[schema.]tabella}\nSET ${2:colonna} = ${3:valore}\nWHERE ${4:/* condizione */};\n',
+  },
+  {
+    label: 'DELETE FROM',
+    detail: 'DELETE FROM ... WHERE ...',
+    insertText: 'DELETE FROM ${1:[schema.]tabella}\nWHERE ${2:/* condizione */};\n',
+  },
+  {
+    label: 'MERGE INTO',
+    detail: 'MERGE INTO ... USING ... (upsert)',
+    insertText: 'MERGE INTO ${1:[schema.]tabella} AS tgt\nUSING ${2:sorgente} AS src\nON ${3:/* condizione */}\nWHEN MATCHED THEN UPDATE SET ${4:col = src.col}\nWHEN NOT MATCHED THEN INSERT (${5:colonne})\nVALUES (${6:src.colonne});\n',
+  },
+]
+
+/** Snippet statement che corrispondono al testo digitato (prefisso della keyword). */
+export function buildStatementSnippets(word: string): StatementSnippet[] {
+  const w = word.trim().toLowerCase()
+  if (w.length < 2) return []
+  return STATEMENT_SNIPPETS.filter(s => {
+    const label = s.label.toLowerCase()
+    return label.startsWith(w) || w.startsWith(label)
+  })
 }
 
 // ---------- Ricerca: gli spazi valgono come % (LIKE) ----------
@@ -704,35 +799,48 @@ export function buildJoinConditionSuggestions(
     colByKey.set(key, new Set((table.columns ?? []).map(c => c.name.toLowerCase())))
   }
 
-  const out: JoinConditionSuggestion[] = []
-  const seen = new Set<string>()
-  const scope = refs.map(x => x.table)
-
-  // famiglia dell'ultima coppia scritta (per dare priorità alla stessa relazione)
-  let lastLeft = ''
-  for (const m of onText.matchAll(/([A-Za-z_][\w]*)\s*=\s*([A-Za-z_][\w]*)/gi)) lastLeft = m[1]
-
+  // Raggruppa le FK per NOME del vincolo: ogni voce = un vincolo con le sue coppie
+  // non ancora scritte (es. "AND MIS_D_CORRIDOIO = CEL_CORRIDOIO AND MIS_D_CELLA = CEL_CELLA").
+  const byFk = new Map<string, ForeignKeyInfo[]>()
   for (const fk of summary.foreignKeys) {
     const parent = refs.find(r => `${r.table.schema}.${r.table.name}`.toLowerCase() === `${fk.schema}.${fk.table}`.toLowerCase())
     const child = refs.find(r => `${r.table.schema}.${r.table.name}`.toLowerCase() === `${fk.refSchema}.${fk.refTable}`.toLowerCase())
     if (!parent || !child) continue
-    // colonna della tabella che referenzia a sinistra (come scrive l'utente: MIS_* = CEL_*)
-    const left = fk.column
-    const right = fk.refColumn
-    const key = [left.toLowerCase(), right.toLowerCase()].sort().join('=')
-    if (used.has(key) || seen.has(key)) continue
-    seen.add(key)
+    const pairKey = [fk.column.toLowerCase(), fk.refColumn.toLowerCase()].sort().join('=')
+    if (used.has(pairKey)) continue
+    const key = fk.name || `${fk.table}.${fk.refTable}`
+    const list = byFk.get(key)
+    if (list) list.push(fk)
+    else byFk.set(key, [fk])
+  }
 
+  const out: JoinConditionSuggestion[] = []
+  // famiglia dell'ultima coppia scritta (per dare priorità alla stessa relazione)
+  let lastLeft = ''
+  for (const m of onText.matchAll(/([A-Za-z_][\w]*)\s*=\s*([A-Za-z_][\w]*)/gi)) lastLeft = m[1]
+
+  for (const fks of byFk.values()) {
+    const parts: string[] = []
+    const first = fks[0]
+    const parent = refs.find(r => `${r.table.schema}.${r.table.name}`.toLowerCase() === `${first.schema}.${first.table}`.toLowerCase())!
+    const child = refs.find(r => `${r.table.schema}.${r.table.name}`.toLowerCase() === `${first.refSchema}.${first.refTable}`.toLowerCase())!
     const parentCols = colByKey.get(`${parent.table.schema}.${parent.table.name}`) ?? new Set()
     const childCols = colByKey.get(`${child.table.schema}.${child.table.name}`) ?? new Set()
-    const leftPart = parentCols.has(left.toLowerCase()) && !childCols.has(left.toLowerCase()) ? left : `${parent.table.name}.${left}`
-    const rightPart = childCols.has(right.toLowerCase()) && !parentCols.has(right.toLowerCase()) ? right : `${child.table.name}.${right}`
-
-    const famScore = lastLeft ? sharedLeadingTokens(lastLeft, left) * 400 : 0
+    let famScore = 0
+    for (const fk of fks) {
+      const leftPart = parentCols.has(fk.column.toLowerCase()) && !childCols.has(fk.column.toLowerCase())
+        ? fk.column
+        : `${parent.table.name}.${fk.column}`
+      const rightPart = childCols.has(fk.refColumn.toLowerCase()) && !parentCols.has(fk.refColumn.toLowerCase())
+        ? fk.refColumn
+        : `${child.table.name}.${fk.refColumn}`
+      parts.push(`${sqlIdent(leftPart)} = ${sqlIdent(rightPart)}`)
+      if (lastLeft) famScore = Math.max(famScore, sharedLeadingTokens(lastLeft, fk.column) * 400)
+    }
     out.push({
-      text: `AND ${sqlIdent(leftPart)} = ${sqlIdent(rightPart)}`,
-      left,
-      right,
+      text: `AND ${parts.join(' AND ')}`,
+      left: fks[0].column,
+      right: fks[0].refColumn,
       score: 1000 + famScore,
     })
   }
@@ -833,6 +941,7 @@ export function buildColumnContextSuggestions(
   stmtBefore: string,
   typedWord: string,
   summary: DatabaseSummary,
+  columnHistoryBoost: (columnName: string) => number = () => 0,
 ): ColumnContextSuggestion[] {
   const refTables = extractStatementTableRefs(stmtText)
     .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
@@ -918,6 +1027,7 @@ export function buildColumnContextSuggestions(
     const base = wantTyped ? columnMatchScore(typedWord, first.col.name) : 1
     if (base <= 0) continue
     const fkBoost = fkCols.has(first.col.name.toLowerCase()) ? 150 : 0
+    const histBoost = columnHistoryBoost(first.col.name) * 120
     ranked.push({
       s: {
         name: first.col.name,
@@ -929,7 +1039,7 @@ export function buildColumnContextSuggestions(
           owners.length === 1 ? owners[0].label : owners.map(o => o.label).join(', '),
         shared: owners.length > 1,
         documentation: docFor(first.col, first.table),
-        score: base + fkBoost,
+        score: base + fkBoost + histBoost,
         counterpart: false,
       },
     })
@@ -937,6 +1047,48 @@ export function buildColumnContextSuggestions(
   ranked.sort((a, b) => b.s.score - a.s.score)
   out.push(...ranked.map(x => x.s))
   return out
+}
+
+/** Colonne di una tabella qualificata con il suo alias/nome (es. dopo "r." o "RUN_MISSIONI."). */
+export interface QualifiedColumnSuggestion {
+  name: string
+  insertText: string
+  dataType: string
+  isNullable: boolean
+  documentation: string
+}
+
+/**
+ * Suggerisce le colonne di una tabella quando il testo prima del cursore termina
+ * con "alias." o "tabella." (es. "FROM RUN_MISSIONI r WHERE r.").
+ * Restituisce l'elenco qualificato con il prefisso digitato.
+ */
+export function buildQualifiedColumnSuggestions(
+  stmtText: string,
+  prefix: string,
+  summary: DatabaseSummary,
+): QualifiedColumnSuggestion[] {
+  // estrae l'identificatore prima del punto finale (es. "r." → "r")
+  const m = /([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*$/i.exec(prefix)
+  if (!m) return []
+  const qualifier = m[1]
+
+  // mappa alias/tabella → TableInfo per lo statement
+  const refs = extractStatementTableRefs(stmtText)
+    .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
+    .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined)
+
+  const table = refs.find(({ r }) => (r.alias ?? r.tableName).toLowerCase() === qualifier.toLowerCase())?.table
+  if (!table?.columns) return []
+
+  const qual = sqlIdent(qualifier)
+  return table.columns.map(c => ({
+    name: c.name,
+    insertText: `${qual}.${sqlIdent(c.name)}`,
+    dataType: c.dataType,
+    isNullable: c.isNullable,
+    documentation: columnInfoMarkdown(table, c),
+  }))
 }
 
 // ---------- Parsing EXEC (autocompletamento parametri delle stored procedure) ----------
@@ -1525,10 +1677,14 @@ export function filterUnusedParams(parameters: ProcParamInfo[], afterProc: strin
   return parameters.filter(p => !used.has(p.name.toLowerCase()))
 }
 
-/** Snippet "tutti i parametri": IN → @p1=${1} (tab-stop), OUTPUT → @nome OUTPUT (senza valore). */
+/** Snippet "tutti i parametri": IN → @p1=${1:default} (tab-stop con default se noto), OUTPUT → @nome OUTPUT. */
 export function buildExecParamSnippet(parameters: ProcParamInfo[]): string {
   return parameters
-    .map((par, i) => (par.mode === 'OUTPUT' ? `@${par.name} OUTPUT` : `@${par.name}=\${${i + 1}}`))
+    .map((par, i) => {
+      if (par.mode === 'OUTPUT') return `@${par.name} OUTPUT`
+      const def = par.defaultValue
+      return def !== undefined && def !== null && def !== '' ? `@${par.name}=\${${i + 1}:${def}}` : `@${par.name}=\${${i + 1}}`
+    })
     .join(', ')
 }
 
@@ -1750,47 +1906,96 @@ export interface JoinSuggestionItem {
   filterText: string
 }
 
+/** Genera un alias breve per una tabella (iniziali delle parole, es. RUN_MISSIONI → rm). */
+export function tableAlias(name: string): string {
+  const parts = name
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map(p => p[0].toLowerCase())
+  if (parts.length === 0) return name[0]?.toLowerCase() ?? 't'
+  if (parts.length === 1) return (name[0] + name[1]).toLowerCase()
+  return parts.join('')
+}
+
 /**
  * Costruisce le voci di completamento per una tabella candidata:
  * - in posizione JOIN, UNA voce per ogni relazione FK verso le tabelle del contesto
  *   (ognuna con la propria clausola ON), come Visual Studio che propone i casi possibili;
  * - con una sola relazione (o fuori da JOIN) una voce unica con la tabella.
+ * Se `useAliases` è true, la clausola ON usa alias brevi (es. "mc.CEL_CELLA") e la tabella
+ * viene inserita con alias ("MAG_CELLE AS mc").
  */
 export function buildJoinSuggestions(
   candidate: RankedTable,
   contextTableInfos: TableInfo[],
   isJoinPosition: boolean,
+  useAliases = false,
 ): JoinSuggestionItem[] {
   const t = candidate.table
   const base = qualified(t.schema, t.name)
+  const candAlias = useAliases ? tableAlias(t.name) : null
+  // alias per le tabelle del contesto (per qualificare l'altro lato dell'ON)
+  const ctxAlias = new Map<string, string>()
+  for (const ct of contextTableInfos) ctxAlias.set(`${ct.schema}.${ct.name}`, tableAlias(ct.name))
   const scope = [...contextTableInfos, t]
 
   if (!isJoinPosition || candidate.hints.length === 0) {
+    const fkNames = new Set(candidate.hints.map(h => h.fk.name))
     return [
       {
         label: base,
-        detail:
-          candidate.hints.length === 1
+        detail: candidate.viaTable
+          ? `raggiungibile via ${candidate.viaTable} (join transitivo)`
+          : fkNames.size === 1 && candidate.hints.length === 1
             ? `${candidate.hints[0].fk.column} = ${candidate.hints[0].fk.refColumn}`
-            : `${candidate.hints.length} relazioni disponibili`,
+            : `${fkNames.size} relazioni disponibili`,
         insertText: base,
         filterText: t.name,
       },
     ]
   }
 
-  return candidate.hints.map(h => {
-    const fk = h.fk
-    const ctxColumn = h.direction === 'out' ? fk.refColumn : fk.column
-    const candColumn = h.direction === 'out' ? fk.column : fk.refColumn
-    const ctxTableName = h.direction === 'out' ? fk.refTable : fk.table
-    const src = columnAppearsIn(scope, ctxColumn) === 1 ? ctxColumn : `${ctxTableName}.${ctxColumn}`
-    return {
-      // con più relazioni la label distingue la colonna del contesto (es. via MIS_D_CELLA)
-      label: candidate.hints.length > 1 ? `${base} · via ${ctxColumn}` : base,
-      detail: `JOIN su ${src} = ${candColumn}`,
-      insertText: buildJoinText(t, h, scope),
+  // Raggruppa gli hint per NOME del vincolo FK: le FK composite (DEST, SORG, SYNCRON)
+  // generano UNA voce con tutte le coppie nell'ON (es. "ON (a = b AND c = d)").
+  const byFk = new Map<string, JoinHint[]>()
+  for (const h of candidate.hints) {
+    const key = h.fk.name || `${h.fk.table}.${h.fk.refTable}:${h.fk.column}=${h.fk.refColumn}`
+    const list = byFk.get(key)
+    if (list) list.push(h)
+    else byFk.set(key, [h])
+  }
+
+  const items: JoinSuggestionItem[] = []
+  for (const hints of byFk.values()) {
+    const first = hints[0].fk
+    const on = hints
+      .map(h => {
+        const fk = h.fk
+        const ctxColumn = h.direction === 'out' ? fk.refColumn : fk.column
+        const candColumn = h.direction === 'out' ? fk.column : fk.refColumn
+        const ctxTableName = h.direction === 'out' ? fk.refTable : fk.table
+        const ctxQual = useAliases
+          ? ctxAlias.get(`${fk.schema}.${ctxTableName}`) ?? sqlIdent(ctxTableName)
+          : sqlIdent(ctxTableName)
+        const ctxPart =
+          useAliases || columnAppearsIn(scope, ctxColumn) > 1
+            ? `${useAliases ? ctxQual : sqlIdent(ctxTableName)}.${sqlIdent(ctxColumn)}`
+            : sqlIdent(ctxColumn)
+        const candPart =
+          useAliases || columnAppearsIn(scope, candColumn) > 1
+            ? `${useAliases ? candAlias : sqlIdent(t.name)}.${sqlIdent(candColumn)}`
+            : sqlIdent(candColumn)
+        return `${ctxPart} = ${candPart}`
+      })
+      .join(' AND ')
+    // etichetta con la prima colonna del contesto per distinguere i vincoli (DEST/SORG/SYNCRON)
+    const firstCtxCol = hints[0].direction === 'out' ? first.refColumn : first.column
+    items.push({
+      label: byFk.size > 1 ? `${base} · via ${firstCtxCol}` : base,
+      detail: `JOIN ${byFk.size > 1 ? `(${hints.length} col.) ` : ''}su ${on}`,
+      insertText: useAliases ? `${base} AS ${candAlias} ON (${on})` : `${base} ON (${on})`,
       filterText: t.name,
-    }
-  })
+    })
+  }
+  return items
 }

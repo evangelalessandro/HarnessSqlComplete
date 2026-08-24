@@ -82,6 +82,19 @@ describe('scriptExecProcedure: genera EXEC con parametri', () => {
     expect(scriptExecProcedure(p)).toBe('EXEC zzz_test_proc @id = , @flag OUTPUT;\n')
   })
 
+  it('precompila i valori di default noti', () => {
+    const p: Parameters<typeof scriptExecProcedure>[0] = {
+      schema: 'dbo',
+      name: 'P',
+      createDate: null,
+      parameters: [
+        { name: 'id', dataType: 'int', mode: 'IN', defaultValue: '0' },
+        { name: 'caus', dataType: 'nvarchar', mode: 'IN', defaultValue: "N'IN'" },
+      ],
+    }
+    expect(scriptExecProcedure(p)).toBe("EXEC P @id = 0, @caus = N'IN';\n")
+  })
+
   it('senza parametri emette solo EXEC nome', () => {
     expect(scriptExecProcedure(mkProc('dbo', 'P', []))).toBe('EXEC P ;\n')
   })

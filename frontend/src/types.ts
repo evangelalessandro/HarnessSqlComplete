@@ -63,8 +63,9 @@ export interface TableUsage {
   rowCount: number
 }
 
-/** Relazione di foreign key tra due tabelle (per i suggerimenti JOIN con clausola ON). */
+/** Relazione di foreign key (una riga per COPPIA di colonne; le FK composite hanno lo stesso name). */
 export interface ForeignKeyInfo {
+  name: string
   schema: string
   table: string
   column: string
@@ -93,6 +94,8 @@ export interface ProcParamInfo {
   name: string
   dataType: string
   mode: string
+  /** Valore di default dichiarato nella definizione (es. "0", "N'x'"), se presente. */
+  defaultValue?: string | null
 }
 
 export interface ProcedureInfo {
@@ -118,6 +121,13 @@ export interface DatabaseInfo {
   name: string
 }
 
+/** Coppia di tabelle che compaiono insieme nei JOIN reali delle stored procedure (per ranking). */
+export interface TableCooccurrence {
+  tableA: string
+  tableB: string
+  count: number
+}
+
 export interface DatabaseSummary {
   tables: TableInfo[]
   views: ViewInfo[]
@@ -126,6 +136,7 @@ export interface DatabaseSummary {
   functions: FunctionInfo[]
   foreignKeys: ForeignKeyInfo[]
   databases: DatabaseInfo[]
+  cooccurrences?: TableCooccurrence[] | null
 }
 
 export interface SearchResult {

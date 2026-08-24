@@ -1,0 +1,197 @@
+import { useEffect, useRef, useState } from 'react'
+import { Download, FileUp, RotateCcw, X } from 'lucide-react'
+import type { FormatProfileNode } from '../formatProfile'
+import {
+  buildFormatProfile,
+  flattenFormatOptions,
+  loadFormatProfileXml,
+  parseFormatProfileXml,
+  resetFormatProfileXml,
+  saveFormatProfileXml,
+  serializeFormatProfile,
+  setFormatOption,
+} from '../formatProfile'
+import { Button } from './ui'
+
+/** Descrittore di un'opzione editabile nella UI (con etichetta italiana). */
+interface EditableOption {
+  key: string
+  label: string
+  kind: 'bool' | 'number'
+  hint?: string
+  min?: number
+  max?: number
+}
+
+const EDITABLE_OPTIONS: EditableOption[] = [
+  { key: 'Select_SingleLine_WhenRightMarginIsNotExceeded', label: 'Query brevi su una sola riga', kind: 'bool' },
+  { key: 'Select_SingleLine_WhenQueryIsShorterThanXCharacters_Value', label: 'Soglia caratteri (query breve)', kind: 'number', min: 1, max: 500 },
+  { key: 'Select_SingleLine_WhenQueryContainsLessThanXWords_Value', label: 'Soglia parole (query breve)', kind: 'number', min: 1, max: 200 },
+  { key: 'Select_SelectList_StackColumns', label: 'Impila le colonne della SELECT', kind: 'bool' },
+  { key: 'Select_SelectList_IndentColumnList_Size', label: 'Indentazione colonne SELECT', kind: 'number', min: 0, max: 20 },
+  { key: 'Select_From_LineBreakBeforeFrom', label: 'A capo prima di FROM', kind: 'bool' },
+  { key: 'Select_From_Join_LineBreakBeforeJoin', label: 'A capo prima di JOIN', kind: 'bool' },
+  { key: 'Select_From_Join_IndentJoinKeyword_Size', label: 'Indentazione JOIN', kind: 'number', min: 0, max: 20 },
+  { key: 'Select_From_Join_LineBreakBeforeOn', label: 'A capo prima di ON', kind: 'bool' },
+  { key: 'Select_Where_LineBreakBeforeWhere', label: 'A capo prima di WHERE', kind: 'bool' },
+  { key: 'Select_Where_IndentWhereCondition_Size', label: 'Indentazione condizione WHERE', kind: 'number', min: 0, max: 30 },
+  { key: 'Select_GroupBy_LineBreakBeforeGroup', label: 'A capo prima di GROUP BY', kind: 'bool' },
+  { key: 'Select_Having_LineBreakBeforeHaving', label: 'A capo prima di HAVING', kind: 'bool' },
+  { key: 'Select_OrderBy_LineBreakBeforeOrder', label: 'A capo prima di ORDER BY', kind: 'bool' },
+  { key: 'Select_OrderBy_IndentOrderByPhrase_Size', label: 'Indentazione ORDER BY', kind: 'number', min: 0, max: 20 },
+  { key: 'UnionExceptIntersect_LineBreakBeforeUnion', label: 'A capo prima di UNION', kind: 'bool' },
+  { key: 'Insert_ColumnList_LineBreakBeforeOpenBrace', label: 'INSERT: parentesi colonne su riga propria', kind: 'bool' },
+  { key: 'Insert_Values_LineBreakBeforeValues', label: 'A capo prima di VALUES', kind: 'bool' },
+  { key: 'Update_SetClause_LineBreakBeforeSet', label: 'A capo prima di SET (UPDATE)', kind: 'bool' },
+  { key: 'Update_SetClause_IndentSetKeyword_Size', label: 'Indentazione SET', kind: 'number', min: 0, max: 20 },
+  { key: 'TextCase_Keyword', label: 'Keyword in MAIUSCOLO (1=sì)', kind: 'number', min: 0, max: 1 },
+  { key: 'TextCase_DataType', label: 'Tipi di dato in MAIUSCOLO (1=sì)', kind: 'number', min: 0, max: 1 },
+  { key: 'Spacing_Delimiters_InsertSpaceAfterComma', label: 'Spazio dopo la virgola', kind: 'bool' },
+]
+
+function downloadFile(name: string, content: string) {
+  const blob = new Blob([content], { type: 'application/xml' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+export default function FormatProfilePanel({ onClose }: { onClose: () => void }) {
+  const [xml, setXml] = useState<string>(() => loadFormatProfileXml())
+  const [nodes, setNodes] = useState<FormatProfileNode[]>(() => parseFormatProfileXml(loadFormatProfileXml()))
+  const [message, setMessage] = useState<string | null>(null)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+
+  const flat = flattenFormatOptions(nodes)
+  const profile = buildFormatProfile(xml)
+
+  useEffect(() => {
+    setMessage(null)
+  }, [xml])
+
+  const update = (key: string, value: string) => {
+    const next = [...nodes]
+    setFormatOption(next, key, value)
+    setNodes(next)
+    const nextXml = serializeFormatProfile(next)
+    setXml(nextXml)
+    saveFormatProfileXml(nextXml)
+  }
+
+  const handleImportFile = (file: File) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const text = String(reader.result ?? '')
+        if (!text.includes('FormatProfile')) throw new Error('File non valido: manca FormatProfile')
+        const parsed = parseFormatProfileXml(text)
+        setNodes(parsed)
+        setXml(serializeFormatProfile(parsed))
+        saveFormatProfileXml(serializeFormatProfile(parsed))
+        setMessage('Profilo importato e salvato.')
+      } catch (e) {
+        setMessage(`Importazione fallita: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    reader.readAsText(file)
+  }
+
+  const handleReset = () => {
+    resetFormatProfileXml()
+    const def = parseFormatProfileXml(loadFormatProfileXml())
+    setNodes(def)
+    setXml(serializeFormatProfile(def))
+    setMessage('Profilo ripristinato al default.')
+  }
+
+  const handleExport = () => {
+    downloadFile('formatprofile.xml', xml)
+    setMessage('Profilo esportato (formatprofile.xml).')
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4">
+      <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-100">Formattazione T-SQL</h2>
+            <p className="text-xs text-zinc-500">Profilo FormatProfile (Redgate / SQL Prompt)</p>
+          </div>
+          <button onClick={onClose} className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200" title="Chiudi">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-2">
+          <Button variant="secondary" onClick={() => fileRef.current?.click()} title="Importa un file formatprofile.xml">
+            <FileUp className="h-4 w-4" /> Importa
+          </Button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".xml,application/xml"
+            className="hidden"
+            onChange={e => {
+              const f = e.target.files?.[0]
+              if (f) handleImportFile(f)
+              e.target.value = ''
+            }}
+          />
+          <Button variant="secondary" onClick={handleExport} title="Scarica il profilo come formatprofile.xml">
+            <Download className="h-4 w-4" /> Esporta
+          </Button>
+          <Button variant="ghost" onClick={handleReset} title="Ripristina il profilo predefinito">
+            <RotateCcw className="h-4 w-4" /> Ripristina default
+          </Button>
+          {message && <span className="text-xs text-emerald-400">{message}</span>}
+          <span className="ml-auto text-[11px] text-zinc-600">{flat.size} opzioni nel profilo</span>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <div className="space-y-3">
+            {EDITABLE_OPTIONS.map(opt => {
+              const raw = flat.get(opt.key)
+              const isBool = opt.kind === 'bool'
+              const boolVal = raw ? raw.toLowerCase() === 'true' : false
+              const numVal = raw ? Number(raw) : 0
+              return (
+                <label key={opt.key} className="flex items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2">
+                  <div>
+                    <span className="text-[13px] text-zinc-200">{opt.label}</span>
+                    {opt.hint && <span className="block text-[11px] text-zinc-500">{opt.hint}</span>}
+                  </div>
+                  {isBool ? (
+                    <input
+                      type="checkbox"
+                      checked={boolVal}
+                      onChange={e => update(opt.key, e.target.checked ? 'true' : 'false')}
+                      className="h-4 w-4 accent-sky-500"
+                    />
+                  ) : (
+                    <input
+                      type="number"
+                      value={Number.isFinite(numVal) ? numVal : 0}
+                      min={opt.min}
+                      max={opt.max}
+                      onChange={e => update(opt.key, String(Number(e.target.value) || 0))}
+                      className="w-20 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-right text-xs text-zinc-100 focus:border-sky-500 focus:outline-none"
+                    />
+                  )}
+                </label>
+              )
+            })}
+          </div>
+          <p className="mt-4 text-[11px] leading-relaxed text-zinc-500">
+            Il profilo completo (tutte le opzioni Redgate, anche quelle non elencate qui) viene conservato
+            integralmente: importare, modificare ed esportare non perde nessuna voce. L'anteprima usa
+            <span className="text-zinc-300"> {profile.breakBeforeFrom ? 'a capo' : 'no'} prima di FROM</span>, ind.
+            colonne SELECT {profile.selectColumnIndent}, ind. JOIN {profile.joinIndent}.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
