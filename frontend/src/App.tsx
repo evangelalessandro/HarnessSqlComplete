@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Database as DbIcon, FilePlus2, Pin, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { BookOpen, Database as DbIcon, FilePlus2, Pin, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
@@ -10,11 +10,13 @@ import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
 import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryResult } from './types'
+import { chooseResultTab } from './queryTabs'
 import LoginScreen from './components/LoginScreen'
 import Sidebar from './components/Sidebar'
 import SqlEditor, { DEFAULT_SQL } from './components/SqlEditor'
 import ResultsPanel from './components/ResultsPanel'
 import PrintPanel from './components/PrintPanel'
+import HelpPage from './components/HelpPage'
 import { FileDropZone } from './components/FileDropZone'
 import { Badge } from './components/ui'
 
@@ -34,11 +36,106 @@ export default function App() {
   const [banner, setBanner] = useState<string | null>(null)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
 
+  // Pagina di aiuto (apribile dal sito)
+  const [helpOpen, setHelpOpen] = useState(false)
+
   // Colori personalizzati per database (persistiti in localStorage)
   const [dbColors, setDbColors] = useState<Record<string, string>>(() => loadDbColors())
 
   // Impostazioni editor (font e tema)
   const [settings, setSettings] = useState<EditorSettings>(() => loadSettings())
+
+  // Layout dei pannelli: larghezza della sidebar e pannello agganciato a destra (persistiti)
+  const [layout, setLayout] = useState<{
+    sidebarWidth: number
+    rightDock: { panel: 'db' | 'objects'; width: number } | null
+  }>(() => {
+    try {
+      const raw = localStorage.getItem('sql-intelli:layout')
+      if (raw) {
+        const p = JSON.parse(raw)
+        return {
+          sidebarWidth: typeof p.sidebarWidth === 'number' ? Math.min(560, Math.max(220, p.sidebarWidth)) : 320,
+          rightDock: p.rightDock ?? null,
+        }
+      }
+    } catch {
+      /* ignora */
+    }
+    return { sidebarWidth: 320, rightDock: null }
+  })
+  const setLayoutAndPersist = useCallback(
+    (updater: (prev: typeof layout) => typeof layout) => {
+      setLayout(prev => {
+        const next = updater(prev)
+        try {
+          localStorage.setItem('sql-intelli:layout', JSON.stringify(next))
+        } catch {
+          /* ignora */
+        }
+        return next
+      })
+    },
+    [],
+  )
+  /** Elemento della colonna destra: destinazione del portal dei pannelli agganciati a destra. */
+  const [rightDockEl, setRightDockEl] = useState<HTMLElement | null>(null)
+  const rightDockRefCb = useCallback((el: HTMLElement | null) => setRightDockEl(el), [])
+
+  // Ridimensiona la larghezza della sidebar (trascina il bordo destro)
+  const sidebarResizeRef = useRef(false)
+  const onSidebarResizeMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    sidebarResizeRef.current = true
+    const startX = e.clientX
+    const startW = layout.sidebarWidth
+    const onMove = (ev: MouseEvent) => {
+      if (!sidebarResizeRef.current) return
+      const w = Math.min(560, Math.max(220, startW + (ev.clientX - startX)))
+      setLayoutAndPersist(prev => ({ ...prev, sidebarWidth: Math.round(w) }))
+    }
+    const onUp = () => {
+      sidebarResizeRef.current = false
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  // Ridimensiona la larghezza della colonna destra (trascina il bordo sinistro)
+  const rightResizeRef = useRef(false)
+  const onRightResizeMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    rightResizeRef.current = true
+    const startX = e.clientX
+    const startW = layout.rightDock?.width ?? 300
+    const onMove = (ev: MouseEvent) => {
+      if (!rightResizeRef.current) return
+      const w = Math.min(560, Math.max(200, startW + (startX - ev.clientX)))
+      setLayoutAndPersist(prev =>
+        prev.rightDock ? { ...prev, rightDock: { ...prev.rightDock, width: Math.round(w) } } : prev,
+      )
+    }
+    const onUp = () => {
+      rightResizeRef.current = false
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  // La Sidebar notifica quale pannello è agganciato a destra → mostra/nasconde la colonna
+  const handleRightDockChange = useCallback(
+    (panel: 'db' | 'objects' | null) => {
+      setLayoutAndPersist(prev => ({
+        ...prev,
+        rightDock: panel ? { panel, width: prev.rightDock?.width ?? 300 } : null,
+      }))
+    },
+    [setLayoutAndPersist],
+  )
 
   const zoomFont = useCallback((delta: number) => {
     setSettings(prev => {
@@ -275,7 +372,8 @@ export default function App() {
       try {
         const r = await api.execute(connection.connectionId, sql)
         setResult(r)
-        setActiveTab(r.error || r.resultSets.length > 0 ? 'results' : 'print')
+        // senza SELECT (solo PRINT/messaggi) si apre la schermata dei print
+        setActiveTab(chooseResultTab(r))
       } catch (e) {
         setBanner(e instanceof Error ? e.message : String(e))
       } finally {
@@ -456,6 +554,13 @@ export default function App() {
         </Badge>
         <Badge tone={aiConfigured ? 'emerald' : 'amber'}>{aiStatusText}</Badge>
         <button
+          onClick={() => setHelpOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
+          title="Apri la guida con tutte le funzioni"
+        >
+          <BookOpen className="h-4 w-4" /> Aiuto
+        </button>
+        <button
           onClick={() => void handleDisconnect()}
           className="ml-auto inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
         >
@@ -468,18 +573,31 @@ export default function App() {
       )}
 
       <div className="flex min-h-0 flex-1">
-        <aside className="w-80 shrink-0 border-r border-zinc-800 bg-zinc-900/60">
-          <Sidebar
-            summary={summary}
-            loading={loadingSummary && !summary}
-            activeDatabase={connection.database}
-            onInsertText={handleInsertText}
-            onPreviewInEditor={handlePreviewInEditor}
-            onOpenScript={handleOpenScript}
-            onOpenObject={handleOpenObject}
-            onSwitchDatabase={handleSwitchDatabase}
-            dbColors={dbColors}
-            onSetDbColor={handleSetDbColor}
+        <aside
+          className="relative flex shrink-0 flex-col border-r border-zinc-800 bg-zinc-900/60"
+          style={{ width: layout.sidebarWidth }}
+        >
+          <div className="min-h-0 flex-1">
+            <Sidebar
+              summary={summary}
+              loading={loadingSummary && !summary}
+              activeDatabase={connection.database}
+              onInsertText={handleInsertText}
+              onPreviewInEditor={handlePreviewInEditor}
+              onOpenScript={handleOpenScript}
+              onOpenObject={handleOpenObject}
+              onSwitchDatabase={handleSwitchDatabase}
+              dbColors={dbColors}
+              onSetDbColor={handleSetDbColor}
+              rightDockEl={rightDockEl}
+              onRightDockChange={handleRightDockChange}
+            />
+          </div>
+          {/* Trascina per allargare/stringere la sidebar (e i pannelli ancorati a sinistra) */}
+          <div
+            onMouseDown={onSidebarResizeMouseDown}
+            className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize"
+            title="Trascina per allargare/stringere la sidebar"
           />
         </aside>
 
@@ -627,8 +745,24 @@ export default function App() {
             </div>
           </div>
         </main>
+
+        {/* Colonna destra: ospita il pannello agganciato a destra (contenuto portato dalla Sidebar) */}
+        {layout.rightDock && (
+          <aside
+            ref={rightDockRefCb}
+            className="relative flex h-full shrink-0 flex-col border-l border-zinc-800 bg-zinc-900/60"
+            style={{ width: layout.rightDock.width }}
+          >
+            <div
+              onMouseDown={onRightResizeMouseDown}
+              className="absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize"
+              title="Trascina per allargare/stringere la colonna"
+            />
+          </aside>
+        )}
       </div>
       </div>
+      {helpOpen && <HelpPage onClose={() => setHelpOpen(false)} />}
     </FileDropZone>
   )
 }

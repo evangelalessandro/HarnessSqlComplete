@@ -4,12 +4,41 @@ import { Eraser, FolderOpen, Moon, Play, Save, Settings2, Sun, Wand2, ZoomIn, Zo
 import monaco from '../monacoSetup'
 import { api } from '../api'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from '../types'
-import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, columnMatchScore, completionSortText, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, parseInsertContext, qualified, rankTablesForJoin, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
+import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
 import { registerInsertHighlight } from '../sqlInsertHighlight'
 import { positionAt, runSqlDiagnostics } from '../sqlDiagnostics'
+import { computeBlockGuides } from '../sqlBlockGuides'
+import { computeFoldingRanges } from '../sqlFolding'
+import { pickFormatTarget, pickSqlToExecute } from '../executeSelection'
+import {
+  TSQL_ALTER_SNIPPETS,
+  TSQL_OPTION_HINTS,
+  TSQL_OVER_CONTINUE,
+  TSQL_OVER_FRAMES,
+  TSQL_OVER_STARTS,
+  TSQL_SET_OPTIONS,
+  TSQL_SYSTEM_VARIABLES,
+  TSQL_TABLE_HINTS,
+  TSQL_TYPES,
+  detectAlterTableContext,
+  detectCreateIndexContext,
+  detectCreateTableColumnContext,
+  detectDeclareTypeContext,
+  detectObjectNameContext,
+  detectOptionHintsContext,
+  detectOverContext,
+  detectSetContext,
+  detectSystemVariableContext,
+  detectTableHintsContext,
+  detectVariableContext,
+  extractDeclaredVariables,
+  systemVariablePrefixLen,
+  variablePrefixLen,
+} from '../tsqlSnippets'
 import { registerTableColorizer } from '../sqlTableColors'
 import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../history'
 import { registerSqlHover } from '../sqlHover'
+import { classifyContext, filterKeywordsForContext, isAfterOrderKeyword, isOrderWordTyped, shouldSuggestJoinConditions } from '../intellisenseContext'
 import { buildFormatProfile, loadFormatProfileXml } from '../formatProfile'
 import { formatSqlWithProfile } from '../tsqlFormatter'
 import FormatProfilePanel from './FormatProfilePanel'
@@ -65,11 +94,32 @@ const SQL_KEYWORDS = [
   'ROLLBACK', 'SAVE', 'WAITFOR', 'RAISERROR',
 ]
 
-/** Funzioni SQL utili nei contesti di colonne (WHERE/HAVING/ORDER BY/GROUP BY). */
+/** Funzioni T-SQL (manuale Microsoft): aggregati, finestra/window, stringhe, matematiche, data/ora, conversione, sistema. */
 const SQL_FUNCTIONS = [
-  'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'COALESCE', 'ISNULL', 'NULLIF', 'CAST', 'CONVERT',
-  'GETDATE', 'GETUTCDATE', 'NEWID', 'UPPER', 'LOWER', 'LEN', 'SUBSTRING', 'LEFT', 'RIGHT',
-  'ROUND', 'ABS', 'DATEADD', 'DATEDIFF', 'YEAR', 'MONTH', 'DAY', 'CASE', 'IIF', 'NULL',
+  // aggregati
+  'SUM', 'AVG', 'MIN', 'MAX', 'COUNT', 'COUNT_BIG', 'STRING_AGG', 'STDEV', 'STDEVP', 'VAR', 'VARP',
+  'CHECKSUM_AGG', 'GROUPING', 'GROUPING_ID',
+  // finestra (window)
+  'RANK', 'DENSE_RANK', 'ROW_NUMBER', 'NTILE', 'LAG', 'LEAD', 'FIRST_VALUE', 'LAST_VALUE',
+  'CUME_DIST', 'PERCENT_RANK', 'PERCENTILE_CONT', 'PERCENTILE_DISC',
+  // stringhe
+  'ASCII', 'CHAR', 'CHARINDEX', 'CONCAT', 'CONCAT_WS', 'DIFFERENCE', 'FORMAT', 'LEFT', 'LEN',
+  'LOWER', 'LTRIM', 'NCHAR', 'PATINDEX', 'QUOTENAME', 'REPLACE', 'REPLICATE', 'REVERSE', 'RIGHT',
+  'RTRIM', 'SOUNDEX', 'SPACE', 'STR', 'STRING_ESCAPE', 'STRING_SPLIT', 'STUFF', 'SUBSTRING',
+  'TRANSLATE', 'TRIM', 'UNICODE', 'UPPER',
+  // matematiche
+  'ABS', 'CEILING', 'FLOOR', 'ROUND', 'SIGN', 'SQRT', 'SQUARE', 'POWER', 'EXP', 'LOG', 'LOG10',
+  'PI', 'RAND', 'ACOS', 'ASIN', 'ATAN', 'ATN2', 'COS', 'COT', 'DEGREES', 'RADIANS', 'SIN', 'TAN',
+  // data/ora
+  'GETDATE', 'GETUTCDATE', 'SYSDATETIME', 'SYSUTCDATETIME', 'CURRENT_TIMESTAMP', 'DATEADD',
+  'DATEDIFF', 'DATEDIFF_BIG', 'DATENAME', 'DATEPART', 'DATEFROMPARTS', 'DATETIMEFROMPARTS',
+  'YEAR', 'MONTH', 'DAY', 'EOMONTH', 'ISDATE', 'SWITCHOFFSET', 'TODATETIMEOFFSET',
+  // conversione
+  'CAST', 'CONVERT', 'TRY_CAST', 'TRY_CONVERT', 'PARSE', 'TRY_PARSE',
+  // sistema / logico
+  'COALESCE', 'ISNULL', 'NULLIF', 'IIF', 'CHOOSE', 'CASE', 'NULL', 'ISNUMERIC', 'NEWID',
+  'NEWSEQUENTIALID', 'HOST_NAME', 'USER_NAME', 'SCOPE_IDENTITY', 'IDENT_CURRENT', 'ERROR_MESSAGE',
+  'ERROR_NUMBER', 'ERROR_SEVERITY', 'ERROR_STATE', 'JSON_VALUE', 'JSON_QUERY', 'ISJSON', 'JSON_MODIFY',
 ]
 
 export default function SqlEditor({
@@ -142,13 +192,31 @@ export default function SqlEditor({
     const model = ed?.getModel()
     if (!ed || !model) return
     try {
+      // come l'esecuzione: con una selezione si formatta SOLO quella parte
+      const sel = ed.getSelection()
+      const selected = sel && !sel.isEmpty() ? model.getValueInRange(sel) : null
+      const { text, usesSelection } = pickFormatTarget(selected, model.getValue())
       const profileXml = loadFormatProfileXml()
       const profile = buildFormatProfile(profileXml)
-      const formatted = formatSqlWithProfile(model.getValue(), profile)
-      ed.executeEdits('format', [{ range: model.getFullModelRange(), text: formatted }])
+      const formatted = formatSqlWithProfile(text, profile)
+      const range = usesSelection ? sel! : model.getFullModelRange()
+      ed.executeEdits('format', [{ range, text: formatted }])
     } catch {
       /* SQL non valido: nessuna azione */
     }
+  }
+
+  /**
+   * Testo da eseguire: come SSMS, se c'è una selezione nell'editor viene eseguita
+   * SOLO la selezione (ripulita dagli spazi ai bordi); altrimenti tutto il contenuto.
+   */
+  const getSqlToExecute = (): string => {
+    const ed = editorRef.current
+    const model = ed?.getModel()
+    if (!ed || !model) return ''
+    const sel = ed.getSelection()
+    const selected = sel && !sel.isEmpty() ? model.getValueInRange(sel) : null
+    return pickSqlToExecute(selected, ed.getValue())
   }
 
   const handleMount: OnMount = (editor, _monacoInstance) => {
@@ -158,12 +226,13 @@ export default function SqlEditor({
     ensureColorizer()
 
     // Esegui: F5 e Ctrl+Invio (registra nella cronologia le tabelle usate)
-    const runQuery = (sql: string) => {
+    const runQuery = () => {
+      const sql = getSqlToExecute()
       recordTablesFromSql(sql)
       stateRef.current.onExecute(sql)
     }
-    editor.addCommand(monaco.KeyCode.F5, () => runQuery(editor.getValue()))
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => runQuery(editor.getValue()))
+    editor.addCommand(monaco.KeyCode.F5, () => runQuery())
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => runQuery())
     // Salva: Ctrl+S
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => onSaveRef.current?.())
     // Salva con nome: Ctrl+Shift+S
@@ -174,6 +243,8 @@ export default function SqlEditor({
     registerSchemaCompletions()
     registerInlineCompletions()
     registerSqlDiagnostics()
+    registerBlockGuides()
+    registerFolding()
     disposablesRef.current.push(...registerInsertHighlight(editor))
     disposablesRef.current.push(
       registerSqlHover(() => ({
@@ -210,13 +281,14 @@ export default function SqlEditor({
           )
           // Testo prima della parola in corso (per capire se siamo in posizione FROM/JOIN)
           const prefix = textBefore.slice(0, Math.max(0, textBefore.length - word.word.length))
-          const isTablePosition = /(?:FROM|JOIN|UPDATE|INTO|TABLE)\s*$/i.test(prefix)
-          const isJoinPosition = /(?:(?:LEFT|RIGHT|INNER|OUTER|CROSS|FULL)\s+)?JOIN\s*$/i.test(prefix)
-          const isExecPosition = /(?:^|\s)EXEC(?:UTE)?\s*$/i.test(prefix)
-          // Contesti colonna: clausole oppure dopo un operatore di confronto (es. ON mis_corr = )
-          const isColumnContext =
-            /(?:WHERE|ON|HAVING|AND|OR|SET|BY|GROUP|ORDER)\s*$/i.test(prefix) ||
-            /(?:=|<>|!=|<=|>=|<|>)\s*$/i.test(prefix)
+          // Contesto dello statement corrente (per la classificazione e i rami successivi)
+          const fullText = model.getValue()
+          const cursorOffset = model.getOffsetAt(position)
+          const stmtRange = statementRangeAt(fullText, cursorOffset)
+          const stmtText = fullText.slice(stmtRange.start, stmtRange.end)
+          const stmtBefore = stmtText.slice(0, cursorOffset - stmtRange.start)
+          const ctx = classifyContext({ prefix, stmtBefore })
+          const { isTablePosition, isJoinPosition, isExecPosition, isColumnContext, inSelectList } = ctx
 
           const suggestions: monaco.languages.CompletionItem[] = []
           let rank = 0
@@ -225,7 +297,270 @@ export default function SqlEditor({
             rank++
           }
 
+          // Funzioni T-SQL (aggregati, window, stringhe…) + funzioni utente del database.
+          // filterText = nome, così Monaco le filtra con la parola digitata.
+          const pushSqlFunctions = () => {
+            for (const f of SQL_FUNCTIONS) {
+              push({
+                label: f,
+                kind: monaco.languages.CompletionItemKind.Keyword,
+                insertText: f,
+                range,
+                filterText: f,
+              })
+            }
+            for (const fn of st.summary?.functions ?? []) {
+              push({
+                label: `${fn.schema}.${fn.name}`,
+                detail: fn.type === 'FN' ? 'funzione scalare' : fn.type === 'IF' ? 'funzione inline' : 'funzione tabella',
+                kind: monaco.languages.CompletionItemKind.Function,
+                insertText: qualified(fn.schema, fn.name),
+                range,
+                filterText: fn.name,
+              })
+            }
+          }
+
           if (st.summary) {
+            // DECLARE @var → tipi di dato T-SQL (non tabelle!)
+            if (detectDeclareTypeContext(textBefore)) {
+              for (const t of TSQL_TYPES) {
+                push({
+                  label: t.name,
+                  detail: t.detail,
+                  kind: monaco.languages.CompletionItemKind.TypeParameter,
+                  insertText: t.insertText,
+                  range,
+                  filterText: t.name,
+                })
+              }
+              return { suggestions }
+            }
+
+            // SET <opzione> → valori possibili (ON/OFF…); dopo "SET " → nomi delle opzioni
+            const setCtx = detectSetContext(textBefore)
+            if (setCtx) {
+              if (setCtx.kind === 'options') {
+                for (const opt of TSQL_SET_OPTIONS) {
+                  push({
+                    label: opt.name,
+                    detail: opt.detail,
+                    kind: monaco.languages.CompletionItemKind.Keyword,
+                    insertText: opt.name,
+                    range,
+                    filterText: opt.name,
+                  })
+                }
+              } else {
+                const opt = TSQL_SET_OPTIONS.find(o => o.name.toUpperCase() === setCtx.option) ?? {
+                  name: setCtx.option,
+                  detail: 'valore per l\'opzione SET',
+                  values: ['ON', 'OFF'],
+                }
+                for (const v of opt.values) {
+                  push({
+                    label: v,
+                    detail: `valore per SET ${setCtx.option}`,
+                    kind: monaco.languages.CompletionItemKind.Constant,
+                    insertText: v,
+                    range,
+                    filterText: v,
+                  })
+                }
+              }
+              return { suggestions }
+            }
+
+            // ALTER TABLE <tabella> → snippet (constraint, colonne, abilita/disabilita trigger)
+            if (detectAlterTableContext(textBefore)) {
+              for (const sn of TSQL_ALTER_SNIPPETS) {
+                push({
+                  label: sn.label,
+                  detail: sn.detail,
+                  kind: monaco.languages.CompletionItemKind.Snippet,
+                  insertText: sn.insertText,
+                  insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                  range,
+                  filterText: sn.label,
+                })
+              }
+              return { suggestions }
+            }
+
+            // "@@..." → variabili di sistema T-SQL (es. "IF @@ERROR", "SELECT @@ROWCOUNT").
+            // Monaco non considera '@@' una parola (l'@ è separatore): il range deve
+            // coprire il "@@" (e l'eventuale prefisso parziale) già digitato, altrimenti
+            // il nome si aggiunge dopo → "IF @@@@ROWCOUNT".
+            if (detectSystemVariableContext(textBefore)) {
+              const prefixLen = systemVariablePrefixLen(textBefore)
+              if (prefixLen > 0) {
+                const startOffset = cursorOffset - prefixLen
+                const startPos = model.getPositionAt(startOffset)
+                const endPos = model.getPositionAt(cursorOffset)
+                const sysRange = new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column)
+                for (const v of TSQL_SYSTEM_VARIABLES) {
+                  push({
+                    label: v.name,
+                    detail: v.detail,
+                    kind: monaco.languages.CompletionItemKind.Constant,
+                    insertText: v.name,
+                    range: sysRange,
+                    filterText: v.name,
+                  })
+                }
+                return { suggestions }
+              }
+            }
+
+            // Oggetti dopo DROP/TRUNCATE/ALTER/USE (niente tabelle generiche)
+            const objKind = detectObjectNameContext(textBefore)
+            if (objKind) {
+              const pushObj = (label: string, detail: string, insertText: string) =>
+                push({
+                  label,
+                  detail,
+                  kind: monaco.languages.CompletionItemKind.Struct,
+                  insertText,
+                  range,
+                  filterText: label.split('.').pop() ?? label,
+                })
+              if (objKind === 'table') {
+                for (const t of st.summary.tables) pushObj(qualified(t.schema, t.name), `${t.columnCount} col.`, qualified(t.schema, t.name))
+              } else if (objKind === 'view') {
+                for (const v of st.summary.views) pushObj(qualified(v.schema, v.name), 'vista', qualified(v.schema, v.name))
+              } else if (objKind === 'procedure') {
+                for (const p of st.summary.procedures) pushObj(qualified(p.schema, p.name), `proc · ${p.parameters?.length ?? 0} param.`, qualified(p.schema, p.name))
+              } else if (objKind === 'function') {
+                for (const f of st.summary.functions) pushObj(qualified(f.schema, f.name), f.type, qualified(f.schema, f.name))
+              } else if (objKind === 'trigger') {
+                for (const tr of st.summary.triggers) pushObj(qualified(tr.schema, tr.name), tr.tableName, qualified(tr.schema, tr.name))
+              } else if (objKind === 'database') {
+                for (const d of st.summary.databases) pushObj(d.name, 'database', d.name)
+              }
+              return { suggestions }
+            }
+
+            // CREATE TABLE t (id → tipi di dato
+            if (detectCreateTableColumnContext(textBefore)) {
+              for (const t of TSQL_TYPES) {
+                push({
+                  label: t.name,
+                  detail: t.detail,
+                  kind: monaco.languages.CompletionItemKind.TypeParameter,
+                  insertText: t.insertText,
+                  range,
+                  filterText: t.name,
+                })
+              }
+              return { suggestions }
+            }
+
+            // OPTION ( → hint di query
+            if (detectOptionHintsContext(textBefore)) {
+              for (const h of TSQL_OPTION_HINTS) {
+                push({
+                  label: h.name,
+                  detail: h.detail,
+                  kind: monaco.languages.CompletionItemKind.Keyword,
+                  insertText: h.insertText,
+                  insertTextRules: h.insertText.includes('${')
+                    ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet
+                    : undefined,
+                  range,
+                  filterText: h.name,
+                })
+              }
+              return { suggestions }
+            }
+
+            // CREATE INDEX → snippet del nome; dopo "ON " → tabelle
+            const idxCtx = detectCreateIndexContext(textBefore)
+            if (idxCtx === 'name') {
+              push({
+                label: 'CREATE INDEX',
+                detail: 'snippet indice: nome, tabella e colonna',
+                kind: monaco.languages.CompletionItemKind.Snippet,
+                insertText: '[${1:nome}] ON [${2:tabella}] (${3:colonna})',
+                insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                range,
+              })
+              return { suggestions }
+            }
+            if (idxCtx === 'table') {
+              for (const t of st.summary.tables) {
+                push({
+                  label: qualified(t.schema, t.name),
+                  detail: `${t.columnCount} col.`,
+                  kind: monaco.languages.CompletionItemKind.Struct,
+                  insertText: qualified(t.schema, t.name),
+                  range,
+                  filterText: t.name,
+                })
+              }
+              return { suggestions }
+            }
+
+            // FROM t WITH ( → hint di tabella (NOLOCK…)
+            if (detectTableHintsContext(textBefore)) {
+              for (const h of TSQL_TABLE_HINTS) {
+                push({
+                  label: h.name,
+                  detail: h.detail,
+                  kind: monaco.languages.CompletionItemKind.Constant,
+                  insertText: h.name,
+                  range,
+                  filterText: h.name,
+                })
+              }
+              return { suggestions }
+            }
+
+            // Funzioni finestra: dentro OVER( ... ) → PARTITION BY / ORDER BY / ROWS / RANGE
+            const overCtx = detectOverContext(textBefore)
+            if (overCtx) {
+              const list =
+                overCtx === 'empty'
+                  ? TSQL_OVER_STARTS
+                  : overCtx === 'continue'
+                    ? TSQL_OVER_CONTINUE
+                    : TSQL_OVER_FRAMES
+              for (const o of list) {
+                push({
+                  label: o.name,
+                  detail: o.detail,
+                  kind: monaco.languages.CompletionItemKind.Snippet,
+                  insertText: o.insertText,
+                  insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                  range,
+                  filterText: o.name,
+                })
+              }
+              return { suggestions }
+            }
+
+            // Variabili dichiarate (@var): "select @p" dopo un DECLARE → @t, @prova
+            if (detectVariableContext(textBefore)) {
+              const vars = extractDeclaredVariables(textBefore)
+              if (vars.length > 0) {
+                const prefixLen = variablePrefixLen(textBefore)
+                const startOffset = cursorOffset - prefixLen
+                const startPos = model.getPositionAt(startOffset)
+                const endPos = model.getPositionAt(cursorOffset)
+                const varRange = new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column)
+                for (const v of vars) {
+                  push({
+                    label: v.name,
+                    detail: `${v.dataType} · variabile dichiarata`,
+                    kind: monaco.languages.CompletionItemKind.Variable,
+                    insertText: v.name,
+                    range: varRange,
+                    filterText: v.name,
+                  })
+                }
+                return { suggestions }
+              }
+            }
+
             // Snippet statement completi: a inizio statement (dopo ';', GO o vuoto),
             // digitando "ins"/"sel"/"upd"/"del"/"mer" propone il template con tab-stop
             {
@@ -240,7 +575,9 @@ export default function SqlEditor({
                     insertText: sn.insertText,
                     insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                     range,
-                    filterText: word.word,
+                    // filterText stabile = label ("INSERT INTO"…): con la parola digitata
+                    // il popup si svuoterebbe digitando un carattere in più (es. "ins" → "inse").
+                    filterText: sn.label,
                   })
                 }
               }
@@ -399,38 +736,38 @@ export default function SqlEditor({
               }
             }
 
-            const contextTables = findTableRefs(textBefore)
+            // Contesto = SOLO lo statement corrente (prima del cursore): le query
+            // precedenti non devono filtrare le tabelle/colonne dello statement in
+            // corso (es. DAT_UDC già usata prima NON va nascosta a un nuovo JOIN).
+            const contextTables = findTableRefs(stmtBefore)
             const summaryTables = st.summary.tables
 
             // Aiuto SELECT: se il cursore è nella select-list (tra SELECT e FROM dello statement),
             // suggerisce le colonne delle tabelle referenziate in tutto lo statement (anche dopo il cursore)
-            const fullText = model.getValue()
-            const cursorOffset = model.getOffsetAt(position)
-            const stmtRange = statementRangeAt(fullText, cursorOffset)
-            const stmtText = fullText.slice(stmtRange.start, stmtRange.end)
-            const stmtBefore = stmtText.slice(0, cursorOffset - stmtRange.start)
-            const inSelectList = /\bSELECT\b/i.test(stmtBefore) && !/\bFROM\b/i.test(stmtBefore)
             if (inSelectList) {
               const sel = buildSelectListSuggestions(stmtText, stmtBefore, st.summary)
               // Con una parola in corso: solo i campi con affinità, ordinati per punteggio.
-              // filterText = parola digitata così Monaco NON li scarta (match triviale) e
-              // l'ordine resta il nostro (sortText).
+              // filterText = NOME colonna (stabile): Monaco rifiltra le voci memorizzate
+              // con la parola corrente, quindi con la parola digitata come filterText il
+              // popup sparirebbe appena si digita un carattere in più (es. "MIS" → "MIS_":
+              // "mis_" non fa più match con filterText "mis"). L'ordine resta il nostro (sortText).
               if (word.word.length > 0) {
-                const rankedCols = sel.columns
-                  .map(col => ({ col, score: columnMatchScore(word.word, col.name) + (col.isFk ? 150 : 0) }))
-                  .filter(x => x.score > 0)
-                  .sort((a, b) => b.score - a.score)
+                // solo i campi con affinità, ordinati per punteggio (il boost FK
+                // si applica ai campi che matchano già, non a tutte le chiavi)
+                const rankedCols = rankSelectListForTyped(sel.columns, word.word)
                 for (const { col, score } of rankedCols) {
                   push({
                     label: col.name,
                     detail: `${col.dataType}${col.isNullable ? ' NULL' : ''} · ${col.ownerLabel}${col.shared ? ' (condivisa)' : ''} · affinità ${score}`,
                     documentation: col.documentation,
                     kind: monaco.languages.CompletionItemKind.Field,
-                    insertText: sqlIdent(col.name),
+                    insertText: col.insertText,
                     range,
-                    filterText: word.word,
+                    filterText: completionFilterText(col.name),
                   })
                 }
+                // anche le funzioni (SUM/AVG/RANK/…) se matchano la parola digitata
+                pushSqlFunctions()
                 return { suggestions }
               }
               if (sel.starText) {
@@ -465,19 +802,32 @@ export default function SqlEditor({
                   detail: `${col.dataType}${col.isNullable ? ' NULL' : ''}${col.isIdentity ? ' IDENTITY' : ''} · ${col.ownerLabel}${col.shared ? ' (condivisa)' : ''}`,
                   documentation: col.documentation,
                   kind: monaco.languages.CompletionItemKind.Field,
-                  insertText: sqlIdent(col.name),
+                  insertText: col.insertText,
                   range,
                   filterText: col.name,
                 })
               }
-              // select-list: SOLO i campi delle tabelle dello statement (niente tabelle/proc/keyword)
+              // anche le funzioni T-SQL (SUM/AVG/RANK/…) e quelle utente del database
+              pushSqlFunctions()
+              // select-list: campi delle tabelle dello statement + funzioni (niente tabelle/proc/keyword)
               return { suggestions }
             }
 
             const contextTableInfos = contextTables
               .map(name => summaryTables.find(x => x.name.toLowerCase() === name))
               .filter((x): x is TableInfo => x !== undefined)
-            const rankedTables = rankTablesForJoin(st.summary.tables, st.summary.foreignKeys, contextTables, st.summary.cooccurrences ?? undefined, historyTableBoost)
+            // Posizione FROM/INTO/UPDATE/TABLE o inizio statement: clausola NUOVA →
+            // si propongono TUTTE le tabelle per utilizzo reale (le query precedenti
+            // non devono nascondere tabelle riscrivibili, es. RUN_MISSIONI).
+            // Posizione JOIN (o contesti generici): solo le tabelle collegabili al contesto.
+            const rankedTables = rankTablesForPosition(
+              st.summary.tables,
+              st.summary.foreignKeys,
+              contextTables,
+              isTablePosition || ctx.statementStart,
+              st.summary.cooccurrences ?? undefined,
+              historyTableBoost,
+            )
 
             // Dopo EXEC: SOLO le stored procedure (chiamabili)
             if (isExecPosition) {
@@ -525,10 +875,23 @@ export default function SqlEditor({
             // Con una parola in corso: solo le colonne con affinità, ordinate per punteggio,
             // più le controparti di JOIN (FK esatte o token condivisi) dopo "col = ".
             if (isColumnContext) {
+              // Dopo "ORDER " serve "BY" (completa ORDER BY) → prima di tutto, anche
+              // mentre si digita già "b"/"by" (il range copre la parola in corso).
+              if (isAfterOrderKeyword(prefix)) {
+                push({
+                  label: 'BY',
+                  detail: 'completa ORDER BY',
+                  kind: monaco.languages.CompletionItemKind.Keyword,
+                  insertText: 'BY',
+                  range,
+                  filterText: 'by',
+                })
+              }
               // Dentro una clausola ON con condizioni già scritte: propone anche le altre
               // coppie FK tra le stesse tabelle (es. dopo "MIS_D_CORRIDOIO = CEL_CORRIDOIO"
-              // suggerisce "AND MIS_D_CELLA = CEL_CELLA").
-              if (/\bON\b/i.test(stmtBefore)) {
+              // suggerisce "AND MIS_D_CELLA = CEL_CELLA") — solo se NON si sta digitando
+              // una colonna, altrimenti gli "AND ..." coprirebbero i campi delle tabelle.
+              if (shouldSuggestJoinConditions(word.word, stmtBefore)) {
                 for (const jc of buildJoinConditionSuggestions(stmtText, stmtBefore, st.summary)) {
                   push({
                     label: jc.text,
@@ -536,7 +899,7 @@ export default function SqlEditor({
                     kind: monaco.languages.CompletionItemKind.Snippet,
                     insertText: jc.text,
                     range,
-                    filterText: word.word.length > 0 ? word.word : jc.left,
+                    filterText: jc.left,
                   })
                 }
               }
@@ -549,38 +912,26 @@ export default function SqlEditor({
                   kind: monaco.languages.CompletionItemKind.Field,
                   insertText: col.insertText,
                   range,
-                  filterText: word.word.length > 0 ? word.word : col.name,
+                  // filterText stabile = nome colonna (vedi select-list: con la parola
+                  // digitata il popup sparirebbe digitando un carattere in più, es. "MIS_").
+                  filterText: completionFilterText(col.name),
                 })
               }
-              for (const f of SQL_FUNCTIONS) {
-                push({
-                  label: f,
-                  kind: monaco.languages.CompletionItemKind.Keyword,
-                  insertText: f,
-                  range,
-                })
-              }
-              // Funzioni utente del database (scalari e table-valued): molto usate nelle SP reali
-              // (es. dbo.fn_td, dbo.fn_InsTextStr, dbo.fn_getAbiFromFunzion)
-              for (const fn of st.summary.functions) {
-                push({
-                  label: `${fn.schema}.${fn.name}`,
-                  detail: fn.type === 'FN' ? 'funzione scalare' : fn.type === 'IF' ? 'funzione inline' : 'funzione tabella',
-                  kind: monaco.languages.CompletionItemKind.Function,
-                  insertText: qualified(fn.schema, fn.name),
-                  range,
-                  filterText: fn.name,
-                })
-              }
+              // funzioni T-SQL + funzioni utente del database
+              pushSqlFunctions()
               return { suggestions }
             }
 
             // Tabelle: prima quelle collegabili via FK (con clausola ON), poi per utilizzo reale.
-            // In posizione JOIN ogni relazione FK diventa una voce selezionabile (come Visual Studio);
-            // se la query usa già alias, il JOIN viene generato con alias brevi.
-            const queryUsesAliases = /(?:FROM|JOIN)\s+[^\s,;]+\s+(?:AS\s+)?[A-Za-z_][A-Za-z0-9_]*\s+(?:JOIN|ON|WHERE|,)/i.test(stmtText)
+            // In posizione JOIN ogni relazione FK diventa una voce selezionabile (come Visual Studio).
+            // NIENTE alias se non necessari: l'alias della tabella candidata si usa solo per i
+            // self-join (stessa tabella già nello statement); le tabelle del contesto con un
+            // alias già scritto nell'editor vengono riferite con il loro alias (altrimenti SQL invalido).
+            const stmtRefs = extractStatementTableRefs(stmtText)
+            const aliasedCtxTables = new Set(stmtRefs.filter(r => r.alias).map(r => r.tableName.toLowerCase()))
             for (const ranked of rankedTables) {
-              for (const item of buildJoinSuggestions(ranked, contextTableInfos, isJoinPosition, queryUsesAliases)) {
+              const needsAlias = contextTables.includes(ranked.table.name.toLowerCase())
+              for (const item of buildJoinSuggestions(ranked, contextTableInfos, isJoinPosition, needsAlias, aliasedCtxTables)) {
                 const details = [usageDetail(ranked.table.usage)]
                 if (ranked.hints.length > 0) details.push(`${ranked.hints.length} FK`)
                 const detail = details.filter(Boolean).join(' · ') || `tabella · ${ranked.table.columnCount} colonne`
@@ -609,7 +960,8 @@ export default function SqlEditor({
             // Posizione FROM/JOIN/UPDATE/INTO: SOLO tabelle e viste
             if (isTablePosition) return { suggestions }
 
-            if (!isExecPosition) {
+            // Stored procedure: solo se il contesto le ammette (statementStart/generic, non dopo tabella)
+            if (!isExecPosition && ctx.allowed.includes('procedures')) {
               for (const p of st.summary.procedures) {
                 const params = p.parameters ?? []
                 const suffix = params.length
@@ -628,28 +980,45 @@ export default function SqlEditor({
 
             if (!isTablePosition) {
               // Colonne delle tabelle referenziate nel testo prima del cursore
-              for (const ref of contextTables) {
-                const t = st.summary.tables.find(x => x.name.toLowerCase() === ref)
-                if (!t?.columns) continue
-                for (const c of t.columns) {
-                  push({
-                    label: c.name,
-                    detail: `colonna di ${t.schema}.${t.name} · ${c.dataType}${c.isNullable ? ' NULL' : ''}`,
-                    documentation: columnInfoMarkdown(t, c),
-                    kind: monaco.languages.CompletionItemKind.Field,
-                    insertText: sqlIdent(c.name),
-                    range,
-                  })
+              // (solo nei contesti che le ammettono: columnContext/selectList/generic)
+              if (ctx.allowed.includes('columns')) {
+                for (const ref of contextTables) {
+                  const t = st.summary.tables.find(x => x.name.toLowerCase() === ref)
+                  if (!t?.columns) continue
+                  for (const c of t.columns) {
+                    push({
+                      label: c.name,
+                      detail: `colonna di ${t.schema}.${t.name} · ${c.dataType}${c.isNullable ? ' NULL' : ''}`,
+                      documentation: columnInfoMarkdown(t, c),
+                      kind: monaco.languages.CompletionItemKind.Field,
+                      insertText: sqlIdent(c.name),
+                      range,
+                    })
+                  }
                 }
               }
 
-              for (const k of SQL_KEYWORDS) {
-                push({
-                  label: k,
-                  kind: monaco.languages.CompletionItemKind.Keyword,
-                  insertText: k,
-                  range,
-                })
+              // Keyword filtrate per contesto (dopo "FROM t " solo clausole, all'inizio solo statement)
+              if (ctx.allowed.includes('keywords')) {
+                // "order" (o prefisso) → "ORDER BY" come voce unica (non serve cercare BY a parte)
+                if (isOrderWordTyped(word.word)) {
+                  push({
+                    label: 'ORDER BY',
+                    detail: 'clausola ORDER BY',
+                    kind: monaco.languages.CompletionItemKind.Keyword,
+                    insertText: 'ORDER BY',
+                    range,
+                    filterText: 'order',
+                  })
+                }
+                for (const k of filterKeywordsForContext(ctx, SQL_KEYWORDS)) {
+                  push({
+                    label: k,
+                    kind: monaco.languages.CompletionItemKind.Keyword,
+                    insertText: k,
+                    range,
+                  })
+                }
               }
             }
           }
@@ -735,6 +1104,88 @@ export default function SqlEditor({
     update()
   }
 
+  /**
+   * Righe verticali tra BEGIN e END (e CASE/END): disegna una linea continua nella
+   * colonna della keyword di apertura per ogni riga del blocco, come in Visual Studio.
+   */
+  const registerBlockGuides = () => {
+    const model = editorRef.current?.getModel()
+    if (!model) return
+    const decorationIds: string[] = []
+    const update = () => {
+      const m = editorRef.current?.getModel()
+      if (!m) return
+      const text = m.getValue()
+      const guides = computeBlockGuides(text)
+      const newDecorations: monaco.editor.IModelDeltaDecoration[] = []
+      for (const g of guides) {
+        // linea verticale su ogni riga compresa tra apertura e chiusura (incluse).
+        // Sulle righe vuote o più corte della colonna della guida Monaco non disegna
+        // il box (la linea si interrompe): si usa la fine della riga e si compensa con
+        // un margine in "ch" (classe sql-guide-offset-N) per restare sulla colonna giusta.
+        for (let line = g.openLine; line <= g.closeLine; line++) {
+          const lineLen = m.getLineLength(line)
+          const effCol = Math.min(g.column, Math.max(1, lineLen + 1))
+          const offset = g.column - effCol
+          const cls =
+            `sql-block-guide sql-guide-depth-${Math.min(g.depth, 4)}` +
+            (offset > 0 ? ` sql-guide-offset-${Math.min(offset, 20)}` : '')
+          newDecorations.push({
+            range: new monaco.Range(line, effCol, line, effCol),
+            options: {
+              isWholeLine: false,
+              // classe custom: disegna il bordo verticale (CSS in index.css)
+              beforeContentClassName: cls,
+            },
+          })
+        }
+        // evidenzia le keyword di apertura/chiusura (END alla colonna della guida,
+        // non alla colonna 1: per i blocchi indentati l'evidenza sarebbe sugli spazi)
+        const openRange = new monaco.Range(g.openLine, g.column, g.openLine, g.column + (g.kind === 'if' ? 2 : 5))
+        newDecorations.push({
+          range: openRange,
+          options: { inlineClassName: 'sql-block-keyword' },
+        })
+        const closeRange = new monaco.Range(g.closeLine, g.column, g.closeLine, g.column + 3)
+        newDecorations.push({
+          range: closeRange,
+          options: { inlineClassName: 'sql-block-keyword' },
+        })
+      }
+      const old = decorationIds.splice(0)
+      decorationIds.push(...m.deltaDecorations(old, newDecorations))
+    }
+    const sub = model.onDidChangeContent(() => update())
+    disposablesRef.current.push({ dispose: () => sub.dispose() })
+    update()
+  }
+
+  /**
+   * Folding: chiudi/espandi porzioni di codice con le frecce nella gutter.
+   * Copre blocchi BEGIN/END, regioni SSMS (--#region/--#endregion) e commenti
+   * a blocco su più righe. Scorciatoie Monaco: Ctrl+Shift+[ (chiudi), Ctrl+Shift+]
+   * (apri), Ctrl+K Ctrl+L (alterna), Ctrl+K Ctrl+0 (chiudi tutto), Ctrl+K Ctrl+J (apri tutto).
+   */
+  const registerFolding = () => {
+    disposablesRef.current.push(
+      monaco.languages.registerFoldingRangeProvider('sql', {
+        provideFoldingRanges: model => {
+          const ranges = computeFoldingRanges(model.getValue())
+          return ranges.map(r => ({
+            start: r.start,
+            end: r.end,
+            kind:
+              r.kind === 'region'
+                ? monaco.languages.FoldingRangeKind.Region
+                : r.kind === 'comment'
+                  ? monaco.languages.FoldingRangeKind.Comment
+                  : undefined,
+          }))
+        },
+      }),
+    )
+  }
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2">
@@ -742,11 +1193,12 @@ export default function SqlEditor({
           <Button
             variant="primary"
             onClick={() => {
-              const sql = editorRef.current?.getValue() ?? ''
+              const sql = getSqlToExecute()
               recordTablesFromSql(sql)
               onExecute(sql)
             }}
             loading={executing}
+            title="Esegui (F5 / Ctrl+Invio) — se hai selezionato del testo esegue solo la selezione"
           >
             <Play className="h-4 w-4" /> Esegui
           </Button>
@@ -759,7 +1211,7 @@ export default function SqlEditor({
           <Button variant="ghost" onClick={() => onOpenFile?.()} title="Apri file .sql (permette di sovrascrivere l'originale)">
             <FolderOpen className="h-4 w-4" /> Apri file
           </Button>
-          <Button variant="secondary" onClick={handleFormat}>
+          <Button variant="secondary" onClick={handleFormat} title="Formatta (Ctrl+Shift+F) — con una selezione formatta solo quella parte">
             <Wand2 className="h-4 w-4" /> Formatta
           </Button>
           <Button
@@ -816,6 +1268,12 @@ export default function SqlEditor({
             tabSize: 2,
             padding: { top: 10 },
             renderLineHighlight: 'all',
+            // guide di indentazione verticali (visibili nei blocchi BEGIN/END dopo la formattazione)
+            guides: { bracketPairs: false, indentation: true, highlightActiveIndentation: true },
+            // folding: frecce nella gutter per chiudere porzioni di codice (BEGIN/END, --#region, commenti)
+            folding: true,
+            foldingHighlight: true,
+            showFoldingControls: 'always',
             suggest: { showWords: false },
             quickSuggestions: { other: 'on', comments: false, strings: false },
             wordBasedSuggestions: 'off',

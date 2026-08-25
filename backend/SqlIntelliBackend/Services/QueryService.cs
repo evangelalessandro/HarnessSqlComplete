@@ -17,6 +17,8 @@ public class QueryService
         var sets = new List<QueryResultSet>();
         long totalAffected = 0;
         string? error = null;
+        // riga di inizio del batch in esecuzione (per riportare la riga esatta negli errori)
+        var currentStartLine = 1;
 
         try
         {
@@ -24,37 +26,45 @@ public class QueryService
             conn.FireInfoMessageEventOnUserErrors = true;
             conn.InfoMessage += (_, e) =>
             {
+                // con FireInfoMessageEventOnUserErrors gli errori di sintassi arrivano qui:
+                // riporta la riga assoluta (i PRINT hanno Number 0 → niente prefisso)
                 foreach (SqlError err in e.Errors)
-                    messages.Add(err.Message);
+                {
+                    var text = err.Number == 0
+                        ? err.Message
+                        : $"Riga {currentStartLine + Math.Max(0, err.LineNumber - 1)}: {err.Message}";
+                    messages.Add(text);
+                }
             };
             await conn.OpenAsync(ct);
 
-            var batches = SqlBatchSplitter.Split(sql);
+            var batches = SqlBatchSplitter.SplitWithLines(sql);
             if (batches.Count == 0)
                 throw new InvalidOperationException("Nessuna istruzione SQL da eseguire.");
 
             foreach (var batch in batches)
             {
+                currentStartLine = batch.StartLine;
                 await using var cmd = conn.CreateCommand();
-                cmd.CommandText = batch;
+                cmd.CommandText = batch.Text;
                 cmd.CommandTimeout = timeoutSeconds ?? 30;
                 cmd.StatementCompleted += (_, e) => totalAffected += e.RecordCount;
 
                 await using var reader = await cmd.ExecuteReaderAsync(ct);
-                var first = true;
                 do
                 {
                     var schema = reader.GetColumnSchema();
                     if (schema.Count == 0)
                     {
+                        // Statement senza result set (UPDATE/INSERT/DELETE/PRINT…):
+                        // niente set vuoto — come SSMS, le righe interessate finiscono nei messaggi,
+                        // così il client mostra la schermata dei PRINT quando non c'è una SELECT.
                         var affected = reader.RecordsAffected;
                         if (affected >= 0)
                         {
                             totalAffected += affected;
-                            if (first && sets.Count == 0)
-                                sets.Add(new QueryResultSet([], [], 0, affected, false));
+                            messages.Add(affected == 1 ? "(1 riga interessata)" : $"({affected} righe interessate)");
                         }
-                        first = false;
                         continue;
                     }
 
@@ -79,13 +89,23 @@ public class QueryService
                         rows.Add(row);
                     }
                     sets.Add(new QueryResultSet(columns, rows, rows.Count, 0, truncated));
-                    first = false;
                 } while (await reader.NextResultAsync(ct));
             }
         }
         catch (OperationCanceledException)
         {
             error = "Query annullata (timeout).";
+        }
+        catch (SqlException ex)
+        {
+            // riporta la riga assoluta dello script (SQL Server dà la riga relativa al batch)
+            var parts = new List<string>();
+            foreach (SqlError err in ex.Errors)
+            {
+                var line = err.LineNumber > 0 ? currentStartLine + err.LineNumber - 1 : currentStartLine;
+                parts.Add($"Riga {line}: {err.Message}");
+            }
+            error = string.Join(Environment.NewLine, parts);
         }
         catch (Exception ex)
         {

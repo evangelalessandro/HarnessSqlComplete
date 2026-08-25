@@ -187,6 +187,10 @@ export interface FormatProfile {
   breakBeforeHaving: boolean
   breakBeforeOrderBy: boolean
   breakBeforeUnion: boolean
+  /** A capo prima di INTO (SELECT ... INTO) e prima di AND/OR nelle condizioni. */
+  breakBeforeInto: boolean
+  breakBeforeAnd: boolean
+  breakBeforeOr: boolean
   /** Select list su righe separate (stack) con indentazione. */
   stackSelectColumns: boolean
   selectColumnIndent: number
@@ -238,6 +242,9 @@ export function buildFormatProfile(xml: string): FormatProfile {
     breakBeforeHaving: bool('Select_Having_LineBreakBeforeHaving', true),
     breakBeforeOrderBy: bool('Select_OrderBy_LineBreakBeforeOrder', true),
     breakBeforeUnion: bool('UnionExceptIntersect_LineBreakBeforeUnion', true),
+    breakBeforeInto: bool('Select_Into_LineBreakBeforeInto', true),
+    breakBeforeAnd: bool('Select_Where_LineBreakBeforeAnd', true),
+    breakBeforeOr: bool('Select_Where_LineBreakBeforeOr', true),
     stackSelectColumns: bool('Select_SelectList_StackColumns', true),
     selectColumnIndent: num('Select_SelectList_IndentColumnList_Size', 3),
     joinIndent: num('Select_From_Join_IndentJoinKeyword_Size', 2),

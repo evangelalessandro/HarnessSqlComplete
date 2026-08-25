@@ -1,28 +1,43 @@
 // Formattatore T-SQL basato sul profilo FormatProfile (stile Redgate/SQL Prompt).
-// Tokenizza il testo (rispettando stringhe e commenti), poi ricostruisce le righe
-// applicando le regole del profilo: a-capo prima delle clausole, indentazioni,
-// stacked select list, INSERT/VALUES, UPDATE/SET, case delle keyword.
+// Due motori:
+//  1) formatSqlWithProfile  → query semplici (SELECT/INSERT/UPDATE/DELETE/MERGE)
+//  2) formatRoutineWithProfile → routine (procedure/funzioni/trigger) con blocchi:
+//     firma con parametri allineati e virgola iniziale, AS su riga propria,
+//     corpo indentato, BEGIN/END, IF/ELSE, WHILE, CASE/WHEN/THEN/END,
+//     EXEC con parametri allineati, DECLARE, label a margine, GO.
 
 import type { FormatProfile } from './formatProfile'
 
 type Token =
-  | { type: 'word'; text: string }
-  | { type: 'string'; text: string }
-  | { type: 'comment'; text: string }
-  | { type: 'punct'; text: string }
+  | { type: 'word'; text: string; blank?: number }
+  | { type: 'string'; text: string; blank?: number }
+  | { type: 'comment'; text: string; ownLine?: boolean; blank?: number }
+  | { type: 'punct'; text: string; blank?: number }
 
 /** Tokenizza il testo SQL rispettando stringhe, commenti e operatori. */
 export function tokenizeSqlText(text: string): Token[] {
   const tokens: Token[] = []
   let i = 0
   const n = text.length
+  // true se, da inizio riga, non è ancora comparso codice (solo spazi)
+  let atLineStart = true
+  // righe vuote (a-capo consecutivi) incontrate dall'ultimo token emesso
+  let pendingBlank = 0
+  const pushToken = (t: Token) => {
+    if (pendingBlank > 0) {
+      t.blank = pendingBlank
+      pendingBlank = 0
+    }
+    tokens.push(t)
+  }
   while (i < n) {
     const ch = text[i]
     // commento di riga
     if (ch === '-' && text[i + 1] === '-') {
       const end = text.indexOf('\n', i)
       const slice = text.slice(i, end === -1 ? n : end)
-      tokens.push({ type: 'comment', text: slice })
+      pushToken({ type: 'comment', text: slice, ownLine: atLineStart })
+      atLineStart = false
       i += slice.length
       continue
     }
@@ -30,7 +45,9 @@ export function tokenizeSqlText(text: string): Token[] {
     if (ch === '/' && text[i + 1] === '*') {
       const end = text.indexOf('*/', i + 2)
       const slice = text.slice(i, end === -1 ? n : end + 2)
-      tokens.push({ type: 'comment', text: slice })
+      // su riga propria se inizia a inizio riga oppure occupa più righe
+      pushToken({ type: 'comment', text: slice, ownLine: atLineStart || slice.includes('\n') })
+      atLineStart = false
       i += slice.length
       continue
     }
@@ -49,31 +66,56 @@ export function tokenizeSqlText(text: string): Token[] {
         }
         i++
       }
-      tokens.push({ type: 'string', text: text.slice(start, i) })
+      pushToken({ type: 'string', text: text.slice(start, i) })
+      atLineStart = false
+      continue
+    }
+    // identificatore tra parentesi quadre: [dbo].[Nome] resta un unico token
+    if (ch === '[') {
+      const end = text.indexOf(']', i + 1)
+      const slice = text.slice(i, end === -1 ? n : end + 1)
+      pushToken({ type: 'word', text: slice })
+      atLineStart = false
+      i += slice.length
       continue
     }
     // parola/identificatore (con @ per variabili, e numeri)
     if (/[A-Za-z_@]/.test(ch) || (ch >= '0' && ch <= '9')) {
       const m = /^[A-Za-z_@][A-Za-z0-9_@]*|\d+(?:\.\d+)?/.exec(text.slice(i))
       if (m) {
-        tokens.push({ type: 'word', text: m[0] })
+        pushToken({ type: 'word', text: m[0] })
+        atLineStart = false
         i += m[0].length
         continue
       }
     }
-    // spazi bianchi: saltati (la ricostruzione decide gli spazi)
+    // spazi bianchi: saltati (la ricostruzione decide gli spazi), ma si contano
+    // le righe vuote tra i token (a-capo immediatamente seguiti da un altro a-capo)
     if (/\s/.test(ch)) {
-      i++
+      let blank = 0
+      while (i < n && /\s/.test(text[i])) {
+        if (text[i] === '\n') {
+          // riga vuota: dopo questo a-capo arriva subito un altro a-capo (o spazi + a-capo)
+          let j = i + 1
+          while (j < n && (text[j] === ' ' || text[j] === '\t' || text[j] === '\r')) j++
+          if (j < n && text[j] === '\n') blank++
+          atLineStart = true
+        }
+        i++
+      }
+      pendingBlank = blank
       continue
     }
     // punteggiatura/operatori (max 2 caratteri)
     const two = text.slice(i, i + 2)
     if (['>=', '<=', '<>', '!=', '||', '::', '->', '=>'].includes(two)) {
-      tokens.push({ type: 'punct', text: two })
+      pushToken({ type: 'punct', text: two })
+      atLineStart = false
       i += 2
       continue
     }
-    tokens.push({ type: 'punct', text: ch })
+    pushToken({ type: 'punct', text: ch })
+    atLineStart = false
     i++
   }
   return tokens
@@ -87,6 +129,14 @@ const KEYWORDS = new Set([
   'LIKE', 'BETWEEN', 'EXISTS', 'TOP', 'DISTINCT', 'CASE', 'ELSE', 'END', 'BEGIN', 'DECLARE',
   'EXEC', 'EXECUTE', 'PRINT', 'RETURN', 'IF', 'WHILE', 'ELSE', 'GO', 'WITH', 'TRUNCATE',
   'OUTPUT', 'OPTION', 'RECOMPILE', 'NOCOUNT', 'TRANSACTION', 'COMMIT', 'ROLLBACK', 'SAVE',
+  'PROCEDURE', 'FUNCTION', 'TRIGGER', 'CREATE', 'ALTER', 'DROP', 'GOTO', 'RAISERROR', 'THROW',
+  'TRY', 'CATCH', 'OPEN', 'CLOSE', 'FETCH', 'DEALLOCATE', 'BREAK', 'CONTINUE', 'WAITFOR',
+  'USE', 'TABLE', 'VIEW', 'CURSOR', 'LOCAL', 'FAST_FORWARD', 'READ_ONLY', 'FOR', 'INTO',
+  'SCOPE_IDENTITY', 'IDENTITY', 'BULK', 'CONVERT', 'CAST', 'ROW_NUMBER', 'DENSE_RANK', 'NTILE',
+  'LAG', 'LEAD', 'FIRST_VALUE', 'LAST_VALUE', 'NEXT', 'PRIOR', 'ABSOLUTE', 'RELATIVE', 'SCROLL',
+  'XACT_ABORT', 'ANSI_NULLS', 'QUOTED_IDENTIFIER', 'NOCOUNT', 'ARITHABORT', 'CONCAT_NULL_YIELDS_NULL',
+  'NUMERIC_ROUNDABORT', 'ANSI_PADDING', 'ANSI_WARNINGS', 'CURSOR_CLOSE_ON_COMMIT', 'IMPLICIT_TRANSACTIONS',
+  'LOCK_TIMEOUT', 'REMOTE_PROC_TRANSACTIONS', 'ROWCOUNT', 'STATISTICS', 'DATEFORMAT', 'LANGUAGE',
 ])
 
 const TYPES = new Set([
@@ -99,7 +149,7 @@ const TYPES = new Set([
 /** Clausole principali di un statement (a livello top). */
 const CLAUSE_KEYWORDS = [
   'FROM', 'WHERE', 'GROUP', 'HAVING', 'ORDER', 'UNION', 'INNER', 'LEFT', 'RIGHT', 'FULL',
-  'CROSS', 'JOIN', 'ON', 'SET', 'VALUES', 'USING', 'WHEN', 'OUTPUT', 'OPTION',
+  'CROSS', 'JOIN', 'ON', 'SET', 'VALUES', 'USING', 'WHEN', 'OUTPUT', 'OPTION', 'INTO',
 ]
 
 interface Row {
@@ -107,38 +157,61 @@ interface Row {
   text: string
 }
 
+/** True se il testo è una routine (procedura/funzione/trigger) o codice procedurale. */
+export function isRoutineText(sql: string): boolean {
+  // Consapevole di stringhe e commenti (via tokenizer): la parola "PRINT" dentro
+  // 'To Print' NON è codice procedurale (bug che instradava le query al motore sbagliato).
+  const words = tokenizeSqlText(sql)
+    .filter(t => t.type === 'word')
+    .map(t => t.text.toUpperCase())
+  if (words.length === 0) return false
+
+  // firma di routine: CREATE/ALTER [OR ALTER] PROCEDURE|FUNCTION|TRIGGER|VIEW
+  let k = 0
+  if (words[k] === 'CREATE' || words[k] === 'ALTER') {
+    k++
+    if (words[k] === 'OR' && words[k + 1] === 'ALTER') k += 2
+    if (words[k] === 'PROCEDURE' || words[k] === 'PROC' || words[k] === 'FUNCTION' || words[k] === 'TRIGGER' || words[k] === 'VIEW') {
+      return true
+    }
+  }
+
+  // parole chiave di codice procedurale a livello di token
+  const ROUTINE_WORDS = new Set(['BEGIN', 'DECLARE', 'EXEC', 'EXECUTE', 'PRINT', 'GOTO', 'RAISERROR', 'THROW'])
+  if (words.some(w => ROUTINE_WORDS.has(w))) return true
+
+  // IF ... BEGIN insieme → corpo procedurale
+  const ifIdx = words.indexOf('IF')
+  if (ifIdx !== -1 && words.slice(ifIdx + 1).includes('BEGIN')) return true
+  return false
+}
+
 /**
- * Formatta un testo T-SQL secondo il profilo. La logica principale:
- * - se la query è "corta" e il profilo lo permette → una sola riga;
- * - altrimenti a-capo prima delle clausole principali con l'indentazione del profilo;
- * - select list impilata se richiesto; INSERT/VALUES e UPDATE/SET su righe separate.
+ * Formatta una query semplice secondo il profilo (motore query: clausole su righe proprie).
  */
 export function formatSqlWithProfile(sql: string, profile: FormatProfile): string {
+  if (isRoutineText(sql)) return formatRoutineWithProfile(sql, profile)
   const tokens = tokenizeSqlText(sql)
   if (tokens.length === 0) return sql
 
-  // case delle keyword/datatype
   const up = (t: Token): string => {
     if (t.type === 'word') {
       const upper = t.text.toUpperCase()
       if (profile.keywordUpper && KEYWORDS.has(upper)) return upper
       if (profile.dataTypeUpper && TYPES.has(upper)) return upper
-      if (t.text.startsWith('@')) return t.text // variabili invariati
+      if (t.text.startsWith('@')) return t.text
     }
     return t.text
   }
 
-  // query corta → una riga (con spazi normalizzati)
   const words = tokens.filter(t => t.type === 'word').length
   const chars = tokens.reduce((acc, t) => acc + t.text.length, 0)
   if (profile.singleLineShort && chars <= profile.singleLineMaxChars && words <= profile.singleLineMaxWords) {
     return joinTokensInline(tokens, up, profile)
   }
 
-  // trova le posizioni delle clausole a livello top (profondità parentesi 0)
   const clauseAt = new Map<number, string>()
   let depth = 0
-  let lastWord = ''
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i]
     if (t.type === 'comment') continue
@@ -160,9 +233,7 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
 
   const flush = () => {
     if (current.length > 0) {
-      // current contiene già stringhe convertite (up applicato nel loop)
-      const text = current.join(' ')
-      lines.push({ indent: currentIndent, text })
+      lines.push({ indent: currentIndent, text: current.join(' ') })
       current = []
     }
   }
@@ -177,10 +248,25 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
     const t = tokens[i]
     const clause = clauseAt.get(i)
 
+    // profondità parentesi reale (per non spezzare AND/virgole dentro le funzioni)
+    if (t.type === 'punct') {
+      if (t.text === '(') depth++
+      else if (t.text === ')') depth = Math.max(0, depth - 1)
+    }
+
+    // commento su riga propria: resta sulla sua riga (i token successivi ripartono da capo)
+    if (t.type === 'comment' && t.ownLine) {
+      flush()
+      lines.push({ indent: currentIndent, text: t.text })
+      current = []
+      continue
+    }
+
     if (clause) {
       const isJoinModifier = ['INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS'].includes(clause)
       const isJoinWord = clause === 'JOIN' || isJoinModifier
-      // "INNER JOIN": il modificatore e JOIN stanno sulla stessa riga
+      // SELECT ... INTO #tmp su riga propria (INSERT/MERGE INTO restano attaccati)
+      const isSelectStmt = /^\s*SELECT\b/i.test(lines.length > 0 ? lines[0].text : current.join(' '))
       if (isJoinModifier && profile.breakBeforeJoin) {
         const next = tokens[i + 1]
         const joinToken = next && next.type === 'word' && next.text.toUpperCase() === 'JOIN' ? next : null
@@ -194,6 +280,7 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
       }
       if (
         (clause === 'FROM' && profile.breakBeforeFrom) ||
+        (clause === 'INTO' && profile.breakBeforeInto && isSelectStmt) ||
         (isJoinWord && profile.breakBeforeJoin) ||
         (clause === 'ON' && profile.breakBeforeOn) ||
         (clause === 'WHERE' && profile.breakBeforeWhere) ||
@@ -210,6 +297,7 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
       ) {
         let indent = 0
         if (clause === 'FROM') indent = 0
+        else if (clause === 'INTO') indent = 0
         else if (isJoinWord) indent = profile.joinIndent
         else if (clause === 'WHERE') indent = 0
         else if (clause === 'HAVING') indent = 0
@@ -222,8 +310,19 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
       }
     }
 
-    // gestione della select list impilata: dopo SELECT, la prima virgola a livello top
-    // spezza in righe ogni colonna
+    // AND/OR nelle condizioni (WHERE/HAVING/ON): vanno a capo sullo stesso livello
+    const upper = t.type === 'word' ? t.text.toUpperCase() : ''
+    if (
+      (upper === 'AND' || upper === 'OR') &&
+      depth === 0 &&
+      current.length > 0 &&
+      (upper === 'AND' ? profile.breakBeforeAnd : profile.breakBeforeOr)
+    ) {
+      flush()
+      current = [up(t)]
+      continue
+    }
+
     if (
       profile.stackSelectColumns &&
       current.length > 0 &&
@@ -239,9 +338,7 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
       continue
     }
 
-    // spaziatura: virgola senza spazio prima, spazio dopo; operatori binari con spazi
     if (t.type === 'punct' && t.text === ',' && current.length > 0) {
-      // se non è inizio riga, evita lo spazio prima della virgola
       current[current.length - 1] = current[current.length - 1].replace(/\s+$/, '')
       current.push(',')
       continue
@@ -251,7 +348,6 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
       current.push(up(t))
     } else {
       const prev = current[current.length - 1]
-      // niente spazio prima di ',' o ')'
       if (t.type === 'punct' && (t.text === ',' || t.text === ')')) {
         current.push(up(t))
       } else if (prev === '(' || prev === '.') {
@@ -263,7 +359,6 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
   }
   flush()
 
-  // normalizza la spaziatura di ogni riga: niente spazi attorno al punto, prima della virgola
   const cleanLine = (s: string) =>
     s
       .replace(/\s*\.\s*/g, '.')
@@ -274,6 +369,527 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
       .trim()
   const rendered = lines.map(l => ' '.repeat(l.indent) + cleanLine(l.text)).join('\n')
   return rendered.trimEnd() + '\n'
+}
+
+/**
+ * Formatta una routine (procedura/funzione/trigger) con indentazione a blocchi,
+ * nello stile dell'esempio Redgate: firma con parametri allineati e virgola iniziale,
+ * AS su riga propria, corpo indentato, BEGIN/END, IF/ELSE, WHILE, CASE/WHEN/THEN/END,
+ * EXEC con parametri allineati, DECLARE con virgola iniziale, label a margine.
+ */
+export function formatRoutineWithProfile(sql: string, profile: FormatProfile): string {
+  const tokens = tokenizeSqlText(sql)
+  if (tokens.length === 0) return sql
+
+  const up = (t: Token): string => {
+    if (t.type === 'word') {
+      const upper = t.text.toUpperCase()
+      if (profile.keywordUpper && KEYWORDS.has(upper)) return upper
+      if (profile.dataTypeUpper && TYPES.has(upper)) return upper
+      if (t.text.startsWith('@')) return t.text
+    }
+    return t.text
+  }
+
+  const lines: Row[] = []
+  let indent = 0
+
+  const pushLine = (text: string, ind?: number) => {
+    const indN = ind ?? indent
+    // commento a blocco multilinea: preserva le righe interne (niente pulizia/spazi)
+    if (text.startsWith('/*') && text.includes('\n')) {
+      lines.push({ indent: indN, text })
+      return
+    }
+    const clean = text
+      .replace(/\s*\.\s*/g, '.')
+      .replace(/\s*,/g, ',')
+      .replace(/\(\s+/g, '(')
+      .replace(/\s+\)/g, ')')
+      // niente spazio tra tipo e parentesi: NVARCHAR(max), DECIMAL(18,2)
+      .replace(/\b(NVARCHAR|VARCHAR|NCHAR|CHAR|DECIMAL|NUMERIC|BINARY|VARBINARY|DATETIME2|DATETIMEOFFSET)\s*\(/gi, '$1(')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (clean.length > 0) lines.push({ indent: indN, text: clean })
+  }
+
+  // Passo 1: separa la firma (CREATE/ALTER ... fino alla parentesi di chiusura + AS) dal corpo
+  let depth = 0
+  let asIndex = -1
+  // cerca la prima '(' della firma
+  let sigOpen = -1
+  for (let k = 0; k < tokens.length; k++) {
+    if (tokens[k].type === 'word' && /^(CREATE|ALTER)$/i.test(tokens[k].text)) {
+      // salta fino alla '('
+      for (let m = k; m < tokens.length; m++) {
+        if (tokens[m].type === 'punct' && tokens[m].text === '(') {
+          sigOpen = m
+          break
+        }
+      }
+      break
+    }
+  }
+
+  if (sigOpen !== -1) {
+    // chiudi la firma
+    depth = 0
+    let sigClose = -1
+    for (let k = sigOpen; k < tokens.length; k++) {
+      const t = tokens[k]
+      if (t.type === 'punct' && t.text === '(') depth++
+      else if (t.type === 'punct' && t.text === ')') {
+        depth--
+        if (depth === 0) {
+          sigClose = k
+          break
+        }
+      }
+    }
+    if (sigClose !== -1) {
+      // trova AS dopo sigClose a livello top
+      depth = 0
+      for (let k = sigClose + 1; k < tokens.length; k++) {
+        const t = tokens[k]
+        if (t.type === 'punct') {
+          if (t.text === '(') depth++
+          else if (t.text === ')') depth = Math.max(0, depth - 1)
+          continue
+        }
+        if (depth === 0 && t.type === 'word' && t.text.toUpperCase() === 'AS') {
+          asIndex = k
+          break
+        }
+      }
+    }
+  }
+
+  // Passo 2: costruisci la firma (CREATE/ALTER ... NOME ( ... )) su righe proprie
+  const headerTokens = asIndex !== -1 ? tokens.slice(0, asIndex) : []
+  const bodyTokens = asIndex !== -1 ? tokens.slice(asIndex) : tokens
+
+  if (headerTokens.length > 0) {
+    // riga intestazione: CREATE/ALTER PROCEDURE [schema].[nome]
+    const header: string[] = []
+    let k = 0
+    while (k < headerTokens.length) {
+      const t = headerTokens[k]
+      if (t.type === 'punct' && t.text === '(') break
+      header.push(up(t))
+      k++
+    }
+    pushLine(header.join(' '), 0)
+
+    // parentesi aperta su riga propria
+    if (k < headerTokens.length && headerTokens[k].type === 'punct' && headerTokens[k].text === '(') {
+      pushLine('(', 0)
+      k++
+      // parametri: una riga per parametro con virgola iniziale
+      const paramLines: string[] = []
+      let currentParam: string[] = []
+      let parDepth = 1
+      const isParamSeparator = (tok: Token) => tok.type === 'punct' && tok.text === ',' && parDepth === 1
+      for (; k < headerTokens.length; k++) {
+        const t = headerTokens[k]
+        if (t.type === 'punct' && t.text === '(') {
+          parDepth++
+          currentParam.push(up(t))
+          continue
+        }
+        if (t.type === 'punct' && t.text === ')') {
+          parDepth--
+          if (parDepth === 0) {
+            if (currentParam.length > 0) paramLines.push(currentParam.join(' '))
+            break
+          }
+          currentParam.push(up(t))
+          continue
+        }
+        if (isParamSeparator(t)) {
+          if (currentParam.length > 0) paramLines.push(currentParam.join(' '))
+          currentParam = []
+          continue
+        }
+        currentParam.push(up(t))
+      }
+      const PARAM_INDENT = 4
+      paramLines.forEach((p, idx) => {
+        // la prima riga senza virgola iniziale, le altre con ','
+        pushLine(idx === 0 ? p : `,${p}`, PARAM_INDENT)
+      })
+      // parentesi chiusa su riga propria
+      pushLine(')', 0)
+    }
+    // AS su riga propria
+    pushLine('AS', 0)
+  }
+
+  // Passo 3: corpo — indentazione a blocchi
+  const body = bodyTokens // inizia con AS (o direttamente il codice se non c'era firma)
+  if (bodyTokens.length > 0 && bodyTokens[0].type === 'word' && bodyTokens[0].text.toUpperCase() === 'AS') {
+    // salta AS, il corpo inizia dopo
+  }
+
+  let startIdx = 0
+  if (body.length > 0 && body[0].type === 'word' && body[0].text.toUpperCase() === 'AS') startIdx = 1
+
+  // blocchi: BEGIN/END, IF/ELSE, WHILE, CASE/END, TRY/CATCH — il corpo di una routine
+  // con firma (CREATE/ALTER PROCEDURE/…) parte da 1 (dopo AS); un frammento
+  // procedurale senza firma (es. "IF … BEGIN … END") parte da 0
+  const hasRoutineHeader = /^(?:\s)*(?:CREATE|ALTER)\s+(?:OR\s+ALTER\s+)?(?:PROCEDURE|PROC|FUNCTION|TRIGGER|VIEW)\b/i.test(sql)
+  indent = hasRoutineHeader ? 1 : 0
+  // livelli di indentazione degli IF aperti (per allineare l'ELSE all'IF giusto)
+  const ifStack: number[] = []
+  const blockStack: ('begin' | 'case' | 'try')[] = []
+  let line: string[] = []
+  let lineIndent = indent
+
+  const flushLine = () => {
+    if (line.length > 0) {
+      pushLine(line.join(' '), lineIndent)
+      line = []
+    }
+  }
+
+  // Gestisce un "segmento" (statement) come sequenza di token fino a ';' o GO,
+  // spezzando a ogni keyword di statement a livello top, MA non dentro un CASE
+  // (CASE/WHEN/THEN/ELSE/END interni restano nel segmento).
+  const ROUTINE_STARTERS = new Set([
+    'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'SET', 'DECLARE', 'PRINT', 'RETURN', 'GOTO',
+    'RAISERROR', 'THROW', 'OPEN', 'CLOSE', 'FETCH', 'DEALLOCATE', 'BREAK', 'CONTINUE', 'WAITFOR',
+    'COMMIT', 'ROLLBACK', 'EXEC', 'EXECUTE', 'IF', 'WHILE', 'BEGIN', 'GO',
+  ])
+  let seg: Token[] = []
+  const segments: Token[][] = []
+  let segDepth = 0
+  let caseDepth = 0
+  const isLabelAt = (tokens: Token[], idx: number) =>
+    tokens[idx]?.type === 'word' &&
+    tokens[idx + 1]?.type === 'punct' &&
+    tokens[idx + 1].text === ':' &&
+    segDepth === 0
+  for (let k = startIdx; k < body.length; k++) {
+    const t = body[k]
+    // commento su riga propria (già indentato): segmento a sé, così resta sulla sua riga
+    // invece di essere aggregato allo statement precedente o scartato da BEGIN/END/IF
+    if (t.type === 'comment' && t.ownLine && segDepth === 0 && caseDepth === 0) {
+      if (seg.length > 0) segments.push(seg)
+      segments.push([t])
+      seg = []
+      continue
+    }
+    if (t.type === 'punct') {
+      if (t.text === '(') segDepth++
+      else if (t.text === ')') segDepth = Math.max(0, segDepth - 1)
+    }
+    const upper = t.type === 'word' ? t.text.toUpperCase() : ''
+    const isCaseOpen = segDepth === 0 && upper === 'CASE'
+    const isCaseEnd = segDepth === 0 && upper === 'END' && caseDepth > 0
+    // valuta gli starter con il caseDepth ATTUALE (prima di aggiornarlo): l'END del CASE
+    // non deve spezzare come fine blocco
+    const isStarter =
+      segDepth === 0 &&
+      caseDepth === 0 &&
+      t.type === 'word' &&
+      (ROUTINE_STARTERS.has(upper) || upper === 'END')
+    const isElse = segDepth === 0 && caseDepth === 0 && t.type === 'word' && upper === 'ELSE'
+    const isSemi = t.type === 'punct' && t.text === ';' && segDepth === 0
+    const isLab = isLabelAt(body, k)
+    if (isCaseOpen) caseDepth++
+    if (isCaseEnd) caseDepth = Math.max(0, caseDepth - 1)
+    if (isStarter || isElse || isSemi || isLab) {
+      if (seg.length > 0) segments.push(seg)
+      seg = []
+      if (isSemi) continue
+    }
+    seg.push(t)
+  }
+  if (seg.length > 0) segments.push(seg)
+
+  const isLabel = (tokens: Token[], idx: number) =>
+    tokens[idx]?.type === 'word' && tokens[idx + 1]?.type === 'punct' && tokens[idx + 1].text === ':'
+
+  let pendingIndent: number | null = null
+  // true quando è già stata emessa almeno una riga (la firma conta): le righe vuote
+  // iniziali del documento non vengono riprodotte
+  let emittedAny = headerTokens.length > 0
+
+  for (const segment of segments) {
+    if (segment.length === 0) continue
+    // righe vuote tra le istruzioni: preservate così come sono nell'originale.
+    // Dentro un'istruzione (token interni allo stesso segmento) vengono invece tolte.
+    const blanks = segment[0].blank ?? 0
+    if (blanks > 0 && emittedAny) {
+      for (let b = 0; b < blanks; b++) lines.push({ indent: 0, text: '' })
+    }
+    emittedAny = true
+    // GO → a margine
+    if (segment.length === 1 && segment[0].type === 'word' && segment[0].text.toUpperCase() === 'GO') {
+      flushLine()
+      pendingIndent = null
+      pushLine('GO', 0)
+      continue
+    }
+    // label (es. "end_ok:") → a margine
+    if (isLabel(segment, 0)) {
+      flushLine()
+      pushLine(`${up(segment[0])}:`, 0)
+      const rest = segment.slice(2)
+      if (rest.length > 0) {
+        // il resto dello statement parte dall'indent corrente del blocco
+        indent = Math.max(1, indent)
+        lineIndent = indent
+        line = rest.map(up)
+        flushLine()
+      }
+      continue
+    }
+
+    // primo token del segmento
+    const first = segment[0]
+    const firstUpper = first.type === 'word' ? first.text.toUpperCase() : ''
+
+    // commento su riga propria: resta sulla sua riga all'indent corrente del blocco.
+    // Non consuma pendingIndent: se è il corpo di un IF/WHILE senza BEGIN, lo statement
+    // successivo eredita comunque l'indentazione pendente.
+    if (segment.length === 1 && first.type === 'comment') {
+      flushLine()
+      pushLine(first.text, pendingIndent ?? indent)
+      continue
+    }
+
+    // BEGIN / IF / WHILE / CASE: apri blocco
+    if (firstUpper === 'BEGIN') {
+      flushLine()
+      pushLine('BEGIN', indent)
+      blockStack.push('begin')
+      indent++
+      continue
+    }
+    if (firstUpper === 'END') {
+      // chiude un blocco BEGIN (o il CASE inline è già gestito dentro lo statement)
+      indent = Math.max(0, indent - 1)
+      pendingIndent = null
+      flushLine()
+      const extra = segment.slice(1).map(up).join(' ')
+      pushLine(extra ? `END ${extra}` : 'END', indent)
+      if (blockStack.length > 0) blockStack.pop()
+      continue
+    }
+    if (firstUpper === 'ELSE') {
+      // l'ELSE si allinea all'IF a cui appartiene (livello registrato quando è stato
+      // emesso l'IF); il corpo dell'ELSE senza BEGIN parte indentato di +1
+      flushLine()
+      const rest = segment.slice(1).map(up).join(' ')
+      const level = ifStack.pop() ?? Math.max(0, indent - 1)
+      pushLine(rest ? `ELSE ${rest}` : 'ELSE', level)
+      if (/\bBEGIN\b/i.test(rest)) {
+        blockStack.push('begin')
+        indent = level + 1
+      } else {
+        // ELSE IF riapre un IF allo stesso livello; altrimenti è il corpo dell'ELSE
+        if (/\bIF\b/i.test(rest)) ifStack.push(level)
+        pendingIndent = level + 1
+      }
+      continue
+    }
+    if (firstUpper === 'IF' || firstUpper === 'WHILE') {
+      flushLine()
+      // registra il livello dell'IF (per allineare il suo ELSE)
+      if (firstUpper === 'IF') ifStack.push(indent)
+      // condizione sulla stessa riga, ma "BEGIN" successivo va su riga propria
+      const cond: string[] = []
+      let j = 0
+      let par = 0
+      for (; j < segment.length; j++) {
+        const t = segment[j]
+        if (t.type === 'punct') {
+          if (t.text === '(') par++
+          else if (t.text === ')') par = Math.max(0, par - 1)
+        }
+        if (t.type === 'word' && t.text.toUpperCase() === 'BEGIN' && par === 0 && j > 0) break
+        cond.push(up(t))
+      }
+      pushLine(cond.join(' '), indent)
+      const after = segment.slice(j)
+      if (after.length > 0 && after[0].type === 'word' && after[0].text.toUpperCase() === 'BEGIN') {
+        pushLine('BEGIN', indent)
+        blockStack.push('begin')
+        indent++
+        const rest = after.slice(1)
+        if (rest.length > 0) {
+          lineIndent = indent
+          line = rest.map(up)
+          flushLine()
+        }
+      } else {
+        // IF/WHILE senza BEGIN: il prossimo statement è il corpo condizionale (indentato +1)
+        pendingIndent = indent + 1
+      }
+      continue
+    }
+    if (firstUpper === 'CASE' || (firstUpper === 'SELECT' && segment.some(t => t.type === 'word' && t.text.toUpperCase() === 'CASE'))) {
+      // CASE espressione: apri case inline
+      if (firstUpper === 'CASE') {
+        flushLine()
+        pushLine('CASE', indent)
+        blockStack.push('case')
+        indent++
+        const rest = segment.slice(1)
+        if (rest.length > 0) {
+          lineIndent = indent
+          line = rest.map(up)
+          flushLine()
+        }
+        continue
+      }
+    }
+
+    // statement normale (SET, DECLARE, SELECT, INSERT, UPDATE, DELETE, EXEC, RETURN, PRINT...)
+    flushLine()
+    // se è il corpo di un IF/WHILE senza BEGIN, usa l'indentazione pendente
+    if (pendingIndent !== null) {
+      lineIndent = pendingIndent
+      pendingIndent = null
+    } else {
+      lineIndent = indent
+    }
+
+    // DECLARE: variabili su righe proprie con virgola iniziale
+    if (firstUpper === 'DECLARE') {
+      const vars: string[][] = []
+      let cur: string[] = []
+      let par = 0
+      for (let j = 0; j < segment.length; j++) {
+        const t = segment[j]
+        if (t.type === 'punct') {
+          if (t.text === '(') par++
+          else if (t.text === ')') par = Math.max(0, par - 1)
+        }
+        if (t.type === 'punct' && t.text === ',' && par === 0) {
+          if (cur.length > 0) vars.push(cur)
+          cur = []
+          continue
+        }
+        cur.push(up(t))
+      }
+      if (cur.length > 0) vars.push(cur)
+      vars.forEach((v, idx) => {
+        if (idx === 0) pushLine(v.join(' '), lineIndent)
+        else pushLine(`,` + v.join(' '), lineIndent)
+      })
+      continue
+    }
+
+    // EXEC: riga principale + parametri allineati con virgola iniziale
+    if (firstUpper === 'EXEC' || firstUpper === 'EXECUTE') {
+      const parts: string[] = []
+      let cur: string[] = []
+      let par = 0
+      for (let j = 0; j < segment.length; j++) {
+        const t = segment[j]
+        if (t.type === 'punct') {
+          if (t.text === '(') par++
+          else if (t.text === ')') par = Math.max(0, par - 1)
+        }
+        if (t.type === 'punct' && t.text === ',' && par === 0 && cur.length > 0) {
+          parts.push(cur.join(' '))
+          cur = []
+          continue
+        }
+        cur.push(up(t))
+      }
+      if (cur.length > 0) parts.push(cur.join(' '))
+      if (parts.length === 1) {
+        pushLine(parts[0], indent)
+      } else {
+        // allinea i parametri alla colonna di "exec ... " (primo token dopo exec)
+        const firstLine = parts[0]
+        const paramPad = firstLine.length + 1
+        pushLine(firstLine, indent)
+        for (let p = 1; p < parts.length; p++) {
+          pushLine(`,` + parts[p], Math.max(indent, Math.round(paramPad / 2)))
+        }
+      }
+      continue
+    }
+
+    // SELECT / INSERT / UPDATE / DELETE / SET: statement con clausole, con eventuale CASE inline
+    const caseLines = splitCaseLines(segment, up)
+    if (caseLines.length > 1) {
+      // il CASE inline viene spezzato su righe proprie indentate
+      caseLines.forEach(cl => pushLine(cl.text, lineIndent + cl.delta))
+    } else {
+      line = segment.map(up)
+      flushLine()
+    }
+  }
+
+  flushLine()
+
+  const unit = profile.tabSize || 2
+  const rendered = lines.map(l => ' '.repeat(l.indent * unit) + l.text).join('\n')
+  return rendered.trimEnd() + '\n'
+}
+
+interface CaseLine {
+  text: string
+  delta: number
+}
+
+/**
+ * Se il segmento contiene un CASE inline (es. "SELECT @x = CASE WHEN ... THEN ... ELSE ... END"),
+ * lo spezza in righe: CASE / WHEN / THEN / ELSE / END, ciascuna con la propria indentazione.
+ * Restituisce più righe solo se c'è un CASE; altrimenti una sola riga con delta 0.
+ */
+function splitCaseLines(segment: Token[], up: (t: Token) => string): CaseLine[] {
+  const idx = segment.findIndex(t => t.type === 'word' && t.text.toUpperCase() === 'CASE')
+  if (idx === -1) return [{ text: segment.map(up).join(' '), delta: 0 }]
+
+  const out: CaseLine[] = []
+  const head = segment.slice(0, idx)
+  if (head.length > 0) out.push({ text: head.map(up).join(' '), delta: 0 })
+
+  let depth = 0
+  let cur: string[] = []
+  let curDelta = 1
+  const flush = (text: string, delta: number) => {
+    const t = text.trim()
+    if (t.length > 0) out.push({ text: t, delta })
+  }
+  for (let i = idx; i < segment.length; i++) {
+    const t = segment[i]
+    const upper = t.type === 'word' ? t.text.toUpperCase() : ''
+    if (t.type === 'punct') {
+      if (t.text === '(') depth++
+      else if (t.text === ')') depth = Math.max(0, depth - 1)
+    }
+    // separatori del CASE a profondità 0
+    const isWhen = upper === 'WHEN' && depth === 0 && cur.length > 0
+    const isThen = upper === 'THEN' && depth === 0 && cur.length > 0
+    const isElse = upper === 'ELSE' && depth === 0 && cur.length > 0
+    const isEnd = upper === 'END' && depth === 0
+    if (isWhen || isThen || isElse || isEnd) {
+      flush(cur.join(' '), curDelta)
+      cur = []
+      if (upper === 'WHEN') curDelta = 2
+      else if (upper === 'THEN') curDelta = 3
+      else if (upper === 'ELSE') curDelta = 2
+      else curDelta = 1
+      cur.push(up(t))
+      if (isEnd) {
+        // END chiude: flush immediato e il resto continua sullo stesso livello
+        flush(cur.join(' '), 1)
+        cur = []
+        curDelta = 0
+        continue
+      }
+      continue
+    }
+    cur.push(up(t))
+  }
+  if (cur.length > 0) flush(cur.join(' '), curDelta)
+  return out
 }
 
 /** Unisce i token in una sola riga con spaziatura normale. */
@@ -291,7 +907,6 @@ function joinTokensInline(tokens: Token[], up: (t: Token) => string, profile: Fo
         continue
       }
       if (t.text === '(' || t.text === '.') {
-        // spazio prima di '(' tranne per le chiamate di funzione di sistema (COUNT(, ISNULL(, ...)
         if (t.text === '(' && !/(COUNT|SUM|AVG|MIN|MAX|COALESCE|ISNULL|NULLIF|CAST|CONVERT|UPPER|LOWER|LEN|SUBSTRING|LEFT|RIGHT|ROUND|ABS|DATEADD|DATEDIFF|YEAR|MONTH|DAY|IIF|GETDATE|GETUTCDATE|NEWID|POWER|SQRT|REPLACE|TRIM|RTRIM|LTRIM|CHARINDEX|PATINDEX|REVERSE|STUFF|FORMAT|TRY_CAST|TRY_CONVERT|SQUARE|CEILING|FLOOR|SIGN|EXP|LOG|LOG10|ISDATE|ISNUMERIC|IDENTITY|ROW_NUMBER|RANK|DENSE_RANK|NTILE|LAG|LEAD|FIRST_VALUE|LAST_VALUE)\($/i.test(out)) {
           out += ' ('
         } else {

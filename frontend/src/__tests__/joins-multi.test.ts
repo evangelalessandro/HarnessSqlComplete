@@ -295,13 +295,14 @@ describe('buildJoinConditionSuggestions: altre condizioni dello stesso JOIN', ()
     expect(res.some(r => r.text.includes('MIS_D_CORRIDOIO'))).toBe(false)
   })
 
-  it('senza condizioni già scritte nell\'ON: una voce per vincolo con tutte le coppie', () => {
+  it('senza condizioni già scritte nell\'ON: una voce per vincolo, SENZA "AND" iniziale', () => {
     const stmt = 'SELECT * FROM RUN_MISSIONI JOIN MAG_CELLE ON '
     const before = 'SELECT * FROM RUN_MISSIONI JOIN MAG_CELLE ON '
     const res = buildJoinConditionSuggestions(stmt, before, condSummary)
     expect(res.length).toBe(2)
-    expect(res.some(r => r.text === 'AND MIS_D_CORRIDOIO = CEL_CORRIDOIO AND MIS_D_CELLA = CEL_CELLA')).toBe(true)
-    expect(res.some(r => r.text === 'AND MIS_S_CORRIDOIO = CEL_CORRIDOIO AND MIS_S_CELLA = CEL_CELLA')).toBe(true)
+    expect(res.some(r => r.text === 'MIS_D_CORRIDOIO = CEL_CORRIDOIO AND MIS_D_CELLA = CEL_CELLA')).toBe(true)
+    expect(res.some(r => r.text === 'MIS_S_CORRIDOIO = CEL_CORRIDOIO AND MIS_S_CELLA = CEL_CELLA')).toBe(true)
+    expect(res.every(r => !r.text.startsWith('AND '))).toBe(true)
   })
 
   it('le coppie già scritte vengono escluse in entrambi gli ordini', () => {

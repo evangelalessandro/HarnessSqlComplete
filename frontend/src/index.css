@@ -60,6 +60,50 @@ body {
   border-radius: 2px;
 }
 
+/* Righe verticali di indentazione tra BEGIN/END e CASE/END (stile Visual Studio).
+   beforeContentClassName disegna un elemento prima del contenuto della riga:
+   il bordo sinistro crea la linea verticale continua. */
+.monaco-editor .sql-block-guide {
+  border-left: 1.5px solid rgba(56, 189, 248, 0.35);
+  margin-right: 3px;
+}
+.monaco-editor .sql-guide-depth-1 { border-left-color: rgba(52, 211, 153, 0.35); }
+.monaco-editor .sql-guide-depth-2 { border-left-color: rgba(167, 139, 250, 0.35); }
+.monaco-editor .sql-guide-depth-3 { border-left-color: rgba(251, 113, 133, 0.35); }
+.monaco-editor .sql-guide-depth-4 { border-left-color: rgba(45, 212, 191, 0.35); }
+
+/* Sulle righe vuote o più corte della colonna della guida, Monaco non disegna il box
+   nella posizione richiesta: lo si disegna all'inizio/fine della riga e lo si sposta
+   con un margine in unità "ch" (= larghezza di un carattere nei font monospazio),
+   così la linea verticale resta continua e allineata alla colonna del blocco. */
+.monaco-editor .sql-guide-offset-1 { margin-left: 1ch; }
+.monaco-editor .sql-guide-offset-2 { margin-left: 2ch; }
+.monaco-editor .sql-guide-offset-3 { margin-left: 3ch; }
+.monaco-editor .sql-guide-offset-4 { margin-left: 4ch; }
+.monaco-editor .sql-guide-offset-5 { margin-left: 5ch; }
+.monaco-editor .sql-guide-offset-6 { margin-left: 6ch; }
+.monaco-editor .sql-guide-offset-7 { margin-left: 7ch; }
+.monaco-editor .sql-guide-offset-8 { margin-left: 8ch; }
+.monaco-editor .sql-guide-offset-9 { margin-left: 9ch; }
+.monaco-editor .sql-guide-offset-10 { margin-left: 10ch; }
+.monaco-editor .sql-guide-offset-11 { margin-left: 11ch; }
+.monaco-editor .sql-guide-offset-12 { margin-left: 12ch; }
+.monaco-editor .sql-guide-offset-13 { margin-left: 13ch; }
+.monaco-editor .sql-guide-offset-14 { margin-left: 14ch; }
+.monaco-editor .sql-guide-offset-15 { margin-left: 15ch; }
+.monaco-editor .sql-guide-offset-16 { margin-left: 16ch; }
+.monaco-editor .sql-guide-offset-17 { margin-left: 17ch; }
+.monaco-editor .sql-guide-offset-18 { margin-left: 18ch; }
+.monaco-editor .sql-guide-offset-19 { margin-left: 19ch; }
+.monaco-editor .sql-guide-offset-20 { margin-left: 20ch; }
+
+/* Evidenziazione leggera delle keyword di blocco (BEGIN/END/CASE) */
+.monaco-editor .sql-block-keyword {
+  font-weight: 600;
+  background-color: rgba(56, 189, 248, 0.08);
+  border-radius: 2px;
+}
+
 /* Palette colori tabelle: un colore per tabella, condiviso dalle sue colonne.
    !important e il selettore sugli span interni servono a vincere sui colori
    dei token del tema Monaco (es. .mtk5) che altrimenti sovrascrivono la cascata. */

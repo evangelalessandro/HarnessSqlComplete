@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { MouseEvent, ReactNode } from 'react'
 import {
   Braces,
+  Boxes,
   ChevronDown,
   ChevronRight,
+  Database as DbIcon,
   Eye,
   FileCode2,
   Flame,
@@ -38,6 +41,10 @@ import {
 } from '../helpers'
 import { useDebounce } from '../hooks/useDebounce'
 import { Badge, Spinner } from './ui'
+import DockPanel from './DockPanel'
+import type { PanelPosition } from './DockPanel'
+import { DEFAULT_PANEL_STATE, dockSideFromDrop, normalizePanelState, resolveRightDock } from '../panelLayout'
+import type { PanelSize, PanelState } from '../panelLayout'
 import { ColumnHoverCard, TableHoverCard } from './HoverCards'
 import type { HoverRect, HoverTarget } from './HoverCards'
 
@@ -56,6 +63,10 @@ interface Props {
   dbColors?: Record<string, string>
   /** Imposta/rimuove (null) il colore personalizzato di un database. */
   onSetDbColor?: (database: string, color: string | null) => void
+  /** Elemento della colonna destra (in App): qui viene portato il pannello agganciato a destra. */
+  rightDockEl: HTMLElement | null
+  /** Notifica quale pannello è agganciato a destra (null = nessuno) per mostrare/nascondere la colonna. */
+  onRightDockChange: (panel: 'db' | 'objects' | null) => void
   /** Apre una stored procedure / funzione / vista / trigger: 'alter' genera ALTER, 'open' la definizione CREATE. */
   onOpenObject?: (
     kind: 'procedure' | 'function' | 'view' | 'trigger',
@@ -101,8 +112,117 @@ export default function Sidebar({
   onSwitchDatabase,
   dbColors,
   onSetDbColor,
+  rightDockEl,
+  onRightDockChange,
 }: Props) {
   const [query, setQuery] = useState('')
+  // Pannelli (stile Visual Studio): database in alto, oggetti+ricerca sotto.
+  // Ogni pannello è chiudibile, staccabile (floating), ridimensionabile e agganciabile
+  // a sinistra (sidebar) o a destra (colonna laterale); il divider tra i due è spostabile.
+  const [panels, setPanels] = useState<PanelState>(() => {
+    try {
+      const raw = localStorage.getItem('sql-intelli:panels')
+      if (raw) return normalizePanelState(JSON.parse(raw))
+    } catch {
+      /* ignora */
+    }
+    return DEFAULT_PANEL_STATE
+  })
+  const persistPanels = (next: PanelState) => {
+    setPanels(next)
+    try {
+      localStorage.setItem('sql-intelli:panels', JSON.stringify(next))
+    } catch {
+      /* ignora */
+    }
+  }
+
+  // Pannello attualmente agganciato a destra (al massimo uno)
+  const rightPanelId: 'db' | 'objects' | null =
+    panels.db.open && !panels.db.floating && panels.db.dockSide === 'right'
+      ? 'db'
+      : panels.objects.open && !panels.objects.floating && panels.objects.dockSide === 'right'
+        ? 'objects'
+        : null
+
+  // Mostra/nasconde la colonna destra in App quando cambia l'aggancio
+  useEffect(() => {
+    onRightDockChange(rightPanelId)
+  }, [rightPanelId, onRightDockChange])
+
+  // Trascinamento del divider tra Database e Oggetti (regola l'altezza del pannello DB)
+  const sidebarRef = useRef<HTMLDivElement | null>(null)
+  const dragDivider = useRef(false)
+  const onDividerMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    dragDivider.current = true
+    const onMove = (ev: globalThis.MouseEvent) => {
+      if (!dragDivider.current) return
+      const rect = sidebarRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const h = Math.min(rect.height - 60, Math.max(60, ev.clientY - rect.top))
+      persistPanels({ ...panels, db: { ...panels.db, dockHeight: Math.round(h) } })
+    }
+    const onUp = () => {
+      dragDivider.current = false
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  const moveDbPanel = (pos: PanelPosition) => persistPanels({ ...panels, db: { ...panels.db, ...pos } })
+  const moveObjectsPanel = (pos: PanelPosition) => persistPanels({ ...panels, objects: { ...panels.objects, ...pos } })
+  const resizeDbPanel = (size: PanelSize) => persistPanels({ ...panels, db: { ...panels.db, ...size } })
+  const resizeObjectsPanel = (size: PanelSize) => persistPanels({ ...panels, objects: { ...panels.objects, ...size } })
+  const setDbOpen = (open: boolean) => persistPanels({ ...panels, db: { ...panels.db, open } })
+  const setObjectsOpen = (open: boolean) => persistPanels({ ...panels, objects: { ...panels.objects, open } })
+
+  const dockDbLeft = () => persistPanels({ ...panels, db: { ...panels.db, floating: false, dockSide: 'left' } })
+  const dockObjectsLeft = () => persistPanels({ ...panels, objects: { ...panels.objects, floating: false, dockSide: 'left' } })
+
+  const floatDb = () => persistPanels({ ...panels, db: { ...panels.db, floating: true } })
+  const floatObjects = () => persistPanels({ ...panels, objects: { ...panels.objects, floating: true } })
+
+  // Aggancia a destra: un solo pannello per volta (l'altro, se c'era, torna a sinistra)
+  const dockDbRight = () => {
+    const { movedToLeft } = resolveRightDock('db', rightPanelId)
+    persistPanels({
+      ...panels,
+      db: { ...panels.db, floating: false, dockSide: 'right' },
+      objects: movedToLeft === 'objects' ? { ...panels.objects, floating: false, dockSide: 'left' } : panels.objects,
+    })
+  }
+  const dockObjectsRight = () => {
+    const { movedToLeft } = resolveRightDock('objects', rightPanelId)
+    persistPanels({
+      ...panels,
+      objects: { ...panels.objects, floating: false, dockSide: 'right' },
+      db: movedToLeft === 'db' ? { ...panels.db, floating: false, dockSide: 'left' } : panels.db,
+    })
+  }
+
+  // Rilascio del drag di un pannello flottante: sopra la sidebar → sinistra;
+  // sul bordo destro dello schermo → destra; altrimenti resta flottante.
+  const dbDragEnd = (point: { x: number; y: number }) => {
+    const side = dockSideFromDrop(
+      point,
+      { width: window.innerWidth, height: window.innerHeight },
+      sidebarRef.current?.getBoundingClientRect() ?? null,
+    )
+    if (side === 'left') dockDbLeft()
+    else if (side === 'right') dockDbRight()
+  }
+  const objectsDragEnd = (point: { x: number; y: number }) => {
+    const side = dockSideFromDrop(
+      point,
+      { width: window.innerWidth, height: window.innerHeight },
+      sidebarRef.current?.getBoundingClientRect() ?? null,
+    )
+    if (side === 'left') dockObjectsLeft()
+    else if (side === 'right') dockObjectsRight()
+  }
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     tables: true,
     views: true,
@@ -378,9 +498,65 @@ export default function Sidebar({
     return <div className="p-4 text-sm text-zinc-600">Metadati non disponibili.</div>
   }
 
-  return (
-    <div className="flex h-full flex-col">
-      <div className="border-b border-zinc-800 p-3">
+  const clearCloseTimerAndHover = () => {
+    clearCloseTimer()
+    setHover(null)
+  }
+
+  // Contenuti dei pannelli: riutilizzati in ogni posizione (ancorato a sinistra,
+  // flottante o ancorato a destra via portal)
+  const dbListContent = () => (
+    <div className="space-y-0.5 p-2">
+      {summary.databases.map(d => {
+        const isActive = d.name === activeDatabase
+        const isOpen = isActive && !collapsedDb
+        const objectCount =
+          isActive
+            ? summary.tables.length +
+              summary.views.length +
+              summary.procedures.length +
+              summary.functions.length +
+              summary.triggers.length
+            : 0
+        return (
+          <div key={d.name}>
+            <button
+              onClick={() => toggleDbNode(d.name)}
+              onContextMenu={e => {
+                e.preventDefault()
+                setColorMenu({ db: d.name, x: e.clientX, y: e.clientY })
+              }}
+              className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs font-semibold transition-colors ${
+                isActive ? 'text-sky-300' : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200'
+              }`}
+              title={`${d.name}${isActive ? ' (attivo)' : ''} — click per ${isActive ? 'aprire/chiudere gli oggetti' : 'attivare'}, tasto destro per il colore`}
+            >
+              {isOpen ? (
+                <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+              )}
+              <span
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ backgroundColor: dbTabColor(d.name, dbColors) }}
+              />
+              <span className="min-w-0 break-all font-mono">{d.name}</span>
+              {isActive && <Badge tone="sky">attivo</Badge>}
+              {isActive && objectCount > 0 && (
+                <span className="ml-auto rounded-full bg-zinc-800 px-1.5 text-[10px] text-zinc-400">
+                  {objectCount}
+                </span>
+              )}
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
+
+  const objectsContent = () => (
+    <>
+      <div className="shrink-0 border-b border-zinc-800 p-2">
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
           <input
@@ -391,62 +567,10 @@ export default function Sidebar({
           />
         </div>
       </div>
-
       <div
         className="min-h-0 flex-1 overflow-y-auto p-2"
-        onScroll={() => {
-          clearCloseTimer()
-          setHover(null)
-        }}
+        onScroll={clearCloseTimerAndHover}
       >
-        {/* Database dell'istanza (in alto): il nodo attivo si espande con i suoi oggetti */}
-        <div className="mb-1 space-y-0.5">
-          {summary.databases.map(d => {
-            const isActive = d.name === activeDatabase
-            const isOpen = isActive && !collapsedDb
-            const objectCount =
-              isActive
-                ? summary.tables.length +
-                  summary.views.length +
-                  summary.procedures.length +
-                  summary.functions.length +
-                  summary.triggers.length
-                : 0
-            return (
-              <div key={d.name}>
-                <button
-                  onClick={() => toggleDbNode(d.name)}
-                  onContextMenu={e => {
-                    e.preventDefault()
-                    setColorMenu({ db: d.name, x: e.clientX, y: e.clientY })
-                  }}
-                  className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs font-semibold transition-colors ${
-                    isActive ? 'text-sky-300' : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200'
-                  }`}
-                  title={`${d.name}${isActive ? ' (attivo)' : ''} — click per ${isActive ? 'aprire/chiudere gli oggetti' : 'attivare'}, tasto destro per il colore`}
-                >
-                  {isOpen ? (
-                    <ChevronDown className="h-3.5 w-3.5 shrink-0" />
-                  ) : (
-                    <ChevronRight className="h-3.5 w-3.5 shrink-0" />
-                  )}
-                  <span
-                    className="h-2 w-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: dbTabColor(d.name, dbColors) }}
-                  />
-                  <span className="truncate font-mono">{d.name}</span>
-                  {isActive && <Badge tone="sky">attivo</Badge>}
-                  {isActive && objectCount > 0 && (
-                    <span className="ml-auto rounded-full bg-zinc-800 px-1.5 text-[10px] text-zinc-400">
-                      {objectCount}
-                    </span>
-                  )}
-                </button>
-              </div>
-            )
-          })}
-        </div>
-
         {q ? (
           <div className="space-y-0.5 border-t border-zinc-800 pt-2">
             {hits.length === 0 && <p className="p-3 text-sm text-zinc-600">Nessun oggetto trovato.</p>}
@@ -459,7 +583,7 @@ export default function Sidebar({
                 title="Clicca per inserire nel editor — tasto destro per le azioni"
               >
                 <KindIcon kind={h.kind} />
-                <span className="truncate font-mono">{h.name}</span>
+                <span className="min-w-0 break-all font-mono">{h.name}</span>
                 {h.schema !== 'dbo' && <span className="text-zinc-500">· {h.schema}</span>}
                 <span className="ml-auto">
                   <Badge tone="zinc">{h.kind}</Badge>
@@ -532,7 +656,7 @@ export default function Sidebar({
                                       title={`${c.dataType}${c.isNullable ? ' NULL' : ''}${c.isIdentity ? ' IDENTITY' : ''}`}
                                     >
                                       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${c.isIdentity ? 'bg-amber-400' : c.isNullable ? 'bg-zinc-600' : 'bg-emerald-500'}`} />
-                                      <span className="truncate font-mono">{c.name}</span>
+                                      <span className="min-w-0 break-all font-mono">{c.name}</span>
                                       <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">{c.dataType}</span>
                                     </button>
                                   ))}
@@ -552,7 +676,7 @@ export default function Sidebar({
                                       title="Clicca per inserire — tasto destro per le azioni"
                                     >
                                       <Flame className="h-3 w-3 shrink-0 text-rose-400/70" />
-                                      <span className="truncate font-mono">{trg.name}</span>
+                                      <span className="min-w-0 break-all font-mono">{trg.name}</span>
                                     </button>
                                   ))}
                                 </>
@@ -670,6 +794,166 @@ export default function Sidebar({
           </div>
         ) : null}
       </div>
+    </>
+  )
+
+  const dbDockedLeft = panels.db.open && !panels.db.floating && panels.db.dockSide === 'left'
+  const objectsDockedLeft = panels.objects.open && !panels.objects.floating && panels.objects.dockSide === 'left'
+  const dbFloating = panels.db.open && panels.db.floating
+  const objectsFloating = panels.objects.open && panels.objects.floating
+
+  return (
+    <div ref={sidebarRef} className="flex h-full flex-col">
+      {/* Pannello DATABASE ancorato a sinistra: lista dei database */}
+      {dbDockedLeft && (
+        <DockPanel
+          title="Database"
+          icon={<DbIcon className="h-3.5 w-3.5 text-sky-400" />}
+          floating={false}
+          position={{ x: panels.db.x, y: panels.db.y }}
+          onMove={moveDbPanel}
+          onClose={() => setDbOpen(false)}
+          onToggleFloat={floatDb}
+          accent="text-sky-300"
+          dockClassName="shrink-0"
+          dbHeight={panels.db.dockHeight}
+          onScroll={clearCloseTimerAndHover}
+        >
+          {dbListContent()}
+        </DockPanel>
+      )}
+
+      {/* Divider spostabile tra Database e Oggetti (solo quando entrambi sono ancorati a sinistra) */}
+      {dbDockedLeft && objectsDockedLeft && (
+        <div
+          onMouseDown={onDividerMouseDown}
+          className="group relative z-10 flex h-2 shrink-0 cursor-row-resize items-center justify-center border-y border-zinc-800 bg-zinc-900/80 hover:bg-sky-950/60"
+          title="Trascina per ridimensionare"
+        >
+          <div className="h-0.5 w-8 rounded bg-zinc-700 group-hover:bg-sky-400" />
+        </div>
+      )}
+
+      {/* Pannello OGGETTI ancorato a sinistra: ricerca + albero */}
+      {objectsDockedLeft && (
+        <DockPanel
+          title="Oggetti"
+          icon={<Boxes className="h-3.5 w-3.5 text-emerald-400" />}
+          floating={false}
+          position={{ x: panels.objects.x, y: panels.objects.y }}
+          onMove={moveObjectsPanel}
+          onClose={() => setObjectsOpen(false)}
+          onToggleFloat={floatObjects}
+          accent="text-emerald-300"
+          dockClassName="min-h-0 flex-1"
+          onScroll={clearCloseTimerAndHover}
+        >
+          {objectsContent()}
+        </DockPanel>
+      )}
+
+      {/* Barra per riaprire i pannelli chiusi */}
+      {(!panels.db.open || !panels.objects.open) && (
+        <div className="flex shrink-0 items-center gap-1 border-t border-zinc-800 bg-zinc-900/80 px-2 py-1">
+          <span className="text-[10px] uppercase tracking-wide text-zinc-600">Pannelli:</span>
+          {!panels.db.open && (
+            <button
+              onClick={() => setDbOpen(true)}
+              className="rounded px-2 py-0.5 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+            >
+              + Database
+            </button>
+          )}
+          {!panels.objects.open && (
+            <button
+              onClick={() => setObjectsOpen(true)}
+              className="rounded px-2 py-0.5 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+            >
+              + Oggetti
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Pannello DATABASE flottante (trascinabile e ridimensionabile) */}
+      {dbFloating && (
+        <DockPanel
+          title="Database"
+          icon={<DbIcon className="h-3.5 w-3.5 text-sky-400" />}
+          floating
+          position={{ x: panels.db.x, y: panels.db.y }}
+          size={{ width: panels.db.width, height: panels.db.height }}
+          onMove={moveDbPanel}
+          onDragEnd={dbDragEnd}
+          onResize={resizeDbPanel}
+          onClose={() => setDbOpen(false)}
+          onDockLeft={dockDbLeft}
+          onDockRight={dockDbRight}
+          accent="text-sky-300"
+          onScroll={clearCloseTimerAndHover}
+        >
+          {dbListContent()}
+        </DockPanel>
+      )}
+
+      {/* Pannello OGGETTI flottante (trascinabile e ridimensionabile) */}
+      {objectsFloating && (
+        <DockPanel
+          title="Oggetti"
+          icon={<Boxes className="h-3.5 w-3.5 text-emerald-400" />}
+          floating
+          position={{ x: panels.objects.x, y: panels.objects.y }}
+          size={{ width: panels.objects.width, height: panels.objects.height }}
+          onMove={moveObjectsPanel}
+          onDragEnd={objectsDragEnd}
+          onResize={resizeObjectsPanel}
+          onClose={() => setObjectsOpen(false)}
+          onDockLeft={dockObjectsLeft}
+          onDockRight={dockObjectsRight}
+          accent="text-emerald-300"
+          onScroll={clearCloseTimerAndHover}
+        >
+          {objectsContent()}
+        </DockPanel>
+      )}
+
+      {/* Pannelli ancorati a DESTRA: il contenuto viene portato nella colonna destra di App */}
+      {rightDockEl && panels.db.open && !panels.db.floating && panels.db.dockSide === 'right' &&
+        createPortal(
+          <DockPanel
+            title="Database"
+            icon={<DbIcon className="h-3.5 w-3.5 text-sky-400" />}
+            floating={false}
+            position={{ x: 0, y: 0 }}
+            onMove={() => {}}
+            onClose={() => setDbOpen(false)}
+            onToggleFloat={floatDb}
+            accent="text-sky-300"
+            dockClassName="min-h-0 flex-1"
+            onScroll={clearCloseTimerAndHover}
+          >
+            {dbListContent()}
+          </DockPanel>,
+          rightDockEl,
+        )}
+      {rightDockEl && panels.objects.open && !panels.objects.floating && panels.objects.dockSide === 'right' &&
+        createPortal(
+          <DockPanel
+            title="Oggetti"
+            icon={<Boxes className="h-3.5 w-3.5 text-emerald-400" />}
+            floating={false}
+            position={{ x: 0, y: 0 }}
+            onMove={() => {}}
+            onClose={() => setObjectsOpen(false)}
+            onToggleFloat={floatObjects}
+            accent="text-emerald-300"
+            dockClassName="min-h-0 flex-1"
+            onScroll={clearCloseTimerAndHover}
+          >
+            {objectsContent()}
+          </DockPanel>,
+          rightDockEl,
+        )}
 
       {hover?.kind === 'table' && (
         <TableHoverCard
@@ -707,7 +991,7 @@ export default function Sidebar({
               top: Math.min(colorMenu.y, window.innerHeight - 180),
             }}
           >
-            <div className="mb-1.5 truncate border-b border-zinc-800 pb-1 text-xs font-semibold text-zinc-300">
+            <div className="mb-1.5 break-all border-b border-zinc-800 pb-1 text-xs font-semibold text-zinc-300">
               Colore per {colorMenu.db}
             </div>
             <div className="grid grid-cols-6 gap-1">
@@ -791,7 +1075,7 @@ function ObjectMenu({
         className="fixed z-[62] w-72 rounded-lg border border-zinc-700 bg-zinc-900 p-1.5 shadow-2xl"
         style={mainPos}
       >
-        <div className="mb-1 truncate border-b border-zinc-800 px-2 pb-1.5 pt-0.5 text-xs font-semibold text-zinc-300">
+        <div className="mb-1 break-all border-b border-zinc-800 px-2 pb-1.5 pt-0.5 text-xs font-semibold text-zinc-300">
           {title}
           <span className="ml-1.5 font-normal capitalize text-zinc-500">{subtitle}</span>
         </div>
@@ -912,8 +1196,8 @@ function ObjectRow({
         className="flex w-full items-center gap-2 rounded px-2 py-1 pl-7 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800"
         title="Clicca per inserire nel editor — tasto destro per le azioni"
       >
-        <span className="truncate font-mono">{label}</span>
-        {detail && <span className="truncate text-[11px] text-zinc-500">{detail}</span>}
+        <span className="min-w-0 break-all font-mono">{label}</span>
+        {detail && <span className="min-w-0 break-all text-[11px] text-zinc-500">{detail}</span>}
       </button>
       {children}
     </div>
@@ -963,7 +1247,7 @@ function TableRow({
           className="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800"
           title={usageText ? `${usageText} — clicca per inserire, tasto destro per le azioni` : 'Clicca per inserire, tasto destro per le azioni'}
         >
-          <span className="truncate font-mono">{label}</span>
+          <span className="min-w-0 break-all font-mono">{label}</span>
           {badge && <span className="ml-auto shrink-0 rounded bg-zinc-800 px-1 text-[10px] text-zinc-500">{badge}</span>}
         </button>
         {onQuickPreview && (

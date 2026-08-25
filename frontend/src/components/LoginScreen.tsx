@@ -338,43 +338,64 @@ export default function LoginScreen({ onConnected }: Props) {
               </p>
             )}
             {saved.map(c => (
-              <div key={c.id} className="group rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 transition-colors hover:border-zinc-700">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium text-zinc-100">{c.name}</div>
-                    <div className="mt-0.5 flex items-center gap-1 text-xs text-zinc-500">
-                      <Server className="h-3 w-3 shrink-0" />
-                      <span className="truncate">
-                        {c.server}
-                        {c.port !== 1433 ? `,${c.port}` : ''}
-                        {c.database ? ` · ${c.database}` : ''}
-                      </span>
-                    </div>
-                    <div className="mt-1.5 flex gap-1.5">
-                      <Badge tone={c.useWindowsAuth ? 'sky' : 'violet'}>
-                        {c.useWindowsAuth ? 'Windows' : c.username ?? 'SQL'}
-                      </Badge>
-                    </div>
+              <div
+                key={c.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => void handleConnectSaved(c.id)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    void handleConnectSaved(c.id)
+                  }
+                }}
+                className="group flex cursor-pointer items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-950/60 p-4 transition-colors hover:border-sky-600 hover:bg-sky-950/20"
+                title="Clicca per connetterti con questa login"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-base font-semibold text-zinc-100">{c.name}</div>
+                  <div className="mt-0.5 flex items-center gap-1 text-xs text-zinc-500">
+                    <Server className="h-3 w-3 shrink-0" />
+                    <span className="truncate">
+                      {c.server}
+                      {c.port !== 1433 ? `,${c.port}` : ''}
+                      {c.database ? ` · ${c.database}` : ''}
+                    </span>
                   </div>
-                  <div className="flex shrink-0 gap-1">
-                    <button
-                      type="button"
-                      onClick={() => void handleConnectSaved(c.id)}
-                      className="rounded-md bg-sky-600 p-1.5 text-white transition-colors hover:bg-sky-500"
-                      title="Connetti"
-                    >
-                      {connectingId === c.id ? <Spinner className="h-3.5 w-3.5 !text-white" /> : <Plug className="h-3.5 w-3.5" />}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleDelete(c.id)}
-                      className="rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-rose-950 hover:text-rose-300"
-                      title="Elimina login"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                  <div className="mt-1.5 flex gap-1.5">
+                    <Badge tone={c.useWindowsAuth ? 'sky' : 'violet'}>
+                      {c.useWindowsAuth ? 'Windows' : c.username ?? 'SQL'}
+                    </Badge>
                   </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation()
+                    void handleConnectSaved(c.id)
+                  }}
+                  className="flex shrink-0 items-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-medium text-white shadow-md transition-colors hover:bg-sky-500"
+                  title="Connetti con questa login"
+                >
+                  {connectingId === c.id ? (
+                    <Spinner className="h-4 w-4 !text-white" />
+                  ) : (
+                    <>
+                      <Plug className="h-4 w-4" /> Connetti
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation()
+                    void handleDelete(c.id)
+                  }}
+                  className="shrink-0 rounded-md p-2 text-zinc-500 transition-colors hover:bg-rose-950 hover:text-rose-300"
+                  title="Elimina login"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
               </div>
             ))}
           </div>

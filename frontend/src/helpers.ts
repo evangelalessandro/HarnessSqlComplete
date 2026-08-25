@@ -69,6 +69,18 @@ export interface RankedTable {
   hints: JoinHint[]
   /** Percorso transitivo: tabella intermedia quando la candidata non è collegata direttamente (B4). */
   viaTable?: string
+  /** Primo percorso con chiave condivisa (per compatibilità). */
+  viaPath?: ViaPath
+  /** Tutti i percorsi transitivi con chiave condivisa (uno per tabella del contesto raggiunta). */
+  viaPaths?: ViaPath[]
+}
+
+/** Percorso transitivo A→M→C con chiave condivisa: candidato.col = tabella-contesto.col. */
+export interface ViaPath {
+  midTable: string
+  ctxTable: string
+  candColumn: string
+  ctxColumn: string
 }
 
 /**
@@ -96,21 +108,40 @@ export function rankTablesForJoin(
     adj.get(a)!.add(b)
     adj.get(b)!.add(a)
   }
-  // tabella intermedia per chi è a distanza 2 dal contesto
-  const via = new Map<string, string>()
+  // tabella intermedia per chi è a distanza 2 dal contesto, con le colonne della
+  // chiave condivisa (per proporre gli ON transitivi, es. GM_PIAZZOLA = BPZ_PIAZZOLA).
+  // Si raccolgono TUTTI i percorsi: una candidata può raggiungere più tabelle del contesto.
+  const viaMid = new Map<string, string>()
+  const viaPaths = new Map<string, ViaPath[]>()
+  const connects = (fk: ForeignKeyInfo, a: string, b: string) =>
+    (fk.table.toLowerCase() === a && fk.refTable.toLowerCase() === b) ||
+    (fk.table.toLowerCase() === b && fk.refTable.toLowerCase() === a)
+  const midColumnOf = (fk: ForeignKeyInfo, mid: string) =>
+    fk.table.toLowerCase() === mid ? fk.column : fk.refColumn
   for (const t of tables) {
     const name = t.name.toLowerCase()
     if (ctx.has(name)) continue
     for (const c of ctx) {
       if (adj.get(name)?.has(c)) continue // già collegata direttamente
       for (const mid of adj.get(name) ?? []) {
-        if (adj.get(mid)?.has(c)) {
-          const midName = tables.find(x => x.name.toLowerCase() === mid)?.name ?? mid
-          via.set(name, midName)
-          break
+        if (!adj.get(mid)?.has(c)) continue
+        const midName = tables.find(x => x.name.toLowerCase() === mid)?.name ?? mid
+        if (!viaMid.has(name)) viaMid.set(name, midName)
+        // chiave condivisa: candidato.col → M.col e C.col → M.col (stessa colonna intermedia)
+        const candFk = foreignKeys.find(f => connects(f, name, mid))
+        const ctxFk = foreignKeys.find(f => connects(f, c, mid))
+        if (candFk && ctxFk && midColumnOf(candFk, mid).toLowerCase() === midColumnOf(ctxFk, mid).toLowerCase()) {
+          const ctxName = tables.find(x => x.name.toLowerCase() === c)?.name ?? c
+          const list = viaPaths.get(name) ?? []
+          list.push({
+            midTable: midName,
+            ctxTable: ctxName,
+            candColumn: candFk.table.toLowerCase() === name ? candFk.column : candFk.refColumn,
+            ctxColumn: ctxFk.table.toLowerCase() === c ? ctxFk.column : ctxFk.refColumn,
+          })
+          viaPaths.set(name, list)
         }
       }
-      if (via.has(name)) break
     }
   }
 
@@ -132,14 +163,37 @@ export function rankTablesForJoin(
         if (co.tableA.toLowerCase() === name || co.tableB.toLowerCase() === name)
           coScore += co.count
       }
-      // join transitivo: raggiungibile tramite una tabella intermedia (peso minore delle FK dirette)
-      const transitiva = hints.length === 0 ? via.get(name) : undefined
+      // join transitivo: raggiungibile tramite una tabella intermedia (peso minore delle FK dirette);
+      // l'viaTable resta anche con FK dirette verso ALTRE tabelle del contesto (via specifica per tabella)
+      const transitiva = viaMid.get(name)
+      const paths = viaPaths.get(name) ?? []
       const transitiveScore = transitiva ? 400 : 0
       const histScore = historyBoost(t.name) * 300
       const score = hints.length * 1000 + transitiveScore + coScore + histScore + usageScore(t.usage)
-      return { table: t, score, hints, viaTable: transitiva }
+      return { table: t, score, hints, viaTable: transitiva, viaPath: paths[0], viaPaths: paths }
     })
     .sort((a, b) => b.score - a.score)
+}
+
+/**
+ * Tabelle candidate per il completamento, in base alla posizione del cursore:
+ * - `freshClause` (primo FROM/INTO/UPDATE/TABLE di una clausola o inizio statement):
+ *   TUTTE le tabelle ordinate per utilizzo reale. Il contesto delle query precedenti
+ *   NON deve nascondere tabelle che si vogliono riscrivere: es. dopo
+ *   "select * from RUN_MISSIONI … if @@ROWCOUNT > 1 BEGIN select * from RUN_MI"
+ *   deve riapparire RUN_MISSIONI tra i suggerimenti del nuovo FROM.
+ * - altrimenti (JOIN e contesti generici): solo le tabelle collegabili al contesto
+ *   (FK dirette, transitive, co-occorrenza) più le più usate.
+ */
+export function rankTablesForPosition(
+  tables: TableInfo[],
+  foreignKeys: ForeignKeyInfo[],
+  contextTables: string[],
+  freshClause: boolean,
+  cooccurrences: TableCooccurrence[] = [],
+  historyBoost: (tableName: string) => number = () => 0,
+): RankedTable[] {
+  return rankTablesForJoin(tables, foreignKeys, freshClause ? [] : contextTables, cooccurrences, historyBoost)
 }
 
 /** Testo leggibile di una cella per griglie e tooltip. */
@@ -729,12 +783,26 @@ export interface OnLeftColumn {
 }
 
 /**
+ * filterText STABILE per le voci di colonne (select-list e contesti di colonna):
+ * il NOME della colonna, mai la parola digitata. Monaco, a ogni carattere digitato,
+ * RIFILTRA le voci già calcolate con la parola corrente (senza richiamare il provider):
+ * se filterText fosse la parola digitata (es. "mis"), digitare un carattere in più
+ * ("MIS_") renderebbe "mis_" non più corrispondente a "mis" → il popup si svuota
+ * ("mi toglie tutti i campi di missioni"). Con il nome colonna ogni prefisso digitato
+ * continua a matchare ("mis", "mis_", "mis_u" → "MIS_UDC"). L'ordine resta il nostro (sortText).
+ */
+export function completionFilterText(columnName: string): string {
+  return columnName
+}
+
+/**
  * Colonna sinistra di un confronto: "ON a.col = " / "WHERE col = " (prima del cursore).
  * Accetta anche una parola già avviata dopo "=" (es. "ON mis_corr = cel") per poter
  * suggerire la controparte mentre si digita.
  */
 export function detectLeftColumnInOn(textBefore: string): OnLeftColumn | null {
-  const re = /(?:ON|AND|OR|WHERE|HAVING)\s+(?:\[?([A-Za-z_][\w]*)\]?\s*\.\s*)?\[?([A-Za-z_][\w]*)\]?\s*=\s*(?:\[?[A-Za-z_][\w]*\]?)?$/i
+  // accetta anche la parentesi subito dopo la keyword: "ON (GM_PIAZZOLA = pia"
+  const re = /(?:\bON\b|\bAND\b|\bOR\b|\bWHERE\b|\bHAVING\b)\s*\(?\s*(?:\[?([A-Za-z_][\w]*)\]?\s*\.\s*)?\[?([A-Za-z_][\w]*)\]?\s*=\s*(?:\[?[A-Za-z_][\w]*\]?)?$/i
   const m = re.exec(textBefore)
   if (!m) return null
   return { name: m[2], qualifier: m[1] ?? null }
@@ -791,6 +859,16 @@ export function buildJoinConditionSuggestions(
   for (const m of onText.matchAll(/([A-Za-z_][\w]*)\s*=\s*([A-Za-z_][\w]*)/gi)) {
     used.add([m[1].toLowerCase(), m[2].toLowerCase()].sort().join('='))
   }
+  // l'ON ha già almeno una condizione? → le ulteriori coppie iniziano con "AND";
+  // con l'ON VUOTO la prima condizione non deve avere "AND" (non c'è nulla da concatenare)
+  const hasConditions = used.size > 0
+
+  // con l'ON vuoto: la tabella appena unita (dopo l'ultimo JOIN) — le prime condizioni
+  // devono collegare QUELLA tabella al resto, non proporre coppie di altri JOIN
+  const joinMatches = [...stmtText.matchAll(/\bJOIN\s+((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)/gi)]
+  const lastJoinTable = joinMatches.length > 0
+    ? joinMatches[joinMatches.length - 1][1].replace(/[\[\]\s]/g, '').split('.').pop()?.toLowerCase()
+    : null
 
   // nomi colonna per tabella (minuscoli) per decidere la qualifica
   const colByKey = new Map<string, Set<string>>()
@@ -799,12 +877,42 @@ export function buildJoinConditionSuggestions(
     colByKey.set(key, new Set((table.columns ?? []).map(c => c.name.toLowerCase())))
   }
 
+  // Coppia di tabelle dell'ON corrente (dalle colonne scritte, qualificate o univoche):
+  // le condizioni aggiuntive devono riguardare SOLO quelle due tabelle, altrimenti
+  // con più join comparirebbero coppie di altri JOIN o self-FK (rumore).
+  const onTableKeys = new Set<string>()
+  for (const m of onText.matchAll(/(?:\[?([A-Za-z_][\w]*)\]?\s*\.\s*)?\[?([A-Za-z_][\w]*)\]?/gi)) {
+    const qual = m[1]?.toLowerCase()
+    const col = m[2].toLowerCase()
+    if (!col) continue
+    if (qual) {
+      const ref = refs.find(x => (x.r.alias ?? x.r.tableName).toLowerCase() === qual)
+      if (ref) onTableKeys.add(`${ref.table.schema}.${ref.table.name}`)
+    } else {
+      const owners = refs.filter(x => (x.table.columns ?? []).some(c => c.name.toLowerCase() === col))
+      if (owners.length === 1) onTableKeys.add(`${owners[0].table.schema}.${owners[0].table.name}`)
+    }
+  }
+  const hasOnPair = onTableKeys.size >= 2
+
   // Raggruppa le FK per NOME del vincolo: ogni voce = un vincolo con le sue coppie
   // non ancora scritte (es. "AND MIS_D_CORRIDOIO = CEL_CORRIDOIO AND MIS_D_CELLA = CEL_CELLA").
   const byFk = new Map<string, ForeignKeyInfo[]>()
   for (const fk of summary.foreignKeys) {
-    const parent = refs.find(r => `${r.table.schema}.${r.table.name}`.toLowerCase() === `${fk.schema}.${fk.table}`.toLowerCase())
-    const child = refs.find(r => `${r.table.schema}.${r.table.name}`.toLowerCase() === `${fk.refSchema}.${fk.refTable}`.toLowerCase())
+    const parentKey = `${fk.schema}.${fk.table}`
+    const childKey = `${fk.refSchema}.${fk.refTable}`
+    // self-FK: quasi mai utili come condizione aggiuntiva di un ON tra tabelle diverse
+    if (parentKey.toLowerCase() === childKey.toLowerCase()) continue
+    // se l'ON ha una coppia determinata, restano solo le relazioni tra quelle due tabelle
+    if (hasOnPair && (!onTableKeys.has(parentKey) || !onTableKeys.has(childKey))) continue
+    // con l'ON vuoto restano solo le relazioni che coinvolgono la tabella appena unita
+    if (!hasConditions && lastJoinTable) {
+      const parentName = fk.table.toLowerCase()
+      const childName = fk.refTable.toLowerCase()
+      if (parentName !== lastJoinTable && childName !== lastJoinTable) continue
+    }
+    const parent = refs.find(r => `${r.table.schema}.${r.table.name}`.toLowerCase() === parentKey.toLowerCase())
+    const child = refs.find(r => `${r.table.schema}.${r.table.name}`.toLowerCase() === childKey.toLowerCase())
     if (!parent || !child) continue
     const pairKey = [fk.column.toLowerCase(), fk.refColumn.toLowerCase()].sort().join('=')
     if (used.has(pairKey)) continue
@@ -838,7 +946,7 @@ export function buildJoinConditionSuggestions(
       if (lastLeft) famScore = Math.max(famScore, sharedLeadingTokens(lastLeft, fk.column) * 400)
     }
     out.push({
-      text: `AND ${parts.join(' AND ')}`,
+      text: `${hasConditions ? 'AND ' : ''}${parts.join(' AND ')}`,
       left: fks[0].column,
       right: fks[0].refColumn,
       score: 1000 + famScore,
@@ -884,6 +992,39 @@ export function findJoinCounterparts(
         c => c.name.toLowerCase() === fk.refColumn.toLowerCase(),
       )
       if (refTable && refCol) add(refCol, refTable, 2000, true)
+    }
+  }
+
+  // Partner con chiave condivisa: colonne di ALTRE tabelle che referenziano lo STESSO
+  // target della colonna sinistra (es. GM_PIAZZOLA → PZ_PIAZZOLA e BPZ_PIAZZOLA → PZ_PIAZZOLA:
+  // sono i partner di join naturali, da proporre per primi).
+  if (leftTable) {
+    const leftTargets = new Set<string>()
+    for (const fk of foreignKeys) {
+      if (
+        fk.schema.toLowerCase() === leftTable.schema.toLowerCase() &&
+        fk.table.toLowerCase() === leftTable.name.toLowerCase() &&
+        fk.column.toLowerCase() === leftColumnName.toLowerCase()
+      ) {
+        leftTargets.add(`${fk.refSchema}.${fk.refTable}.${fk.refColumn}`.toLowerCase())
+      }
+    }
+    if (leftTargets.size > 0) {
+      for (const t of statementTables) {
+        if (t.schema.toLowerCase() === leftTable.schema.toLowerCase() && t.name.toLowerCase() === leftTable.name.toLowerCase()) continue
+        for (const c of t.columns ?? []) {
+          for (const fk of foreignKeys) {
+            if (
+              fk.table.toLowerCase() === t.name.toLowerCase() &&
+              fk.column.toLowerCase() === c.name.toLowerCase() &&
+              leftTargets.has(`${fk.refSchema}.${fk.refTable}.${fk.refColumn}`.toLowerCase())
+            ) {
+              add(c, t, 1500, true)
+              break
+            }
+          }
+        }
+      }
     }
   }
   const leftTokens = nameTokens(leftColumnName).filter(tok => tok.length >= 3)
@@ -1024,6 +1165,8 @@ export function buildColumnContextSuggestions(
     const first = owners[0]
     const key = `${first.table.schema}.${first.table.name}.${first.col.name}`
     if (counterpartKey.has(key)) continue
+    // la colonna sinistra del confronto è già scritta: non va riproposta
+    if (left && first.col.name.toLowerCase() === left.name.toLowerCase()) continue
     const base = wantTyped ? columnMatchScore(typedWord, first.col.name) : 1
     if (base <= 0) continue
     const fkBoost = fkCols.has(first.col.name.toLowerCase()) ? 150 : 0
@@ -1545,6 +1688,8 @@ export interface SelectListColumn {
   documentation: string
   /** True se la colonna è coinvolta in una foreign key (chiave usata nei JOIN). */
   isFk: boolean
+  /** Testo da inserire: qualificato (alias.tabella.col) se il nome è condiviso tra più tabelle. */
+  insertText: string
 }
 
 export interface SelectListSuggestions {
@@ -1648,6 +1793,7 @@ export function buildSelectListSuggestions(
   const columns: SelectListColumn[] = []
   const fkCols = fkColumnNames(summary.foreignKeys)
   for (const [, entry] of colMap) {
+    const shared = entry.owners.length > 1
     columns.push({
       name: entry.c.name,
       dataType: entry.c.dataType,
@@ -1655,18 +1801,38 @@ export function buildSelectListSuggestions(
       isIdentity: entry.c.isIdentity,
       ownerLabel:
         entry.owners.length === 1 ? entry.owners[0].label : entry.owners.map(o => o.label).join(', '),
-      shared: entry.owners.length > 1,
+      shared,
       documentation: columnInfoMarkdown(
         entry.owners[0].table,
         entry.c,
         entry.owners.map(o => ({ table: o.table, alias: null })),
       ),
       isFk: fkCols.has(entry.c.name.toLowerCase()),
+      // colonna condivisa tra più tabelle: insert qualificato per non essere ambigua
+      insertText: shared
+        ? `${sqlIdent(entry.owners[0].label)}.${sqlIdent(entry.c.name)}`
+        : sqlIdent(entry.c.name),
     })
   }
   // Colonne coinvolte in FK (chiavi) prima delle altre: sono quelle usate nei JOIN reali
   columns.sort((a, b) => (b.isFk ? 1 : 0) - (a.isFk ? 1 : 0))
   return { starText, starCount, starOffset, columns }
+}
+
+/**
+ * Colonne della select-list filtrate per affinità con la parola digitata e ordinate
+ * per punteggio. Il boost FK (+150) si applica SOLO alle colonne che matchano già:
+ * digitando "uso" non devono comparire le chiavi estranee che non contengono "uso".
+ */
+export function rankSelectListForTyped(
+  columns: SelectListColumn[],
+  typedWord: string,
+): { col: SelectListColumn; score: number }[] {
+  return columns
+    .map(col => ({ col, base: columnMatchScore(typedWord, col.name) }))
+    .filter(x => x.base > 0)
+    .map(x => ({ col: x.col, score: x.base + (x.col.isFk ? 150 : 0) }))
+    .sort((a, b) => b.score - a.score)
 }
 
 // ---------- Parametri EXEC ----------
@@ -1922,14 +2088,18 @@ export function tableAlias(name: string): string {
  * - in posizione JOIN, UNA voce per ogni relazione FK verso le tabelle del contesto
  *   (ognuna con la propria clausola ON), come Visual Studio che propone i casi possibili;
  * - con una sola relazione (o fuori da JOIN) una voce unica con la tabella.
- * Se `useAliases` è true, la clausola ON usa alias brevi (es. "mc.CEL_CELLA") e la tabella
- * viene inserita con alias ("MAG_CELLE AS mc").
+ * Gli alias si usano SOLO quando servono: `useAliases` per la tabella candidata
+ * (es. self-join, dove senza alias il nome sarebbe ambiguo) e `aliasedCtxTables`
+ * per le tabelle del contesto che nell'editor hanno GIÀ un alias (in quel caso
+ * l'ON deve riferirsi all'alias, non al nome tabella). Altrimenti l'ON usa i nomi
+ * delle tabelle o la colonna nuda se non ambigua.
  */
 export function buildJoinSuggestions(
   candidate: RankedTable,
   contextTableInfos: TableInfo[],
   isJoinPosition: boolean,
   useAliases = false,
+  aliasedCtxTables: Set<string> = new Set(),
 ): JoinSuggestionItem[] {
   const t = candidate.table
   const base = qualified(t.schema, t.name)
@@ -1939,13 +2109,15 @@ export function buildJoinSuggestions(
   for (const ct of contextTableInfos) ctxAlias.set(`${ct.schema}.${ct.name}`, tableAlias(ct.name))
   const scope = [...contextTableInfos, t]
 
-  if (!isJoinPosition || candidate.hints.length === 0) {
+  if (!isJoinPosition) {
     const fkNames = new Set(candidate.hints.map(h => h.fk.name))
     return [
       {
         label: base,
-        detail: candidate.viaTable
-          ? `raggiungibile via ${candidate.viaTable} (join transitivo)`
+        // senza relazioni (es. lista completa in un nuovo FROM) il dettaglio resta
+        // vuoto così il chiamante mostra l'utilizzo reale della tabella
+        detail: candidate.hints.length === 0
+          ? ''
           : fkNames.size === 1 && candidate.hints.length === 1
             ? `${candidate.hints[0].fk.column} = ${candidate.hints[0].fk.refColumn}`
             : `${fkNames.size} relazioni disponibili`,
@@ -1954,6 +2126,10 @@ export function buildJoinSuggestions(
       },
     ]
   }
+
+  // In posizione JOIN: PRIMA le relazioni FK dirette, poi quelle transitive (via),
+  // così il suggerimento più diretto non viene sepolto sotto i join a 2 hop.
+  const items: JoinSuggestionItem[] = []
 
   // Raggruppa gli hint per NOME del vincolo FK: le FK composite (DEST, SORG, SYNCRON)
   // generano UNA voce con tutte le coppie nell'ON (es. "ON (a = b AND c = d)").
@@ -1965,7 +2141,6 @@ export function buildJoinSuggestions(
     else byFk.set(key, [h])
   }
 
-  const items: JoinSuggestionItem[] = []
   for (const hints of byFk.values()) {
     const first = hints[0].fk
     const on = hints
@@ -1974,12 +2149,15 @@ export function buildJoinSuggestions(
         const ctxColumn = h.direction === 'out' ? fk.refColumn : fk.column
         const candColumn = h.direction === 'out' ? fk.column : fk.refColumn
         const ctxTableName = h.direction === 'out' ? fk.refTable : fk.table
-        const ctxQual = useAliases
+        // lato contesto: l'alias si usa se richiesto (useAliases) o se la query lo usa
+        // già (ctxHasAlias, altrimenti l'ON sarebbe SQL invalido)
+        const ctxHasAlias = aliasedCtxTables.has(ctxTableName.toLowerCase())
+        const ctxQual = useAliases || ctxHasAlias
           ? ctxAlias.get(`${fk.schema}.${ctxTableName}`) ?? sqlIdent(ctxTableName)
           : sqlIdent(ctxTableName)
         const ctxPart =
-          useAliases || columnAppearsIn(scope, ctxColumn) > 1
-            ? `${useAliases ? ctxQual : sqlIdent(ctxTableName)}.${sqlIdent(ctxColumn)}`
+          useAliases || ctxHasAlias || columnAppearsIn(scope, ctxColumn) > 1
+            ? `${ctxQual}.${sqlIdent(ctxColumn)}`
             : sqlIdent(ctxColumn)
         const candPart =
           useAliases || columnAppearsIn(scope, candColumn) > 1
@@ -1997,5 +2175,30 @@ export function buildJoinSuggestions(
       filterText: t.name,
     })
   }
-  return items
+
+  // voci transitive con chiave condivisa (es. "GESTORI_MODULI ON (GM_PIAZZOLA = BPZ_PIAZZOLA)")
+  const viaPaths = candidate.viaPaths && candidate.viaPaths.length > 0
+    ? candidate.viaPaths
+    : candidate.viaPath
+      ? [candidate.viaPath]
+      : []
+  for (const v of viaPaths) {
+    const onText = `${sqlIdent(v.candColumn)} = ${sqlIdent(v.ctxColumn)}`
+    items.push({
+      label: base,
+      detail: `JOIN via ${v.midTable} su ${onText}`,
+      insertText: `${base} ON (${onText})`,
+      filterText: t.name,
+    })
+  }
+
+  if (items.length > 0) return items
+  return [
+    {
+      label: base,
+      detail: candidate.viaTable ? `raggiungibile via ${candidate.viaTable} (join transitivo)` : 'nessuna relazione FK nota',
+      insertText: base,
+      filterText: t.name,
+    },
+  ]
 }
