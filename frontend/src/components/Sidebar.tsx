@@ -383,7 +383,7 @@ export default function Sidebar({
             hint: 'Genera lo script della vista',
             submenu: [
               { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('view', hit.schema, hit.name, 'open') },
-              { id: 'alter', label: 'ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('view', hit.schema, hit.name, 'alter') },
+              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('view', hit.schema, hit.name, 'alter') },
               { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('view', hit.schema, hit.name)) },
               { id: 'select', label: 'SELECT', icon: <Rows3 className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`SELECT ${qname}`, select1000(hit.schema, hit.name)) },
             ],
@@ -403,7 +403,7 @@ export default function Sidebar({
             id: 'modify',
             label: 'Modifica',
             icon: <SquarePen className="h-3.5 w-3.5" />,
-            hint: 'Genera ALTER PROCEDURE in una nuova tab',
+            hint: 'Genera CREATE OR ALTER PROCEDURE in una nuova tab',
             run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'alter'),
           },
           {
@@ -413,7 +413,7 @@ export default function Sidebar({
             hint: 'Genera lo script della stored procedure',
             submenu: [
               { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'open') },
-              { id: 'alter', label: 'ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'alter') },
+              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'alter') },
               { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('procedure', hit.schema, hit.name)) },
               { id: 'execute', label: 'EXECUTE', icon: <Play className="h-3.5 w-3.5" />, run: () => onInsertText(scriptExecProcedure(p)) },
             ],
@@ -426,7 +426,7 @@ export default function Sidebar({
             id: 'modify',
             label: 'Modifica',
             icon: <SquarePen className="h-3.5 w-3.5" />,
-            hint: 'Genera ALTER FUNCTION in una nuova tab',
+            hint: 'Genera CREATE OR ALTER FUNCTION in una nuova tab',
             run: () => onOpenObject?.('function', hit.schema, hit.name, 'alter'),
           },
           {
@@ -436,7 +436,7 @@ export default function Sidebar({
             hint: 'Genera lo script della funzione',
             submenu: [
               { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('function', hit.schema, hit.name, 'open') },
-              { id: 'alter', label: 'ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('function', hit.schema, hit.name, 'alter') },
+              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('function', hit.schema, hit.name, 'alter') },
               { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('function', hit.schema, hit.name)) },
             ],
           },
@@ -447,7 +447,7 @@ export default function Sidebar({
             id: 'modify',
             label: 'Modifica',
             icon: <SquarePen className="h-3.5 w-3.5" />,
-            hint: 'Genera ALTER TRIGGER in una nuova tab',
+            hint: 'Genera CREATE OR ALTER TRIGGER in una nuova tab',
             run: () => onOpenObject?.('trigger', hit.schema, hit.name, 'alter'),
           },
           {
@@ -457,7 +457,7 @@ export default function Sidebar({
             hint: 'Genera lo script del trigger',
             submenu: [
               { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('trigger', hit.schema, hit.name, 'open') },
-              { id: 'alter', label: 'ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('trigger', hit.schema, hit.name, 'alter') },
+              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('trigger', hit.schema, hit.name, 'alter') },
               { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('trigger', hit.schema, hit.name)) },
             ],
           },

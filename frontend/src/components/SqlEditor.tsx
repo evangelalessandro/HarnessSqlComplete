@@ -4,7 +4,8 @@ import { Eraser, FolderOpen, Moon, Play, Save, Settings2, Sun, Wand2, ZoomIn, Zo
 import monaco from '../monacoSetup'
 import { api } from '../api'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from '../types'
-import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
+import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
+import { shouldSuggestSystemObjects, systemObjectsFor } from '../systemObjects'
 import { registerInsertHighlight } from '../sqlInsertHighlight'
 import { positionAt, runSqlDiagnostics } from '../sqlDiagnostics'
 import { computeBlockGuides } from '../sqlBlockGuides'
@@ -92,6 +93,16 @@ const SQL_KEYWORDS = [
   'REFERENCES', 'CONSTRAINT', 'INDEX', 'UNIQUE', 'CHECK', 'DEFAULT', 'OVER', 'PARTITION', 'ROW_NUMBER',
   'RANK', 'DENSE_RANK', 'OUTPUT', 'MERGE', 'OPTION', 'RECOMPILE', 'NOCOUNT', 'TRANSACTION', 'COMMIT',
   'ROLLBACK', 'SAVE', 'WAITFOR', 'RAISERROR',
+  // Statement e language elements ufficiali (riferimento Microsoft T-SQL)
+  'BACKUP', 'RESTORE', 'GRANT', 'REVOKE', 'DENY', 'BULK', 'DBCC', 'CHECKPOINT', 'KILL',
+  'RECONFIGURE', 'SHUTDOWN', 'IF', 'WHILE', 'BREAK', 'CONTINUE', 'GOTO', 'OPEN', 'CLOSE', 'FETCH',
+  'DEALLOCATE', 'CURSOR', 'EXCEPT', 'INTERSECT', 'EXISTS', 'FULL', 'APPLY', 'PIVOT', 'UNPIVOT', 'FOR',
+  'COLLATE', 'TABLESAMPLE', 'HOLDLOCK', 'NOCHECK', 'CASCADE', 'ANY', 'SOME', 'OF', 'OFF', 'TO', 'ADD',
+  'ASC', 'DESC', 'DATABASE', 'SCHEMA', 'COLUMN', 'CLUSTERED', 'NONCLUSTERED', 'PROC', 'NULLIF',
+  'ROWCOUNT', 'STATISTICS', 'USER', 'CURRENT_USER', 'SESSION_USER', 'SYSTEM_USER', 'CURRENT_TIMESTAMP',
+  'CURRENT_DATE', 'CURRENT_TIME', 'WITHIN', 'COMPUTE',
+  // OFFSET-FETCH (paginazione, dopo ORDER BY)
+  'OFFSET', 'NEXT', 'ROWS', 'ONLY',
 ]
 
 /** Funzioni T-SQL (manuale Microsoft): aggregati, finestra/window, stringhe, matematiche, data/ora, conversione, sistema. */
@@ -116,6 +127,13 @@ const SQL_FUNCTIONS = [
   'YEAR', 'MONTH', 'DAY', 'EOMONTH', 'ISDATE', 'SWITCHOFFSET', 'TODATETIMEOFFSET',
   // conversione
   'CAST', 'CONVERT', 'TRY_CAST', 'TRY_CONVERT', 'PARSE', 'TRY_PARSE',
+  // data/ora moderne
+  'DATETRUNC', 'DATE_BUCKET', 'GENERATE_SERIES',
+  // JSON
+  'OPENJSON', 'JSON_ARRAY', 'JSON_OBJECT',
+  // statistiche approssimate e confronto (SQL 2022)
+  'APPROX_COUNT_DISTINCT', 'APPROX_PERCENTILE_CONT', 'APPROX_PERCENTILE_DISC', 'GREATEST', 'LEAST',
+  'RANDOM',
   // sistema / logico
   'COALESCE', 'ISNULL', 'NULLIF', 'IIF', 'CHOOSE', 'CASE', 'NULL', 'ISNUMERIC', 'NEWID',
   'NEWSEQUENTIALID', 'HOST_NAME', 'USER_NAME', 'SCOPE_IDENTITY', 'IDENT_CURRENT', 'ERROR_MESSAGE',
@@ -297,7 +315,8 @@ export default function SqlEditor({
             rank++
           }
 
-          // Funzioni T-SQL (aggregati, window, stringhe…) + funzioni utente del database.
+          // Funzioni T-SQL (aggregati, window, stringhe…) + funzioni utente SCALARI del database.
+          // Le funzioni tabellari (IF/TF) si propongono solo come sorgente (vedi loop dopo le viste).
           // filterText = nome, così Monaco le filtra con la parola digitata.
           const pushSqlFunctions = () => {
             for (const f of SQL_FUNCTIONS) {
@@ -309,10 +328,10 @@ export default function SqlEditor({
                 filterText: f,
               })
             }
-            for (const fn of st.summary?.functions ?? []) {
+            for (const fn of splitUserFunctions(st.summary?.functions ?? []).scalars) {
               push({
                 label: `${fn.schema}.${fn.name}`,
-                detail: fn.type === 'FN' ? 'funzione scalare' : fn.type === 'IF' ? 'funzione inline' : 'funzione tabella',
+                detail: 'funzione scalare',
                 kind: monaco.languages.CompletionItemKind.Function,
                 insertText: qualified(fn.schema, fn.name),
                 range,
@@ -957,7 +976,50 @@ export default function SqlEditor({
               })
             }
 
-            // Posizione FROM/JOIN/UPDATE/INTO: SOLO tabelle e viste
+            // Funzioni TABELLARI (IF/TF): sorgenti come le tabelle/viste (FROM/JOIN/APPLY),
+            // NON nelle espressioni (SELECT/WHERE/GROUP BY/… dove vanno solo le scalari)
+            for (const fn of splitUserFunctions(st.summary.functions).tableValued) {
+              push({
+                label: `${fn.schema}.${fn.name}`,
+                detail: 'funzione tabellare',
+                kind: monaco.languages.CompletionItemKind.Class,
+                insertText: qualified(fn.schema, fn.name),
+                range,
+                filterText: fn.name,
+              })
+            }
+
+            // Oggetti di catalogo di sistema (sys.tables, sys.columns, sys.dm_*…): compaiono
+            // quando si digita "sys"/"dm" o dopo "sys." — sorgenti come le tabelle
+            if (shouldSuggestSystemObjects(prefix, word.word)) {
+              for (const obj of systemObjectsFor(prefix, word.word)) {
+                push({
+                  label: obj,
+                  detail: 'oggetto di catalogo di sistema',
+                  kind: monaco.languages.CompletionItemKind.Class,
+                  insertText: obj,
+                  range,
+                  filterText: obj,
+                })
+              }
+            }
+
+            // Self-join: in posizione JOIN le tabelle già nello statement vengono riproposte
+            // con un alias (es. "MAG_CORRIDOI AS mc2 ON (…)") — corso "Cross and Self Joins"
+            if (isJoinPosition) {
+              for (const sj of buildSelfJoinSuggestions(stmtText, st.summary)) {
+                push({
+                  label: sj.label,
+                  detail: sj.detail,
+                  kind: monaco.languages.CompletionItemKind.Struct,
+                  insertText: sj.insertText,
+                  range,
+                  filterText: sj.filterText,
+                })
+              }
+            }
+
+            // Posizione FROM/JOIN/UPDATE/INTO: SOLO tabelle, viste e funzioni tabellari
             if (isTablePosition) return { suggestions }
 
             // Stored procedure: solo se il contesto le ammette (statementStart/generic, non dopo tabella)

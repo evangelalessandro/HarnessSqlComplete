@@ -3,7 +3,7 @@ import { BookOpen, Database as DbIcon, FilePlus2, Pin, Table2, TerminalSquare, U
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
-import { dbTabColor, toAlterStatement } from './helpers'
+import { dbTabColor, toCreateOrAlterStatement } from './helpers'
 import { openSqlFiles, saveSqlFile } from './fileSave'
 import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
@@ -437,15 +437,15 @@ export default function App() {
     [newEditorTab, connection],
   )
 
-  /** Apre una stored procedure / funzione / vista / trigger: 'alter' genera ALTER, 'open' la definizione CREATE. */
+  /** Apre una stored procedure / funzione / vista / trigger: 'alter' genera CREATE OR ALTER, 'open' la definizione CREATE. */
   const handleOpenObject = useCallback(
     async (_kind: 'procedure' | 'function' | 'view' | 'trigger', schema: string, name: string, mode: 'alter' | 'open') => {
       if (!connection) return
       setBanner(null)
       try {
         const { definition } = await api.getObjectDefinition(connection.connectionId, schema, name)
-        const sql = mode === 'alter' ? toAlterStatement(definition) : definition
-        const title = `${mode === 'alter' ? 'ALTER ' : ''}${schema === 'dbo' ? name : `${schema}.${name}`}`
+        const sql = mode === 'alter' ? toCreateOrAlterStatement(definition) : definition
+        const title = `${mode === 'alter' ? 'CREATE OR ALTER ' : ''}${schema === 'dbo' ? name : `${schema}.${name}`}`
         newEditorTab(title, sql, connection?.database)
       } catch (e) {
         setBanner(e instanceof Error ? e.message : String(e))

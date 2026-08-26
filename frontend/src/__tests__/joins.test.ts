@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildJoinText, findTableRefs, rankTablesForJoin, usageScore } from '../helpers'
+import { buildJoinText, findTableRefs, isSqlReserved, rankTablesForJoin, usageScore } from '../helpers'
 import type { TableUsage } from '../types'
 import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
 
@@ -66,5 +66,22 @@ describe('JOIN: suggerimenti e clausola ON', () => {
     const ranked = rankTablesForJoin(summary.tables, summary.foreignKeys, ctx)
     expect(ranked.some(r => r.table.name === 'DAT_UDC')).toBe(false)
     expect(ranked.some(r => r.table.name === 'RUN_MISSIONI')).toBe(true)
+  })
+})
+
+describe('isSqlReserved: keyword ufficiali non trattate come alias di tabella', () => {
+  it('statement e language elements del riferimento Microsoft sono riservati', () => {
+    for (const w of ['backup', 'restore', 'grant', 'revoke', 'deny', 'kill', 'dbcc', 'checkpoint',
+      'collate', 'tran', 'pivot', 'unpivot', 'apply', 'except', 'intersect', 'checkpoint',
+      'reconfigure', 'shutdown', 'bulk', 'truncate', 'use', 'declare', 'while', 'break', 'continue',
+      'goto', 'fetch', 'open', 'close', 'deallocate', 'cursor', 'statistics', 'rowcount',
+    ]) {
+      expect(isSqlReserved(w)).toBe(true)
+    }
+  })
+
+  it('parole NON riservate restano utilizzabili come alias', () => {
+    expect(isSqlReserved('utente')).toBe(false)
+    expect(isSqlReserved('gestori')).toBe(false)
   })
 })

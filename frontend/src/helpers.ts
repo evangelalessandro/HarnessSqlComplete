@@ -1,4 +1,4 @@
-import type { CellValue, ColumnInfo, DatabaseSummary, ForeignKeyInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableUsage } from './types'
+import type { CellValue, ColumnInfo, DatabaseSummary, ForeignKeyInfo, FunctionInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableUsage } from './types'
 
 /**
  * Identificatore SQL: restituisce il nome senza parentesi quadre se è "sicuro"
@@ -204,18 +204,38 @@ export function cellText(v: CellValue): string {
   return String(v)
 }
 
-/** Tabella markdown (GFM) dalle colonne/righe di un result set, per l'hover dell'editor. */
+/** Numero massimo di colonne mostrate nell'anteprima hover (oltre → nota). */
+const PREVIEW_MAX_COLUMNS = 10
+/** Lunghezza massima di una cella nell'anteprima (oltre → troncata con …). */
+const PREVIEW_MAX_CELL = 28
+
+/**
+ * Tabella markdown (GFM) dalle colonne/righe di un result set, per l'hover dell'editor.
+ * Curata per la lettura: header in grassetto, valori lunghi troncati, NULL in corsivo,
+ * colonne in eccesso nascoste (con nota) così l'anteprima non diventa un muro di testo.
+ */
 export function rowsToMarkdown(columns: string[], rows: CellValue[][], maxRows = 10): string {
   if (columns.length === 0) return ''
-  const escape = (s: string) => s.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ').trim()
-  const header = `| ${columns.map(c => escape(c)).join(' | ')} |`
-  const sep = `| ${columns.map(() => '---').join(' | ')} |`
+  const escape = (s: string) =>
+    s.replace(/\|/g, '\\|').replace(/`/g, '\\`').replace(/\r?\n/g, ' ').replace(/\s{2,}/g, ' ').trim()
+  const cell = (v: CellValue): string => {
+    const t = cellText(v)
+    if (t === 'NULL') return '*NULL*'
+    const short = t.length > PREVIEW_MAX_CELL ? t.slice(0, PREVIEW_MAX_CELL - 1) + '…' : t
+    return escape(short)
+  }
+  const shown = columns.slice(0, PREVIEW_MAX_COLUMNS)
+  const header = `| ${shown.map(c => `**${escape(c)}**`).join(' | ')} |`
+  const sep = `| ${shown.map(() => '---').join(' | ')} |`
   const body = rows
     .slice(0, maxRows)
-    .map(row => `| ${columns.map((_, i) => escape(cellText(row[i]))).join(' | ')} |`)
+    .map(row => `| ${shown.map((_, i) => cell(row[i])).join(' | ')} |`)
     .join('\n')
-  const more = rows.length > maxRows ? `\n\n_… altre ${rows.length - maxRows} righe (top ${maxRows})_` : ''
-  return `${header}\n${sep}\n${body}${more}`
+  const notes: string[] = []
+  if (rows.length > maxRows) notes.push(`_… altre ${rows.length - maxRows} righe (prime ${maxRows})_`)
+  if (columns.length > shown.length) notes.push(`_… e altre ${columns.length - shown.length} colonne_`)
+  const notesText = notes.length > 0 ? `\n${notes.join(' ')}` : ''
+  return `${header}\n${sep}${body ? `\n${body}` : ''}${notesText}`
 }
 
 // ---------- Parsing INSERT (completamento colonne + evidenziazione valori corrispondenti) ----------
@@ -1345,9 +1365,10 @@ export function tokenizeSql(text: string): SqlToken[] {
       i = end + 1
       continue
     }
-    if (/[A-Za-z_]/.test(ch)) {
+    if (/[A-Za-z_#]/.test(ch)) {
+      // '#' ammesso: identificatori di tabelle temporanee (#temp, ##temp)
       let j = i
-      while (j < n && /[A-Za-z0-9_]/.test(text[j])) j++
+      while (j < n && /[A-Za-z0-9_#]/.test(text[j])) j++
       const prev = tokens[tokens.length - 1]
       tokens.push({
         start: i,
@@ -1452,6 +1473,17 @@ const SQL_RESERVED = new Set([
   'restore', 'kill', 'read', 'write', 'of', 'any', 'some', 'create', 'alter', 'drop', 'truncate',
   'begin', 'merge', 'row', 'rows', 'range', 'identity', 'noexpand', 'pivot', 'unpivot', 'revert',
   'cube', 'rollup', 'sys', 'rule', 'audit', 'contains', 'containstable', 'freetext', 'freetexttable',
+  'bulk',
+  // parole riservate ufficiali (elenco Microsoft) mancanti sopra
+  'add', 'authorization', 'browse', 'cascade', 'checkpoint', 'clustered', 'collate', 'column',
+  'compute', 'current', 'current_date', 'current_time', 'current_timestamp', 'current_user',
+  'database', 'dbcc', 'deallocate', 'disk', 'distributed', 'double', 'dump', 'errlvl', 'escape',
+  'except', 'exit', 'external', 'file', 'fillfactor', 'holdlock', 'identity_insert', 'identitycol',
+  'intersect', 'lineno', 'load', 'national', 'nocheck', 'nonclustered', 'offsets', 'opendatasource',
+  'openquery', 'openrowset', 'openxml', 'percent', 'plan', 'precision', 'proc', 'public', 'readtext',
+  'reconfigure', 'replication', 'restrict', 'rowcount', 'rowguidcol', 'securityaudit', 'session_user',
+  'setuser', 'shutdown', 'statistics', 'system_user', 'tablesample', 'textsize', 'to', 'tran',
+  'try_convert', 'tsequal', 'updatetext', 'varying', 'writetext', 'openjson', 'generate_series',
 ])
 
 export function isSqlReserved(word: string): boolean {
@@ -1642,33 +1674,75 @@ export function resolveTokenAt(text: string, offset: number, summary: DatabaseSu
 }
 
 /** Markdown informativo per hover e documentazione dei suggerimenti: tipo, flag, descrizione e proprietà estese. */
+/** Descrizione (proprietà estesa MS_Description) da una lista di proprietà, se presente. */
+function msDescription(props: { name: string; value: string }[] | null | undefined): string | null {
+  const p = props?.find(x => x.name === 'MS_Description')
+  return p ? p.value : null
+}
+
+/**
+ * Separa le funzioni utente del database per tipo d'uso:
+ * - `scalars` (FN e tipi sconosciuti): utilizzabili nelle ESPRESSIONI (SELECT/WHERE/GROUP BY/…);
+ * - `tableValued` (IF inline / TF): utilizzabili SOLO come sorgente (FROM/JOIN/APPLY), come le tabelle.
+ */
+export function splitUserFunctions(functions: FunctionInfo[]): { scalars: FunctionInfo[]; tableValued: FunctionInfo[] } {
+  const scalars: FunctionInfo[] = []
+  const tableValued: FunctionInfo[] = []
+  for (const f of functions) {
+    if (f.type === 'IF' || f.type === 'TF') tableValued.push(f)
+    else scalars.push(f)
+  }
+  return { scalars, tableValued }
+}
+
+/**
+ * Documentazione markdown per tooltip/autocompletamento: layout curato a sezioni
+ * (intestazione, tabella riassuntiva, descrizione, proprietà estese) invece del
+ * testo piatto di prima.
+ */
 export function columnInfoMarkdown(table: TableInfo, column: ColumnInfo | null, owners?: ResolvedToken['owners']): string {
   const lines: string[] = []
   if (column) {
     const size = column.maxLength ? `(${column.maxLength})` : ''
-    lines.push(
-      `**${column.name}** — \`${column.dataType}${size}\`${column.isNullable ? ' · NULL' : ' · NOT NULL'}${column.isIdentity ? ' · IDENTITY' : ''}${column.isComputed ? ' · COMPUTED' : ''}`,
-    )
-    lines.push(`Tabella: \`${table.schema}.${table.name}\``)
+    const flags = [
+      column.isNullable ? 'NULL' : 'NOT NULL',
+      column.isIdentity ? 'IDENTITY' : null,
+      column.isComputed ? 'COMPUTED' : null,
+    ]
+      .filter(Boolean)
+      .join(' · ')
+    lines.push(`**📄 ${column.name}** — \`${column.dataType}${size}\` · ${flags}`)
+    lines.push('')
+    lines.push('| | |')
+    lines.push('| --- | --- |')
+    lines.push(`| **Tabella** | \`${table.schema}.${table.name}\` |`)
+    if (column.isIdentity) lines.push('| **Identity** | Sì |')
+    if (column.isComputed) lines.push('| **Calcolata** | Sì |')
     if (owners && owners.length > 1) {
-      lines.push(`*Colonna presente anche in:* ${owners.map(o => `\`${o.table.schema}.${o.table.name}\``).join(', ')}`)
+      lines.push(`| **Presente anche in** | ${owners.map(o => `\`${o.table.schema}.${o.table.name}\``).join(', ')} |`)
     }
-    if (column.description) lines.push(`\n**Descrizione:** ${column.description}`)
+    if (column.description) lines.push('', `**Descrizione:** ${column.description}`)
     const props = column.extendedProperties ?? []
     if (props.length > 0) {
-      lines.push('\n**Proprietà estese:**')
+      lines.push('', '**Proprietà estese:**')
       for (const p of props) lines.push(`- **${p.name}:** ${p.value}`)
     }
   } else {
-    lines.push(`**${table.schema}.${table.name}** — ${table.columnCount} colonne`)
+    lines.push(`**🗄️ ${table.schema}.${table.name}** · *${table.columnCount} colonne*`)
     if (table.usage) {
-      lines.push(
-        `Utilizzo: ${table.usage.fkIncoming} ref. · ${table.usage.fkOutgoing} join · ${table.usage.dependencyCount} dip. · ${table.usage.rowCount.toLocaleString('it-IT')} righe`,
-      )
+      lines.push('')
+      lines.push('| | |')
+      lines.push('| --- | --- |')
+      if (table.usage.rowCount > 0) lines.push(`| **Righe** | ${formatCount(table.usage.rowCount)} |`)
+      if (table.usage.fkIncoming > 0) lines.push(`| **Riferimenti** | ${table.usage.fkIncoming} |`)
+      if (table.usage.fkOutgoing > 0) lines.push(`| **JOIN** | ${table.usage.fkOutgoing} |`)
+      if (table.usage.dependencyCount > 0) lines.push(`| **Dipendenze** | ${table.usage.dependencyCount} |`)
     }
-    const props = table.extendedProperties ?? []
+    const desc = msDescription(table.extendedProperties)
+    if (desc) lines.push('', `**Descrizione:** ${desc}`)
+    const props = (table.extendedProperties ?? []).filter(p => p.name !== 'MS_Description')
     if (props.length > 0) {
-      lines.push('\n**Proprietà estese:**')
+      lines.push('', '**Proprietà estese:**')
       for (const p of props) lines.push(`- **${p.name}:** ${p.value}`)
     }
   }
@@ -1854,24 +1928,37 @@ export function buildExecParamSnippet(parameters: ProcParamInfo[]): string {
     .join(', ')
 }
 
-// ---------- Definizioni oggetti (Alter) ----------
+// ---------- Definizioni oggetti (Create or Alter) ----------
 
 /**
- * Converte una definizione CREATE in ALTER:
- * "CREATE PROCEDURE ..." → "ALTER PROCEDURE ...", "CREATE OR ALTER ..." → "ALTER ...".
- * Se non inizia con CREATE, restituisce il testo invariato.
+ * Prepara una definizione per la modifica: "CREATE PROCEDURE ..." →
+ * "CREATE OR ALTER PROCEDURE ..." (eseguibile anche su un oggetto esistente).
+ * "CREATE OR ALTER ..." resta invariato; se non inizia con CREATE, testo invariato.
  */
-export function toAlterStatement(definition: string): string {
+export function toCreateOrAlterStatement(definition: string): string {
   const m = /^\s*CREATE\s+(?:OR\s+ALTER\s+)?/i.exec(definition)
   if (!m) return definition
-  return 'ALTER ' + definition.slice(m[0].length)
+  return 'CREATE OR ALTER ' + definition.slice(m[0].length)
 }
 
 /** Parole chiave che non possono essere alias di tabella: se seguono il nome, la tabella non ha alias. */
 const TABLE_ALIAS_BLOCK =
   'JOIN|INNER|LEFT|RIGHT|CROSS|FULL|OUTER|ON|WHERE|AND|OR|NOT|GROUP|ORDER|BY|HAVING|UNION|ALL|' +
   'SET|VALUES|INTO|FROM|UPDATE|DELETE|INSERT|SELECT|GO|WITH|WHEN|THEN|ELSE|END|CASE|IN|IS|' +
-  'LIKE|BETWEEN|EXISTS|TOP|DISTINCT|USE|EXEC|EXECUTE|RETURN|MERGE|TRUNCATE|TABLE|AS'
+  'LIKE|BETWEEN|EXISTS|TOP|DISTINCT|USE|EXEC|EXECUTE|RETURN|MERGE|TRUNCATE|TABLE|AS|' +
+  'APPLY|PIVOT|UNPIVOT|FOR|COLLATE|EXCEPT|INTERSECT|OUTPUT|OPTION|OVER|PARTITION|ROW_NUMBER|' +
+  'RANK|DENSE_RANK|NTILE|LAG|LEAD|OFFSET|FETCH|NOCOUNT|RECOMPILE|TABLESAMPLE|BACKUP|RESTORE|' +
+  'GRANT|REVOKE|DENY|KILL|DBCC|CHECKPOINT|RECONFIGURE|SHUTDOWN|TRAN|TRANSACTION|COMMIT|ROLLBACK|' +
+  'SAVE|DECLARE|PRINT|IF|WHILE|BREAK|CONTINUE|GOTO|WAITFOR|RAISERROR|THROW|TRY|CATCH|OPEN|CLOSE|' +
+  'CURSOR|DEALLOCATE|BULK|CONTAINS|CONTAINSTABLE|FREETEXT|FREETEXTTABLE|OPENROWSET|OPENQUERY|' +
+  'OPENDATASOURCE|TABLESAMPLE|INTERSECT|EXCEPT|WITHIN|ADMINISTER|ASSEMBLY|ASYMMETRIC|AUTHORIZATION|' +
+  'CASCADE|CHECKPOINT|CLUSTERED|COLUMN|COMPUTE|CONSTRAINT|CURRENT|DATABASE|DEFAULT|DISK|DOUBLE|' +
+  'DUMP|ERRLVL|ESCAPE|EXIT|EXTERNAL|FILE|FILLFACTOR|FOREIGN|FREETEXTTABLE|HOLDLOCK|IDENTITY|' +
+  'INDEX|KEY|LINENO|LOAD|NATIONAL|NOCHECK|NONCLUSTERED|OF|OFF|OFFSETS|PERCENT|PLAN|PRECISION|' +
+  'PRIMARY|PROC|PROCEDURE|PUBLIC|READ|READTEXT|REFERENCES|REPLICATION|RESTRICT|REVERT|ROWGUIDCOL|' +
+  'RULE|SCHEMA|SECURITYAUDIT|SESSION_USER|SETUSER|SOME|STATISTICS|SYSTEM_USER|TEXTSIZE|TO|TSEQUAL|' +
+  'UNIQUE|UPDATETEXT|USER|VARYING|VIEW|WRITETEXT|ADD|ANY|ASC|DESC|CURRENT_DATE|CURRENT_TIME|' +
+  'CURRENT_TIMESTAMP|CURRENT_USER|IDENTITYCOL|IDENTITY_INSERT|ROWCOUNT|NULLIF|COALESCE|GROUPING'
 
 /**
  * Regex condivisa per estrarre i riferimenti a tabelle (FROM/JOIN/UPDATE/INTO/TABLE):
@@ -1926,6 +2013,11 @@ export function colorizeSqlTokens(text: string, summary: DatabaseSummary): Color
   for (const t of summary.tables) {
     tableByLower.set(t.name.toLowerCase(), t)
     tableByKey.set(`${t.schema}.${t.name}`, t)
+  }
+  // funzioni TABELLARI (IF = inline, TF = table-valued): colorate come le tabelle
+  const tvfByLower = new Map<string, FunctionInfo>()
+  for (const f of summary.functions) {
+    if (f.type === 'IF' || f.type === 'TF') tvfByLower.set(f.name.toLowerCase(), f)
   }
   const columnOwners = new Map<string, string[]>()
   for (const t of summary.tables) {
@@ -1986,6 +2078,11 @@ export function colorizeSqlTokens(text: string, summary: DatabaseSummary): Color
     if (tok.qualified && tok.qualifier) {
       const refs = refsFor(stmtIndexOf(tok.start))
       const qLower = tok.qualifier.toLowerCase()
+      // colonna di una tabella temporanea ("#temp.col"): col colore della #temp
+      if (qLower.startsWith('#')) {
+        result.push({ index: i, tableKey: tok.qualifier, isTableName: false })
+        continue
+      }
       const ownerKey =
         refs.aliases.get(qLower) ??
         (tableByLower.has(qLower) ? `${tableByLower.get(qLower)!.schema}.${tableByLower.get(qLower)!.name}` : undefined)
@@ -2002,6 +2099,12 @@ export function colorizeSqlTokens(text: string, summary: DatabaseSummary): Color
         result.push({ index: i, tableKey: `${tbl.schema}.${tbl.name}`, isTableName: true })
         continue
       }
+      // funzione tabellare qualificata (es. dbo.fn_…): colorata come le tabelle
+      const fnQ = tvfByLower.get(tok.lower)
+      if (fnQ) {
+        result.push({ index: i, tableKey: `${fnQ.schema}.${fnQ.name}`, isTableName: true })
+        continue
+      }
       const single = columnOwners.get(tok.lower)
       if (single && single.length === 1) result.push({ index: i, tableKey: single[0], isTableName: false })
       continue
@@ -2010,6 +2113,19 @@ export function colorizeSqlTokens(text: string, summary: DatabaseSummary): Color
     const table = tableByLower.get(tok.lower)
     if (table) {
       result.push({ index: i, tableKey: `${table.schema}.${table.name}`, isTableName: true })
+      continue
+    }
+
+    // funzione tabellare: colorata come le tabelle (es. FROM dbo.fn_… o senza schema)
+    const fn = tvfByLower.get(tok.lower)
+    if (fn) {
+      result.push({ index: i, tableKey: `${fn.schema}.${fn.name}`, isTableName: true })
+      continue
+    }
+
+    // tabella temporanea (#temp / ##temp): colore stabile per nome
+    if (tok.lower.startsWith('#')) {
+      result.push({ index: i, tableKey: tok.text, isTableName: true })
       continue
     }
 
@@ -2201,4 +2317,70 @@ export function buildJoinSuggestions(
       filterText: t.name,
     },
   ]
+}
+
+// ---------- Self-join (il corso T-SQL dedica lezioni a "Cross Joins and Self Joins") ----------
+
+export interface SelfJoinSuggestion {
+  label: string
+  detail: string
+  insertText: string
+  filterText: string
+}
+
+/**
+ * Suggerimenti di SELF-JOIN: le tabelle già presenti nello statement (FROM/JOIN)
+ * vengono riproposte come "tabella AS alias" per unire la tabella con sé stessa.
+ * L'ON viene compilato dalle FK autoreferenziali (es. manager_id → id) usando il
+ * riferimento esistente (alias o nome) sul lato contesto e un nuovo alias sull'altro.
+ */
+export function buildSelfJoinSuggestions(stmtText: string, summary: DatabaseSummary): SelfJoinSuggestion[] {
+  const refs = extractStatementTableRefs(stmtText)
+  const tablesByLower = new Map<string, TableInfo>()
+  for (const t of summary.tables) tablesByLower.set(t.name.toLowerCase(), t)
+  const existingAliases = new Set(refs.filter(r => r.alias).map(r => r.alias!.toLowerCase()))
+  const out: SelfJoinSuggestion[] = []
+  const seen = new Set<string>()
+  for (const r of refs) {
+    const key = r.tableName.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    const table = tablesByLower.get(key)
+    if (!table) continue
+    const ctxQual = r.alias ?? table.name
+    // alias nuovo che non collide con quelli già scritti nello statement
+    let newAlias = tableAlias(table.name)
+    while (
+      existingAliases.has(newAlias.toLowerCase()) ||
+      newAlias.toLowerCase() === ctxQual.toLowerCase()
+    ) {
+      newAlias += '2'
+    }
+    const selfFks = summary.foreignKeys.filter(
+      fk => fk.table.toLowerCase() === key && fk.refTable.toLowerCase() === key,
+    )
+    const base = qualified(table.schema, table.name)
+    const aliasText = `${base} AS ${newAlias}`
+    if (selfFks.length === 0) {
+      out.push({
+        label: aliasText,
+        detail: 'self-join (scrivi l\'ON)',
+        insertText: aliasText,
+        filterText: table.name,
+      })
+      continue
+    }
+    // un elemento per ogni FK autoreferenziale (come "una voce per FK" dei JOIN)
+    for (const fk of selfFks) {
+      // il lato figlio (colonna FK) è il nuovo alias, il lato padre (refColumn) è il riferimento esistente
+      const on = `${newAlias}.${sqlIdent(fk.column)} = ${sqlIdent(ctxQual)}.${sqlIdent(fk.refColumn)}`
+      out.push({
+        label: aliasText,
+        detail: `self-join su ${on}`,
+        insertText: `${aliasText} ON (${on})`,
+        filterText: table.name,
+      })
+    }
+  }
+  return out
 }

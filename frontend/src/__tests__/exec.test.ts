@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildExecParamSnippet, filterUnusedParams, findExecContext, toAlterStatement } from '../helpers'
+import { buildExecParamSnippet, filterUnusedParams, findExecContext, toCreateOrAlterStatement } from '../helpers'
 import { wsbritvicLikeSummary } from './schema'
 
 const summary = wsbritvicLikeSummary()
@@ -55,31 +55,31 @@ describe('EXEC: parametri delle stored procedure', () => {
   })
 })
 
-describe('toAlterStatement: CREATE → ALTER', () => {
-  it('CREATE PROCEDURE → ALTER PROCEDURE', () => {
+describe('toCreateOrAlterStatement: CREATE → CREATE OR ALTER', () => {
+  it('CREATE PROCEDURE → CREATE OR ALTER PROCEDURE', () => {
     const def = 'CREATE PROCEDURE dbo.X\nAS\nBEGIN\n  SELECT 1\nEND'
-    expect(toAlterStatement(def)).toBe('ALTER PROCEDURE dbo.X\nAS\nBEGIN\n  SELECT 1\nEND')
+    expect(toCreateOrAlterStatement(def)).toBe('CREATE OR ALTER PROCEDURE dbo.X\nAS\nBEGIN\n  SELECT 1\nEND')
   })
 
-  it('CREATE OR ALTER PROCEDURE → ALTER PROCEDURE (senza doppione)', () => {
+  it('CREATE OR ALTER PROCEDURE → invariato (senza doppione)', () => {
     const def = 'CREATE OR ALTER PROCEDURE dbo.X AS SELECT 1'
-    expect(toAlterStatement(def)).toBe('ALTER PROCEDURE dbo.X AS SELECT 1')
+    expect(toCreateOrAlterStatement(def)).toBe(def)
   })
 
-  it('CREATE FUNCTION → ALTER FUNCTION', () => {
-    expect(toAlterStatement('CREATE FUNCTION dbo.F(@a INT) RETURNS INT')).toBe(
-      'ALTER FUNCTION dbo.F(@a INT) RETURNS INT',
+  it('CREATE FUNCTION → CREATE OR ALTER FUNCTION', () => {
+    expect(toCreateOrAlterStatement('CREATE FUNCTION dbo.F(@a INT) RETURNS INT')).toBe(
+      'CREATE OR ALTER FUNCTION dbo.F(@a INT) RETURNS INT',
     )
   })
 
   it('con indentazione iniziale', () => {
-    expect(toAlterStatement('\n  CREATE PROCEDURE dbo.X AS SELECT 1')).toBe(
-      'ALTER PROCEDURE dbo.X AS SELECT 1',
+    expect(toCreateOrAlterStatement('\n  CREATE PROCEDURE dbo.X AS SELECT 1')).toBe(
+      'CREATE OR ALTER PROCEDURE dbo.X AS SELECT 1',
     )
   })
 
   it('testo che non inizia con CREATE: invariato', () => {
     const def = 'SELECT 1'
-    expect(toAlterStatement(def)).toBe(def)
+    expect(toCreateOrAlterStatement(def)).toBe(def)
   })
 })

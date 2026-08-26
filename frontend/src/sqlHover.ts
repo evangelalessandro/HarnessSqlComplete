@@ -44,7 +44,7 @@ export function registerSqlHover(getContext: () => HoverContext): monaco.IDispos
             if (preview.error) {
               mdTable = `_Anteprima non disponibile: ${preview.error}_`
             } else if (set && set.columns.length > 0) {
-              mdTable = `**Anteprima dati (TOP 10):**\n\n${rowsToMarkdown(
+              mdTable = `---\n\n### 🔍 Anteprima dati\n\n${rowsToMarkdown(
                 set.columns.map(c => c.name),
                 set.rows,
                 10,

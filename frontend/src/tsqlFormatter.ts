@@ -137,6 +137,20 @@ const KEYWORDS = new Set([
   'XACT_ABORT', 'ANSI_NULLS', 'QUOTED_IDENTIFIER', 'NOCOUNT', 'ARITHABORT', 'CONCAT_NULL_YIELDS_NULL',
   'NUMERIC_ROUNDABORT', 'ANSI_PADDING', 'ANSI_WARNINGS', 'CURSOR_CLOSE_ON_COMMIT', 'IMPLICIT_TRANSACTIONS',
   'LOCK_TIMEOUT', 'REMOTE_PROC_TRANSACTIONS', 'ROWCOUNT', 'STATISTICS', 'DATEFORMAT', 'LANGUAGE',
+  // parole riservate ufficiali (elenco Microsoft) per il case coerente
+  'ADD', 'ANY', 'ASC', 'AUTHORIZATION', 'BACKUP', 'BROWSE', 'CASCADE', 'CHECK', 'CHECKPOINT',
+  'CLUSTERED', 'COALESCE', 'COLLATE', 'COLUMN', 'COMPUTE', 'CONSTRAINT', 'CONTAINS', 'CONTAINSTABLE',
+  'CURRENT', 'CURRENT_DATE', 'CURRENT_TIME', 'CURRENT_TIMESTAMP', 'CURRENT_USER', 'DATABASE', 'DBCC',
+  'DEFAULT', 'DENY', 'DESC', 'DISK', 'DISTRIBUTED', 'DOUBLE', 'DUMP', 'ERRLVL', 'ESCAPE', 'EXCEPT',
+  'EXIT', 'EXTERNAL', 'FILE', 'FILLFACTOR', 'FOREIGN', 'FREETEXT', 'FREETEXTTABLE', 'GRANT',
+  'HOLDLOCK', 'IDENTITY_INSERT', 'IDENTITYCOL', 'INDEX', 'INTERSECT', 'KEY', 'KILL', 'LINENO',
+  'LOAD', 'NATIONAL', 'NOCHECK', 'NONCLUSTERED', 'NULL', 'NULLIF', 'OF', 'OFF', 'OFFSETS',
+  'OPENDATASOURCE', 'OPENQUERY', 'OPENROWSET', 'OPENXML', 'OVER', 'PERCENT', 'PIVOT', 'PLAN',
+  'PRECISION', 'PRIMARY', 'PROC', 'PUBLIC', 'READ', 'READTEXT', 'RECONFIGURE', 'REFERENCES',
+  'REPLICATION', 'RESTORE', 'RESTRICT', 'REVERT', 'REVOKE', 'ROWGUIDCOL', 'RULE', 'SCHEMA',
+  'SECURITYAUDIT', 'SESSION_USER', 'SETUSER', 'SHUTDOWN', 'SOME', 'SYSTEM_USER', 'TABLESAMPLE',
+  'TEXTSIZE', 'TO', 'TRAN', 'TRY_CONVERT', 'TSEQUAL', 'UNIQUE', 'UNPIVOT', 'UPDATETEXT', 'USER',
+  'VARYING', 'WRITETEXT', 'APPLY', 'EXCEPT', 'INTERSECT', 'PIVOT', 'UNPIVOT',
 ])
 
 const TYPES = new Set([
@@ -150,6 +164,7 @@ const TYPES = new Set([
 const CLAUSE_KEYWORDS = [
   'FROM', 'WHERE', 'GROUP', 'HAVING', 'ORDER', 'UNION', 'INNER', 'LEFT', 'RIGHT', 'FULL',
   'CROSS', 'JOIN', 'ON', 'SET', 'VALUES', 'USING', 'WHEN', 'OUTPUT', 'OPTION', 'INTO',
+  'APPLY', 'PIVOT', 'UNPIVOT', 'FOR', 'EXCEPT', 'INTERSECT',
 ]
 
 interface Row {
@@ -269,7 +284,10 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
       const isSelectStmt = /^\s*SELECT\b/i.test(lines.length > 0 ? lines[0].text : current.join(' '))
       if (isJoinModifier && profile.breakBeforeJoin) {
         const next = tokens[i + 1]
-        const joinToken = next && next.type === 'word' && next.text.toUpperCase() === 'JOIN' ? next : null
+        const joinToken =
+          next && next.type === 'word' && (next.text.toUpperCase() === 'JOIN' || next.text.toUpperCase() === 'APPLY')
+            ? next
+            : null
         if (joinToken) {
           flush()
           currentIndent = profile.joinIndent
@@ -282,6 +300,7 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
         (clause === 'FROM' && profile.breakBeforeFrom) ||
         (clause === 'INTO' && profile.breakBeforeInto && isSelectStmt) ||
         (isJoinWord && profile.breakBeforeJoin) ||
+        (clause === 'APPLY' && profile.breakBeforeJoin) ||
         (clause === 'ON' && profile.breakBeforeOn) ||
         (clause === 'WHERE' && profile.breakBeforeWhere) ||
         (clause === 'GROUP' && profile.breakBeforeGroupBy) ||
@@ -293,12 +312,17 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
         clause === 'USING' ||
         clause === 'WHEN' ||
         clause === 'OUTPUT' ||
-        clause === 'OPTION'
+        clause === 'OPTION' ||
+        clause === 'PIVOT' ||
+        clause === 'UNPIVOT' ||
+        clause === 'FOR' ||
+        clause === 'EXCEPT' ||
+        clause === 'INTERSECT'
       ) {
         let indent = 0
         if (clause === 'FROM') indent = 0
         else if (clause === 'INTO') indent = 0
-        else if (isJoinWord) indent = profile.joinIndent
+        else if (isJoinWord || clause === 'APPLY') indent = profile.joinIndent
         else if (clause === 'WHERE') indent = 0
         else if (clause === 'HAVING') indent = 0
         else if (clause === 'GROUP') indent = 0
@@ -558,11 +582,39 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'SET', 'DECLARE', 'PRINT', 'RETURN', 'GOTO',
     'RAISERROR', 'THROW', 'OPEN', 'CLOSE', 'FETCH', 'DEALLOCATE', 'BREAK', 'CONTINUE', 'WAITFOR',
     'COMMIT', 'ROLLBACK', 'EXEC', 'EXECUTE', 'IF', 'WHILE', 'BEGIN', 'GO',
+    // statement di batch (riferimento Microsoft): ognuno inizia un segmento proprio
+    'BACKUP', 'RESTORE', 'GRANT', 'REVOKE', 'DENY', 'USE', 'KILL', 'CHECKPOINT', 'DBCC',
+    'RECONFIGURE', 'SHUTDOWN', 'TRUNCATE', 'BULK', 'ALTER', 'CREATE', 'DROP', 'DISABLE', 'ENABLE',
+    'EXCEPT', 'INTERSECT',
   ])
   let seg: Token[] = []
   const segments: Token[][] = []
   let segDepth = 0
   let caseDepth = 0
+  // statement che CONTENGONO altre keyword di statement (GRANT SELECT, BULK INSERT, …):
+  // dentro di essi uno starter interno ammesso NON spezza (altrimenti "GRANT" resterebbe
+  // troncato). GRANT/REVOKE/DENY terminano al TO <principal>: dopo TO gli starter tornano
+  // a spezzare (es. lo SELECT di uno statement successivo).
+  const STATEMENT_CONTAINERS = new Map<string, Set<string>>([
+    ['GRANT', new Set(['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'EXECUTE', 'EXEC', 'REFERENCES', 'ALTER', 'CONTROL', 'CREATE', 'VIEW'])],
+    ['REVOKE', new Set(['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'EXECUTE', 'EXEC', 'REFERENCES', 'ALTER', 'CONTROL', 'CREATE', 'VIEW'])],
+    ['DENY', new Set(['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'EXECUTE', 'EXEC', 'REFERENCES', 'ALTER', 'CONTROL', 'CREATE', 'VIEW'])],
+    ['BULK', new Set(['INSERT'])],
+  ])
+  const insideContainer = (segTokens: Token[], innerUpper: string): boolean => {
+    const first = segTokens[0]
+    if (!first || first.type !== 'word') return false
+    const firstUpper = first.text.toUpperCase()
+    const inner = STATEMENT_CONTAINERS.get(firstUpper)
+    if (!inner) return false
+    if (
+      firstUpper !== 'BULK' &&
+      segTokens.some(t => t.type === 'word' && t.text.toUpperCase() === 'TO')
+    ) {
+      return false
+    }
+    return inner.has(innerUpper)
+  }
   const isLabelAt = (tokens: Token[], idx: number) =>
     tokens[idx]?.type === 'word' &&
     tokens[idx + 1]?.type === 'punct' &&
@@ -591,7 +643,8 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       segDepth === 0 &&
       caseDepth === 0 &&
       t.type === 'word' &&
-      (ROUTINE_STARTERS.has(upper) || upper === 'END')
+      (ROUTINE_STARTERS.has(upper) || upper === 'END') &&
+      !(seg.length > 0 && insideContainer(seg, upper))
     const isElse = segDepth === 0 && caseDepth === 0 && t.type === 'word' && upper === 'ELSE'
     const isSemi = t.type === 'punct' && t.text === ';' && segDepth === 0
     const isLab = isLabelAt(body, k)
@@ -661,7 +714,10 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     // BEGIN / IF / WHILE / CASE: apri blocco
     if (firstUpper === 'BEGIN') {
       flushLine()
-      pushLine('BEGIN', indent)
+      // "BEGIN TRANSACTION"/"BEGIN TRAN"/"BEGIN TRY"/"BEGIN CATCH": il resto del
+      // segmento (es. TRANSACTION) NON deve andare perso (bug: scompariva dal risultato)
+      const extra = segment.slice(1).map(up).join(' ')
+      pushLine(extra ? `BEGIN ${extra}` : 'BEGIN', indent)
       blockStack.push('begin')
       indent++
       continue
@@ -921,7 +977,7 @@ function joinTokensInline(tokens: Token[], up: (t: Token) => string, profile: Fo
       out += (out.endsWith(' ') || out.length === 0 ? '' : ' ') + text + ' '
       continue
     }
-    out += (out.endsWith(' ') || out.endsWith('(') || out.length === 0 ? '' : ' ') + text
+    out += (out.endsWith(' ') || out.endsWith('(') || out.endsWith('.') || out.length === 0 ? '' : ' ') + text
   }
   return out.replace(/\s+/g, ' ').trim()
 }

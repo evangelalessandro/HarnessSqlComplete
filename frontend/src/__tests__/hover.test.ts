@@ -42,32 +42,37 @@ describe('resolveTokenAt: hover sui campi della query', () => {
   })
 })
 
-describe('columnInfoMarkdown: proprietà estese nella documentazione', () => {
-  it('include tipo, descrizione e proprietà estese della colonna', () => {
+describe('columnInfoMarkdown: documentazione a sezioni (tooltip/autocompletamento)', () => {
+  it('include tipo, tabella, descrizione e proprietà estese della colonna', () => {
     const table = summary.tables.find(t => t.name === 'RUN_MISSIONI')!
     const col = table.columns!.find(c => c.name === 'MIS_UDC')!
     const md = columnInfoMarkdown(table, col)
-    expect(md).toContain('**MIS_UDC**')
+    expect(md).toContain('📄')
+    expect(md).toContain('**📄 MIS_UDC**')
     expect(md).toContain('nvarchar')
+    expect(md).toContain('| **Tabella** | `dbo.RUN_MISSIONI` |')
     expect(md).toContain('Codice UDC di destinazione')
     expect(md).toContain('**Proprietà estese:**')
     expect(md).toContain('BusinessKey')
     expect(md).toContain('UDC')
   })
 
-  it('variante tabella: conteggio colonne, utilizzo e proprietà estese', () => {
+  it('variante tabella: conteggio colonne, utilizzo e descrizione separata', () => {
     const table = summary.tables.find(t => t.name === 'DAT_UDC')!
     const md = columnInfoMarkdown(table, null)
+    expect(md).toContain('🗄️')
     expect(md).toContain('dbo.DAT_UDC')
     expect(md).toContain('5 colonne')
-    expect(md).toContain('Tabella degli UDC')
+    // la descrizione (MS_Description) ha una sezione dedicata, non è duplicata nelle proprietà
+    expect(md).toContain('**Descrizione:** Tabella degli UDC')
+    expect(md).not.toContain('- **MS_Description:**')
   })
 })
 
-describe('rowsToMarkdown: anteprima dati nell hover', () => {
-  it('genera una tabella markdown con header, separatore e righe', () => {
+describe('rowsToMarkdown: anteprima dati curata nell hover', () => {
+  it('genera una tabella markdown con header in grassetto, separatore e righe', () => {
     const md = rowsToMarkdown(['id', 'nome'], [[1, 'Mario'], [2, 'Anna']])
-    expect(md).toContain('| id | nome |')
+    expect(md).toContain('| **id** | **nome** |')
     expect(md).toContain('| --- | --- |')
     expect(md).toContain('| 1 | Mario |')
     expect(md).toContain('| 2 | Anna |')
@@ -77,12 +82,29 @@ describe('rowsToMarkdown: anteprima dati nell hover', () => {
     const rows = Array.from({ length: 15 }, (_, i) => [i, `a|b\nc`])
     const md = rowsToMarkdown(['n', 'v'], rows, 10)
     expect(md).toContain('a\\|b c')
-    expect(md).toContain('_… altre 5 righe (top 10)_')
+    expect(md).toContain('_… altre 5 righe (prime 10)_')
     expect((md.match(/\| \d+ \|/g) ?? []).length).toBe(10)
   })
 
-  it('NULL e booleani vengono resi leggibili', () => {
+  it('NULL in corsivo e booleani resi leggibili', () => {
     const md = rowsToMarkdown(['a', 'b'], [[null, true]])
-    expect(md).toContain('| NULL | true |')
+    expect(md).toContain('| *NULL* | true |')
+  })
+
+  it('valori lunghi troncati con … e backtick sfuggiti', () => {
+    const lungo = 'x'.repeat(60)
+    const md = rowsToMarkdown(['v'], [[`parola \`con\` ${lungo}`]])
+    expect(md).toContain('\\`')
+    expect(md).toContain('…')
+    expect(md).not.toContain('x'.repeat(28))
+  })
+
+  it('colonne in eccesso nascoste con nota (anteprima leggibile)', () => {
+    const cols = Array.from({ length: 15 }, (_, i) => `col_${i}`)
+    const row = cols.map((_, i) => i)
+    const md = rowsToMarkdown(cols, [row])
+    expect(md).toContain('| **col_0** |')
+    expect(md).not.toContain('col_14')
+    expect(md).toContain('_… e altre 5 colonne_')
   })
 })

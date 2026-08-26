@@ -53,6 +53,8 @@ export interface ClassifyInput {
 const AFTER_TABLE_KEYWORDS = new Set([
   'WHERE', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'ON', 'GROUP', 'ORDER', 'HAVING',
   'UNION', 'SET', 'VALUES', 'OUTPUT', 'OPTION', 'AS', 'WITH', 'AND', 'OR',
+  // costrutti ufficiali T-SQL: APPLY/PIVOT/UNPIVOT, FOR XML/JSON, collation, set operatori
+  'APPLY', 'PIVOT', 'UNPIVOT', 'FOR', 'COLLATE', 'EXCEPT', 'INTERSECT', 'TABLESAMPLE', 'HOLDLOCK',
 ])
 
 /** Classifica il contesto corrente. */
@@ -60,9 +62,22 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
   const isTablePosition = /(?:FROM|JOIN|UPDATE|INTO|TABLE)\s*$/i.test(prefix)
   const isJoinPosition = /(?:(?:LEFT|RIGHT|INNER|OUTER|CROSS|FULL)\s+)?JOIN\s*$/i.test(prefix)
   const isExecPosition = /(?:^|\s)EXEC(?:UTE)?\s*$/i.test(prefix)
+  // dopo una virgola che CONTINUA una lista di colonne (es. "GROUP BY a, ",
+  // "ORDER BY a, b, ", "WHERE x IN (1, ", "ON a = b, "): il contesto resta di colonne.
+  // Il testo prima dell'ultima virgola deve appartenere a una clausola di colonne,
+  // così "FROM a, " resta un contesto di TABELLE.
+  const commaContinuation = (() => {
+    const m = /,\s*$/.exec(prefix)
+    if (!m) return false
+    const before = prefix.slice(0, m.index)
+    // l'ultima clausola di colonne prima della virgola (la coda può contenere altre virgole:
+    // "ORDER BY a, b, ")
+    return /(?:\bGROUP\s+BY|\bORDER\s+BY|\bWHERE\b|\bHAVING\b|\bON\b|\bSET\b)[^;]*$/i.test(before)
+  })()
   const isColumnContext =
     /(?:WHERE|ON|HAVING|AND|OR|SET|BY|GROUP|ORDER)\s*$/i.test(prefix) ||
-    /(?:=|<>|!=|<=|>=|<|>)\s*$/i.test(prefix)
+    /(?:=|<>|!=|<=|>=|<|>)\s*$/i.test(prefix) ||
+    commaContinuation
   const inSelectList = /\bSELECT\b/i.test(stmtBefore) && !/\bFROM\b/i.test(stmtBefore)
   const statementStart = /(?:^|;|\bGO\b|\n\s*\n)\s*$/i.test(prefix)
 
@@ -166,7 +181,10 @@ export function filterKeywordsForContext(ctx: IntellisenseContext, keywords: str
   if (ctx.kind === 'statementStart' || ctx.kind === 'generic') {
     // all'inizio servono le keyword di statement; in generic le più utili
     if (ctx.kind === 'statementStart') {
-      return keywords.filter(k => /^(SELECT|INSERT|UPDATE|DELETE|MERGE|EXEC|EXECUTE|DECLARE|CREATE|ALTER|DROP|USE|GO|BEGIN|WITH)$/i.test(k))
+      // statement ufficiali T-SQL (riferimento Microsoft): DML/DDL/permessi/backup/sessione/controllo
+      return keywords.filter(k =>
+        /^(SELECT|INSERT|UPDATE|DELETE|MERGE|EXEC|EXECUTE|DECLARE|CREATE|ALTER|DROP|USE|GO|BEGIN|WITH|BACKUP|RESTORE|GRANT|REVOKE|DENY|TRUNCATE|SET|PRINT|IF|WHILE|COMMIT|ROLLBACK|SAVE|TRANSACTION|RAISERROR|THROW|RETURN|KILL|DBCC|CHECKPOINT|BULK|EXCEPT|INTERSECT|BREAK|CONTINUE|GOTO|WAITFOR)$/i.test(k),
+      )
     }
   }
   return keywords
