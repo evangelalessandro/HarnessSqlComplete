@@ -271,7 +271,7 @@ export default function DataPreviewModal({ target, connectionId, summary, onClos
             <ClipboardCopy className="h-3.5 w-3.5" /> {copied ? 'Copiato!' : 'Copia SQL'}
           </Button>
         </div>
-        <pre className="max-h-56 min-h-24 flex-1 overflow-auto border-t border-zinc-800 bg-zinc-950 p-3 font-mono text-xs text-emerald-200">
+        <pre className="max-h-56 min-h-24 flex-1 overflow-auto border-t border-zinc-300 bg-white p-3 font-mono text-xs text-black">
           {output || 'Seleziona almeno una riga e una colonna per generare lo statement.'}
         </pre>
       </div>
