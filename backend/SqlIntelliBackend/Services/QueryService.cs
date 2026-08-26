@@ -38,16 +38,17 @@ public class QueryService
             };
             await conn.OpenAsync(ct);
 
-            // Verifica di sintassi: esegue dentro una transazione che viene SEMPRE annullata,
-            // così gli errori reali di SQL Server (con riga) arrivano senza effetti collaterali.
+            // Verifica di sintassi: ogni comando gira dentro una transazione ADO.NET che
+            // viene SEMPRE annullata a fine richiesta (nessun effetto collaterale). NON si
+            // usa "BEGIN TRANSACTION" in T-SQL: se il testo utente contiene già
+            // BEGIN TRAN/ROLLBACK/COMMIT (nidificati sopra il nostro), un suo ROLLBACK
+            // senza nome chiude l'INTERA transazione → il Rollback finale fallisce e va
+            // ignorato (la connessione si chiude comunque senza COMMIT, quindi niente
+            // effetti collaterali residui).
+            SqlTransaction? checkTran = null;
             if (checkSyntax)
             {
-                await using (var tran = conn.CreateCommand())
-                {
-                    tran.CommandText = "BEGIN TRANSACTION";
-                    tran.CommandTimeout = 10;
-                    await tran.ExecuteNonQueryAsync(ct);
-                }
+                checkTran = (SqlTransaction)await conn.BeginTransactionAsync(ct);
             }
 
             var batches = SqlBatchSplitter.SplitWithLines(sql);
@@ -59,6 +60,7 @@ public class QueryService
                 currentStartLine = batch.StartLine;
                 await using var cmd = conn.CreateCommand();
                 cmd.CommandText = batch.Text;
+                cmd.Transaction = checkTran;
                 cmd.CommandTimeout = checkSyntax ? Math.Min(timeoutSeconds ?? 30, 10) : (timeoutSeconds ?? 30);
                 cmd.StatementCompleted += (_, e) => totalAffected += e.RecordCount;
 
@@ -104,14 +106,18 @@ public class QueryService
                 } while (await reader.NextResultAsync(ct));
             }
 
-            // verifica di sintassi: annulla la transazione (nessun effetto collaterale)
-            if (checkSyntax)
+            // verifica di sintassi: annulla la transazione ADO.NET (nessun effetto collaterale).
+            // Se il testo utente ha già eseguito ROLLBACK senza nome, la transazione non esiste
+            // più: il rollback fallisce e va ignorato (la connessione si chiude senza COMMIT).
+            if (checkTran is not null)
             {
-                await using (var rb = conn.CreateCommand())
+                try
                 {
-                    rb.CommandText = "ROLLBACK TRANSACTION";
-                    rb.CommandTimeout = 10;
-                    await rb.ExecuteNonQueryAsync(ct);
+                    await checkTran.RollbackAsync(ct);
+                }
+                catch
+                {
+                    /* transazione già chiusa dal testo utente */
                 }
             }
         }
