@@ -3,6 +3,7 @@ import Editor, { type OnMount } from '@monaco-editor/react'
 import { Eraser, FolderOpen, Moon, Play, Save, Settings2, Sun, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
 import monaco from '../monacoSetup'
 import { api } from '../api'
+import { syntaxIssuesFromCheck } from '../syntaxCheck'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from '../types'
 import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from '../systemObjects'
@@ -174,6 +175,8 @@ export default function SqlEditor({
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
   // Pannello impostazioni di formattazione
   const [profileOpen, setProfileOpen] = useState(false)
+  // Verifica di sintassi opzionale (errori reali di SQL Server con "Riga N:")
+  const [syntaxCheck, setSyntaxCheck] = useState(false)
   // Registrazione robusta del colorizer, copre ogni ordine di mount/summary
   const colorizerRef = useRef<{
     ed: monaco.editor.IStandaloneCodeEditor
@@ -204,6 +207,57 @@ export default function SqlEditor({
     ensureColorizer()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summary, editor])
+
+  /**
+   * Verifica di sintassi opzionale: con il toggle attivo, a ogni modifica (debounce)
+   * chiede al backend di eseguire il testo in una transazione con rollback; gli errori
+   * reali di SQL Server ("Riga N: …") diventano sottolineature nel documento.
+   */
+  useEffect(() => {
+    const model = editorRef.current?.getModel()
+    const connId = connectionId
+    if (!syntaxCheck || !model || !connId) {
+      if (model) monaco.editor.setModelMarkers(model, 'sql-check', [])
+      return
+    }
+    let timer: number | null = null
+    let cancelled = false
+    const run = async () => {
+      const text = model.getValue()
+      if (!text.trim()) {
+        monaco.editor.setModelMarkers(model, 'sql-check', [])
+        return
+      }
+      try {
+        const res = await api.checkSyntax(connId, text)
+        if (cancelled) return
+        const issues = syntaxIssuesFromCheck(res.error, res.messages)
+        const markers: monaco.editor.IMarkerData[] = issues.map(i => ({
+          startLineNumber: i.line,
+          startColumn: 1,
+          endLineNumber: i.line,
+          endColumn: Math.max(1, model.getLineLength(i.line)) + 1,
+          message: i.message,
+          severity: monaco.MarkerSeverity.Error,
+        }))
+        monaco.editor.setModelMarkers(model, 'sql-check', markers)
+      } catch {
+        if (!cancelled) monaco.editor.setModelMarkers(model, 'sql-check', [])
+      }
+    }
+    const schedule = () => {
+      if (timer !== null) window.clearTimeout(timer)
+      timer = window.setTimeout(run, 900)
+    }
+    const sub = model.onDidChangeContent(schedule)
+    schedule()
+    return () => {
+      cancelled = true
+      if (timer !== null) window.clearTimeout(timer)
+      sub.dispose()
+      monaco.editor.setModelMarkers(model, 'sql-check', [])
+    }
+  }, [syntaxCheck, connectionId])
 
   const handleFormat = () => {
     const ed = editorRef.current
@@ -1305,6 +1359,12 @@ export default function SqlEditor({
             {theme === 'vs-dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </Button>
           <Toggle checked={aiEnabled} onChange={onAiEnabledChange} label="Autocompletamento IA" />
+          <Toggle
+            checked={syntaxCheck}
+            onChange={setSyntaxCheck}
+            label="Verifica sintassi"
+            title="Sottolinea gli errori reali di SQL Server (esegue il testo in una transazione che viene annullata — nessun effetto collaterale)"
+          />
           <Badge tone={aiConfigured ? 'emerald' : 'amber'}>{aiStatusText}</Badge>
         </div>
       </div>

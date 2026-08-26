@@ -32,14 +32,17 @@ export function Toggle({
   checked,
   onChange,
   label,
+  title,
 }: {
   checked: boolean
   onChange: (v: boolean) => void
   label?: string
+  title?: string
 }) {
   return (
     <button
       type="button"
+      title={title}
       onClick={() => onChange(!checked)}
       className="flex items-center gap-2 text-sm text-zinc-300 transition-colors hover:text-zinc-100"
     >

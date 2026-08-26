@@ -10,7 +10,7 @@ public class QueryService
 {
     private const int MaxRowsPerSet = 5000;
 
-    public async Task<QueryResult> ExecuteAsync(string connectionString, string sql, int? timeoutSeconds, CancellationToken ct = default)
+    public async Task<QueryResult> ExecuteAsync(string connectionString, string sql, int? timeoutSeconds, CancellationToken ct = default, bool checkSyntax = false)
     {
         var sw = Stopwatch.StartNew();
         var messages = new List<string>();
@@ -38,6 +38,18 @@ public class QueryService
             };
             await conn.OpenAsync(ct);
 
+            // Verifica di sintassi: esegue dentro una transazione che viene SEMPRE annullata,
+            // così gli errori reali di SQL Server (con riga) arrivano senza effetti collaterali.
+            if (checkSyntax)
+            {
+                await using (var tran = conn.CreateCommand())
+                {
+                    tran.CommandText = "BEGIN TRANSACTION";
+                    tran.CommandTimeout = 10;
+                    await tran.ExecuteNonQueryAsync(ct);
+                }
+            }
+
             var batches = SqlBatchSplitter.SplitWithLines(sql);
             if (batches.Count == 0)
                 throw new InvalidOperationException("Nessuna istruzione SQL da eseguire.");
@@ -47,7 +59,7 @@ public class QueryService
                 currentStartLine = batch.StartLine;
                 await using var cmd = conn.CreateCommand();
                 cmd.CommandText = batch.Text;
-                cmd.CommandTimeout = timeoutSeconds ?? 30;
+                cmd.CommandTimeout = checkSyntax ? Math.Min(timeoutSeconds ?? 30, 10) : (timeoutSeconds ?? 30);
                 cmd.StatementCompleted += (_, e) => totalAffected += e.RecordCount;
 
                 await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -90,6 +102,17 @@ public class QueryService
                     }
                     sets.Add(new QueryResultSet(columns, rows, rows.Count, 0, truncated));
                 } while (await reader.NextResultAsync(ct));
+            }
+
+            // verifica di sintassi: annulla la transazione (nessun effetto collaterale)
+            if (checkSyntax)
+            {
+                await using (var rb = conn.CreateCommand())
+                {
+                    rb.CommandText = "ROLLBACK TRANSACTION";
+                    rb.CommandTimeout = 10;
+                    await rb.ExecuteNonQueryAsync(ct);
+                }
             }
         }
         catch (OperationCanceledException)

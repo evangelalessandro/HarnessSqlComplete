@@ -61,10 +61,14 @@ con `serverName`/`databaseName`) è già validato dai probe in `C:\temp\lsp-prob
 | Opzione | Fattibile | Sostituisce il motore? |
 |---|---|---|
 | dt-sql-parser | No (niente T-SQL) | — |
-| sqltoolsservice LSP | Sì (validato) | No: perde ranking/feature e ha lo stesso buco GROUP BY-virgola |
-| Motore attuale + (opz.) LSP per diagnostica | Sì | È la strada da percorrere |
+| sqltoolsservice LSP (completion) | Sì (validato) | No: perde ranking/feature e ha lo stesso buco GROUP BY-virgola |
+| sqltoolsservice LSP (diagnostica) | **No** (verificato) | Il servizio pubblica SEMPRE 0 diagnostica via `textDocument/publishDiagnostics` anche per SQL palesemente invalido (`SELEC 1`, `SELECT * FORM …`, parentesi non chiuse), sia con didOpen che didChange, con o senza `connection/languageflavorchanged`. |
+| Motore attuale | Sì | È la strada da percorrere |
 
-Raccomandazione: **mantenere il motore attuale** per i suggerimenti; valutare
-l'LSP solo come servizio di diagnostica opzionale. Un parser T-SQL vero (antlr4ts +
-grammatica ufficiale) resta l'unica via per chiudere i buchi di scope (CTE, derived
-table) senza perdere il ranking — come progetto futuro separato.
+Raccomandazione: **mantenere il motore attuale** per i suggerimenti. La "diagnostica
+reale" (errori con riga/colonna) è stata ottenuta senza LSP con la **verifica di
+sintassi via transazione con rollback** (`checkSyntax`): il backend esegue il testo
+dentro `BEGIN TRANSACTION … ROLLBACK` e restituisce gli errori VERI di SQL Server
+con riga assoluta ("Riga N: …") — più precisi dell'LSP e senza dipendenze.
+Un parser T-SQL vero (antlr4ts + grammatica ufficiale) resta l'unica via per chiudere
+i buchi di scope (CTE, derived table) senza perdere il ranking — progetto futuro.

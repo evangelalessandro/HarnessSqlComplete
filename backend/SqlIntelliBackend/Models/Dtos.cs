@@ -108,7 +108,7 @@ public record TableCooccurrence(string TableA, string TableB, int Count);
 
 // ---------- Query ----------
 
-public record ExecuteRequest(string Sql, int? TimeoutSeconds);
+public record ExecuteRequest(string Sql, int? TimeoutSeconds, bool CheckSyntax = false);
 
 public record ColumnResult(string Name, string DataType);
 
