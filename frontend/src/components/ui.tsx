@@ -14,12 +14,19 @@ export function Button({
   children,
   loading,
   variant = 'primary',
+  size = 'md',
   className = '',
   ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & { loading?: boolean; variant?: ButtonVariant }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  loading?: boolean
+  variant?: ButtonVariant
+  size?: 'sm' | 'md'
+}) {
   return (
     <button
-      className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${buttonStyles[variant]} ${className}`}
+      className={`inline-flex items-center gap-1.5 rounded-md text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+        size === 'sm' ? 'px-2 py-1 text-xs' : 'px-3 py-1.5'
+      } ${buttonStyles[variant]} ${className}`}
       {...rest}
     >
       {loading && <Loader2 className="h-4 w-4 animate-spin" />}

@@ -5,7 +5,8 @@ import monaco from '../monacoSetup'
 import { api } from '../api'
 import { syntaxIssuesFromCheck } from '../syntaxCheck'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from '../types'
-import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
+import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, resolveTokenAt, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
+import DataPreviewModal from './DataPreviewModal'
 import { shouldSuggestSystemObjects, systemObjectsFor } from '../systemObjects'
 import { registerInsertHighlight } from '../sqlInsertHighlight'
 import { positionAt, runSqlDiagnostics } from '../sqlDiagnostics'
@@ -177,6 +178,8 @@ export default function SqlEditor({
   const [profileOpen, setProfileOpen] = useState(false)
   // Verifica di sintassi opzionale (errori reali di SQL Server con "Riga N:")
   const [syntaxCheck, setSyntaxCheck] = useState(false)
+  // Finestra anteprima dati della tabella sotto il cursore (F4)
+  const [previewTarget, setPreviewTarget] = useState<{ schema: string; table: string } | null>(null)
   // Registrazione robusta del colorizer, copre ogni ordine di mount/summary
   const colorizerRef = useRef<{
     ed: monaco.editor.IStandaloneCodeEditor
@@ -311,6 +314,17 @@ export default function SqlEditor({
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS, () => onSaveAsRef.current?.())
     // Formatta: Ctrl+Shift+F
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF, handleFormat)
+    // Anteprima dati della tabella sotto il cursore: F4
+    editor.addCommand(monaco.KeyCode.F4, () => {
+      const model = editor.getModel()
+      const pos = editor.getPosition()
+      const sm = stateRef.current.summary
+      if (!model || !pos || !sm) return
+      const resolved = resolveTokenAt(model.getValue(), model.getOffsetAt(pos), sm)
+      if (resolved?.kind === 'table') {
+        setPreviewTarget({ schema: resolved.table.schema, table: resolved.table.name })
+      }
+    })
 
     registerSchemaCompletions()
     registerInlineCompletions()
@@ -1410,6 +1424,14 @@ export default function SqlEditor({
         />
       </div>
       {profileOpen && <FormatProfilePanel onClose={() => setProfileOpen(false)} />}
+      {previewTarget && connectionId && (
+        <DataPreviewModal
+          target={previewTarget}
+          connectionId={connectionId}
+          summary={stateRef.current.summary}
+          onClose={() => setPreviewTarget(null)}
+        />
+      )}
     </div>
   )
 }

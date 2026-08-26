@@ -48,7 +48,7 @@ export function registerSqlHover(getContext: () => HoverContext): monaco.IDispos
                 set.columns.map(c => c.name),
                 set.rows,
                 10,
-              )}`
+              )}\n\n_Premi **F4** per aprire l'anteprima completa (genera INSERT/UPDATE/MERGE)_`
             }
             previewCache.set(key, { at: Date.now(), md: mdTable })
             if (mdTable) contents.push({ value: mdTable })
