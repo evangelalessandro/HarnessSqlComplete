@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildInsertSql, buildMergeSql, buildUpdateSql, sqlLiteral } from '../sqlGen'
+import { buildDeleteSql, buildInsertIntoTempSql, buildInsertSql, buildMergeSql, buildUpdateSql, sqlLiteral } from '../sqlGen'
 import type { GenColumn } from '../sqlGen'
 
 const cols: GenColumn[] = [
@@ -78,5 +78,35 @@ describe('buildMergeSql', () => {
   it('keyColumns esplicite hanno la precedenza', () => {
     const sql = buildMergeSql('dbo', 'Clienti', cols, [[1, 'Mario', 1, '2024-01-15T10:00:00.000']], ['nome'])
     expect(sql).toContain('ON tgt.[nome] = src.[nome]')
+  })
+})
+
+describe('buildDeleteSql', () => {
+  it('WHERE sulla chiave identity', () => {
+    const sql = buildDeleteSql('dbo', 'Clienti', cols, ['id'], [7, 'Mario', 1, '2024-01-15T10:00:00.000'])
+    expect(sql).toBe('DELETE FROM Clienti\nWHERE\n  [id] = 7;')
+  })
+
+  it('senza chiave esplicita usa l\'identity (o la prima colonna)', () => {
+    const sql = buildDeleteSql('dbo', 'Clienti', cols, undefined, [7, 'Mario', 1, '2024-01-15T10:00:00.000'])
+    expect(sql).toContain('[id] = 7')
+    const noIdentity = buildDeleteSql('dbo', 'Clienti', cols.map(c => ({ ...c, isIdentity: false })), undefined, [7, 'Mario', 1, '2024-01-15T10:00:00.000'])
+    expect(noIdentity).toContain('[id] = 7')
+  })
+})
+
+describe('buildInsertIntoTempSql', () => {
+  it('SELECT … INTO #tmp FROM (VALUES …) con alias colonne', () => {
+    const sql = buildInsertIntoTempSql('#tmpClienti', [cols[0], cols[1]], [
+      [1, 'Mario'],
+      [2, 'Anna'],
+    ])
+    expect(sql).toBe(
+      "SELECT *\nINTO [#tmpClienti]\nFROM (VALUES\n    (1, 'Mario'),\n    (2, 'Anna')) AS v ([id], [nome])\n;",
+    )
+  })
+
+  it('senza righe lancia errore', () => {
+    expect(() => buildInsertIntoTempSql('#tmp', cols, [])).toThrow(/Nessuna riga/)
   })
 })

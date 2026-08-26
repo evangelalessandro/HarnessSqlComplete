@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ClipboardCopy, Table2, X } from 'lucide-react'
 import { api } from '../api'
-import { buildInsertSql, buildMergeSql, buildUpdateSql } from '../sqlGen'
+import { buildDeleteSql, buildInsertIntoTempSql, buildInsertSql, buildMergeSql, buildUpdateSql } from '../sqlGen'
 import type { GenColumn } from '../sqlGen'
 import type { CellValue, DatabaseSummary, QueryResult } from '../types'
 import { Badge, Button, Spinner } from './ui'
@@ -24,6 +24,8 @@ export default function DataPreviewModal({ target, connectionId, summary, onClos
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set())
   const [selectedCols, setSelectedCols] = useState<Set<number>>(new Set())
   const [copied, setCopied] = useState(false)
+  // nome della temporanea per "INSERT INTO #" (default: #<Tabella>)
+  const [tempName, setTempName] = useState('')
 
   useEffect(() => {
     if (!target) return
@@ -33,6 +35,7 @@ export default function DataPreviewModal({ target, connectionId, summary, onClos
     setResult(null)
     setSelectedRows(new Set())
     setSelectedCols(new Set())
+    setTempName(`#${target.table}`)
     api
       .previewTable(connectionId, target.schema, target.table, PREVIEW_ROWS)
       .then(res => {
@@ -80,20 +83,26 @@ export default function DataPreviewModal({ target, connectionId, summary, onClos
 
   const sql = useMemo(() => {
     if (!target || selCols.length === 0 || selRows.length === 0) return null
+    const keys = columns.filter(c => c.isIdentity).map(c => c.name)
     const gen = {
       INSERT: () => buildInsertSql(target.schema, target.table, selCols, selRows),
       UPDATE: () =>
         selRows.map(r => buildUpdateSql(target.schema, target.table, columns, selColIndexes, r)).join('\n\n'),
-      MERGE: () => {
-        const keys = columns.filter(c => c.isIdentity).map(c => c.name)
-        return buildMergeSql(target.schema, target.table, selCols, selRows, keys.length ? keys : undefined)
+      MERGE: () => buildMergeSql(target.schema, target.table, selCols, selRows, keys.length ? keys : undefined),
+      DELETE: () =>
+        selRows
+          .map(r => buildDeleteSql(target.schema, target.table, columns, keys.length ? keys : undefined, r))
+          .join('\n\n'),
+      'INSERT#': () => {
+        const name = tempName.trim().startsWith('#') ? tempName.trim() : `#${tempName.trim()}`
+        return buildInsertIntoTempSql(name, selCols, selRows)
       },
     }
     return gen
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target, selCols, selRows, columns, selColIndexes])
+  }, [target, selCols, selRows, columns, selColIndexes, tempName])
 
-  const [kind, setKind] = useState<'INSERT' | 'UPDATE' | 'MERGE'>('INSERT')
+  const [kind, setKind] = useState<'INSERT' | 'UPDATE' | 'MERGE' | 'DELETE' | 'INSERT#'>('INSERT')
   const output = useMemo(() => {
     if (!sql) return ''
     try {
@@ -225,20 +234,36 @@ export default function DataPreviewModal({ target, connectionId, summary, onClos
         </div>
 
         {/* Generatore SQL */}
-        <div className="flex items-center gap-2 border-t border-zinc-700 bg-zinc-800/80 px-4 py-2 text-sm">
+        <div className="flex flex-wrap items-center gap-2 border-t border-zinc-700 bg-zinc-800/80 px-4 py-2 text-sm">
           <span className="text-xs text-zinc-400">Genera:</span>
-          {(['INSERT', 'UPDATE', 'MERGE'] as const).map(k => (
+          {(['INSERT', 'UPDATE', 'MERGE', 'DELETE', 'INSERT#'] as const).map(k => (
             <Button
               key={k}
               variant={kind === k ? 'primary' : 'ghost'}
               size="sm"
               onClick={() => setKind(k)}
               disabled={!sql}
-              title={k === 'UPDATE' ? 'Un UPDATE per ogni riga selezionata (WHERE sulle colonne non aggiornate)' : undefined}
+              title={
+                k === 'UPDATE'
+                  ? 'Un UPDATE per ogni riga selezionata (WHERE sulle colonne non aggiornate)'
+                  : k === 'DELETE'
+                    ? 'Un DELETE per ogni riga selezionata (WHERE sulla chiave)'
+                    : k === 'INSERT#'
+                      ? 'Crea e popola una tabella temporanea (#tmp) con i dati selezionati'
+                      : undefined
+              }
             >
-              {k}
+              {k === 'INSERT#' ? 'INSERT INTO #' : k}
             </Button>
           ))}
+          {kind === 'INSERT#' && (
+            <input
+              value={tempName}
+              onChange={e => setTempName(e.target.value)}
+              placeholder="#tmpTable"
+              className="w-40 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono text-xs text-zinc-200 focus:border-sky-500 focus:outline-none"
+            />
+          )}
           <span className="ml-2 text-xs text-zinc-500">
             {selCols.length} colonne · {selRows.length} righe selezionate
           </span>

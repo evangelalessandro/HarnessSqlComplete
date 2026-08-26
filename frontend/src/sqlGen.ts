@@ -71,6 +71,51 @@ export function buildUpdateSql(
 }
 
 /**
+ * DELETE FROM t WHERE <chiave> = …;
+ * La clausola WHERE usa la chiave identity (o la prima colonna se non nota);
+ * con più righe selezionate si genera un DELETE per riga.
+ */
+export function buildDeleteSql(
+  schema: string,
+  table: string,
+  allColumns: GenColumn[],
+  keyColumns?: string[],
+  row: CellValue[] = [],
+): string {
+  const keys = keyColumns && keyColumns.length > 0
+    ? keyColumns
+    : allColumns.filter(c => c.isIdentity).map(c => c.name)
+  const onCols = keys.length > 0 ? keys : [allColumns[0]?.name]
+  const wheres = onCols
+    .map(c => {
+      const i = allColumns.findIndex(x => x.name === c)
+      return `  [${c}] = ${sqlLiteral(row[i])}`
+    })
+    .join(' AND\n')
+  return `DELETE FROM ${tableRef(schema, table)}\nWHERE\n${wheres};`
+}
+
+/**
+ * "INSERT INTO #tmp": crea e popola una tabella temporanea con i dati selezionati
+ * in un'unica istruzione: SELECT * INTO [#tmp] FROM (VALUES …) AS v(col…).
+ */
+export function buildInsertIntoTempSql(
+  tempName: string,
+  columns: GenColumn[],
+  rows: CellValue[][],
+): string {
+  if (columns.length === 0) throw new Error('Nessuna colonna selezionata')
+  if (rows.length === 0) throw new Error('Nessuna riga selezionata')
+  const tuples = rows.map(r => valueTuple(columns, r)).join(',\n    ')
+  return [
+    'SELECT *',
+    `INTO [${tempName}]`,
+    `FROM (VALUES\n    ${tuples}) AS v (${colList(columns)})`,
+    ';',
+  ].join('\n')
+}
+
+/**
  * MERGE INTO t AS tgt USING (VALUES …) AS src (col…) ON <chiave> WHEN MATCHED THEN
  * UPDATE SET … WHEN NOT MATCHED THEN INSERT (…) VALUES (src.col, …);
  * La chiave dell'ON sono le colonne isIdentity (o la prima colonna se non note).
