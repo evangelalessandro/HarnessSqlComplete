@@ -1234,12 +1234,18 @@ export default function SqlEditor({
       const text = m.getValue()
       const guides = computeBlockGuides(text)
       const newDecorations: monaco.editor.IModelDeltaDecoration[] = []
+      // più guide sulla STESSA colonna di una riga (es. IF agganciato al BEGIN) →
+      // una sola linea: niente linee doppie
+      const guideKeys = new Set<string>()
       for (const g of guides) {
         // linea verticale su ogni riga compresa tra apertura e chiusura (incluse).
         // Sulle righe vuote o più corte della colonna della guida Monaco non disegna
         // il box (la linea si interrompe): si usa la fine della riga e si compensa con
         // un margine in "ch" (classe sql-guide-offset-N) per restare sulla colonna giusta.
         for (let line = g.openLine; line <= g.closeLine; line++) {
+          const key = `${line}:${g.column}`
+          if (guideKeys.has(key)) continue
+          guideKeys.add(key)
           const lineLen = m.getLineLength(line)
           const effCol = Math.min(g.column, Math.max(1, lineLen + 1))
           const offset = g.column - effCol

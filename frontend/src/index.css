@@ -62,10 +62,11 @@ body {
 
 /* Righe verticali di indentazione tra BEGIN/END e CASE/END (stile Visual Studio).
    beforeContentClassName disegna un elemento prima del contenuto della riga:
-   il bordo sinistro crea la linea verticale continua. */
+   il bordo sinistro crea la linea verticale continua. NIENTE margin-right: un margine
+   sposterebbe tutto il contenuto successivo a destra (e con più guide sulla stessa
+   colonna l'effetto si cumula: la linea interna risultava doppia e disallineata). */
 .monaco-editor .sql-block-guide {
   border-left: 1.5px solid rgba(56, 189, 248, 0.35);
-  margin-right: 3px;
 }
 .monaco-editor .sql-guide-depth-1 { border-left-color: rgba(52, 211, 153, 0.35); }
 .monaco-editor .sql-guide-depth-2 { border-left-color: rgba(167, 139, 250, 0.35); }
