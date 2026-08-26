@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { Eraser, FolderOpen, Moon, Play, Save, Settings2, Sun, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
+import { Eraser, FolderOpen, Moon, Play, Save, Settings2, Sun, Table2, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
 import monaco from '../monacoSetup'
 import { api } from '../api'
 import { syntaxIssuesFromCheck } from '../syntaxCheck'
@@ -180,6 +180,8 @@ export default function SqlEditor({
   const [syntaxCheck, setSyntaxCheck] = useState(false)
   // Finestra anteprima dati della tabella sotto il cursore (F4)
   const [previewTarget, setPreviewTarget] = useState<{ schema: string; table: string } | null>(null)
+  // tabella attualmente sotto l'hover (per il pulsante cliccabile nella tooltip)
+  const hoveredTableRef = useRef<{ schema: string; table: string } | null>(null)
   // Registrazione robusta del colorizer, copre ogni ordine di mount/summary
   const colorizerRef = useRef<{
     ed: monaco.editor.IStandaloneCodeEditor
@@ -314,8 +316,8 @@ export default function SqlEditor({
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS, () => onSaveAsRef.current?.())
     // Formatta: Ctrl+Shift+F
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF, handleFormat)
-    // Anteprima dati della tabella sotto il cursore: F4
-    editor.addCommand(monaco.KeyCode.F4, () => {
+    // Anteprima dati della tabella sotto il cursore: F4 (e pulsante toolbar)
+    const openPreviewUnderCursor = () => {
       const model = editor.getModel()
       const pos = editor.getPosition()
       const sm = stateRef.current.summary
@@ -324,6 +326,16 @@ export default function SqlEditor({
       if (resolved?.kind === 'table') {
         setPreviewTarget({ schema: resolved.table.schema, table: resolved.table.name })
       }
+    }
+    editor.addCommand(monaco.KeyCode.F4, openPreviewUnderCursor)
+    // azione richiamabile dai link "command:" nella tooltip (pulsante con il mouse)
+    editor.addAction({
+      id: 'sqlIntelli.openPreview',
+      label: 'Apri anteprima dati',
+      run: () => {
+        const t = hoveredTableRef.current
+        if (t) setPreviewTarget(t)
+      },
     })
 
     registerSchemaCompletions()
@@ -336,6 +348,9 @@ export default function SqlEditor({
       registerSqlHover(() => ({
         summary: stateRef.current.summary,
         connectionId: stateRef.current.connectionId,
+        onTableHover: (schema, table) => {
+          hoveredTableRef.current = { schema, table }
+        },
       })),
     )
     // Zoom con Ctrl+rotella del mouse (listener nativo sul DOM dell'editor)
@@ -1349,6 +1364,24 @@ export default function SqlEditor({
           </Button>
           <Button variant="secondary" onClick={handleFormat} title="Formatta (Ctrl+Shift+F) — con una selezione formatta solo quella parte">
             <Wand2 className="h-4 w-4" /> Formatta
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              // apre l'anteprima della tabella sotto il cursore (come F4)
+              const ed = editorRef.current
+              const model = ed?.getModel()
+              const pos = ed?.getPosition()
+              const sm = stateRef.current.summary
+              if (!ed || !model || !pos || !sm) return
+              const resolved = resolveTokenAt(model.getValue(), model.getOffsetAt(pos), sm)
+              if (resolved?.kind === 'table') {
+                setPreviewTarget({ schema: resolved.table.schema, table: resolved.table.name })
+              }
+            }}
+            title="Anteprima dati della tabella sotto il cursore (F4) — genera INSERT/UPDATE/MERGE/DELETE/#tmp"
+          >
+            <Table2 className="h-4 w-4" /> Anteprima
           </Button>
           <Button
             variant="ghost"
