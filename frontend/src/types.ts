@@ -178,6 +178,32 @@ export interface AutocompleteResponse {
   error: string | null
 }
 
+// ---------- Debug (batch per batch) ----------
+
+export interface DebugBatchInfo {
+  index: number
+  startLine: number
+  text: string
+}
+
+export interface DebugStartResponse {
+  batches: DebugBatchInfo[]
+}
+
+export interface DebugStepResponse {
+  currentIndex: number
+  batchCount: number
+  done: boolean
+  resultSets: QueryResultSet[]
+  totalAffectedRows: number
+  messages: string[]
+  error: string | null
+}
+
+export interface DebugRunResponse {
+  steps: DebugStepResponse[]
+}
+
 export interface AutocompleteStatus {
   configured: boolean
   model: string

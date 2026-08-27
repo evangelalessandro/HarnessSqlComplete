@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, Database as DbIcon, FilePlus2, Pin, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { BookOpen, Bug, Database as DbIcon, FilePlus2, Pin, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
@@ -19,6 +19,7 @@ import PrintPanel from './components/PrintPanel'
 import HelpPage from './components/HelpPage'
 import { FileDropZone } from './components/FileDropZone'
 import { Badge } from './components/ui'
+import DebugPanel from './components/DebugPanel'
 
 type Tab = 'results' | 'print'
 
@@ -364,6 +365,7 @@ export default function App() {
   const handleConnected = useCallback(
     async (res: ConnectResponse) => {
       setConnection(res)
+      setDebugOpen(false)
       // nuova connessione: i risultati delle tab appartenevano al DB precedente
       setTabResults({})
       setTabExecuting({})
@@ -391,6 +393,7 @@ export default function App() {
       // il risultato va alla tab ATTIVA al momento dell'esecuzione
       const tabId = activeEditorTab
       if (!tabId) return
+      setDebugOpen(false)
       setTabExecuting(prev => ({ ...prev, [tabId]: true }))
       setBanner(null)
       try {
@@ -417,6 +420,7 @@ export default function App() {
     }
     setConnection(null)
     setSummary(null)
+    setDebugOpen(false)
     setTabResults({})
     setTabExecuting({})
     setTabResultTab({})
@@ -574,6 +578,11 @@ export default function App() {
     if (!activeEditorTab) return
     setTabResultTab(prev => ({ ...prev, [activeEditorTab]: t }))
   }
+  // pannello di debug (batch per batch): si chiude cambiando tab, eseguendo o disconnettendo
+  const [debugOpen, setDebugOpen] = useState(false)
+  useEffect(() => {
+    setDebugOpen(false)
+  }, [activeEditorTab])
 
   return (
     <FileDropZone onFiles={handleOpenFiles}>
@@ -756,22 +765,36 @@ export default function App() {
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="flex shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-900/40 px-2">
               <TabButton
-                active={activeResultTab === 'results'}
-                onClick={() => setActiveResultTab('results')}
+                active={activeResultTab === 'results' && !debugOpen}
+                onClick={() => {
+                  setDebugOpen(false)
+                  setActiveResultTab('results')
+                }}
                 icon={<Table2 className="h-4 w-4" />}
                 label="Risultati"
                 count={activeResult?.resultSets.length}
               />
               <TabButton
-                active={activeResultTab === 'print'}
-                onClick={() => setActiveResultTab('print')}
+                active={activeResultTab === 'print' && !debugOpen}
+                onClick={() => {
+                  setDebugOpen(false)
+                  setActiveResultTab('print')
+                }}
                 icon={<TerminalSquare className="h-4 w-4" />}
                 label="Messaggi / PRINT"
                 count={activeResult?.messages.length}
               />
+              <TabButton
+                active={debugOpen}
+                onClick={() => setDebugOpen(v => !v)}
+                icon={<Bug className="h-4 w-4" />}
+                label="Debug"
+              />
             </div>
             <div className="min-h-0 flex-1">
-              {activeResultTab === 'results' ? (
+              {debugOpen ? (
+                <DebugPanel connectionId={connection.connectionId} sql={activeTabInfo?.sql ?? ''} onClose={() => setDebugOpen(false)} />
+              ) : activeResultTab === 'results' ? (
                 <ResultsPanel result={activeResult} executing={activeExecuting} />
               ) : (
                 <PrintPanel result={activeResult} />

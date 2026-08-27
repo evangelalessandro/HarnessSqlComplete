@@ -5,6 +5,9 @@ import type {
   ConnectionRequest,
   ConnectionTestResult,
   DatabaseSummary,
+  DebugRunResponse,
+  DebugStartResponse,
+  DebugStepResponse,
   QueryResult,
   SavedConnectionDto,
   SearchResult,
@@ -89,6 +92,18 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ sql, timeoutSeconds }),
     }),
+
+  /** Debug: sessione batch per batch su connessione persistente. */
+  debugStart: (connectionId: string, sql: string) =>
+    http<DebugStartResponse>(`/debug/${connectionId}/start`, {
+      method: 'POST',
+      body: JSON.stringify({ sql }),
+    }),
+  debugStep: (connectionId: string) =>
+    http<DebugStepResponse>(`/debug/${connectionId}/step`, { method: 'POST' }),
+  debugRun: (connectionId: string) =>
+    http<DebugRunResponse>(`/debug/${connectionId}/run`, { method: 'POST' }),
+  debugStop: (connectionId: string) => http<void>(`/debug/${connectionId}/stop`, { method: 'POST' }),
 
   autocomplete: (connectionId: string, sql: string, apiKey?: string) =>
     http<AutocompleteResponse>(`/autocomplete/${connectionId}`, {

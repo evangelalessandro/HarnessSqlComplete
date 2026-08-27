@@ -19,6 +19,7 @@ builder.Services.AddDbContext<AppDbContext>(o =>
 // Servizi applicativi
 builder.Services.AddSingleton<ConnectionHub>();
 builder.Services.AddSingleton<MetadataCache>();
+builder.Services.AddSingleton<DebugSessionService>();
 builder.Services.AddScoped<MetadataService>();
 builder.Services.AddScoped<QueryService>();
 builder.Services.AddHttpClient<DeepSeekService>(c =>
