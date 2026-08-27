@@ -33,6 +33,8 @@ export default function App() {
   const [tabResults, setTabResults] = useState<Record<string, QueryResult | null>>({})
   const [tabExecuting, setTabExecuting] = useState<Record<string, boolean>>({})
   const [tabResultTab, setTabResultTab] = useState<Record<string, Tab>>({})
+  // pannello di debug (batch per batch): si chiude cambiando tab, eseguendo o disconnettendo
+  const [debugOpen, setDebugOpen] = useState(false)
   const [aiEnabled, setAiEnabled] = useState(true)
   const [aiStatus, setAiStatus] = useState<AutocompleteStatus | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
@@ -181,6 +183,10 @@ export default function App() {
     const n = Number(t.id.replace(/^tab-/, ''))
     if (!Number.isNaN(n) && n >= tabCounter.current) tabCounter.current = n + 1
   }
+  // il debug si chiude quando si cambia tab
+  useEffect(() => {
+    setDebugOpen(false)
+  }, [activeEditorTab])
 
   // Salva le tab (ultima query inclusa) a ogni modifica
   useEffect(() => {
@@ -578,11 +584,6 @@ export default function App() {
     if (!activeEditorTab) return
     setTabResultTab(prev => ({ ...prev, [activeEditorTab]: t }))
   }
-  // pannello di debug (batch per batch): si chiude cambiando tab, eseguendo o disconnettendo
-  const [debugOpen, setDebugOpen] = useState(false)
-  useEffect(() => {
-    setDebugOpen(false)
-  }, [activeEditorTab])
 
   return (
     <FileDropZone onFiles={handleOpenFiles}>
