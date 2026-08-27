@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { buildDeleteSql, buildInsertIntoTempSql, buildInsertSql, buildMergeSql, buildUpdateSql, sqlLiteral } from '../sqlGen'
+import { buildDeleteSql, buildInsertIntoTempSql, buildInsertSql, buildMergeSql, buildUpdateSql, parseTargetTable, sqlLiteral } from '../sqlGen'
 import type { GenColumn } from '../sqlGen'
+
+describe('parseTargetTable: "schema.tabella" → coppia', () => {
+  it('con schema e senza schema (default dbo)', () => {
+    expect(parseTargetTable('dbo.Clienti')).toEqual({ schema: 'dbo', table: 'Clienti' })
+    expect(parseTargetTable('Clienti')).toEqual({ schema: 'dbo', table: 'Clienti' })
+    expect(parseTargetTable('  MAG.CORRIDOI ')).toEqual({ schema: 'MAG', table: 'CORRIDOI' })
+    expect(parseTargetTable('')).toEqual({ schema: 'dbo', table: '' })
+  })
+})
 
 const cols: GenColumn[] = [
   { name: 'id', dataType: 'int', isIdentity: true },

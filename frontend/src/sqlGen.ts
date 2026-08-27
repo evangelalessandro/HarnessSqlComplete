@@ -24,6 +24,14 @@ function tableRef(schema: string, table: string): string {
   return qualified(schema, table)
 }
 
+/** "schema.tabella" (o solo "tabella" → schema dbo) in { schema, table }. */
+export function parseTargetTable(ref: string): { schema: string; table: string } {
+  const t = ref.trim()
+  const idx = t.indexOf('.')
+  if (idx === -1) return { schema: 'dbo', table: t }
+  return { schema: t.slice(0, idx).trim(), table: t.slice(idx + 1).trim() }
+}
+
 function colList(columns: GenColumn[]): string {
   return columns.map(c => `[${c.name}]`).join(', ')
 }
