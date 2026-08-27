@@ -15,6 +15,7 @@ import {
 import { api } from '../api'
 import type { ConnectResponse, ConnectionTestResult, SavedConnectionDto } from '../types'
 import { Badge, Button, Spinner, inputClass } from './ui'
+import MatrixRain from './MatrixRain'
 
 interface Props {
   onConnected: (res: ConnectResponse) => void
@@ -142,8 +143,9 @@ export default function LoginScreen({ onConnected }: Props) {
   }
 
   return (
-    <div className="flex min-h-full items-center justify-center bg-zinc-950 p-6">
-      <div className="grid w-full max-w-5xl gap-6 lg:grid-cols-[1fr_380px]">
+    <div className="relative flex min-h-full items-center justify-center overflow-hidden bg-zinc-950 p-6">
+      <MatrixRain />
+      <div className="relative z-10 grid w-full max-w-5xl gap-6 lg:grid-cols-[1fr_380px]">
         {/* Form di connessione */}
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-6 shadow-xl">
           <div className="mb-6 flex items-center gap-3">
