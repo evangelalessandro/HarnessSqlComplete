@@ -251,6 +251,14 @@ export default function Sidebar({
   const [maintPath, setMaintPath] = useState('')
   const [maintBusy, setMaintBusy] = useState<null | 'backup' | 'restore'>(null)
   const [maintResult, setMaintResult] = useState<string | null>(null)
+  const maintPathRef = useRef<HTMLInputElement | null>(null)
+
+  /** Prepara la manutenzione dal menu contestuale del database: percorso suggerito + focus sul campo. */
+  const focusMaintPath = (path: string) => {
+    setMaintPath(path)
+    setMaintResult(null)
+    requestAnimationFrame(() => maintPathRef.current?.focus())
+  }
 
   const runMaintenance = async (kind: 'backup' | 'restore') => {
     if (!connectionId) {
@@ -550,8 +558,8 @@ export default function Sidebar({
   // Contenuti dei pannelli: riutilizzati in ogni posizione (ancorato a sinistra,
   // flottante o ancorato a destra via portal)
   const dbListContent = () => (
-    <>
-      <div className="space-y-0.5 p-2">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
       {summary.databases.map(d => {
         const isActive = d.name === activeDatabase
         const isOpen = isActive && !collapsedDb
@@ -597,12 +605,13 @@ export default function Sidebar({
         )
       })}
       </div>
-      {/* Manutenzione database: backup / ripristino */}
-      <div className="mt-2 border-t border-zinc-800 p-2">
+      {/* Manutenzione database: backup / ripristino (fissata in basso, sempre visibile) */}
+      <div className="shrink-0 border-t border-zinc-800 p-2">
         <div className="mb-1 flex items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
           <DatabaseBackup className="h-3 w-3" /> Manutenzione DB
         </div>
         <input
+          ref={maintPathRef}
           value={maintPath}
           onChange={e => setMaintPath(e.target.value)}
           placeholder="C:\Backup\db.bak"
@@ -640,7 +649,7 @@ export default function Sidebar({
           </pre>
         )}
       </div>
-    </>
+    </div>
   )
 
   const objectsContent = () => (
@@ -1154,6 +1163,33 @@ export default function Sidebar({
             >
               Ripristina default
             </button>
+            {colorMenu.db === activeDatabase && (
+              <>
+                <div className="mb-1 mt-2 border-t border-zinc-800 px-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
+                  Manutenzione
+                </div>
+                <button
+                  onClick={() => {
+                    focusMaintPath(`C:\\Backup\\${colorMenu.db}.bak`)
+                    setColorMenu(null)
+                  }}
+                  className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-sky-300"
+                  title="Prepara il backup del database attivo (modifica il percorso e premi Backup)"
+                >
+                  <DatabaseBackup className="h-3.5 w-3.5 text-sky-400" /> Backup database…
+                </button>
+                <button
+                  onClick={() => {
+                    focusMaintPath('')
+                    setColorMenu(null)
+                  }}
+                  className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-rose-300"
+                  title="Prepara il ripristino del database attivo (sovrascrive con REPLACE)"
+                >
+                  <RotateCcw className="h-3.5 w-3.5 text-rose-400" /> Ripristina database…
+                </button>
+              </>
+            )}
           </div>
         </>
       )}
