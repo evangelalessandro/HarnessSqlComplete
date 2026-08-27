@@ -182,6 +182,25 @@ export default function SqlEditor({
   const [previewTarget, setPreviewTarget] = useState<{ schema: string; table: string } | null>(null)
   // tabella attualmente sotto l'hover (per il pulsante cliccabile nella tooltip)
   const hoveredTableRef = useRef<{ schema: string; table: string } | null>(null)
+
+  // Il link "command:sqlIntelli.openPreview" nella tooltip NON esegue comandi in
+  // Monaco standalone (l'opener dei command: è roba da workbench): intercettiamo il
+  // click sull'anchor con un listener a livello documento e apriamo la preview.
+  useEffect(() => {
+    const onClick = (ev: MouseEvent) => {
+      const target = ev.target as HTMLElement | null
+      const a = target?.closest?.('a[data-href]')
+      if (!a) return
+      const href = a.getAttribute('data-href') ?? ''
+      if (!href.startsWith('command:sqlIntelli.openPreview')) return
+      ev.preventDefault()
+      ev.stopPropagation()
+      const t = hoveredTableRef.current
+      if (t) setPreviewTarget(t)
+    }
+    document.addEventListener('click', onClick, true)
+    return () => document.removeEventListener('click', onClick, true)
+  }, [])
   // Registrazione robusta del colorizer, copre ogni ordine di mount/summary
   const colorizerRef = useRef<{
     ed: monaco.editor.IStandaloneCodeEditor
@@ -328,15 +347,6 @@ export default function SqlEditor({
       }
     }
     editor.addCommand(monaco.KeyCode.F4, openPreviewUnderCursor)
-    // azione richiamabile dai link "command:" nella tooltip (pulsante con il mouse)
-    editor.addAction({
-      id: 'sqlIntelli.openPreview',
-      label: 'Apri anteprima dati',
-      run: () => {
-        const t = hoveredTableRef.current
-        if (t) setPreviewTarget(t)
-      },
-    })
 
     registerSchemaCompletions()
     registerInlineCompletions()
