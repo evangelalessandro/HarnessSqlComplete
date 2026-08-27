@@ -384,6 +384,8 @@ export default function SqlEditor({
       monaco.languages.registerCompletionItemProvider('sql', {
         triggerCharacters: ['.', ' ', '[', '"', '(', '*'],
         provideCompletionItems: (model, position) => {
+          // la preview dati ha il SUO provider filtrato sulla tabella
+          if (model.uri.toString().startsWith('sql-intelli://preview')) return { suggestions: [] }
           const st = stateRef.current
           const word = model.getWordUntilPosition(position)
           const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn)
@@ -1189,6 +1191,8 @@ export default function SqlEditor({
         provideInlineCompletions: async (model, position, context, token) => {
           const st = stateRef.current
           if (!st.aiEnabled) return { items: [] }
+          // la preview dati ha un mini-editor: niente autocompletamento IA lì
+          if (model.uri.toString().startsWith('sql-intelli://preview')) return { items: [] }
 
           const textBefore = model.getValueInRange(
             new monaco.Range(1, 1, position.lineNumber, position.column),
@@ -1472,6 +1476,7 @@ export default function SqlEditor({
           target={previewTarget}
           connectionId={connectionId}
           summary={stateRef.current.summary}
+          theme={theme}
           onClose={() => setPreviewTarget(null)}
         />
       )}

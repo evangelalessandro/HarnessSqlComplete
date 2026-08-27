@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import Editor from '@monaco-editor/react'
+import * as monaco from 'monaco-editor'
 import { Play, RotateCcw, Table2, X } from 'lucide-react'
 import { api } from '../api'
+import { sqlIdent } from '../helpers'
 import type { CellValue, DatabaseSummary, QueryResult } from '../types'
 import { Button, Spinner } from './ui'
 import SelectableResultGrid from './SelectableResultGrid'
@@ -10,27 +13,58 @@ interface Props {
   target: { schema: string; table: string } | null
   connectionId: string
   summary: DatabaseSummary | null
+  theme?: string
   onClose: () => void
 }
 
 const DEFAULT_TOP = 100
+/** URI del modello del mini-editor: i provider dell'editor principale lo ignorano. */
+const PREVIEW_URI = 'sql-intelli://preview.sql'
 
 function bracket(name: string): string {
   return `[${name.replace(/\]/g, ']]')}]`
 }
 
-function defaultQuery(schema: string, table: string): string {
-  return `SELECT TOP ${DEFAULT_TOP} * FROM ${bracket(schema)}.${bracket(table)}`
+/** Query di default con TUTTI i campi scritti (facile toglierli) invece di *. */
+function defaultQuery(schema: string, table: string, columns: string[]): string {
+  const cols = columns.length > 0 ? columns.map(c => bracket(c)).join(', ') : '*'
+  return `SELECT TOP ${DEFAULT_TOP} ${cols}\nFROM ${bracket(schema)}.${bracket(table)}`
 }
 
-/** Anteprima dati con QUERY MODIFICABILE: togli/metti campi, ordina, cambia il WHERE…
- * la griglia riflette la query; la selezione righe/colonne genera INSERT/UPDATE/MERGE/DELETE/#tmp. */
-export default function DataPreviewModal({ target, connectionId, summary, onClose }: Props) {
+/** Keyword essenziali proposte nel mini-editor (oltre alle colonne della tabella). */
+const PREVIEW_KEYWORDS = [
+  'SELECT', 'TOP', 'FROM', 'WHERE', 'ORDER', 'BY', 'GROUP', 'HAVING', 'AND', 'OR', 'NOT',
+  'AS', 'DESC', 'ASC', 'NULL', 'IS', 'IN', 'LIKE', 'BETWEEN', 'CASE', 'WHEN', 'THEN', 'ELSE',
+  'END', 'JOIN', 'ON', 'DISTINCT',
+]
+
+/** Anteprima dati: mini-editor con intellisense FILTRATO sulla tabella in questione
+ * (query di default con tutti i campi) + griglia selezionabile con generatore SQL. */
+export default function DataPreviewModal({ target, connectionId, summary, theme = 'vs-dark', onClose }: Props) {
   const [query, setQuery] = useState('')
   const [result, setResult] = useState<QueryResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const runSeq = useRef(0)
+  // stato letto dal completion provider del mini-editor (colonne della tabella)
+  const previewState = useRef({ schema: '', table: '', columns: [] as string[] })
+  const miniRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
+
+  const tableMeta = target
+    ? summary?.tables.find(
+        t => t.name.toLowerCase() === target.table.toLowerCase() && t.schema.toLowerCase() === target.schema.toLowerCase(),
+      )
+    : undefined
+  const tableColumns = (tableMeta?.columns ?? []).map(c => c.name)
+
+  // aggiorna lo stato per il provider del mini-editor
+  useEffect(() => {
+    previewState.current = {
+      schema: target?.schema ?? '',
+      table: target?.table ?? '',
+      columns: tableColumns,
+    }
+  }, [target, tableColumns])
 
   const run = async (q: string) => {
     if (!target) return
@@ -53,7 +87,7 @@ export default function DataPreviewModal({ target, connectionId, summary, onClos
 
   useEffect(() => {
     if (!target) return
-    const q = defaultQuery(target.schema, target.table)
+    const q = defaultQuery(target.schema, target.table, tableColumns)
     setQuery(q)
     setResult(null)
     setError(null)
@@ -61,16 +95,58 @@ export default function DataPreviewModal({ target, connectionId, summary, onClos
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target, connectionId])
 
+  // provider di completamento SOLO per il mini-editor, filtrato sulla tabella
+  useEffect(() => {
+    const disp = monaco.languages.registerCompletionItemProvider('sql', {
+      triggerCharacters: [' ', ','],
+      provideCompletionItems: (model, position) => {
+        if (model.uri.toString() !== PREVIEW_URI) return { suggestions: [] }
+        const { schema, table, columns } = previewState.current
+        const word = model.getWordUntilPosition(position)
+        const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn)
+        const textBefore = model.getValueInRange(new monaco.Range(1, 1, position.lineNumber, position.column))
+        const suggestions: monaco.languages.CompletionItem[] = []
+        // dopo FROM/JOIN → il nome della tabella
+        if (/(?:FROM|JOIN)\s+[^\s,;]*$/i.test(textBefore)) {
+          suggestions.push({
+            label: `${schema}.${table}`,
+            kind: monaco.languages.CompletionItemKind.Struct,
+            insertText: `${schema}.${table}`,
+            range,
+            filterText: table,
+          })
+          return { suggestions }
+        }
+        // colonne della tabella (e keyword essenziali)
+        for (const c of columns) {
+          suggestions.push({
+            label: c,
+            kind: monaco.languages.CompletionItemKind.Field,
+            insertText: sqlIdent(c),
+            range,
+            filterText: c,
+          })
+        }
+        for (const k of PREVIEW_KEYWORDS) {
+          suggestions.push({
+            label: k,
+            kind: monaco.languages.CompletionItemKind.Keyword,
+            insertText: k,
+            range,
+            filterText: k,
+          })
+        }
+        return { suggestions }
+      },
+    })
+    return () => disp.dispose()
+  }, [])
+
   if (!target) return null
 
   const set = result?.resultSets?.[0]
   // colonne identity della tabella (dallo schema) → chiave di MERGE/DELETE
-  const tableMeta = summary?.tables.find(
-    t => t.name.toLowerCase() === target.table.toLowerCase() && t.schema.toLowerCase() === target.schema.toLowerCase(),
-  )
-  const identityColumns = (tableMeta?.columns ?? [])
-    .filter(c => c.isIdentity)
-    .map(c => c.name)
+  const identityColumns = (tableMeta?.columns ?? []).filter(c => c.isIdentity).map(c => c.name)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6" onClick={onClose}>
@@ -91,18 +167,38 @@ export default function DataPreviewModal({ target, connectionId, summary, onClos
           </button>
         </div>
 
-        {/* Query modificabile */}
-        <div className="flex items-center gap-2 border-b border-zinc-700 bg-zinc-900 px-3 py-2">
-          <input
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) void run(query)
-            }}
-            spellCheck={false}
-            title="Modifica la SELECT: togli/metti campi, ordina (ORDER BY), filtra (WHERE)… poi premi Esegui"
-            className="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 focus:border-sky-500 focus:outline-none"
-          />
+        {/* Mini-editor query (intellisense solo della tabella) */}
+        <div className="flex items-center gap-2 border-b border-zinc-700 bg-zinc-900 px-3 py-1.5">
+          <div className="min-w-0 flex-1 overflow-hidden rounded border border-zinc-700 bg-zinc-950">
+            <Editor
+              height="42px"
+              defaultLanguage="sql"
+              theme={theme}
+              path={PREVIEW_URI}
+              value={query}
+              onChange={v => setQuery(v ?? '')}
+              onMount={ed => {
+                miniRef.current = ed
+                ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
+                  void run(ed.getValue())
+                })
+              }}
+              options={{
+                minimap: { enabled: false },
+                lineNumbers: 'off',
+                folding: false,
+                glyphMargin: false,
+                lineDecorationsWidth: 0,
+                scrollBeyondLastLine: false,
+                wordWrap: 'off',
+                fontSize: 12,
+                automaticLayout: true,
+                scrollbar: { vertical: 'hidden', horizontal: 'auto' },
+                suggest: { showWords: false },
+                quickSuggestions: { other: 'on', comments: false, strings: false },
+              }}
+            />
+          </div>
           <Button size="sm" onClick={() => void run(query)} loading={loading} title="Esegui la query (Ctrl+Invio)">
             <Play className="h-3.5 w-3.5" /> Esegui
           </Button>
@@ -110,11 +206,11 @@ export default function DataPreviewModal({ target, connectionId, summary, onClos
             size="sm"
             variant="ghost"
             onClick={() => {
-              const q = defaultQuery(target.schema, target.table)
+              const q = defaultQuery(target.schema, target.table, tableColumns)
               setQuery(q)
               void run(q)
             }}
-            title="Ripristina la SELECT TOP 100 * originale"
+            title="Ripristina la SELECT TOP 100 con tutti i campi"
           >
             <RotateCcw className="h-3.5 w-3.5" />
           </Button>
