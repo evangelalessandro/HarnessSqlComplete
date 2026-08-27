@@ -135,23 +135,3 @@ public record SuggestionItem(string Text, string? Reason);
 public record AutocompleteResponse(List<SuggestionItem>? Suggestions, string? Error);
 
 public record AutocompleteStatus(bool Configured, string Model, string BaseUrl, bool HasApiKeyOverride);
-
-// ---------- Debug (esecuzione batch per batch su connessione persistente) ----------
-
-public record DebugBatchInfo(int Index, int StartLine, string Text);
-
-public record DebugStartRequest(string Sql);
-
-public record DebugStartResponse(List<DebugBatchInfo> Batches);
-
-/// <summary>Risultato di un singolo passo (un batch eseguito).</summary>
-public record DebugStepResponse(
-    int CurrentIndex,
-    int BatchCount,
-    bool Done,
-    List<QueryResultSet> ResultSets,
-    long TotalAffectedRows,
-    List<string> Messages,
-    string? Error);
-
-public record DebugRunResponse(List<DebugStepResponse> Steps);
