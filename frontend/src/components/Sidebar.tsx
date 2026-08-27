@@ -1,19 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { MouseEvent, ReactNode } from 'react'
+import type { DragEvent, MouseEvent, ReactNode } from 'react'
 import {
   Braces,
   Boxes,
   ChevronDown,
   ChevronRight,
   Database as DbIcon,
+  DatabaseBackup,
   Eye,
   FileCode2,
   Flame,
   FolderOpen,
   GitMerge,
+  KeyRound,
   Play,
   Plus,
+  RotateCcw,
   Rows3,
   Search,
   SquarePen,
@@ -21,6 +24,7 @@ import {
   Trash2,
   Zap,
 } from 'lucide-react'
+import { api } from '../api'
 import type { ColumnInfo, DatabaseSummary, ProcedureInfo, TableInfo, TriggerInfo, ViewInfo } from '../types'
 import {
   dbColorPalette,
@@ -52,6 +56,8 @@ interface Props {
   summary: DatabaseSummary | null
   loading: boolean
   activeDatabase: string
+  /** Id della connessione attiva (per backup/ripristino del database). */
+  connectionId?: string
   onInsertText: (text: string) => void
   /** Apre la preview (SELECT TOP 100 *) in una nuova tab dell'editor. */
   onPreviewInEditor?: (sql: string) => void
@@ -105,6 +111,7 @@ export default function Sidebar({
   summary,
   loading,
   activeDatabase,
+  connectionId,
   onInsertText,
   onPreviewInEditor,
   onOpenScript,
@@ -239,6 +246,43 @@ export default function Sidebar({
   const [objectMenu, setObjectMenu] = useState<{ hit: SearchHit; x: number; y: number } | null>(null)
   // Nodo del database attivo: true = oggetti nascosti (nodo chiuso)
   const [collapsedDb, setCollapsedDb] = useState(false)
+
+  // Manutenzione database: backup/ripristino dal pannello database
+  const [maintPath, setMaintPath] = useState('')
+  const [maintBusy, setMaintBusy] = useState<null | 'backup' | 'restore'>(null)
+  const [maintResult, setMaintResult] = useState<string | null>(null)
+
+  const runMaintenance = async (kind: 'backup' | 'restore') => {
+    if (!connectionId) {
+      setMaintResult('Connessione non disponibile.')
+      return
+    }
+    const path = maintPath.trim()
+    if (!path) {
+      setMaintResult('Inserisci il percorso completo del file .bak (es. C:\\Backup\\db.bak).')
+      return
+    }
+    const confirmMsg =
+      kind === 'restore'
+        ? `ATTENZIONE: il ripristino sovrascriverà il database "${activeDatabase}" (RESTORE ... WITH REPLACE).\nTutti i dati attuali andranno persi. Continuare?`
+        : `Creare un backup del database "${activeDatabase}" in:\n${path}`
+    if (!window.confirm(confirmMsg)) return
+    setMaintBusy(kind)
+    setMaintResult(null)
+    try {
+      const res = kind === 'backup' ? await api.backupDb(connectionId, path) : await api.restoreDb(connectionId, path)
+      if (res.error) {
+        setMaintResult(`Errore: ${res.error}`)
+      } else {
+        const lines = res.messages.filter(Boolean)
+        setMaintResult(lines.length > 0 ? lines.join('\n') : kind === 'backup' ? 'Backup completato.' : 'Ripristino completato.')
+      }
+    } catch (err) {
+      setMaintResult(`Errore: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setMaintBusy(null)
+    }
+  }
 
   const toggleDbNode = (name: string) => {
     if (name === activeDatabase) {
@@ -506,7 +550,8 @@ export default function Sidebar({
   // Contenuti dei pannelli: riutilizzati in ogni posizione (ancorato a sinistra,
   // flottante o ancorato a destra via portal)
   const dbListContent = () => (
-    <div className="space-y-0.5 p-2">
+    <>
+      <div className="space-y-0.5 p-2">
       {summary.databases.map(d => {
         const isActive = d.name === activeDatabase
         const isOpen = isActive && !collapsedDb
@@ -551,7 +596,51 @@ export default function Sidebar({
           </div>
         )
       })}
-    </div>
+      </div>
+      {/* Manutenzione database: backup / ripristino */}
+      <div className="mt-2 border-t border-zinc-800 p-2">
+        <div className="mb-1 flex items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
+          <DatabaseBackup className="h-3 w-3" /> Manutenzione DB
+        </div>
+        <input
+          value={maintPath}
+          onChange={e => setMaintPath(e.target.value)}
+          placeholder="C:\Backup\db.bak"
+          className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-100 placeholder-zinc-600 focus:border-sky-500 focus:outline-none"
+          title="Percorso completo del file .bak"
+        />
+        <div className="mt-1 flex gap-1">
+          <button
+            onClick={() => void runMaintenance('backup')}
+            disabled={maintBusy !== null}
+            className="flex flex-1 items-center justify-center gap-1 rounded border border-zinc-700 bg-zinc-800/60 px-2 py-1 text-xs font-medium text-zinc-200 transition-colors hover:border-sky-700 hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-50"
+            title={`Backup del database "${activeDatabase}"`}
+          >
+            <DatabaseBackup className="h-3.5 w-3.5" />
+            {maintBusy === 'backup' ? '…' : 'Backup'}
+          </button>
+          <button
+            onClick={() => void runMaintenance('restore')}
+            disabled={maintBusy !== null}
+            className="flex flex-1 items-center justify-center gap-1 rounded border border-rose-900/60 bg-rose-950/30 px-2 py-1 text-xs font-medium text-rose-300 transition-colors hover:border-rose-600 hover:text-rose-200 disabled:cursor-not-allowed disabled:opacity-50"
+            title={`Ripristina il database "${activeDatabase}" dal file (sovrascrive con REPLACE)`}
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            {maintBusy === 'restore' ? '…' : 'Ripristina'}
+          </button>
+        </div>
+        {maintBusy && (
+          <div className="mt-1.5 flex items-center gap-2 px-1 text-xs text-sky-300">
+            <Spinner /> {maintBusy === 'backup' ? 'Backup in corso…' : 'Ripristino in corso…'}
+          </div>
+        )}
+        {maintResult && (
+          <pre className="mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap rounded bg-zinc-950/80 px-2 py-1 text-[10px] leading-snug text-zinc-400">
+            {maintResult}
+          </pre>
+        )}
+      </div>
+    </>
   )
 
   const objectsContent = () => (
@@ -574,22 +663,40 @@ export default function Sidebar({
         {q ? (
           <div className="space-y-0.5 border-t border-zinc-800 pt-2">
             {hits.length === 0 && <p className="p-3 text-sm text-zinc-600">Nessun oggetto trovato.</p>}
-            {hits.map((h, i) => (
-              <button
-                key={`${h.kind}-${h.schema}-${h.name}-${i}`}
-                onClick={() => onInsertText(qualified(h.schema, h.name))}
-                onContextMenu={e => openObjectMenu(e, h)}
-                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800"
-                title="Clicca per inserire nel editor — tasto destro per le azioni"
-              >
-                <KindIcon kind={h.kind} />
-                <span className="min-w-0 break-all font-mono">{h.name}</span>
-                {h.schema !== 'dbo' && <span className="text-zinc-500">· {h.schema}</span>}
-                <span className="ml-auto">
-                  <Badge tone="zinc">{h.kind}</Badge>
-                </span>
-              </button>
-            ))}
+            {hits.map((h, i) => {
+              const isProc = h.kind === 'procedura'
+              return (
+                <button
+                  key={`${h.kind}-${h.schema}-${h.name}-${i}`}
+                  onClick={isProc ? undefined : () => onInsertText(qualified(h.schema, h.name))}
+                  onContextMenu={e => openObjectMenu(e, h)}
+                  draggable={isProc}
+                  onDragStart={
+                    isProc && h.proc
+                      ? e => {
+                          e.dataTransfer.setData('text/plain', scriptExecProcedure(h.proc!))
+                          e.dataTransfer.effectAllowed = 'copy'
+                        }
+                      : undefined
+                  }
+                  className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800 ${
+                    isProc ? 'cursor-grab active:cursor-grabbing' : ''
+                  }`}
+                  title={
+                    isProc
+                      ? 'Trascina nel editor per generare EXEC con i parametri — tasto destro per le azioni'
+                      : 'Clicca per inserire nel editor — tasto destro per le azioni'
+                  }
+                >
+                  <KindIcon kind={h.kind} />
+                  <span className="min-w-0 break-all font-mono">{h.name}</span>
+                  {h.schema !== 'dbo' && <span className="text-zinc-500">· {h.schema}</span>}
+                  <span className="ml-auto">
+                    <Badge tone="zinc">{h.kind}</Badge>
+                  </span>
+                </button>
+              )
+            })}
           </div>
         ) : !collapsedDb ? (
           <div className="space-y-1 border-t border-zinc-800 pt-2 pl-2">
@@ -659,6 +766,31 @@ export default function Sidebar({
                                       <span className="min-w-0 break-all font-mono">{c.name}</span>
                                       <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">{c.dataType}</span>
                                     </button>
+                                  ))}
+                                  {t.indexes && t.indexes.length > 0 && (
+                                    <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
+                                      Indici
+                                    </div>
+                                  )}
+                                  {t.indexes?.map(ix => (
+                                    <div
+                                      key={ix.name}
+                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-xs text-zinc-500"
+                                      title={`${ix.name}${ix.isPrimaryKey ? ' — PRIMARY KEY' : ix.isUnique ? ' — UNIQUE' : ''}${ix.columns && ix.columns.length > 0 ? `\nColonne: ${ix.columns.join(', ')}` : ''}`}
+                                    >
+                                      <KeyRound className="h-3 w-3 shrink-0 text-amber-400/70" />
+                                      <span className="min-w-0 break-all font-mono text-zinc-400">{ix.name}</span>
+                                      {ix.isPrimaryKey ? (
+                                        <span className="shrink-0 rounded bg-amber-950/70 px-1 text-[9px] font-bold uppercase text-amber-300">PK</span>
+                                      ) : ix.isUnique ? (
+                                        <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-zinc-400">UNIQUE</span>
+                                      ) : null}
+                                      {ix.columns && ix.columns.length > 0 && (
+                                        <span className="ml-auto min-w-0 break-all text-right font-mono text-[10px] text-zinc-600">
+                                          {ix.columns.join(', ')}
+                                        </span>
+                                      )}
+                                    </div>
                                   ))}
                                   {tableTriggers.length > 0 && (
                                     <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
@@ -730,7 +862,11 @@ export default function Sidebar({
                     <ObjectRow
                       key={`${p.schema}.${p.name}`}
                       label={p.schema !== 'dbo' ? `${p.schema}.${p.name}` : p.name}
-                      onInsert={() => onInsertText(qualified(p.schema, p.name))}
+                      draggable
+                      onDragStart={e => {
+                        e.dataTransfer.setData('text/plain', scriptExecProcedure(p))
+                        e.dataTransfer.effectAllowed = 'copy'
+                      }}
                       onContextMenu={e =>
                         openObjectMenu(e, { kind: 'procedura', schema: p.schema, name: p.name, proc: p })
                       }
@@ -1180,12 +1316,16 @@ function ObjectRow({
   detail,
   onInsert,
   onContextMenu,
+  draggable,
+  onDragStart,
   children,
 }: {
   label: string
   detail?: string
-  onInsert: () => void
+  onInsert?: () => void
   onContextMenu?: (e: MouseEvent<HTMLElement>) => void
+  draggable?: boolean
+  onDragStart?: (e: DragEvent<HTMLElement>) => void
   children?: ReactNode
 }) {
   return (
@@ -1193,8 +1333,18 @@ function ObjectRow({
       <button
         onClick={onInsert}
         onContextMenu={onContextMenu}
-        className="flex w-full items-center gap-2 rounded px-2 py-1 pl-7 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800"
-        title="Clicca per inserire nel editor — tasto destro per le azioni"
+        draggable={draggable}
+        onDragStart={onDragStart}
+        className={`flex w-full items-center gap-2 rounded px-2 py-1 pl-7 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800 ${
+          draggable ? 'cursor-grab active:cursor-grabbing' : ''
+        }`}
+        title={
+          onInsert
+            ? 'Clicca per inserire nel editor — tasto destro per le azioni'
+            : draggable
+              ? 'Trascina nel editor per generare EXEC con i parametri — tasto destro per le azioni'
+              : 'Tasto destro per le azioni'
+        }
       >
         <span className="min-w-0 break-all font-mono">{label}</span>
         {detail && <span className="min-w-0 break-all text-[11px] text-zinc-500">{detail}</span>}

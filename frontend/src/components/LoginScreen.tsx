@@ -16,6 +16,7 @@ import { api } from '../api'
 import type { ConnectResponse, ConnectionTestResult, SavedConnectionDto } from '../types'
 import { Badge, Button, Spinner, inputClass } from './ui'
 import MatrixRain from './MatrixRain'
+import ConnectAnimation from './ConnectAnimation'
 
 interface Props {
   onConnected: (res: ConnectResponse) => void
@@ -50,6 +51,8 @@ export default function LoginScreen({ onConnected }: Props) {
   const [testing, setTesting] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [connectingId, setConnectingId] = useState<number | null>(null)
+  // Destinazione della connessione in corso: mostrata nell'animazione scenica
+  const [connectTarget, setConnectTarget] = useState<{ server: string; database?: string } | null>(null)
   const [showPwd, setShowPwd] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -98,6 +101,7 @@ export default function LoginScreen({ onConnected }: Props) {
   }
 
   const handleConnect = async (req: ReturnType<typeof toRequest>) => {
+    setConnectTarget({ server: req.server, database: req.database || undefined })
     setConnecting(true)
     setError(null)
     try {
@@ -112,10 +116,12 @@ export default function LoginScreen({ onConnected }: Props) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setConnecting(false)
+      setConnectTarget(null)
     }
   }
 
-  const handleConnectSaved = async (id: number) => {
+  const handleConnectSaved = async (id: number, target?: { server: string; database?: string }) => {
+    setConnectTarget(target ?? null)
     setConnectingId(id)
     setError(null)
     try {
@@ -130,6 +136,7 @@ export default function LoginScreen({ onConnected }: Props) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setConnectingId(null)
+      setConnectTarget(null)
     }
   }
 
@@ -344,11 +351,11 @@ export default function LoginScreen({ onConnected }: Props) {
                 key={c.id}
                 role="button"
                 tabIndex={0}
-                onClick={() => void handleConnectSaved(c.id)}
+                onClick={() => void handleConnectSaved(c.id, { server: c.server, database: c.database || undefined })}
                 onKeyDown={e => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault()
-                    void handleConnectSaved(c.id)
+                    void handleConnectSaved(c.id, { server: c.server, database: c.database || undefined })
                   }
                 }}
                 className="group flex cursor-pointer items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-950/60 p-4 transition-colors hover:border-sky-600 hover:bg-sky-950/20"
@@ -374,7 +381,7 @@ export default function LoginScreen({ onConnected }: Props) {
                   type="button"
                   onClick={e => {
                     e.stopPropagation()
-                    void handleConnectSaved(c.id)
+                    void handleConnectSaved(c.id, { server: c.server, database: c.database || undefined })
                   }}
                   className="flex shrink-0 items-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-medium text-white shadow-md transition-colors hover:bg-sky-500"
                   title="Connetti con questa login"
@@ -403,6 +410,7 @@ export default function LoginScreen({ onConnected }: Props) {
           </div>
         </div>
       </div>
+      {connectTarget && <ConnectAnimation server={connectTarget.server} database={connectTarget.database} />}
     </div>
   )
 }

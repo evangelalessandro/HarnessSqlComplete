@@ -5,6 +5,7 @@ import type {
   ConnectionRequest,
   ConnectionTestResult,
   DatabaseSummary,
+  DbMaintenanceResponse,
   QueryResult,
   SavedConnectionDto,
   SearchResult,
@@ -88,6 +89,19 @@ export const api = {
     http<QueryResult>(`/query/${connectionId}/execute`, {
       method: 'POST',
       body: JSON.stringify({ sql, timeoutSeconds }),
+    }),
+
+  /** Backup del database corrente su file (.bak). */
+  backupDb: (connectionId: string, path: string) =>
+    http<DbMaintenanceResponse>(`/db/${connectionId}/backup`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+  /** Ripristina il database da file (.bak) — sovrascrive (WITH REPLACE). */
+  restoreDb: (connectionId: string, path: string) =>
+    http<DbMaintenanceResponse>(`/db/${connectionId}/restore`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
     }),
 
   autocomplete: (connectionId: string, sql: string, apiKey?: string) =>

@@ -65,6 +65,9 @@ public record ColumnInfo(
     string? Description,
     List<ExtendedProperty>? ExtendedProperties = null);
 
+/// <summary>Indice di una tabella (nome, PK/UNIQUE e colonne chiave in ordine).</summary>
+public record IndexInfo(string Name, bool IsPrimaryKey, bool IsUnique, List<string>? Columns = null);
+
 public record TableInfo(
     string Schema,
     string Name,
@@ -72,7 +75,8 @@ public record TableInfo(
     DateTime? CreateDate,
     List<ColumnInfo>? Columns = null,
     TableUsage? Usage = null,
-    List<ExtendedProperty>? ExtendedProperties = null);
+    List<ExtendedProperty>? ExtendedProperties = null,
+    List<IndexInfo>? Indexes = null);
 
 public record ViewInfo(string Schema, string Name, DateTime? CreateDate);
 
@@ -135,3 +139,9 @@ public record SuggestionItem(string Text, string? Reason);
 public record AutocompleteResponse(List<SuggestionItem>? Suggestions, string? Error);
 
 public record AutocompleteStatus(bool Configured, string Model, string BaseUrl, bool HasApiKeyOverride);
+
+// ---------- Manutenzione database (backup / restore) ----------
+
+public record DbMaintenanceRequest(string Path);
+
+public record DbMaintenanceResponse(List<string> Messages, string? Error);

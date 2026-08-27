@@ -629,6 +629,7 @@ export default function App() {
               summary={summary}
               loading={loadingSummary && !summary}
               activeDatabase={connection.database}
+              connectionId={connection.connectionId}
               onInsertText={handleInsertText}
               onPreviewInEditor={handlePreviewInEditor}
               onOpenScript={handleOpenScript}

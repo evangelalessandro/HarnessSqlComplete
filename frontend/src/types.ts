@@ -74,6 +74,13 @@ export interface ForeignKeyInfo {
   refColumn: string
 }
 
+export interface IndexInfo {
+  name: string
+  isPrimaryKey: boolean
+  isUnique: boolean
+  columns: string[] | null
+}
+
 export interface TableInfo {
   schema: string
   name: string
@@ -82,6 +89,7 @@ export interface TableInfo {
   columns: ColumnInfo[] | null
   usage: TableUsage | null
   extendedProperties: ExtendedProperty[] | null
+  indexes?: IndexInfo[] | null
 }
 
 export interface ViewInfo {
@@ -186,6 +194,12 @@ export interface AutocompleteStatus {
 }
 
 export type ObjectKind = 'table' | 'view' | 'procedure' | 'function' | 'trigger'
+
+/** Esito di un backup/restore del database (messaggi del server + eventuale errore). */
+export interface DbMaintenanceResponse {
+  messages: string[]
+  error: string | null
+}
 
 /** Tab dell'editor (query o definizione oggetto). */
 export interface EditorTab {

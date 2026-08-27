@@ -81,6 +81,38 @@ public class MetadataService
             }
         }
 
+        // Indici per tabella (una riga per indice, colonne chiave in ordine)
+        var tableIndexes = new Dictionary<(string, string), List<IndexInfo>>();
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT s.name, t.name, i.name, i.is_primary_key, i.is_unique,
+                       ISNULL(STUFF((
+                         SELECT ', ' + c.name
+                         FROM sys.index_columns ic
+                         INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                         WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0
+                         ORDER BY ic.key_ordinal
+                         FOR XML PATH('')), 1, 2, ''), '') AS Cols
+                FROM sys.tables t
+                INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+                INNER JOIN sys.indexes i ON i.object_id = t.object_id
+                WHERE t.is_ms_shipped = 0 AND i.index_id > 0
+                ORDER BY s.name, t.name, i.index_id;
+                """;
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                var key = (r.GetString(0), r.GetString(1));
+                if (!tableIndexes.TryGetValue(key, out var list))
+                    tableIndexes[key] = list = [];
+                var cols = r.GetString(5)
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .ToList();
+                list.Add(new IndexInfo(r.GetString(2), r.GetBoolean(3), r.GetBoolean(4), cols));
+            }
+        }
+
         // Proprietà estese a livello di tabella
         var tableProps = new Dictionary<(string, string), List<ExtendedProperty>>();
         await using (var cmd = conn.CreateCommand())
@@ -144,6 +176,7 @@ public class MetadataService
             {
                 Columns = cols,
                 ExtendedProperties = tableProps.GetValueOrDefault((t.Schema, t.Name)),
+                Indexes = tableIndexes.GetValueOrDefault((t.Schema, t.Name)),
             };
         }
 
