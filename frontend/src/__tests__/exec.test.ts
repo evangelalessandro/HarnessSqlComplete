@@ -72,6 +72,22 @@ describe('toCreateOrAlterStatement: CREATE → CREATE OR ALTER', () => {
     )
   })
 
+  it('CREATE TRIGGER → CREATE OR ALTER TRIGGER (forma reale OBJECT_DEFINITION)', () => {
+    const def =
+      'CREATE TRIGGER [dbo].[tr_CFG_BARCODE] ON [dbo].[CFG_BARCODE]\n' +
+      'FOR UPDATE, INSERT, DELETE\nAS\nSET NOCOUNT ON\n\nBEGIN\n  SELECT 1\nEND'
+    expect(toCreateOrAlterStatement(def)).toBe(
+      'CREATE OR ALTER TRIGGER [dbo].[tr_CFG_BARCODE] ON [dbo].[CFG_BARCODE]\n' +
+        'FOR UPDATE, INSERT, DELETE\nAS\nSET NOCOUNT ON\n\nBEGIN\n  SELECT 1\nEND',
+    )
+  })
+
+  it('CREATE VIEW → CREATE OR ALTER VIEW', () => {
+    expect(toCreateOrAlterStatement('CREATE VIEW dbo.V AS SELECT 1 AS x')).toBe(
+      'CREATE OR ALTER VIEW dbo.V AS SELECT 1 AS x',
+    )
+  })
+
   it('con indentazione iniziale', () => {
     expect(toCreateOrAlterStatement('\n  CREATE PROCEDURE dbo.X AS SELECT 1')).toBe(
       'CREATE OR ALTER PROCEDURE dbo.X AS SELECT 1',
