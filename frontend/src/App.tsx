@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, Database as DbIcon, FilePlus2, Pin, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { BookOpen, Database as DbIcon, FilePlus2, Pin, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
@@ -18,7 +18,7 @@ import ResultsPanel from './components/ResultsPanel'
 import PrintPanel from './components/PrintPanel'
 import HelpPage from './components/HelpPage'
 import { FileDropZone } from './components/FileDropZone'
-import { Badge } from './components/ui'
+import { Badge, Button } from './components/ui'
 
 type Tab = 'results' | 'print'
 
@@ -32,6 +32,9 @@ export default function App() {
   const [tabResults, setTabResults] = useState<Record<string, QueryResult | null>>({})
   const [tabExecuting, setTabExecuting] = useState<Record<string, boolean>>({})
   const [tabResultTab, setTabResultTab] = useState<Record<string, Tab>>({})
+  // descrizione libera della tab (nota utente): tab in modifica + bozza
+  const [descEditingTab, setDescEditingTab] = useState<string | null>(null)
+  const [descDraft, setDescDraft] = useState('')
   const [aiEnabled, setAiEnabled] = useState(true)
   const [aiStatus, setAiStatus] = useState<AutocompleteStatus | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
@@ -330,6 +333,16 @@ export default function App() {
     },
     [activeEditorTab],
   )
+
+  /** Salva la descrizione libera della tab in modifica. */
+  const saveTabDescription = useCallback(() => {
+    if (!descEditingTab) return
+    const clean = descDraft.trim()
+    setEditorTabs(prev =>
+      prev.map(t => (t.id === descEditingTab ? { ...t, description: clean || undefined } : t)),
+    )
+    setDescEditingTab(null)
+  }, [descEditingTab, descDraft])
 
   const togglePin = useCallback((id: string) => {
     setEditorTabs(prev => {
@@ -674,7 +687,7 @@ export default function App() {
                     : 'text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300'
                 }`}
                 style={{ borderTopColor: dbTabColor(t.database ?? connection.database, dbColors) }}
-                title={`${t.title} · db: ${t.database || connection.database}${t.pinned ? ' (appuntata)' : ''}${t.id === activeEditorTab ? ' — trascina per riordinare' : ''}`}
+                title={`${t.title} · db: ${t.database || connection.database}${t.description ? ` — ${t.description}` : ''}${t.pinned ? ' (appuntata)' : ''}${t.id === activeEditorTab ? ' — trascina per riordinare' : ''}`}
               >
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: dbTabColor(t.database ?? connection.database, dbColors) }} />
                 <button
@@ -683,6 +696,18 @@ export default function App() {
                   title={t.title}
                 >
                   {t.title}
+                </button>
+                <button
+                  onClick={() => {
+                    setDescDraft(t.description ?? '')
+                    setDescEditingTab(t.id)
+                  }}
+                  className={`rounded p-0.5 opacity-0 transition-opacity hover:bg-zinc-700 group-hover:opacity-100 ${
+                    t.description ? '!opacity-100 text-amber-400' : 'text-zinc-400'
+                  }`}
+                  title={t.description ? `Descrizione: ${t.description} (modifica)` : 'Aggiungi una descrizione alla tab'}
+                >
+                  <StickyNote className="h-3 w-3" />
                 </button>
                 <button
                   onClick={() => togglePin(t.id)}
@@ -712,6 +737,16 @@ export default function App() {
               <FilePlus2 className="h-3.5 w-3.5" /> Nuova
             </button>
           </div>
+
+          {/* descrizione della tab attiva (nota libera) */}
+          {activeTabInfo?.description && (
+            <div className="flex items-center gap-1.5 border-b border-zinc-800 bg-zinc-900/30 px-3 py-1 text-xs italic text-zinc-400">
+              <StickyNote className="h-3 w-3 shrink-0 text-amber-400" />
+              <span className="truncate" title={activeTabInfo.description}>
+                {activeTabInfo.description}
+              </span>
+            </div>
+          )}
 
           <div
             className="h-[52%] min-h-44 shrink-0"
@@ -797,6 +832,46 @@ export default function App() {
       </div>
       </div>
       {helpOpen && <HelpPage onClose={() => setHelpOpen(false)} />}
+
+      {/* Popover: descrizione libera della tab */}
+      {descEditingTab && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setDescEditingTab(null)}
+        >
+          <div
+            className="w-[min(480px,92vw)] rounded-lg border border-zinc-700 bg-zinc-900 p-4 shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-zinc-100">
+              <StickyNote className="h-4 w-4 text-amber-400" /> Descrizione della tab
+            </h3>
+            <textarea
+              autoFocus
+              value={descDraft}
+              onChange={e => setDescDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  saveTabDescription()
+                }
+                if (e.key === 'Escape') setDescEditingTab(null)
+              }}
+              placeholder="Scrivi una nota libera per questa tab (es. 'Report mensile clienti', 'Da controllare', …)"
+              rows={4}
+              className="w-full rounded-md border border-zinc-700 bg-zinc-950 p-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setDescEditingTab(null)}>
+                Annulla
+              </Button>
+              <Button size="sm" onClick={saveTabDescription}>
+                Salva descrizione
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </FileDropZone>
   )
 }

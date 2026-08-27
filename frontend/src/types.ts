@@ -192,6 +192,8 @@ export interface EditorTab {
   id: string
   title: string
   sql: string
+  /** Descrizione libera della tab (nota dell'utente). */
+  description?: string
   /** Tab appuntata: resta in testa e non è chiudibile. */
   pinned?: boolean
   /** Database associato alla tab (per il colore). */
