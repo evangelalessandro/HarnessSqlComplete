@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, ChevronLeft, ChevronRight, Table2 } from 'lucide-react'
+import { AlertTriangle, ChevronLeft, ChevronRight, Code2, Table2 } from 'lucide-react'
 import type { CellValue, QueryResult } from '../types'
-import { Badge, Spinner } from './ui'
+import { Badge, Button, Spinner } from './ui'
+import SelectableResultGrid from './SelectableResultGrid'
 
 interface Props {
   result: QueryResult | null
@@ -12,10 +13,13 @@ export default function ResultsPanel({ result, executing }: Props) {
   const [setIndex, setSetIndex] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
+  // modalità generatore: seleziona righe/colonne e genera INSERT/UPDATE/MERGE/DELETE/#tmp
+  const [genMode, setGenMode] = useState(false)
 
   useEffect(() => {
     setSetIndex(0)
     setPage(1)
+    setGenMode(false)
   }, [result])
 
   if (executing) {
@@ -79,6 +83,14 @@ export default function ResultsPanel({ result, executing }: Props) {
           </div>
         )}
         <span className="ml-auto flex items-center gap-2">
+          <Button
+            variant={genMode ? 'primary' : 'ghost'}
+            size="sm"
+            onClick={() => setGenMode(v => !v)}
+            title="Seleziona righe/colonne e genera INSERT/UPDATE/MERGE/DELETE/INSERT INTO # dai risultati"
+          >
+            <Code2 className="h-3.5 w-3.5" /> {genMode ? 'Generatore attivo' : 'Genera SQL'}
+          </Button>
           <Badge tone="zinc">{(result.elapsedMs / 1000).toFixed(2)} s</Badge>
           {activeSet.affectedRows > 0 && <Badge tone="amber">{activeSet.affectedRows} righe modificate</Badge>}
           {activeSet.truncated && (
@@ -87,6 +99,12 @@ export default function ResultsPanel({ result, executing }: Props) {
         </span>
       </div>
 
+      {genMode ? (
+        <div className="min-h-0 flex-1">
+          <SelectableResultGrid columns={activeSet.columns} rows={pageRows as CellValue[][]} />
+        </div>
+      ) : (
+        <>
       <div className="min-h-0 flex-1 overflow-auto">
         <table className="w-full border-collapse text-left text-[13px]">
           <thead className="sticky top-0 z-10">
@@ -158,6 +176,8 @@ export default function ResultsPanel({ result, executing }: Props) {
           </button>
         </div>
       </div>
+        </>
+      )}
     </div>
   )
 }

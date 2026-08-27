@@ -87,7 +87,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Tasto destro su un oggetto',
         detail:
-          'Menu contestuale stile SSMS: per le tabelle "Seleziona le prime 1000 righe" e gli script per ogni operazione (Script CREATE, Script DROP, Script SELECT, Script INSERT, Script UPDATE, Script DELETE, Script MERGE); per procedure/funzioni/viste/trigger "Modifica" (ALTER), "Apri definizione" ed EXEC con parametri.',
+          'Menu contestuale stile SSMS: per le tabelle "Seleziona le prime 1000 righe" e gli script per ogni operazione (Script CREATE, Script DROP, Script SELECT, Script INSERT, Script UPDATE, Script DELETE, Script MERGE); per procedure/funzioni/viste/trigger "Modifica" (CREATE OR ALTER), "Apri definizione" ed EXEC con parametri.',
       },
       {
         title: 'Cerca',

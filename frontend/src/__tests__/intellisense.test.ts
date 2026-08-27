@@ -138,6 +138,30 @@ describe('INTELLIGENZA INTELLISENSE — voci coerenti col contesto', () => {
     expect(filtered).not.toContain('ORDER')
   })
 
+  it('keyword filtrate: statement ufficiali completi all\'inizio (BACKUP/GRANT/SET/PRINT/IF/WHILE)', () => {
+    const ctx = ctxFor('')
+    const filtered = filterKeywordsForContext(ctx, [
+      'BACKUP', 'RESTORE', 'GRANT', 'REVOKE', 'DENY', 'SET', 'PRINT', 'IF', 'WHILE', 'COMMIT',
+      'ROLLBACK', 'RAISERROR', 'THROW', 'RETURN', 'KILL', 'DBCC', 'CHECKPOINT', 'BULK', 'TRUNCATE',
+      'TRANSACTION', 'WHERE', 'ORDER', 'FROM',
+    ])
+    for (const k of ['BACKUP', 'RESTORE', 'GRANT', 'REVOKE', 'DENY', 'SET', 'PRINT', 'IF', 'WHILE', 'COMMIT', 'ROLLBACK', 'RAISERROR', 'THROW', 'RETURN', 'KILL', 'DBCC', 'CHECKPOINT', 'BULK', 'TRUNCATE', 'TRANSACTION']) {
+      expect(filtered).toContain(k)
+    }
+    expect(filtered).not.toContain('WHERE')
+    expect(filtered).not.toContain('ORDER')
+    expect(filtered).not.toContain('FROM')
+  })
+
+  it('keyword filtrate: dopo "FROM t " compaiono anche APPLY/PIVOT/UNPIVOT/FOR (costrutti ufficiali)', () => {
+    const ctx = ctxFor('SELECT * FROM RUN_MISSIONI ')
+    const filtered = filterKeywordsForContext(ctx, ['APPLY', 'PIVOT', 'UNPIVOT', 'FOR', 'COLLATE', 'EXCEPT', 'INTERSECT', 'TABLESAMPLE', 'WHERE', 'JOIN', 'SELECT'])
+    for (const k of ['APPLY', 'PIVOT', 'UNPIVOT', 'FOR', 'COLLATE', 'EXCEPT', 'INTERSECT', 'TABLESAMPLE', 'WHERE', 'JOIN']) {
+      expect(filtered).toContain(k)
+    }
+    expect(filtered).not.toContain('SELECT')
+  })
+
   it('snippet statement compaiono solo a inizio statement', () => {
     // a inizio statement: "ins" → INSERT INTO
     expect(buildStatementSnippets('ins').some(s => s.label === 'INSERT INTO')).toBe(true)
@@ -170,6 +194,28 @@ describe('INTELLIGENZA INTELLISENSE — qualità del ranking (casi reali)', () =
   it('dopo "FROM RUN_MISSIONI " il contesto non ammette colonne (niente rumore)', () => {
     const ctx = ctxFor('SELECT * FROM RUN_MISSIONI ')
     expect(allows(ctx, 'columns')).toBe(false)
+  })
+
+  it('dopo la virgola di "GROUP BY a, " il contesto resta di colonne (niente tabelle)', () => {
+    // scenario utente: SELECT ... FROM dbo.MAG_CORRIDOI group by COR_CORRIDOIO ,
+    const ctx = ctxFor('SELECT COR_CORRIDOIO, COR_AREA FROM dbo.MAG_CORRIDOI group by COR_CORRIDOIO ,')
+    expect(ctx.kind).toBe('columnContext')
+    expect(allows(ctx, 'columns')).toBe(true)
+    expect(allows(ctx, 'functions')).toBe(true)
+    expect(allows(ctx, 'tables')).toBe(false)
+  })
+
+  it('virgola che continua liste di colonne: ORDER BY / WHERE IN / ON / SET', () => {
+    expect(ctxFor('SELECT a FROM t order by a, b, ').kind).toBe('columnContext')
+    expect(ctxFor('SELECT a FROM t where x in (1, ').kind).toBe('columnContext')
+    expect(ctxFor('SELECT a FROM t join u on a = b, ').kind).toBe('columnContext')
+    expect(ctxFor('UPDATE t set a = 1, ').kind).toBe('columnContext')
+  })
+
+  it('la virgola di "FROM a, " resta un contesto di tabelle (lista di tabelle)', () => {
+    const ctx = ctxFor('SELECT * FROM dbo.RUN_MISSIONI, ')
+    expect(ctx.kind).not.toBe('columnContext')
+    expect(allows(ctx, 'tables')).toBe(true)
   })
 })
 

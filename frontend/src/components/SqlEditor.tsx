@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { Eraser, FolderOpen, Moon, Play, Save, Settings2, Sun, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
+import { Eraser, FolderOpen, Moon, Play, Save, Settings2, Sun, Table2, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
 import monaco from '../monacoSetup'
 import { api } from '../api'
+import { syntaxIssuesFromCheck } from '../syntaxCheck'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from '../types'
-import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
+import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, resolveTokenAt, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
+import DataPreviewModal from './DataPreviewModal'
+import { shouldSuggestSystemObjects, systemObjectsFor } from '../systemObjects'
 import { registerInsertHighlight } from '../sqlInsertHighlight'
 import { positionAt, runSqlDiagnostics } from '../sqlDiagnostics'
 import { computeBlockGuides } from '../sqlBlockGuides'
@@ -92,6 +95,16 @@ const SQL_KEYWORDS = [
   'REFERENCES', 'CONSTRAINT', 'INDEX', 'UNIQUE', 'CHECK', 'DEFAULT', 'OVER', 'PARTITION', 'ROW_NUMBER',
   'RANK', 'DENSE_RANK', 'OUTPUT', 'MERGE', 'OPTION', 'RECOMPILE', 'NOCOUNT', 'TRANSACTION', 'COMMIT',
   'ROLLBACK', 'SAVE', 'WAITFOR', 'RAISERROR',
+  // Statement e language elements ufficiali (riferimento Microsoft T-SQL)
+  'BACKUP', 'RESTORE', 'GRANT', 'REVOKE', 'DENY', 'BULK', 'DBCC', 'CHECKPOINT', 'KILL',
+  'RECONFIGURE', 'SHUTDOWN', 'IF', 'WHILE', 'BREAK', 'CONTINUE', 'GOTO', 'OPEN', 'CLOSE', 'FETCH',
+  'DEALLOCATE', 'CURSOR', 'EXCEPT', 'INTERSECT', 'EXISTS', 'FULL', 'APPLY', 'PIVOT', 'UNPIVOT', 'FOR',
+  'COLLATE', 'TABLESAMPLE', 'HOLDLOCK', 'NOCHECK', 'CASCADE', 'ANY', 'SOME', 'OF', 'OFF', 'TO', 'ADD',
+  'ASC', 'DESC', 'DATABASE', 'SCHEMA', 'COLUMN', 'CLUSTERED', 'NONCLUSTERED', 'PROC', 'NULLIF',
+  'ROWCOUNT', 'STATISTICS', 'USER', 'CURRENT_USER', 'SESSION_USER', 'SYSTEM_USER', 'CURRENT_TIMESTAMP',
+  'CURRENT_DATE', 'CURRENT_TIME', 'WITHIN', 'COMPUTE',
+  // OFFSET-FETCH (paginazione, dopo ORDER BY)
+  'OFFSET', 'NEXT', 'ROWS', 'ONLY',
 ]
 
 /** Funzioni T-SQL (manuale Microsoft): aggregati, finestra/window, stringhe, matematiche, data/ora, conversione, sistema. */
@@ -116,6 +129,13 @@ const SQL_FUNCTIONS = [
   'YEAR', 'MONTH', 'DAY', 'EOMONTH', 'ISDATE', 'SWITCHOFFSET', 'TODATETIMEOFFSET',
   // conversione
   'CAST', 'CONVERT', 'TRY_CAST', 'TRY_CONVERT', 'PARSE', 'TRY_PARSE',
+  // data/ora moderne
+  'DATETRUNC', 'DATE_BUCKET', 'GENERATE_SERIES',
+  // JSON
+  'OPENJSON', 'JSON_ARRAY', 'JSON_OBJECT',
+  // statistiche approssimate e confronto (SQL 2022)
+  'APPROX_COUNT_DISTINCT', 'APPROX_PERCENTILE_CONT', 'APPROX_PERCENTILE_DISC', 'GREATEST', 'LEAST',
+  'RANDOM',
   // sistema / logico
   'COALESCE', 'ISNULL', 'NULLIF', 'IIF', 'CHOOSE', 'CASE', 'NULL', 'ISNUMERIC', 'NEWID',
   'NEWSEQUENTIALID', 'HOST_NAME', 'USER_NAME', 'SCOPE_IDENTITY', 'IDENT_CURRENT', 'ERROR_MESSAGE',
@@ -156,6 +176,31 @@ export default function SqlEditor({
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
   // Pannello impostazioni di formattazione
   const [profileOpen, setProfileOpen] = useState(false)
+  // Verifica di sintassi opzionale (errori reali di SQL Server con "Riga N:")
+  const [syntaxCheck, setSyntaxCheck] = useState(false)
+  // Finestra anteprima dati della tabella sotto il cursore (F4)
+  const [previewTarget, setPreviewTarget] = useState<{ schema: string; table: string } | null>(null)
+  // tabella attualmente sotto l'hover (per il pulsante cliccabile nella tooltip)
+  const hoveredTableRef = useRef<{ schema: string; table: string } | null>(null)
+
+  // Il link "command:sqlIntelli.openPreview" nella tooltip NON esegue comandi in
+  // Monaco standalone (l'opener dei command: è roba da workbench): intercettiamo il
+  // click sull'anchor con un listener a livello documento e apriamo la preview.
+  useEffect(() => {
+    const onClick = (ev: MouseEvent) => {
+      const target = ev.target as HTMLElement | null
+      const a = target?.closest?.('a[data-href]')
+      if (!a) return
+      const href = a.getAttribute('data-href') ?? ''
+      if (!href.startsWith('command:sqlIntelli.openPreview')) return
+      ev.preventDefault()
+      ev.stopPropagation()
+      const t = hoveredTableRef.current
+      if (t) setPreviewTarget(t)
+    }
+    document.addEventListener('click', onClick, true)
+    return () => document.removeEventListener('click', onClick, true)
+  }, [])
   // Registrazione robusta del colorizer, copre ogni ordine di mount/summary
   const colorizerRef = useRef<{
     ed: monaco.editor.IStandaloneCodeEditor
@@ -186,6 +231,57 @@ export default function SqlEditor({
     ensureColorizer()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summary, editor])
+
+  /**
+   * Verifica di sintassi opzionale: con il toggle attivo, a ogni modifica (debounce)
+   * chiede al backend di eseguire il testo in una transazione con rollback; gli errori
+   * reali di SQL Server ("Riga N: …") diventano sottolineature nel documento.
+   */
+  useEffect(() => {
+    const model = editorRef.current?.getModel()
+    const connId = connectionId
+    if (!syntaxCheck || !model || !connId) {
+      if (model) monaco.editor.setModelMarkers(model, 'sql-check', [])
+      return
+    }
+    let timer: number | null = null
+    let cancelled = false
+    const run = async () => {
+      const text = model.getValue()
+      if (!text.trim()) {
+        monaco.editor.setModelMarkers(model, 'sql-check', [])
+        return
+      }
+      try {
+        const res = await api.checkSyntax(connId, text)
+        if (cancelled) return
+        const issues = syntaxIssuesFromCheck(res.error, res.messages)
+        const markers: monaco.editor.IMarkerData[] = issues.map(i => ({
+          startLineNumber: i.line,
+          startColumn: 1,
+          endLineNumber: i.line,
+          endColumn: Math.max(1, model.getLineLength(i.line)) + 1,
+          message: i.message,
+          severity: monaco.MarkerSeverity.Error,
+        }))
+        monaco.editor.setModelMarkers(model, 'sql-check', markers)
+      } catch {
+        if (!cancelled) monaco.editor.setModelMarkers(model, 'sql-check', [])
+      }
+    }
+    const schedule = () => {
+      if (timer !== null) window.clearTimeout(timer)
+      timer = window.setTimeout(run, 900)
+    }
+    const sub = model.onDidChangeContent(schedule)
+    schedule()
+    return () => {
+      cancelled = true
+      if (timer !== null) window.clearTimeout(timer)
+      sub.dispose()
+      monaco.editor.setModelMarkers(model, 'sql-check', [])
+    }
+  }, [syntaxCheck, connectionId])
 
   const handleFormat = () => {
     const ed = editorRef.current
@@ -239,6 +335,18 @@ export default function SqlEditor({
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS, () => onSaveAsRef.current?.())
     // Formatta: Ctrl+Shift+F
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF, handleFormat)
+    // Anteprima dati della tabella sotto il cursore: F4 (e pulsante toolbar)
+    const openPreviewUnderCursor = () => {
+      const model = editor.getModel()
+      const pos = editor.getPosition()
+      const sm = stateRef.current.summary
+      if (!model || !pos || !sm) return
+      const resolved = resolveTokenAt(model.getValue(), model.getOffsetAt(pos), sm)
+      if (resolved?.kind === 'table') {
+        setPreviewTarget({ schema: resolved.table.schema, table: resolved.table.name })
+      }
+    }
+    editor.addCommand(monaco.KeyCode.F4, openPreviewUnderCursor)
 
     registerSchemaCompletions()
     registerInlineCompletions()
@@ -250,6 +358,9 @@ export default function SqlEditor({
       registerSqlHover(() => ({
         summary: stateRef.current.summary,
         connectionId: stateRef.current.connectionId,
+        onTableHover: (schema, table) => {
+          hoveredTableRef.current = { schema, table }
+        },
       })),
     )
     // Zoom con Ctrl+rotella del mouse (listener nativo sul DOM dell'editor)
@@ -273,6 +384,8 @@ export default function SqlEditor({
       monaco.languages.registerCompletionItemProvider('sql', {
         triggerCharacters: ['.', ' ', '[', '"', '(', '*'],
         provideCompletionItems: (model, position) => {
+          // la preview dati ha il SUO provider filtrato sulla tabella
+          if (model.uri.toString().startsWith('sql-intelli://preview')) return { suggestions: [] }
           const st = stateRef.current
           const word = model.getWordUntilPosition(position)
           const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn)
@@ -297,7 +410,8 @@ export default function SqlEditor({
             rank++
           }
 
-          // Funzioni T-SQL (aggregati, window, stringhe…) + funzioni utente del database.
+          // Funzioni T-SQL (aggregati, window, stringhe…) + funzioni utente SCALARI del database.
+          // Le funzioni tabellari (IF/TF) si propongono solo come sorgente (vedi loop dopo le viste).
           // filterText = nome, così Monaco le filtra con la parola digitata.
           const pushSqlFunctions = () => {
             for (const f of SQL_FUNCTIONS) {
@@ -309,10 +423,10 @@ export default function SqlEditor({
                 filterText: f,
               })
             }
-            for (const fn of st.summary?.functions ?? []) {
+            for (const fn of splitUserFunctions(st.summary?.functions ?? []).scalars) {
               push({
                 label: `${fn.schema}.${fn.name}`,
-                detail: fn.type === 'FN' ? 'funzione scalare' : fn.type === 'IF' ? 'funzione inline' : 'funzione tabella',
+                detail: 'funzione scalare',
                 kind: monaco.languages.CompletionItemKind.Function,
                 insertText: qualified(fn.schema, fn.name),
                 range,
@@ -957,7 +1071,50 @@ export default function SqlEditor({
               })
             }
 
-            // Posizione FROM/JOIN/UPDATE/INTO: SOLO tabelle e viste
+            // Funzioni TABELLARI (IF/TF): sorgenti come le tabelle/viste (FROM/JOIN/APPLY),
+            // NON nelle espressioni (SELECT/WHERE/GROUP BY/… dove vanno solo le scalari)
+            for (const fn of splitUserFunctions(st.summary.functions).tableValued) {
+              push({
+                label: `${fn.schema}.${fn.name}`,
+                detail: 'funzione tabellare',
+                kind: monaco.languages.CompletionItemKind.Class,
+                insertText: qualified(fn.schema, fn.name),
+                range,
+                filterText: fn.name,
+              })
+            }
+
+            // Oggetti di catalogo di sistema (sys.tables, sys.columns, sys.dm_*…): compaiono
+            // quando si digita "sys"/"dm" o dopo "sys." — sorgenti come le tabelle
+            if (shouldSuggestSystemObjects(prefix, word.word)) {
+              for (const obj of systemObjectsFor(prefix, word.word)) {
+                push({
+                  label: obj,
+                  detail: 'oggetto di catalogo di sistema',
+                  kind: monaco.languages.CompletionItemKind.Class,
+                  insertText: obj,
+                  range,
+                  filterText: obj,
+                })
+              }
+            }
+
+            // Self-join: in posizione JOIN le tabelle già nello statement vengono riproposte
+            // con un alias (es. "MAG_CORRIDOI AS mc2 ON (…)") — corso "Cross and Self Joins"
+            if (isJoinPosition) {
+              for (const sj of buildSelfJoinSuggestions(stmtText, st.summary)) {
+                push({
+                  label: sj.label,
+                  detail: sj.detail,
+                  kind: monaco.languages.CompletionItemKind.Struct,
+                  insertText: sj.insertText,
+                  range,
+                  filterText: sj.filterText,
+                })
+              }
+            }
+
+            // Posizione FROM/JOIN/UPDATE/INTO: SOLO tabelle, viste e funzioni tabellari
             if (isTablePosition) return { suggestions }
 
             // Stored procedure: solo se il contesto le ammette (statementStart/generic, non dopo tabella)
@@ -1034,6 +1191,8 @@ export default function SqlEditor({
         provideInlineCompletions: async (model, position, context, token) => {
           const st = stateRef.current
           if (!st.aiEnabled) return { items: [] }
+          // la preview dati ha un mini-editor: niente autocompletamento IA lì
+          if (model.uri.toString().startsWith('sql-intelli://preview')) return { items: [] }
 
           const textBefore = model.getValueInRange(
             new monaco.Range(1, 1, position.lineNumber, position.column),
@@ -1118,12 +1277,18 @@ export default function SqlEditor({
       const text = m.getValue()
       const guides = computeBlockGuides(text)
       const newDecorations: monaco.editor.IModelDeltaDecoration[] = []
+      // più guide sulla STESSA colonna di una riga (es. IF agganciato al BEGIN) →
+      // una sola linea: niente linee doppie
+      const guideKeys = new Set<string>()
       for (const g of guides) {
         // linea verticale su ogni riga compresa tra apertura e chiusura (incluse).
         // Sulle righe vuote o più corte della colonna della guida Monaco non disegna
         // il box (la linea si interrompe): si usa la fine della riga e si compensa con
         // un margine in "ch" (classe sql-guide-offset-N) per restare sulla colonna giusta.
         for (let line = g.openLine; line <= g.closeLine; line++) {
+          const key = `${line}:${g.column}`
+          if (guideKeys.has(key)) continue
+          guideKeys.add(key)
           const lineLen = m.getLineLength(line)
           const effCol = Math.min(g.column, Math.max(1, lineLen + 1))
           const offset = g.column - effCol
@@ -1216,6 +1381,24 @@ export default function SqlEditor({
           </Button>
           <Button
             variant="ghost"
+            onClick={() => {
+              // apre l'anteprima della tabella sotto il cursore (come F4)
+              const ed = editorRef.current
+              const model = ed?.getModel()
+              const pos = ed?.getPosition()
+              const sm = stateRef.current.summary
+              if (!ed || !model || !pos || !sm) return
+              const resolved = resolveTokenAt(model.getValue(), model.getOffsetAt(pos), sm)
+              if (resolved?.kind === 'table') {
+                setPreviewTarget({ schema: resolved.table.schema, table: resolved.table.name })
+              }
+            }}
+            title="Anteprima dati della tabella sotto il cursore (F4) — genera INSERT/UPDATE/MERGE/DELETE/#tmp"
+          >
+            <Table2 className="h-4 w-4" /> Anteprima
+          </Button>
+          <Button
+            variant="ghost"
             onClick={() => setProfileOpen(true)}
             title="Impostazioni di formattazione (importa/edita/esporta il profilo T-SQL)"
           >
@@ -1243,6 +1426,12 @@ export default function SqlEditor({
             {theme === 'vs-dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </Button>
           <Toggle checked={aiEnabled} onChange={onAiEnabledChange} label="Autocompletamento IA" />
+          <Toggle
+            checked={syntaxCheck}
+            onChange={setSyntaxCheck}
+            label="Verifica sintassi"
+            title="Sottolinea gli errori reali di SQL Server (esegue il testo in una transazione che viene annullata — nessun effetto collaterale)"
+          />
           <Badge tone={aiConfigured ? 'emerald' : 'amber'}>{aiStatusText}</Badge>
         </div>
       </div>
@@ -1282,6 +1471,15 @@ export default function SqlEditor({
         />
       </div>
       {profileOpen && <FormatProfilePanel onClose={() => setProfileOpen(false)} />}
+      {previewTarget && connectionId && (
+        <DataPreviewModal
+          target={previewTarget}
+          connectionId={connectionId}
+          summary={stateRef.current.summary}
+          theme={theme}
+          onClose={() => setPreviewTarget(null)}
+        />
+      )}
     </div>
   )
 }

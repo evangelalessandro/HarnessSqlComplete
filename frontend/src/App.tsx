@@ -3,7 +3,7 @@ import { BookOpen, Database as DbIcon, FilePlus2, Pin, Table2, TerminalSquare, U
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
-import { dbTabColor, toAlterStatement } from './helpers'
+import { dbTabColor, toCreateOrAlterStatement } from './helpers'
 import { openSqlFiles, saveSqlFile } from './fileSave'
 import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
@@ -28,9 +28,10 @@ export default function App() {
   const [connection, setConnection] = useState<ConnectResponse | null>(null)
   const [summary, setSummary] = useState<DatabaseSummary | null>(null)
   const [loadingSummary, setLoadingSummary] = useState(false)
-  const [result, setResult] = useState<QueryResult | null>(null)
-  const [executing, setExecuting] = useState(false)
-  const [activeTab, setActiveTab] = useState<Tab>('results')
+  // Risultati LEGATI alla singola tab dell'editor (non condivisi tra le tab)
+  const [tabResults, setTabResults] = useState<Record<string, QueryResult | null>>({})
+  const [tabExecuting, setTabExecuting] = useState<Record<string, boolean>>({})
+  const [tabResultTab, setTabResultTab] = useState<Record<string, Tab>>({})
   const [aiEnabled, setAiEnabled] = useState(true)
   const [aiStatus, setAiStatus] = useState<AutocompleteStatus | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
@@ -238,8 +239,10 @@ export default function App() {
       try {
         const res = await api.switchDatabase(connection.connectionId, database)
         setConnection(res)
-        setResult(null)
-        setActiveTab('results')
+        // cambio database: i risultati delle tab si riferivano al DB precedente
+        setTabResults({})
+        setTabExecuting({})
+        setTabResultTab({})
         setSummary(await api.getSummary(res.connectionId))
         const targetTab = tabId ?? activeEditorTab
         setEditorTabs(prev => prev.map(t => (t.id === targetTab ? { ...t, database: res.database } : t)))
@@ -298,6 +301,22 @@ export default function App() {
         const target = prev.find(t => t.id === id)
         if (!target || target.pinned) return prev // le tab appuntate non si chiudono
         const next = prev.filter(t => t.id !== id)
+        // rimuove anche i risultati legati alla tab chiusa
+        setTabResults(r => {
+          const c = { ...r }
+          delete c[id]
+          return c
+        })
+        setTabExecuting(r => {
+          const c = { ...r }
+          delete c[id]
+          return c
+        })
+        setTabResultTab(r => {
+          const c = { ...r }
+          delete c[id]
+          return c
+        })
         if (next.length === 0) {
           setActiveEditorTab('') // tutte chiuse: stato vuoto, il prossimo progressivo riparte da 1
           return []
@@ -345,8 +364,10 @@ export default function App() {
   const handleConnected = useCallback(
     async (res: ConnectResponse) => {
       setConnection(res)
-      setResult(null)
-      setActiveTab('results')
+      // nuova connessione: i risultati delle tab appartenevano al DB precedente
+      setTabResults({})
+      setTabExecuting({})
+      setTabResultTab({})
       setLoadingSummary(true)
       try {
         setSummary(await api.getSummary(res.connectionId))
@@ -367,20 +388,23 @@ export default function App() {
   const handleExecute = useCallback(
     async (sql: string) => {
       if (!connection) return
-      setExecuting(true)
+      // il risultato va alla tab ATTIVA al momento dell'esecuzione
+      const tabId = activeEditorTab
+      if (!tabId) return
+      setTabExecuting(prev => ({ ...prev, [tabId]: true }))
       setBanner(null)
       try {
         const r = await api.execute(connection.connectionId, sql)
-        setResult(r)
+        setTabResults(prev => ({ ...prev, [tabId]: r }))
         // senza SELECT (solo PRINT/messaggi) si apre la schermata dei print
-        setActiveTab(chooseResultTab(r))
+        setTabResultTab(prev => ({ ...prev, [tabId]: chooseResultTab(r) }))
       } catch (e) {
         setBanner(e instanceof Error ? e.message : String(e))
       } finally {
-        setExecuting(false)
+        setTabExecuting(prev => ({ ...prev, [tabId]: false }))
       }
     },
-    [connection],
+    [connection, activeEditorTab],
   )
 
   const handleDisconnect = useCallback(async () => {
@@ -393,7 +417,9 @@ export default function App() {
     }
     setConnection(null)
     setSummary(null)
-    setResult(null)
+    setTabResults({})
+    setTabExecuting({})
+    setTabResultTab({})
     setBanner(null)
     setAiStatus(null)
     setEditor(null)
@@ -437,15 +463,15 @@ export default function App() {
     [newEditorTab, connection],
   )
 
-  /** Apre una stored procedure / funzione / vista / trigger: 'alter' genera ALTER, 'open' la definizione CREATE. */
+  /** Apre una stored procedure / funzione / vista / trigger: 'alter' genera CREATE OR ALTER, 'open' la definizione CREATE. */
   const handleOpenObject = useCallback(
     async (_kind: 'procedure' | 'function' | 'view' | 'trigger', schema: string, name: string, mode: 'alter' | 'open') => {
       if (!connection) return
       setBanner(null)
       try {
         const { definition } = await api.getObjectDefinition(connection.connectionId, schema, name)
-        const sql = mode === 'alter' ? toAlterStatement(definition) : definition
-        const title = `${mode === 'alter' ? 'ALTER ' : ''}${schema === 'dbo' ? name : `${schema}.${name}`}`
+        const sql = mode === 'alter' ? toCreateOrAlterStatement(definition) : definition
+        const title = `${mode === 'alter' ? 'CREATE OR ALTER ' : ''}${schema === 'dbo' ? name : `${schema}.${name}`}`
         newEditorTab(title, sql, connection?.database)
       } catch (e) {
         setBanner(e instanceof Error ? e.message : String(e))
@@ -540,6 +566,14 @@ export default function App() {
   const activeTabInfo = editorTabs.find(t => t.id === activeEditorTab)
   const activeDbName = activeTabInfo?.database || connection.database
   const activeDbColor = dbTabColor(activeDbName, dbColors)
+  // risultati/esecuzione/sottotab legati alla tab attiva
+  const activeResult = activeEditorTab ? (tabResults[activeEditorTab] ?? null) : null
+  const activeExecuting = activeEditorTab ? (tabExecuting[activeEditorTab] ?? false) : false
+  const activeResultTab: Tab = activeEditorTab ? (tabResultTab[activeEditorTab] ?? 'results') : 'results'
+  const setActiveResultTab = (t: Tab) => {
+    if (!activeEditorTab) return
+    setTabResultTab(prev => ({ ...prev, [activeEditorTab]: t }))
+  }
 
   return (
     <FileDropZone onFiles={handleOpenFiles}>
@@ -688,7 +722,7 @@ export default function App() {
               <SqlEditor
                 connectionId={connection.connectionId}
                 summary={summary}
-                executing={executing}
+                executing={activeExecuting}
                 aiEnabled={aiEnabled}
                 onAiEnabledChange={setAiEnabled}
                 aiConfigured={aiConfigured}
@@ -722,25 +756,25 @@ export default function App() {
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="flex shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-900/40 px-2">
               <TabButton
-                active={activeTab === 'results'}
-                onClick={() => setActiveTab('results')}
+                active={activeResultTab === 'results'}
+                onClick={() => setActiveResultTab('results')}
                 icon={<Table2 className="h-4 w-4" />}
                 label="Risultati"
-                count={result?.resultSets.length}
+                count={activeResult?.resultSets.length}
               />
               <TabButton
-                active={activeTab === 'print'}
-                onClick={() => setActiveTab('print')}
+                active={activeResultTab === 'print'}
+                onClick={() => setActiveResultTab('print')}
                 icon={<TerminalSquare className="h-4 w-4" />}
                 label="Messaggi / PRINT"
-                count={result?.messages.length}
+                count={activeResult?.messages.length}
               />
             </div>
             <div className="min-h-0 flex-1">
-              {activeTab === 'results' ? (
-                <ResultsPanel result={result} executing={executing} />
+              {activeResultTab === 'results' ? (
+                <ResultsPanel result={activeResult} executing={activeExecuting} />
               ) : (
-                <PrintPanel result={result} />
+                <PrintPanel result={activeResult} />
               )}
             </div>
           </div>

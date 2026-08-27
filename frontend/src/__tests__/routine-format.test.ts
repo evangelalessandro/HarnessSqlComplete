@@ -1,9 +1,29 @@
 import { describe, expect, it } from 'vitest'
 import { buildFormatProfile } from '../formatProfile'
-import { formatRoutineWithProfile, isRoutineText } from '../tsqlFormatter'
+import { formatRoutineWithProfile, formatSqlWithProfile, isRoutineText } from '../tsqlFormatter'
 import { DEFAULT_FORMAT_PROFILE_XML } from '../formatProfileDefault'
 
 const profile = buildFormatProfile(DEFAULT_FORMAT_PROFILE_XML)
+
+describe('formatSqlWithProfile: keyword ufficiali maiuscole (riferimento Microsoft)', () => {
+  it('BACKUP/RESTORE/GRANT/DENY/DBCC vengono maiuscolizzate', () => {
+    expect(formatSqlWithProfile("backup database wsdb to disk = 'c:\\x.bak'", profile)).toContain(
+      'BACKUP DATABASE wsdb TO DISK',
+    )
+    expect(formatSqlWithProfile("restore database wsdb from disk = 'c:\\x.bak'", profile)).toContain(
+      'RESTORE DATABASE wsdb FROM DISK',
+    )
+    expect(formatSqlWithProfile('grant select on dbo.t to u', profile)).toContain('GRANT SELECT ON dbo.t TO u')
+    expect(formatSqlWithProfile('deny delete on dbo.t to u', profile)).toContain('DENY DELETE ON dbo.t TO u')
+    // DBCC è maiuscolo; il sottocomando (checkdb) non è una keyword e resta com'è
+    expect(formatSqlWithProfile('dbcc checkdb (wsdb)', profile)).toContain('DBCC checkdb (wsdb)')
+  })
+
+  it('costrutti APPLY con a-capo coerente (CROSS APPLY resta unito)', () => {
+    const out = formatSqlWithProfile('select * from t cross apply dbo.fn(1) x', profile)
+    expect(out).toContain('CROSS APPLY dbo.fn')
+  })
+})
 
 describe('formatRoutineWithProfile: stored procedure con blocchi (stile Redgate)', () => {
   const proc = `alter procedure [dbo].[ws_L2_Engine_Automatismi]
@@ -91,5 +111,77 @@ GO`
     const out = formatRoutineWithProfile(proc, profile)
     expect(out.endsWith('\n')).toBe(true)
     expect(formatRoutineWithProfile(proc, profile)).toBe(out)
+  })
+})
+
+describe('formatRoutineWithProfile: BEGIN ... non deve mai perdere il resto del segmento', () => {
+  it('BEGIN TRANSACTION ... ROLLBACK: "TRANSACTION" non scompare (bug utente)', () => {
+    const sql = `BEGIN TRANSACTION
+
+  SELECT * FROM dbo.MAG_BAIE_INTERNE ORDER BY 1 DESC
+
+  IF 12 = 0
+  BEGIN
+
+  END
+ROLLBACK`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toContain('BEGIN TRANSACTION')
+    expect(out).toContain('SELECT * FROM dbo.MAG_BAIE_INTERNE ORDER BY 1 DESC')
+    expect(out).toContain('IF 12 = 0')
+    expect(out).toContain('ROLLBACK')
+    // il blocco dopo BEGIN TRANSACTION è indentato
+    expect(out).toMatch(/^BEGIN TRANSACTION$/m)
+    expect(out).toMatch(/^  SELECT \* FROM dbo\.MAG_BAIE_INTERNE ORDER BY 1 DESC$/m)
+  })
+
+  it('BEGIN TRAN e BEGIN TRY/CATCH con il resto sulla stessa riga: testo preservato', () => {
+    const sql = `BEGIN TRAN
+  UPDATE dbo.T SET x = 1
+COMMIT
+
+BEGIN TRY
+  SELECT 1
+END TRY
+BEGIN CATCH
+  PRINT ERROR_MESSAGE()
+END CATCH`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toContain('BEGIN TRAN')
+    expect(out).toContain('COMMIT')
+    expect(out).toContain('BEGIN TRY')
+    expect(out).toContain('END TRY')
+    expect(out).toContain('BEGIN CATCH')
+    expect(out).toContain('END CATCH')
+    expect(out).toContain('PRINT ERROR_MESSAGE')
+  })
+
+  it('statement di batch (USE/GRANT/BACKUP) su segmenti propri (riferimento Microsoft)', () => {
+    const sql = `BEGIN
+  USE WSDB
+  GRANT SELECT ON dbo.T TO utente
+  BACKUP DATABASE WSDB TO DISK = 'C:\\ws.bak'
+END`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toMatch(/^BEGIN$/m)
+    expect(out).toMatch(/^  USE WSDB$/m)
+    expect(out).toMatch(/^  GRANT SELECT ON dbo\.T TO utente$/m)
+    expect(out).toMatch(/^  BACKUP DATABASE WSDB TO DISK = 'C:\\ws\.bak'$/m)
+    expect(out).toMatch(/^END$/m)
+  })
+
+  it('GRANT ... TO: dopo il TO uno statement successivo si spezza di nuovo', () => {
+    const sql = `BEGIN
+  GRANT SELECT ON dbo.T TO utente
+  SELECT 1
+END`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toContain('GRANT SELECT ON dbo.T TO utente')
+    expect(out).toContain('SELECT 1')
+    // GRANT e SELECT su righe diverse (il SELECT non viene inghiottito dal GRANT)
+    const grantIdx = out.indexOf('GRANT SELECT')
+    const selectIdx = out.indexOf('SELECT 1')
+    expect(grantIdx).toBeGreaterThanOrEqual(0)
+    expect(selectIdx).toBeGreaterThan(grantIdx)
   })
 })

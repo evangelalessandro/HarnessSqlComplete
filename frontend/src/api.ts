@@ -56,6 +56,16 @@ export const api = {
   disconnect: (connectionId: string) =>
     http<void>(`/connections/${connectionId}/disconnect`, { method: 'POST' }),
 
+  /**
+   * Verifica di sintassi: esegue il testo dentro una transazione che viene SEMPRE
+   * annullata (rollback) — gli errori reali di SQL Server arrivano con "Riga N:".
+   */
+  checkSyntax: (connectionId: string, sql: string) =>
+    http<QueryResult>(`/query/${connectionId}/execute`, {
+      method: 'POST',
+      body: JSON.stringify({ sql, timeoutSeconds: 10, checkSyntax: true }),
+    }),
+
   getSummary: (connectionId: string) =>
     http<DatabaseSummary>(`/metadata/${connectionId}/summary`),
 

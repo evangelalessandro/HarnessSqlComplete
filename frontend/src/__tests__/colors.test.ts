@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { colorClassFor, colorizeSqlTokens, tokenizeSql } from '../helpers'
+import { colorClassFor, colorizeSqlTokens, splitUserFunctions, tokenizeSql } from '../helpers'
+import type { DatabaseSummary } from '../types'
 import { wsbritvicLikeSummary } from './schema'
 
 const summary = wsbritvicLikeSummary()
@@ -105,5 +106,79 @@ describe('colori tabelle e colonne', () => {
     const ordiniCol = colors.find(c => c.index === tokens.findIndex(t => t.lower === 'customer_id' && t.qualified))
     const clientiCol = colors.find(c => c.index === tokens.findIndex(t => t.lower === 'nome' && t.qualified))
     expect(ordiniCol?.tableKey).not.toBe(clientiCol?.tableKey)
+  })
+})
+
+describe('colori funzioni tabellari e tabelle temporanee', () => {
+  // schema locale con funzioni tabellari (IF/TF) e una scalare (FN, NON colorata)
+  const summaryTvf: DatabaseSummary = {
+    ...summary,
+    functions: [
+      { schema: 'dbo', name: 'fn_GetMissioni', type: 'IF' },
+      { schema: 'dbo', name: 'fn_GetCelle', type: 'TF' },
+      { schema: 'dbo', name: 'fn_Scalare', type: 'FN' },
+    ],
+  }
+
+  function colorOf(text: string, needle: string, sum: DatabaseSummary = summary): { key?: string; isTableName?: boolean } {
+    const tokens = tokenizeSql(text)
+    const colors = colorizeSqlTokens(text, sum)
+    const idx = text.indexOf(needle)
+    if (idx === -1) return {}
+    const tokenIdx = tokens.findIndex(t => t.start <= idx && idx < t.end)
+    if (tokenIdx === -1) return {}
+    const c = colors.find(x => x.index === tokenIdx)
+    return c ? { key: c.tableKey, isTableName: c.isTableName } : {}
+  }
+
+  it('funzione tabellare qualificata (dbo.fn_…) colorata come le tabelle', () => {
+    const sql = 'SELECT * FROM dbo.fn_GetMissioni(1) f'
+    expect(colorOf(sql, 'fn_GetMissioni', summaryTvf)).toEqual({ key: 'dbo.fn_GetMissioni', isTableName: true })
+  })
+
+  it('funzione tabellare senza schema colorata allo stesso modo', () => {
+    const sql = 'SELECT * FROM fn_GetCelle(2)'
+    expect(colorOf(sql, 'fn_GetCelle', summaryTvf)).toEqual({ key: 'dbo.fn_GetCelle', isTableName: true })
+  })
+
+  it('funzione SCALARE (FN) non colorata', () => {
+    const sql = 'SELECT dbo.fn_Scalare(1)'
+    expect(colorOf(sql, 'fn_Scalare', summaryTvf).key).toBeUndefined()
+  })
+
+  it('#temp tokenizzata come UN token e colorata (enfatizzata)', () => {
+    const sql = 'SELECT * FROM #temp'
+    const tokens = tokenizeSql(sql)
+    const tempTokens = tokens.filter(t => t.lower.includes('temp'))
+    expect(tempTokens.length).toBe(1)
+    expect(tempTokens[0].text).toBe('#temp')
+    expect(colorOf(sql, '#temp').key).toBe('#temp')
+    expect(colorOf(sql, '#temp').isTableName).toBe(true)
+  })
+
+  it('##global (temporanea globale) colorata', () => {
+    const sql = 'SELECT * FROM ##global'
+    expect(colorOf(sql, '##global').key).toBe('##global')
+    expect(colorOf(sql, '##global').isTableName).toBe(true)
+  })
+
+  it('colonna qualificata di una #temp: col colore della temporanea', () => {
+    const sql = 'SELECT #temp.id FROM #temp'
+    expect(colorOf(sql, 'id').key).toBe('#temp')
+    expect(colorOf(sql, 'id').isTableName).toBe(false)
+  })
+
+  it('tabelle temporanee diverse → colori diversi (chiavi diverse)', () => {
+    expect(colorClassFor('#tmp1')).not.toBe(colorClassFor('#tmp2'))
+  })
+
+  it('splitUserFunctions: FN → scalari (espressioni), IF/TF → tabellari (sorgenti)', () => {
+    const { scalars, tableValued } = splitUserFunctions(summaryTvf.functions)
+    expect(scalars.map(f => f.name)).toEqual(['fn_Scalare'])
+    expect(tableValued.map(f => f.name).sort()).toEqual(['fn_GetCelle', 'fn_GetMissioni'])
+    // tipo sconosciuto → trattato come scalare (sicuro nelle espressioni)
+    const unknown = splitUserFunctions([{ schema: 'dbo', name: 'fn_X', type: 'X' }])
+    expect(unknown.scalars.map(f => f.name)).toEqual(['fn_X'])
+    expect(unknown.tableValued.length).toBe(0)
   })
 })

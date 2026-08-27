@@ -18,7 +18,7 @@ public class QueryController(ConnectionHub hub, QueryService query) : Controller
         if (string.IsNullOrWhiteSpace(req.Sql))
             return BadRequest("SQL vuoto.");
 
-        var result = await query.ExecuteAsync(cs, req.Sql, req.TimeoutSeconds, ct);
+        var result = await query.ExecuteAsync(cs, req.Sql, req.TimeoutSeconds, ct, req.CheckSyntax);
         return Ok(result);
     }
 }
