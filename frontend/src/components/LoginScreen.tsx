@@ -14,9 +14,13 @@ import {
 } from 'lucide-react'
 import { api } from '../api'
 import type { ConnectResponse, ConnectionTestResult, SavedConnectionDto } from '../types'
+import { remainingMinDelay } from '../helpers'
 import { Badge, Button, Spinner, inputClass } from './ui'
 import MatrixRain from './MatrixRain'
 import ConnectAnimation from './ConnectAnimation'
+
+/** Durata minima dell'animazione scenica di connessione (millisecondi). */
+const MIN_CONNECT_ANIMATION_MS = 5000
 
 interface Props {
   onConnected: (res: ConnectResponse) => void
@@ -101,6 +105,7 @@ export default function LoginScreen({ onConnected }: Props) {
   }
 
   const handleConnect = async (req: ReturnType<typeof toRequest>) => {
+    const startedAt = Date.now()
     setConnectTarget({ server: req.server, database: req.database || undefined })
     setConnecting(true)
     setError(null)
@@ -108,6 +113,9 @@ export default function LoginScreen({ onConnected }: Props) {
       const res = await api.connect(req)
       if (res.connectionId) {
         await loadSaved()
+        // l'animazione scenica resta visibile almeno MIN_CONNECT_ANIMATION_MS
+        const wait = remainingMinDelay(startedAt, MIN_CONNECT_ANIMATION_MS)
+        if (wait > 0) await new Promise(r => setTimeout(r, wait))
         onConnected(res)
       } else {
         setError(res.message)
@@ -121,6 +129,7 @@ export default function LoginScreen({ onConnected }: Props) {
   }
 
   const handleConnectSaved = async (id: number, target?: { server: string; database?: string }) => {
+    const startedAt = Date.now()
     setConnectTarget(target ?? null)
     setConnectingId(id)
     setError(null)
@@ -128,6 +137,9 @@ export default function LoginScreen({ onConnected }: Props) {
       const res = await api.connectSaved(id)
       if (res.connectionId) {
         await loadSaved()
+        // l'animazione scenica resta visibile almeno MIN_CONNECT_ANIMATION_MS
+        const wait = remainingMinDelay(startedAt, MIN_CONNECT_ANIMATION_MS)
+        if (wait > 0) await new Promise(r => setTimeout(r, wait))
         onConnected(res)
       } else {
         setError(res.message)

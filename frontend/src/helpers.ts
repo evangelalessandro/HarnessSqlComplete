@@ -618,6 +618,12 @@ export function scriptExecProcedure(proc: ProcedureInfo): string {
   return `EXEC ${qualified(proc.schema, proc.name)} ${args};\n`
 }
 
+/** Millisecondi rimanenti perché una durata minima sia rispettata (0 se già superata).
+ *  Usata per l'animazione di connessione: resta visibile almeno minMs anche con server rapidi. */
+export function remainingMinDelay(startedAt: number, minMs: number): number {
+  return Math.max(0, minMs - (Date.now() - startedAt))
+}
+
 // ---------- Script "as" stile SSMS (tasto destro) ----------
 
 export type ScriptableKind = 'table' | 'view' | 'procedure' | 'function' | 'trigger'

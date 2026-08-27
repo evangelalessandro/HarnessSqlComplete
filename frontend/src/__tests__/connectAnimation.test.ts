@@ -4,6 +4,7 @@ import { createElement } from 'react'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import ConnectAnimation from '../components/ConnectAnimation'
+import { remainingMinDelay } from '../helpers'
 
 // abilita il supporto a act() nell'ambiente jsdom
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -61,5 +62,27 @@ describe('ConnectAnimation: animazione scenica di connessione', () => {
     expect(container.textContent).toContain('bootstrap')
     act(() => root.unmount())
     expect(container.textContent ?? '').not.toContain('PRONTO')
+  })
+})
+
+describe('remainingMinDelay: durata minima dell\'animazione di connessione', () => {
+  it('restituisce i millisecondi rimanenti se la durata minima non è ancora raggiunta', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    const started = Date.now() - 2_000 // iniziata 2s fa
+    expect(remainingMinDelay(started, 5_000)).toBe(3_000)
+    vi.useRealTimers()
+  })
+
+  it('restituisce 0 se la durata minima è già stata superata', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    const started = Date.now() - 6_000 // iniziata 6s fa
+    expect(remainingMinDelay(started, 5_000)).toBe(0)
+    vi.useRealTimers()
+  })
+
+  it('restituisce 0 appena iniziata se la durata minima è 0', () => {
+    expect(remainingMinDelay(Date.now(), 0)).toBe(0)
   })
 })
