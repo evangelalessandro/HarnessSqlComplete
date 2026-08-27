@@ -35,6 +35,7 @@ export default function App() {
   // descrizione libera della tab (nota utente): tab in modifica + bozza
   const [descEditingTab, setDescEditingTab] = useState<string | null>(null)
   const [descDraft, setDescDraft] = useState('')
+  const [titleDraft, setTitleDraft] = useState('')
   const [aiEnabled, setAiEnabled] = useState(true)
   const [aiStatus, setAiStatus] = useState<AutocompleteStatus | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
@@ -279,6 +280,7 @@ export default function App() {
       database?: string,
       fromFile = false,
       fileHandle: FileSystemFileHandle | null = null,
+      fileName?: string,
     ) => {
       // il progressivo si azzera quando non c'è nessuna tab
       if (editorTabs.length === 0) tabCounter.current = 1
@@ -291,6 +293,7 @@ export default function App() {
         database: database ?? connection?.database ?? '',
         fromFile,
         fileHandle,
+        fileName: fileName ?? (fromFile ? title : undefined),
       }
       setEditorTabs(prev => [...prev, tab])
       setActiveEditorTab(tab.id)
@@ -334,15 +337,26 @@ export default function App() {
     [activeEditorTab],
   )
 
-  /** Salva la descrizione libera della tab in modifica. */
+  /** Salva titolo e descrizione libera della tab in modifica. */
   const saveTabDescription = useCallback(() => {
     if (!descEditingTab) return
     const clean = descDraft.trim()
+    const newTitle = titleDraft.trim()
     setEditorTabs(prev =>
-      prev.map(t => (t.id === descEditingTab ? { ...t, description: clean || undefined } : t)),
+      prev.map(t =>
+        t.id === descEditingTab
+          ? {
+              ...t,
+              // titolo vuoto → resta quello attuale
+              title: newTitle || t.title,
+              titleCustom: newTitle && newTitle !== t.title ? true : t.titleCustom,
+              description: clean || undefined,
+            }
+          : t,
+      ),
     )
     setDescEditingTab(null)
-  }, [descEditingTab, descDraft])
+  }, [descEditingTab, descDraft, titleDraft])
 
   const togglePin = useCallback((id: string) => {
     setEditorTabs(prev => {
@@ -511,7 +525,9 @@ export default function App() {
       if (!tab) return
       const sql = editor.getValue()
       setBanner(null)
-      const suggestedName = /\.sql$/i.test(tab.title) ? tab.title : `${tab.title}.sql`
+      const suggestedName = /\.sql$/i.test(tab.fileName ?? tab.title)
+        ? (tab.fileName ?? tab.title)
+        : `${tab.fileName ?? tab.title}.sql`
       // l'handle potrebbe essere stato perso dopo un reload (JSON): verifica che sia reale
       const handle =
         !saveAs && tab.fileHandle && typeof tab.fileHandle.createWritable === 'function'
@@ -532,7 +548,9 @@ export default function App() {
               sql,
               fileHandle: savedHandle ?? t.fileHandle,
               fromFile: savedHandle ? true : t.fromFile,
-              title: newTitle && !saveAs ? newTitle : t.title,
+              fileName: newTitle ?? t.fileName,
+              // titolo rinominato a mano: resta com'è al salvataggio
+              title: newTitle && !saveAs && !t.titleCustom ? newTitle : t.title,
             }
           }),
         )
@@ -551,7 +569,8 @@ export default function App() {
     try {
       const files = await openSqlFiles()
       for (const f of files) {
-        newEditorTab(f.name.replace(/\.sql$/i, ''), f.content, connection?.database, true, f.handle)
+        const base = f.name.replace(/\.sql$/i, '')
+        newEditorTab(base, f.content, connection?.database, true, f.handle, base)
       }
     } catch (e) {
       if (!(e instanceof DOMException && e.name === 'AbortError')) {
@@ -700,13 +719,14 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => {
+                    setTitleDraft(t.title)
                     setDescDraft(t.description ?? '')
                     setDescEditingTab(t.id)
                   }}
                   className={`rounded p-0.5 opacity-0 transition-opacity hover:bg-zinc-700 group-hover:opacity-100 ${
                     t.description ? '!opacity-100 text-amber-400' : 'text-zinc-400'
                   }`}
-                  title={t.description ? `Descrizione: ${t.description} (modifica)` : 'Aggiungi una descrizione alla tab'}
+                  title={t.description ? `Titolo: ${t.title} — Descrizione: ${t.description} (modifica)` : 'Modifica titolo e descrizione della tab'}
                 >
                   <StickyNote className="h-3 w-3" />
                 </button>
@@ -834,7 +854,7 @@ export default function App() {
       </div>
       {helpOpen && <HelpPage onClose={() => setHelpOpen(false)} />}
 
-      {/* Popover: descrizione libera della tab */}
+      {/* Popover: titolo e descrizione libera della tab */}
       {descEditingTab && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
@@ -844,11 +864,26 @@ export default function App() {
             className="w-[min(480px,92vw)] rounded-lg border border-zinc-700 bg-zinc-900 p-4 shadow-2xl"
             onClick={e => e.stopPropagation()}
           >
-            <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-zinc-100">
-              <StickyNote className="h-4 w-4 text-amber-400" /> Descrizione della tab
+            <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-zinc-100">
+              <StickyNote className="h-4 w-4 text-amber-400" /> Titolo e descrizione della tab
             </h3>
-            <textarea
+            <label className="mb-1 block text-xs font-medium text-zinc-400">Titolo</label>
+            <input
               autoFocus
+              value={titleDraft}
+              onChange={e => setTitleDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  saveTabDescription()
+                }
+                if (e.key === 'Escape') setDescEditingTab(null)
+              }}
+              placeholder="Nome della tab (es. 'Report clienti Q3')"
+              className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2.5 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none"
+            />
+            <label className="mb-1 mt-3 block text-xs font-medium text-zinc-400">Descrizione (nota libera)</label>
+            <textarea
               value={descDraft}
               onChange={e => setDescDraft(e.target.value)}
               onKeyDown={e => {
@@ -859,7 +894,7 @@ export default function App() {
                 if (e.key === 'Escape') setDescEditingTab(null)
               }}
               placeholder="Scrivi una nota libera per questa tab (es. 'Report mensile clienti', 'Da controllare', …)"
-              rows={4}
+              rows={3}
               className="w-full rounded-md border border-zinc-700 bg-zinc-950 p-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none"
             />
             <div className="mt-3 flex justify-end gap-2">
@@ -867,7 +902,7 @@ export default function App() {
                 Annulla
               </Button>
               <Button size="sm" onClick={saveTabDescription}>
-                Salva descrizione
+                Salva
               </Button>
             </div>
           </div>

@@ -214,6 +214,10 @@ export interface EditorTab {
   database?: string
   /** Tab nata da un file (nome = file). */
   fromFile?: boolean
+  /** Nome reale del file (senza .sql): usato per suggerire il salvataggio anche con titolo personalizzato. */
+  fileName?: string
+  /** Titolo rinominato manualmente dall'utente: non va sovrascritto al salvataggio. */
+  titleCustom?: boolean
   /** Handle del file aperto col picker: permette di sovrascrivere l'originale. */
   fileHandle?: FileSystemFileHandle | null
 }
