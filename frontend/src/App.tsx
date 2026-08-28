@@ -18,7 +18,7 @@ import ResultsPanel from './components/ResultsPanel'
 import PrintPanel from './components/PrintPanel'
 import HelpPage from './components/HelpPage'
 import { FileDropZone } from './components/FileDropZone'
-import DragonMeter from './components/DragonMeter'
+import DragonBackground from './components/DragonBackground'
 import { Badge, Button } from './components/ui'
 
 type Tab = 'results' | 'print'
@@ -634,7 +634,8 @@ export default function App() {
   return (
     <FileDropZone onFiles={handleOpenFiles}>
       <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/70 px-4 py-2">
+        <DragonBackground level={dragonLevel} />
+        <header className="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/70 px-4 py-2">
         <div className="flex items-center gap-2 font-semibold text-zinc-100">
           <DbIcon className="h-5 w-5 text-sky-400" />
           SQL Intelligence Assistant
@@ -708,7 +709,6 @@ export default function App() {
                 </option>
               ))}
             </select>
-            <DragonMeter level={dragonLevel} />
             {editorTabs.map(t => (
               <div
                 key={t.id}
