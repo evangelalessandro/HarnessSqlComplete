@@ -42,6 +42,65 @@ public class DbMaintenanceController(ConnectionHub hub, QueryService query) : Co
     private static string FromDisks(List<string> paths) =>
         string.Join(", ", paths.Select(p => $"DISK = N'{Esc(p)}'"));
 
+    private static bool ContainsMediaFamilyError(string text) =>
+        text.Contains("gruppi di supporti", StringComparison.OrdinalIgnoreCase)
+        || text.Contains("media famil", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Messaggio chiaro quando un media set multi-file è selezionato in modo incompleto o incoerente.</summary>
+    private async Task<string?> MediaSetHint(string cs, List<string> paths, CancellationToken ct)
+    {
+        // info media (family count + media set id) per OGNI file selezionato
+        var maxFamilies = 0;
+        Guid? setId = null;
+        foreach (var p in paths)
+        {
+            var (f, id) = await ReadMediaInfo(cs, p, ct);
+            if (f <= 0) continue;
+            maxFamilies = Math.Max(maxFamilies, f);
+            if (setId is null)
+                setId = id;
+            else if (id is not null && setId != id)
+                return "I file selezionati appartengono a media set DIVERSI (backup diversi). " +
+                       "Seleziona solo i file dello stesso backup (stesso set di supporti).";
+        }
+        if (maxFamilies > 1 && paths.Count < maxFamilies)
+            return $"Il backup è un media set a {maxFamilies} file (backup multi-file/striped): " +
+                   $"seleziona TUTTI i {maxFamilies} file insieme (multiselezione: Ctrl o Maiusc).";
+        if (maxFamilies == 1 && paths.Count > 1)
+            return "Il backup è a file singolo (1 media family), ma hai selezionato più file: " +
+                   "rimuovi i file in più e lascia solo quello giusto.";
+        return null;
+    }
+
+    /// <summary>Legge FamilyCount e MediaSetId dal media (RESTORE LABELONLY, leggibile anche da un solo file).</summary>
+    private async Task<(int FamilyCount, Guid? MediaSetId)> ReadMediaInfo(string cs, string path, CancellationToken ct)
+    {
+        try
+        {
+            var sql = $"RESTORE LABELONLY FROM DISK = N'{Esc(path)}';";
+            var res = await query.ExecuteAsync(cs, sql, timeoutSeconds: 60, ct);
+            if (res.Error != null || res.ResultSets.Count == 0 || res.ResultSets[0].Rows.Count == 0)
+                return (0, null);
+            var row = res.ResultSets[0].Rows[0];
+            int famIdx = -1, setIdx = -1;
+            for (var i = 0; i < res.ResultSets[0].Columns.Count; i++)
+            {
+                if (res.ResultSets[0].Columns[i].Name.Equals("FamilyCount", StringComparison.OrdinalIgnoreCase)) famIdx = i;
+                if (res.ResultSets[0].Columns[i].Name.Equals("MediaSetId", StringComparison.OrdinalIgnoreCase)) setIdx = i;
+            }
+            var fam = famIdx >= 0 && famIdx < row.Count && int.TryParse(
+                Convert.ToString(row[famIdx], System.Globalization.CultureInfo.InvariantCulture), out var n) ? n : 0;
+            Guid? setId = null;
+            if (setIdx >= 0 && setIdx < row.Count && row[setIdx] is string s &&
+                Guid.TryParse(s, out var g)) setId = g;
+            return (fam, setId);
+        }
+        catch
+        {
+            return (0, null);
+        }
+    }
+
     private ActionResult Bad(string message) => BadRequest(message);
 
     private string? ActiveDbName(string cs, out string? error)
@@ -168,14 +227,26 @@ public class DbMaintenanceController(ConnectionHub hub, QueryService query) : Co
         var sql = $"RESTORE HEADERONLY FROM {FromDisks(paths)};";
         var result = await query.ExecuteAsync(cs, sql, timeoutSeconds: 120, ct);
         if (result.Error != null)
+        {
+            // manca un file di un media set multi-file (striped): LABELONLY legge il conteggio dei file
+            // anche da un singolo device → messaggio chiaro su quanti file selezionare
+            if (ContainsMediaFamilyError(result.Error))
+            {
+                var hint = await MediaSetHint(cs, paths, ct);
+                if (hint != null) return Ok(new BackupInfoResponse([], hint));
+            }
             return Ok(new BackupInfoResponse([], result.Error));
+        }
         if (result.ResultSets.Count == 0 || result.ResultSets[0].Rows.Count == 0)
         {
             // con FireInfoMessageEventOnUserErrors gli errori del dispositivo arrivano nei Messages
-            var detail = result.Messages.Count > 0
-                ? string.Join(Environment.NewLine, result.Messages)
-                : "Nessun backup set trovato nel file.";
-            return Ok(new BackupInfoResponse([], detail));
+            var joined = result.Messages.Count > 0 ? string.Join(Environment.NewLine, result.Messages) : null;
+            if (joined is not null && ContainsMediaFamilyError(joined))
+            {
+                var hint = await MediaSetHint(cs, paths, ct);
+                if (hint != null) return Ok(new BackupInfoResponse([], hint));
+            }
+            return Ok(new BackupInfoResponse([], joined ?? "Nessun backup set trovato nel file."));
         }
 
         var set = result.ResultSets[0];
@@ -346,6 +417,30 @@ public class DbMaintenanceController(ConnectionHub hub, QueryService query) : Co
             if (row.Count > 0 && row[0] != null)
                 outList.Add(new CertEntry(Convert.ToString(row[0], System.Globalization.CultureInfo.InvariantCulture) ?? ""));
         return Ok(outList);
+    }
+
+    /// <summary>Info del media (LABELONLY): FamilyCount e MediaSetId per la verifica proattiva dei file.</summary>
+    [HttpPost("backup-label")]
+    public async Task<ActionResult<MediaLabelResponse>> BackupLabel([FromBody] BackupInfoRequest req, CancellationToken ct)
+    {
+        if (!TryGetCs(out var cs)) return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
+        var paths = ResolvePaths(req.Path, req.Paths);
+        if (paths.Count == 0) return Bad("Specifica il percorso del file di backup (.bak).");
+
+        var (fam, setId) = await ReadMediaInfo(cs, paths[0], ct);
+        string? mediaName = null;
+        try
+        {
+            var res = await query.ExecuteAsync(cs, $"RESTORE LABELONLY FROM DISK = N'{Esc(paths[0])}';", timeoutSeconds: 60, ct);
+            if (res.Error == null && res.ResultSets.Count > 0 && res.ResultSets[0].Rows.Count > 0
+                && res.ResultSets[0].Rows[0].Count > 0 && res.ResultSets[0].Rows[0][0] != null)
+                mediaName = Convert.ToString(res.ResultSets[0].Rows[0][0], System.Globalization.CultureInfo.InvariantCulture);
+        }
+        catch
+        {
+            /* mediaName resta null */
+        }
+        return Ok(new MediaLabelResponse(fam, setId?.ToString(), mediaName, null));
     }
 
     /// <summary>

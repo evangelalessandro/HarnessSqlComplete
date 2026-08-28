@@ -116,7 +116,7 @@ export default function MaintenanceDialog({
   const [rTailPath, setRTailPath] = useState(`C:\\Backup\\${activeDatabase}_tail.bak`)
   const [rMoves, setRMoves] = useState<FileMove[] | null>(null)
   const [rBusy, setRBusy] = useState(false)
-  const [result, setResult] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+  const [result, setResult] = useState<{ kind: 'ok' | 'err' | 'warn'; text: string } | null>(null)
 
   useEffect(() => {
     void (async () => {
@@ -259,17 +259,47 @@ export default function MaintenanceDialog({
         const res = await api.uploadBackup(connectionId, f)
         added.push(res.path)
       }
-      setRPaths(prev => {
-        const next = [...prev]
-        for (const p of added) if (!next.includes(p)) next.push(p)
-        return next
-      })
+      const next = [...rPaths]
+      for (const p of added) if (!next.includes(p)) next.push(p)
+      setRPaths(next)
       if (fileInputRef.current) fileInputRef.current.value = ''
+      // verifica proattiva del media set: file di backup diversi o set incompleto
+      const warn = await verifyMediaSet(next)
+      if (warn) setResult({ kind: 'warn', text: warn })
     } catch (e) {
       setResult({ kind: 'err', text: `Upload fallito: ${e instanceof Error ? e.message : String(e)}` })
     } finally {
       setRUploading(false)
     }
+  }
+
+  /** Controlla che i file selezionati appartengano allo stesso media set e che il set sia completo. */
+  const verifyMediaSet = async (paths: string[]): Promise<string | null> => {
+    if (paths.length === 0) return null
+    const infos: { family: number; setId: string | null }[] = []
+    for (const p of paths) {
+      try {
+        const l = await api.backupLabel(connectionId, p)
+        if (l.error) continue
+        infos.push({ family: l.familyCount, setId: l.mediaSetId })
+      } catch {
+        /* ignora */
+      }
+    }
+    if (infos.length === 0) return null
+    if (infos.length === 1) {
+      if (infos[0].family > 1)
+        return `Il backup è un media set a ${infos[0].family} file: seleziona TUTTI i ${infos[0].family} file (multiselezione), altrimenti il ripristino fallirà.`
+      return null
+    }
+    const firstId = infos[0].setId
+    const allSame = infos.every(x => x.setId !== null && x.setId === firstId)
+    if (!allSame)
+      return 'I file selezionati appartengono a media set DIVERSI (backup diversi): seleziona solo i file dello stesso backup.'
+    const fam = Math.max(...infos.map(x => x.family))
+    if (fam > infos.length)
+      return `Il backup è un media set a ${fam} file: ne hai selezionati ${infos.length}. Seleziona TUTTI i ${fam} file (multiselezione).`
+    return null
   }
 
   const runRestore = async () => {
@@ -959,7 +989,9 @@ export default function MaintenanceDialog({
               className={`max-h-40 overflow-auto whitespace-pre-wrap rounded-md border p-2.5 text-[11px] leading-snug ${
                 result.kind === 'err'
                   ? 'border-rose-800 bg-rose-950/40 text-rose-200'
-                  : 'border-emerald-800 bg-emerald-950/40 text-emerald-200'
+                  : result.kind === 'warn'
+                    ? 'border-amber-800 bg-amber-950/40 text-amber-200'
+                    : 'border-emerald-800 bg-emerald-950/40 text-emerald-200'
               }`}
             >
               {result.text}

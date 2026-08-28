@@ -151,6 +151,9 @@ public record BackupInfoRequest(string? Path, List<string>? Paths = null);
 /// <summary>Esito dell'upload di un file di backup selezionato localmente.</summary>
 public record UploadBackupResponse(string Path, long SizeBytes);
 
+/// <summary>Info del media (RESTORE LABELONLY): conteggio file e media set id.</summary>
+public record MediaLabelResponse(int FamilyCount, string? MediaSetId, string? MediaName, string? Error);
+
 /// <summary>Tipo di backup: 1 = completo, 5 = differenziale, 2 = log transazioni.</summary>
 public record BackupRequest(
     string Path,

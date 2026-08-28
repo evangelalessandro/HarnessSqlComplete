@@ -11,6 +11,7 @@ import type {
   DbFileEntry,
   DbFileListResponse,
   DbMaintenanceResponse,
+  MediaLabelResponse,
   QueryResult,
   RestoreRequest,
   SavedConnectionDto,
@@ -129,6 +130,12 @@ export const api = {
       body: JSON.stringify(
         paths && paths.length > 0 ? { paths, filePosition } : { path, filePosition },
       ),
+    }),
+  /** Info del media (LABELONLY): family count e media set id per verificare i file selezionati. */
+  backupLabel: (connectionId: string, path: string) =>
+    http<MediaLabelResponse>(`/db/${connectionId}/backup-label`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
     }),
   /** Upload di un .bak selezionato localmente → percorso lato server (cartella backup dell'istanza). */
   uploadBackup: async (connectionId: string, file: File): Promise<UploadBackupResponse> => {

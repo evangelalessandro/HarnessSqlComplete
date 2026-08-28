@@ -290,6 +290,14 @@ export interface UploadBackupResponse {
   sizeBytes: number
 }
 
+/** Info del media (LABELONLY): conteggio file e media set id per la verifica proattiva. */
+export interface MediaLabelResponse {
+  familyCount: number
+  mediaSetId: string | null
+  mediaName: string | null
+  error: string | null
+}
+
 export interface DbFileEntry {
   logicalName: string
   physicalName: string
