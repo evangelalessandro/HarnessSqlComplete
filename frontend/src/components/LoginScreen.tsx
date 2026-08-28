@@ -20,7 +20,7 @@ import MatrixRain from './MatrixRain'
 import ConnectAnimation from './ConnectAnimation'
 
 /** Durata minima dell'animazione scenica di connessione (millisecondi). */
-const MIN_CONNECT_ANIMATION_MS = 5000
+const MIN_CONNECT_ANIMATION_MS = 2000
 
 interface Props {
   onConnected: (res: ConnectResponse) => void

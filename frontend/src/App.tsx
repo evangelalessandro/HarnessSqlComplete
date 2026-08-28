@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { BookOpen, Database as DbIcon, FilePlus2, Pin, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
@@ -186,36 +186,37 @@ export default function App() {
     })
   }, [])
 
-  // --- Tab dell'editor (multi-tab), ripristinate da localStorage all'apertura ---
-  const persisted = useMemo(() => loadPersistedTabs(), [])
-  const [editorTabs, setEditorTabs] = useState<EditorTab[]>(() => persisted?.tabs ?? [firstTab()])
-  const [activeEditorTab, setActiveEditorTab] = useState(
-    () => (persisted && persisted.tabs.some(t => t.id === persisted.active) ? persisted.active : 'tab-1'),
-  )
+  // --- Tab dell'editor (multi-tab): salvate in localStorage PER ISTANZA SQL ---
+  // All'avvio non c'è ancora una connessione: le tab dell'istanza vengono caricate
+  // in handleConnected quando ci si collega.
+  const [tabsInstance, setTabsInstance] = useState<string | null>(null)
+  const [editorTabs, setEditorTabs] = useState<EditorTab[]>(() => [firstTab()])
+  const [activeEditorTab, setActiveEditorTab] = useState('tab-1')
   const tabCounter = useRef(2)
   for (const t of editorTabs) {
     const n = Number(t.id.replace(/^tab-/, ''))
     if (!Number.isNaN(n) && n >= tabCounter.current) tabCounter.current = n + 1
   }
 
-  // Salva le tab (ultima query inclusa) a ogni modifica
+  // Salva le tab (ultima query inclusa) a ogni modifica, nella chiave dell'istanza connessa
   useEffect(() => {
-    persistTabs(editorTabs, activeEditorTab)
-  }, [editorTabs, activeEditorTab])
+    if (tabsInstance) persistTabs(tabsInstance, editorTabs, activeEditorTab)
+  }, [editorTabs, activeEditorTab, tabsInstance])
 
   // Alla chiusura/ricarica della pagina salva subito il contenuto corrente dell'editor
   useEffect(() => {
     const flush = () => {
+      if (!tabsInstance) return
       const current = editor?.getValue()
       const tabs =
         current !== undefined
           ? editorTabs.map(t => (t.id === activeEditorTab ? { ...t, sql: current } : t))
           : editorTabs
-      persistTabs(tabs, activeEditorTab)
+      persistTabs(tabsInstance, tabs, activeEditorTab)
     }
     window.addEventListener('beforeunload', flush)
     return () => window.removeEventListener('beforeunload', flush)
-  }, [editor, editorTabs, activeEditorTab])
+  }, [editor, editorTabs, activeEditorTab, tabsInstance])
 
   // Sincronizza il contenuto della tab attiva mentre si digita (debounce 600 ms)
   const contentSyncTimer = useRef<number | null>(null)
@@ -404,6 +405,11 @@ export default function App() {
   const handleConnected = useCallback(
     async (res: ConnectResponse) => {
       setConnection(res)
+      // tab e query sono salvate PER ISTANZA SQL: carica quelle dell'istanza appena connessa
+      setTabsInstance(res.server)
+      const persisted = loadPersistedTabs(res.server)
+      setEditorTabs(persisted?.tabs ?? [firstTab()])
+      setActiveEditorTab(persisted?.tabs.some(t => t.id === persisted.active) ? persisted.active : 'tab-1')
       // nuova connessione: i risultati delle tab appartenevano al DB precedente
       setTabResults({})
       setTabExecuting({})
