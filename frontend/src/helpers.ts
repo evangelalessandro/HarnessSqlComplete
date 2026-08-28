@@ -1,4 +1,4 @@
-import type { BackupSetInfo, CellValue, ColumnInfo, DatabaseSummary, ForeignKeyInfo, FunctionInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableUsage } from './types'
+import type { CellValue, ColumnInfo, DatabaseSummary, ForeignKeyInfo, FunctionInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableReportRow, TableUsage } from './types'
 
 /**
  * Identificatore SQL: restituisce il nome senza parentesi quadre se è "sicuro"
@@ -629,27 +629,49 @@ export function nextDragonLevel(current: number): number {
   return Math.min(100, Math.max(0, current) + 1)
 }
 
-// ---------- Punti di ripristino (catena di backup) ----------
+// ---------- Report utilizzo tabelle (ordinamento) ----------
 
-export interface RestorePoint {
-  set: BackupSetInfo
-  /** Catena di set da ripristinare in ordine (Completo → Differenziali → Log) per arrivare al punto. */
-  chain: BackupSetInfo[]
+export type TableReportSortKey =
+  | 'name'
+  | 'rowCount'
+  | 'reservedKb'
+  | 'usedKb'
+  | 'dataKb'
+  | 'indexKb'
+  | 'unusedKb'
+  | 'indexCount'
+  | 'reads'
+  | 'writes'
+  | 'lastRead'
+  | 'lastWrite'
+  | 'createDate'
+
+export type SortDir = 'asc' | 'desc'
+
+/** Confronto di una riga del report per la colonna scelta (numeri e date in modo naturale). */
+export function compareTableReport(
+  a: TableReportRow,
+  b: TableReportRow,
+  key: TableReportSortKey,
+): number {
+  const av = a[key]
+  const bv = b[key]
+  if (typeof av === 'number' && typeof bv === 'number') return av - bv
+  if (typeof av === 'string' && typeof bv === 'string') return av.localeCompare(bv)
+  if (av == null && bv == null) return 0
+  if (av == null) return 1 // i null vanno in fondo (asc)
+  if (bv == null) return -1
+  return String(av).localeCompare(String(bv))
 }
 
-/**
- * Punti/momenti ripristinabili da un elenco di backup set (RESTORE HEADERONLY):
- * ogni set successivo all'ultimo Completo è un punto, con la catena completa
- * (ultimo Completo + Differenziali + Log fino al set) necessaria per arrivarci.
- */
-export function buildRestorePoints(sets: BackupSetInfo[]): RestorePoint[] {
-  const points: RestorePoint[] = []
-  let lastFullIdx = -1
-  for (let i = 0; i < sets.length; i++) {
-    if (sets[i].type === 1) lastFullIdx = i
-    if (lastFullIdx >= 0) points.push({ set: sets[i], chain: sets.slice(lastFullIdx, i + 1) })
-  }
-  return points
+/** Ordinamento stabile del report per la colonna selezionata. */
+export function sortTableReport(
+  rows: TableReportRow[],
+  key: TableReportSortKey,
+  dir: SortDir,
+): TableReportRow[] {
+  const mult = dir === 'asc' ? 1 : -1
+  return [...rows].sort((a, b) => compareTableReport(a, b, key) * mult)
 }
 
 // ---------- Script "as" stile SSMS (tasto destro) ----------

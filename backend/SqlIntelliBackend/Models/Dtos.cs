@@ -140,88 +140,21 @@ public record AutocompleteResponse(List<SuggestionItem>? Suggestions, string? Er
 
 public record AutocompleteStatus(bool Configured, string Model, string BaseUrl, bool HasApiKeyOverride);
 
-// ---------- Manutenzione database (backup / restore) ----------
+// ---------- Report utilizzo tabelle ----------
 
-/// <summary>Semplice richiesta con percorso file (usata per HEADERONLY).</summary>
-public record DbMaintenanceRequest(string Path);
-
-/// <summary>Richiesta di lettura header con uno o più file (media set multi-file).</summary>
-public record BackupInfoRequest(string? Path, List<string>? Paths = null);
-
-/// <summary>Esito dell'upload di un file di backup selezionato localmente.</summary>
-public record UploadBackupResponse(string Path, long SizeBytes);
-
-/// <summary>Info del media (RESTORE LABELONLY): conteggio file e media set id.</summary>
-public record MediaLabelResponse(int FamilyCount, string? MediaSetId, string? MediaName, string? Error);
-
-/// <summary>Tipo di backup: 1 = completo, 5 = differenziale, 2 = log transazioni.</summary>
-public record BackupRequest(
-    string Path,
-    string Type, // "full" | "differential" | "log"
-    string Component, // "database" | "files"
-    string? Database = null, // database da sottoporre a backup (default: quello attivo)
-    List<string>? Files = null, // nomi logici dei file (component = files)
-    List<string>? Filegroups = null, // nomi dei filegroup (component = files)
-    string? Name = null, // nome del backup set
-    string? Description = null,
-    string OverwriteMode = "append", // "append" | "overwrite" | "format"
-    string? MediaName = null, // per "format": nome del nuovo media set
-    string? MediaDescription = null,
-    bool Verify = false, // VERIFYONLY al termine
-    bool Checksum = false,
-    bool ContinueOnError = false,
-    string Compression = "default", // "default" | "on" | "off"
-    string? EncryptionAlgorithm = null, // "AES_128" | "AES_192" | "AES_256"
-    string? EncryptionCertificate = null, // certificato server (sys.certificates)
-    bool CopyOnly = false,
-    string LogMode = "truncate", // per tipo log: "truncate" | "noTruncate" | "noRecovery"
-    int? ExpiryDays = null,
-    string? ExpiryDate = null // "yyyy-MM-dd"
-);
-
-/// <summary>Ripristino: uno o più file (media set), posizione del set e opzioni SSMS.</summary>
-public record RestoreRequest(
-    string? Path = null,
-    List<string>? Paths = null, // media set: più file .bak (FROM DISK=…, DISK=…)
-    int? FilePosition = null,
-    string? DatabaseName = null, // database di destinazione (default: quello attivo)
-    string? SourceDatabase = null, // nome db dentro il backup (per i MOVE)
-    string SetType = "database", // "database" | "log" (dalla lista HEADERONLY)
-    bool Replace = false,
-    bool LeaveRestoring = false, // NORECOVERY
-    string? StopAt = null, // punto nel tempo ISO "yyyy-MM-ddTHH:mm:ss.fff"
-    List<FileMove>? MoveFiles = null,
-    string? TailLogPath = null // backup della coda del log prima del restore
-);
-
-public record FileMove(string LogicalName, string PhysicalPath);
-
-/// <summary>Un backup set letto con RESTORE HEADERONLY (colonne standard).</summary>
-public record BackupSetInfo(
-    string? Name,
-    string? Description,
-    int Type, // 1 full, 2 log, 5 differential
-    string? TypeDescription,
-    int Position,
-    string? ServerName,
-    string? DatabaseName,
-    string? StartDate,
-    string? FinishDate,
-    long SizeBytes,
-    string? FirstLsn,
-    string? LastLsn,
-    bool CopyOnly,
-    bool HasChecksums,
-    bool IsDamaged
-);
-
-public record BackupInfoResponse(List<BackupSetInfo> Sets, string? Error);
-
-public record DbFileListResponse(List<DbFileEntry> Files, string? Error);
-
-/// <summary>File del database (per BACKUP FILE/FILEGROUP e per i MOVE del restore).</summary>
-public record DbFileEntry(string LogicalName, string PhysicalName, string Type, string? Filegroup, bool IsDefaultFilegroup);
-
-public record CertEntry(string Name);
-
-public record DbMaintenanceResponse(List<string> Messages, string? Error);
+/// <summary>Riga del report: spazio riservato/usato (KB), righe, indici e utilizzo.</summary>
+public record TableReportRow(
+    string Schema,
+    string Name,
+    string? CreateDate,
+    long RowCount,
+    long ReservedKb,
+    long UsedKb,
+    long DataKb,
+    long IndexKb,
+    long UnusedKb,
+    int IndexCount,
+    long Reads,
+    long Writes,
+    string? LastRead,
+    string? LastWrite);

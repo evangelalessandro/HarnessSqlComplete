@@ -195,124 +195,22 @@ export interface AutocompleteStatus {
 
 export type ObjectKind = 'table' | 'view' | 'procedure' | 'function' | 'trigger'
 
-/** Esito di un backup/restore del database (messaggi del server + eventuale errore). */
-export interface DbMaintenanceResponse {
-  messages: string[]
-  error: string | null
-}
-
-/** Opzioni di backup stile dialogo SSMS. */
-export interface BackupRequest {
-  path: string
-  /** "full" | "differential" | "log" */
-  type: 'full' | 'differential' | 'log'
-  /** "database" | "files" */
-  component: 'database' | 'files'
-  /** Database da sottoporre a backup (default: quello attivo). */
-  database?: string
-  files?: string[]
-  filegroups?: string[]
-  name?: string
-  description?: string
-  /** "append" | "overwrite" | "format" */
-  overwriteMode: 'append' | 'overwrite' | 'format'
-  mediaName?: string
-  mediaDescription?: string
-  verify?: boolean
-  checksum?: boolean
-  continueOnError?: boolean
-  /** "default" | "on" | "off" */
-  compression: 'default' | 'on' | 'off'
-  encryptionAlgorithm?: 'AES_128' | 'AES_192' | 'AES_256'
-  encryptionCertificate?: string
-  copyOnly?: boolean
-  /** per tipo log: "truncate" | "noTruncate" | "noRecovery" */
-  logMode?: 'truncate' | 'noTruncate' | 'noRecovery'
-  expiryDays?: number
-  expiryDate?: string
-}
-
-/** Un backup set letto dal file con RESTORE HEADERONLY. */
-export interface BackupSetInfo {
-  name: string | null
-  description: string | null
-  /** 1 full, 2 log, 5 differential */
-  type: number
-  typeDescription: string | null
-  position: number
-  serverName: string | null
-  databaseName: string | null
-  startDate: string | null
-  finishDate: string | null
-  sizeBytes: number
-  firstLsn: string | null
-  lastLsn: string | null
-  copyOnly: boolean
-  hasChecksums: boolean
-  isDamaged: boolean
-}
-
-export interface BackupInfoResponse {
-  sets: BackupSetInfo[]
-  error: string | null
-}
-
-export interface FileMove {
-  logicalName: string
-  physicalPath: string
-}
-
-/** Richiesta di ripristino: uno o più file (media set), posizione del set e opzioni SSMS. */
-export interface RestoreRequest {
-  /** Percorso singolo (compatibilità) o primo file del media set. */
-  path?: string
-  /** Media set: più file .bak (FROM DISK=…, DISK=…). */
-  paths?: string[]
-  filePosition?: number
-  /** Database di destinazione (default: quello attivo). */
-  databaseName?: string
-  sourceDatabase?: string
-  /** "database" | "log" (dalla lista HEADERONLY) */
-  setType: 'database' | 'log'
-  replace?: boolean
-  /** NORECOVERY: lascia il DB in stato restoring per la catena di log. */
-  leaveRestoring?: boolean
-  /** Punto nel tempo ISO "yyyy-MM-ddTHH:mm:ss.fff" (solo set log). */
-  stopAt?: string
-  moveFiles?: FileMove[]
-  /** Backup della coda del log prima del ripristino. */
-  tailLogPath?: string
-}
-
-/** Esito dell'upload di un file .bak selezionato localmente: percorso lato server. */
-export interface UploadBackupResponse {
-  path: string
-  sizeBytes: number
-}
-
-/** Info del media (LABELONLY): conteggio file e media set id per la verifica proattiva. */
-export interface MediaLabelResponse {
-  familyCount: number
-  mediaSetId: string | null
-  mediaName: string | null
-  error: string | null
-}
-
-export interface DbFileEntry {
-  logicalName: string
-  physicalName: string
-  type: string
-  filegroup: string | null
-  isDefaultFilegroup: boolean
-}
-
-export interface DbFileListResponse {
-  files: DbFileEntry[]
-  error: string | null
-}
-
-export interface CertEntry {
+/** Riga del report utilizzo tabelle: spazio riservato/usato (KB), righe, indici e accessi. */
+export interface TableReportRow {
+  schema: string
   name: string
+  createDate: string | null
+  rowCount: number
+  reservedKb: number
+  usedKb: number
+  dataKb: number
+  indexKb: number
+  unusedKb: number
+  indexCount: number
+  reads: number
+  writes: number
+  lastRead: string | null
+  lastWrite: string | null
 }
 
 /** Tab dell'editor (query o definizione oggetto). */
