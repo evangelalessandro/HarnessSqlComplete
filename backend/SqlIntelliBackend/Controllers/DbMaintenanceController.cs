@@ -26,6 +26,22 @@ public class DbMaintenanceController(ConnectionHub hub, QueryService query) : Co
     private static string Esc(string s) => s.Replace("'", "''");
     private static string EscBracket(string s) => s.Replace("]", "]]");
 
+    /// <summary>Unisce path singolo (legacy) e lista media set in un elenco pulito di percorsi.</summary>
+    private static List<string> ResolvePaths(string? single, List<string>? many)
+    {
+        var outList = new List<string>();
+        if (!string.IsNullOrWhiteSpace(single)) outList.Add(single.Trim());
+        if (many is not null)
+            foreach (var p in many)
+                if (!string.IsNullOrWhiteSpace(p) && !outList.Contains(p.Trim()))
+                    outList.Add(p.Trim());
+        return outList;
+    }
+
+    /// <summary>"DISK = N'p1', DISK = N'p2'" per i media set multi-file.</summary>
+    private static string FromDisks(List<string> paths) =>
+        string.Join(", ", paths.Select(p => $"DISK = N'{Esc(p)}'"));
+
     private ActionResult Bad(string message) => BadRequest(message);
 
     private string? ActiveDbName(string cs, out string? error)
@@ -141,14 +157,15 @@ public class DbMaintenanceController(ConnectionHub hub, QueryService query) : Co
         return sb.ToString();
     }
 
-    /// <summary>Legge i backup set contenuti nel file (RESTORE HEADERONLY): tipo, periodi, LSN, dimensioni.</summary>
+    /// <summary>Legge i backup set contenuti nel/i file (RESTORE HEADERONLY): tipo, periodi, LSN, dimensioni.</summary>
     [HttpPost("backup-info")]
-    public async Task<ActionResult<BackupInfoResponse>> BackupInfo([FromBody] DbMaintenanceRequest req, CancellationToken ct)
+    public async Task<ActionResult<BackupInfoResponse>> BackupInfo([FromBody] BackupInfoRequest req, CancellationToken ct)
     {
         if (!TryGetCs(out var cs)) return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
-        if (string.IsNullOrWhiteSpace(req.Path)) return Bad("Specifica il percorso del file di backup (.bak).");
+        var paths = ResolvePaths(req.Path, req.Paths);
+        if (paths.Count == 0) return Bad("Specifica almeno un percorso di file di backup (.bak).");
 
-        var sql = $"RESTORE HEADERONLY FROM DISK = N'{Esc(req.Path)}';";
+        var sql = $"RESTORE HEADERONLY FROM {FromDisks(paths)};";
         var result = await query.ExecuteAsync(cs, sql, timeoutSeconds: 120, ct);
         if (result.Error != null)
             return Ok(new BackupInfoResponse([], result.Error));
@@ -199,9 +216,10 @@ public class DbMaintenanceController(ConnectionHub hub, QueryService query) : Co
     public async Task<ActionResult<DbFileListResponse>> RestoreFileList([FromBody] RestoreRequest req, CancellationToken ct)
     {
         if (!TryGetCs(out var cs)) return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
-        if (string.IsNullOrWhiteSpace(req.Path)) return Bad("Specifica il percorso del file di backup (.bak).");
+        var paths = ResolvePaths(req.Path, req.Paths);
+        if (paths.Count == 0) return Bad("Specifica almeno un percorso di file di backup (.bak).");
 
-        var sql = $"RESTORE FILELISTONLY FROM DISK = N'{Esc(req.Path)}'{(req.FilePosition is > 0 ? $" WITH FILE = {req.FilePosition}" : "")};";
+        var sql = $"RESTORE FILELISTONLY FROM {FromDisks(paths)}" + (req.FilePosition is > 0 ? $" WITH FILE = {req.FilePosition}" : "") + ";";
         var result = await query.ExecuteAsync(cs, sql, timeoutSeconds: 120, ct);
         if (result.Error != null)
             return Ok(new DbFileListResponse([], result.Error));
@@ -239,7 +257,8 @@ public class DbMaintenanceController(ConnectionHub hub, QueryService query) : Co
         if (!TryGetCs(out var cs)) return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
         var dbName = ActiveDbName(cs, out var dbErr);
         if (dbErr != null) return Bad(dbErr);
-        if (string.IsNullOrWhiteSpace(req.Path)) return Bad("Specifica il percorso del file di backup (.bak).");
+        var paths = ResolvePaths(req.Path, req.Paths);
+        if (paths.Count == 0) return Bad("Specifica almeno un percorso di file di backup (.bak).");
 
         // il restore del database in uso fallisce: ci colleghiamo a master
         var masterCs = new SqlConnectionStringBuilder(cs) { InitialCatalog = "master" }.ConnectionString;
@@ -266,7 +285,7 @@ public class DbMaintenanceController(ConnectionHub hub, QueryService query) : Co
     private static string BuildRestoreSql(string destDb, RestoreRequest req)
     {
         var verb = req.SetType == "log" ? "RESTORE LOG" : "RESTORE DATABASE";
-        var sb = new System.Text.StringBuilder($"{verb} [{EscBracket(destDb)}] FROM DISK = N'{Esc(req.Path)}'");
+        var sb = new System.Text.StringBuilder($"{verb} [{EscBracket(destDb)}] FROM {FromDisks(ResolvePaths(req.Path, req.Paths))}");
         var opts = new List<string>();
         if (req.FilePosition is > 0) opts.Add($"FILE = {req.FilePosition}");
         if (req.Replace) opts.Add("REPLACE");
@@ -327,5 +346,62 @@ public class DbMaintenanceController(ConnectionHub hub, QueryService query) : Co
             if (row.Count > 0 && row[0] != null)
                 outList.Add(new CertEntry(Convert.ToString(row[0], System.Globalization.CultureInfo.InvariantCulture) ?? ""));
         return Ok(outList);
+    }
+
+    /// <summary>
+    /// Upload di un file .bak selezionato localmente (browser → server): il file viene salvato
+    /// nella cartella di backup predefinita dell'istanza (leggibile da SQL Server) e si restituisce
+    /// il percorso completo lato server, usabile da RESTORE.
+    /// </summary>
+    [HttpPost("upload-backup")]
+    [RequestSizeLimit(20L * 1024 * 1024 * 1024)] // fino a 20 GB
+    public async Task<ActionResult<UploadBackupResponse>> UploadBackup([FromQuery] string? name, CancellationToken ct)
+    {
+        if (!TryGetCs(out var cs)) return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
+
+        // cartella di backup predefinita dell'istanza (SQL Server ci può leggere/scrivere)
+        var dir = Path.Combine(Path.GetTempPath(), "SqlIntelliUploads");
+        try
+        {
+            var res = await query.ExecuteAsync(cs,
+                "SELECT CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS nvarchar(500));", timeoutSeconds: 30, ct);
+            if (res.Error == null && res.ResultSets.Count > 0 && res.ResultSets[0].Rows.Count > 0
+                && res.ResultSets[0].Rows[0].Count > 0 && res.ResultSets[0].Rows[0][0] is string s && !string.IsNullOrWhiteSpace(s))
+            {
+                dir = s.Trim();
+            }
+        }
+        catch
+        {
+            /* fallback a %TEMP% */
+        }
+
+        try
+        {
+            Directory.CreateDirectory(dir);
+        }
+        catch (Exception ex)
+        {
+            return Bad($"Impossibile creare la cartella di upload '{dir}': {ex.Message}");
+        }
+
+        var safeName = string.IsNullOrWhiteSpace(name)
+            ? "backup.bak"
+            : Path.GetFileName(name.Replace('\\', '/').Replace(':', '_'));
+        var dest = Path.Combine(dir, $"{Guid.NewGuid():N}_{safeName}");
+        try
+        {
+            await using (var fs = System.IO.File.Create(dest))
+            {
+                await Request.Body.CopyToAsync(fs, ct);
+            }
+            var info = new System.IO.FileInfo(dest);
+            return Ok(new UploadBackupResponse(dest, info.Length));
+        }
+        catch (Exception ex)
+        {
+            try { System.IO.File.Delete(dest); } catch { /* ignora */ }
+            return Bad($"Upload non riuscito: {ex.Message}");
+        }
     }
 }

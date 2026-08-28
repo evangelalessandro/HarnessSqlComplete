@@ -15,6 +15,7 @@ import type {
   RestoreRequest,
   SavedConnectionDto,
   SearchResult,
+  UploadBackupResponse,
 } from './types'
 
 const API_BASE = '/api'
@@ -115,18 +116,33 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(req),
     }),
-  /** Legge i backup set contenuti nel file (RESTORE HEADERONLY): periodi, LSN, dimensioni. */
-  backupInfo: (connectionId: string, path: string) =>
+  /** Legge i backup set contenuti nel/i file (RESTORE HEADERONLY): periodi, LSN, dimensioni. */
+  backupInfo: (connectionId: string, path: string, paths?: string[]) =>
     http<BackupInfoResponse>(`/db/${connectionId}/backup-info`, {
       method: 'POST',
-      body: JSON.stringify({ path }),
+      body: JSON.stringify(paths && paths.length > 0 ? { paths } : { path }),
     }),
   /** File contenuti nel backup set (RESTORE FILELISTONLY): per i MOVE del ripristino. */
-  restoreFileList: (connectionId: string, path: string, filePosition?: number) =>
+  restoreFileList: (connectionId: string, path: string, filePosition?: number, paths?: string[]) =>
     http<DbFileListResponse>(`/db/${connectionId}/restore-filelist`, {
       method: 'POST',
-      body: JSON.stringify({ path, filePosition }),
+      body: JSON.stringify(
+        paths && paths.length > 0 ? { paths, filePosition } : { path, filePosition },
+      ),
     }),
+  /** Upload di un .bak selezionato localmente → percorso lato server (cartella backup dell'istanza). */
+  uploadBackup: async (connectionId: string, file: File): Promise<UploadBackupResponse> => {
+    const res = await fetch(`${API_BASE}/db/${connectionId}/upload-backup?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file,
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(text || `Upload non riuscito (HTTP ${res.status})`)
+    }
+    return (await res.json()) as UploadBackupResponse
+  },
   /** File e filegroup del database attivo (BACKUP FILE/FILEGROUP e MOVE). */
   maintenanceFiles: (connectionId: string) =>
     http<DbFileEntry[]>(`/db/${connectionId}/files`),

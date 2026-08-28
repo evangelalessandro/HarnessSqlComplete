@@ -145,6 +145,12 @@ public record AutocompleteStatus(bool Configured, string Model, string BaseUrl, 
 /// <summary>Semplice richiesta con percorso file (usata per HEADERONLY).</summary>
 public record DbMaintenanceRequest(string Path);
 
+/// <summary>Richiesta di lettura header con uno o più file (media set multi-file).</summary>
+public record BackupInfoRequest(string? Path, List<string>? Paths = null);
+
+/// <summary>Esito dell'upload di un file di backup selezionato localmente.</summary>
+public record UploadBackupResponse(string Path, long SizeBytes);
+
 /// <summary>Tipo di backup: 1 = completo, 5 = differenziale, 2 = log transazioni.</summary>
 public record BackupRequest(
     string Path,
@@ -170,9 +176,10 @@ public record BackupRequest(
     string? ExpiryDate = null // "yyyy-MM-dd"
 );
 
-/// <summary>Ripristino: path del file, posizione del set e opzioni SSMS.</summary>
+/// <summary>Ripristino: uno o più file (media set), posizione del set e opzioni SSMS.</summary>
 public record RestoreRequest(
-    string Path,
+    string? Path = null,
+    List<string>? Paths = null, // media set: più file .bak (FROM DISK=…, DISK=…)
     int? FilePosition = null,
     string? DatabaseName = null, // database di destinazione (default: quello attivo)
     string? SourceDatabase = null, // nome db dentro il backup (per i MOVE)

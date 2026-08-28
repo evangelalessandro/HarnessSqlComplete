@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Check,
   DatabaseBackup,
@@ -99,7 +99,10 @@ export default function MaintenanceDialog({
   const [bBusy, setBBusy] = useState(false)
 
   // ---------- Restore ----------
-  const [rPath, setRPath] = useState(initialPath ?? '')
+  const [rPaths, setRPaths] = useState<string[]>(initialPath ? [initialPath] : [])
+  const [rManualPath, setRManualPath] = useState('')
+  const [rUploading, setRUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [rSets, setRSets] = useState<BackupSetInfo[] | null>(null)
   const [rInfoErr, setRInfoErr] = useState<string | null>(null)
   const [rLoadingSets, setRLoadingSets] = useState(false)
@@ -201,8 +204,8 @@ export default function MaintenanceDialog({
   }
 
   const loadBackupInfo = async () => {
-    if (!rPath.trim()) {
-      setRInfoErr('Specifica il percorso del file .bak.')
+    if (rPaths.length === 0) {
+      setRInfoErr('Seleziona almeno un file .bak (locale o percorso server).')
       return
     }
     setRLoadingSets(true)
@@ -211,7 +214,7 @@ export default function MaintenanceDialog({
     setRSel(null)
     setRMoves(null)
     try {
-      const res = await api.backupInfo(connectionId, rPath.trim())
+      const res = await api.backupInfo(connectionId, rPaths[0], rPaths)
       if (res.error) setRInfoErr(res.error)
       else setRSets(res.sets)
     } catch (e) {
@@ -227,11 +230,45 @@ export default function MaintenanceDialog({
     setRStopAt('')
     setRPit(false)
     try {
-      const res = await api.restoreFileList(connectionId, rPath.trim(), s.position)
+      const res = await api.restoreFileList(connectionId, rPaths[0], s.position, rPaths)
       if (res.error) setRInfoErr(res.error)
       else setRMoves(res.files.map(f => ({ logicalName: f.logicalName, physicalPath: f.physicalName })))
     } catch (e) {
       setRInfoErr(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  /** Aggiunge un percorso manuale (lato server) alla lista dei file del media set. */
+  const addManualPath = () => {
+    const p = rManualPath.trim()
+    if (!p) return
+    setRPaths(prev => (prev.includes(p) ? prev : [...prev, p]))
+    setRManualPath('')
+    setRSets(null)
+    setRSel(null)
+  }
+
+  /** Upload dei file selezionati localmente → percorsi lato server aggiunti al media set. */
+  const pickLocalFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    setRUploading(true)
+    setResult(null)
+    try {
+      const added: string[] = []
+      for (const f of Array.from(files)) {
+        const res = await api.uploadBackup(connectionId, f)
+        added.push(res.path)
+      }
+      setRPaths(prev => {
+        const next = [...prev]
+        for (const p of added) if (!next.includes(p)) next.push(p)
+        return next
+      })
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    } catch (e) {
+      setResult({ kind: 'err', text: `Upload fallito: ${e instanceof Error ? e.message : String(e)}` })
+    } finally {
+      setRUploading(false)
     }
   }
 
@@ -253,7 +290,8 @@ export default function MaintenanceDialog({
     setRBusy(true)
     setResult(null)
     const req: RestoreRequest = {
-      path: rPath.trim(),
+      path: rPaths[0],
+      paths: rPaths,
       filePosition: rSel.position,
       databaseName: rDest.trim() || undefined,
       sourceDatabase: rSel.databaseName ?? undefined,
@@ -664,25 +702,67 @@ export default function MaintenanceDialog({
           ) : (
             <>
               <div className={sectionCls}>
-                <label className={labelCls}>File di backup (.bak)</label>
-                <div className="flex gap-2">
+                <label className={labelCls}>File di backup (.bak) — puoi selezionarne più di uno</label>
+                <div className="flex flex-wrap items-center gap-2">
                   <input
-                    value={rPath}
-                    onChange={e => {
-                      setRPath(e.target.value)
-                      setRSets(null)
-                      setRSel(null)
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept=".bak"
+                    className="hidden"
+                    onChange={e => void pickLocalFiles(e.target.files)}
+                  />
+                  <Button variant="secondary" onClick={() => fileInputRef.current?.click()} loading={rUploading}>
+                    <FolderOpen className="h-4 w-4" /> Seleziona file locali…
+                  </Button>
+                  <span className="text-[11px] text-zinc-500">
+                    I file vengono copiati nella cartella backup dell'istanza SQL (media set multi-file).
+                  </span>
+                </div>
+                <div className="mt-2 flex gap-2">
+                  <input
+                    value={rManualPath}
+                    onChange={e => setRManualPath(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        addManualPath()
+                      }
                     }}
                     className={inputCls}
-                    placeholder="C:\Backup\db.bak"
+                    placeholder="Oppure percorso lato server (es. C:\Backup\db.bak)"
                   />
-                  <Button variant="secondary" onClick={() => void loadBackupInfo()} loading={rLoadingSets}>
-                    <FileCode2 className="h-4 w-4" /> Leggi backup
+                  <Button variant="ghost" onClick={addManualPath} title="Aggiungi il percorso alla lista">
+                    Aggiungi
                   </Button>
                 </div>
-                <p className="mt-1 text-[11px] text-zinc-500">
-                  Legge i backup set contenuti nel file (RESTORE HEADERONLY): tipi, periodi coperti e LSN.
-                </p>
+                {rPaths.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {rPaths.map(p => (
+                      <div key={p} className="flex items-center gap-2 rounded border border-zinc-800 bg-zinc-950/60 px-2 py-1 text-xs">
+                        <span className="min-w-0 flex-1 truncate font-mono text-zinc-300" title={p}>
+                          {p.split(/[\\/]/).pop()}
+                        </span>
+                        <span className="hidden text-[10px] text-zinc-600 sm:inline">…{p.slice(-40)}</span>
+                        <button
+                          onClick={() => setRPaths(prev => prev.filter(x => x !== p))}
+                          className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-rose-300"
+                          title="Rimuovi dalla lista"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="mt-2 flex items-center gap-2">
+                  <Button onClick={() => void loadBackupInfo()} loading={rLoadingSets} disabled={rPaths.length === 0}>
+                    <FileCode2 className="h-4 w-4" /> Leggi backup
+                  </Button>
+                  <span className="text-[11px] text-zinc-500">
+                    Legge i backup set del/i file (RESTORE HEADERONLY): tipi, periodi coperti e LSN.
+                  </span>
+                </div>
               </div>
 
               {rInfoErr && (
@@ -820,7 +900,7 @@ export default function MaintenanceDialog({
                           if (!rSel) return
                           void (async () => {
                             try {
-                              const res = await api.restoreFileList(connectionId, rPath.trim(), rSel.position)
+                              const res = await api.restoreFileList(connectionId, rPaths[0], rSel.position, rPaths)
                               if (res.error) setRInfoErr(res.error)
                               else
                                 setRMoves(

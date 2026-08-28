@@ -262,9 +262,12 @@ export interface FileMove {
   physicalPath: string
 }
 
-/** Richiesta di ripristino: path, posizione del set e opzioni SSMS. */
+/** Richiesta di ripristino: uno o più file (media set), posizione del set e opzioni SSMS. */
 export interface RestoreRequest {
-  path: string
+  /** Percorso singolo (compatibilità) o primo file del media set. */
+  path?: string
+  /** Media set: più file .bak (FROM DISK=…, DISK=…). */
+  paths?: string[]
   filePosition?: number
   /** Database di destinazione (default: quello attivo). */
   databaseName?: string
@@ -279,6 +282,12 @@ export interface RestoreRequest {
   moveFiles?: FileMove[]
   /** Backup della coda del log prima del ripristino. */
   tailLogPath?: string
+}
+
+/** Esito dell'upload di un file .bak selezionato localmente: percorso lato server. */
+export interface UploadBackupResponse {
+  path: string
+  sizeBytes: number
 }
 
 export interface DbFileEntry {
