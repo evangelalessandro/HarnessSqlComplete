@@ -201,6 +201,103 @@ export interface DbMaintenanceResponse {
   error: string | null
 }
 
+/** Opzioni di backup stile dialogo SSMS. */
+export interface BackupRequest {
+  path: string
+  /** "full" | "differential" | "log" */
+  type: 'full' | 'differential' | 'log'
+  /** "database" | "files" */
+  component: 'database' | 'files'
+  /** Database da sottoporre a backup (default: quello attivo). */
+  database?: string
+  files?: string[]
+  filegroups?: string[]
+  name?: string
+  description?: string
+  /** "append" | "overwrite" | "format" */
+  overwriteMode: 'append' | 'overwrite' | 'format'
+  mediaName?: string
+  mediaDescription?: string
+  verify?: boolean
+  checksum?: boolean
+  continueOnError?: boolean
+  /** "default" | "on" | "off" */
+  compression: 'default' | 'on' | 'off'
+  encryptionAlgorithm?: 'AES_128' | 'AES_192' | 'AES_256'
+  encryptionCertificate?: string
+  copyOnly?: boolean
+  /** per tipo log: "truncate" | "noTruncate" | "noRecovery" */
+  logMode?: 'truncate' | 'noTruncate' | 'noRecovery'
+  expiryDays?: number
+  expiryDate?: string
+}
+
+/** Un backup set letto dal file con RESTORE HEADERONLY. */
+export interface BackupSetInfo {
+  name: string | null
+  description: string | null
+  /** 1 full, 2 log, 5 differential */
+  type: number
+  typeDescription: string | null
+  position: number
+  serverName: string | null
+  databaseName: string | null
+  startDate: string | null
+  finishDate: string | null
+  sizeBytes: number
+  firstLsn: string | null
+  lastLsn: string | null
+  copyOnly: boolean
+  hasChecksums: boolean
+  isDamaged: boolean
+}
+
+export interface BackupInfoResponse {
+  sets: BackupSetInfo[]
+  error: string | null
+}
+
+export interface FileMove {
+  logicalName: string
+  physicalPath: string
+}
+
+/** Richiesta di ripristino: path, posizione del set e opzioni SSMS. */
+export interface RestoreRequest {
+  path: string
+  filePosition?: number
+  /** Database di destinazione (default: quello attivo). */
+  databaseName?: string
+  sourceDatabase?: string
+  /** "database" | "log" (dalla lista HEADERONLY) */
+  setType: 'database' | 'log'
+  replace?: boolean
+  /** NORECOVERY: lascia il DB in stato restoring per la catena di log. */
+  leaveRestoring?: boolean
+  /** Punto nel tempo ISO "yyyy-MM-ddTHH:mm:ss.fff" (solo set log). */
+  stopAt?: string
+  moveFiles?: FileMove[]
+  /** Backup della coda del log prima del ripristino. */
+  tailLogPath?: string
+}
+
+export interface DbFileEntry {
+  logicalName: string
+  physicalName: string
+  type: string
+  filegroup: string | null
+  isDefaultFilegroup: boolean
+}
+
+export interface DbFileListResponse {
+  files: DbFileEntry[]
+  error: string | null
+}
+
+export interface CertEntry {
+  name: string
+}
+
 /** Tab dell'editor (query o definizione oggetto). */
 export interface EditorTab {
   id: string

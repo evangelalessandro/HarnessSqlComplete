@@ -3,7 +3,7 @@ import { BookOpen, Database as DbIcon, FilePlus2, Pin, StickyNote, Table2, Termi
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
-import { dbTabColor, toCreateOrAlterStatement } from './helpers'
+import { dbTabColor, nextDragonLevel, toCreateOrAlterStatement } from './helpers'
 import { openSqlFiles, saveSqlFile } from './fileSave'
 import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
@@ -18,6 +18,7 @@ import ResultsPanel from './components/ResultsPanel'
 import PrintPanel from './components/PrintPanel'
 import HelpPage from './components/HelpPage'
 import { FileDropZone } from './components/FileDropZone'
+import DragonMeter from './components/DragonMeter'
 import { Badge, Button } from './components/ui'
 
 type Tab = 'results' | 'print'
@@ -40,6 +41,18 @@ export default function App() {
   const [aiStatus, setAiStatus] = useState<AutocompleteStatus | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
+
+  // Drago del fuoco: cresce a ogni query eseguita (0-100, persistito)
+  const [dragonLevel, setDragonLevel] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem('sql-intelli:dragon') ?? 0)
+      return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0
+    } catch {
+      return 0
+    }
+  })
+  // Colpo di fuoco da mostrare all'esecuzione (incrementato a ogni query)
+  const [fireTick, setFireTick] = useState(0)
 
   // Pagina di aiuto (apribile dal sito)
   const [helpOpen, setHelpOpen] = useState(false)
@@ -415,6 +428,17 @@ export default function App() {
   const handleExecute = useCallback(
     async (sql: string) => {
       if (!connection) return
+      // il drago cresce a ogni query eseguita (max 100, persistito in localStorage)
+      setDragonLevel(prev => {
+        const next = nextDragonLevel(prev)
+        try {
+          localStorage.setItem('sql-intelli:dragon', String(next))
+        } catch {
+          /* ignora */
+        }
+        return next
+      })
+      setFireTick(t => t + 1)
       // il risultato va alla tab ATTIVA al momento dell'esecuzione
       const tabId = activeEditorTab
       if (!tabId) return
@@ -684,6 +708,7 @@ export default function App() {
                 </option>
               ))}
             </select>
+            <DragonMeter level={dragonLevel} />
             {editorTabs.map(t => (
               <div
                 key={t.id}
@@ -783,6 +808,8 @@ export default function App() {
                 onAiEnabledChange={setAiEnabled}
                 aiConfigured={aiConfigured}
                 aiStatusText={aiStatusText}
+                dragonLevel={dragonLevel}
+                fireTick={fireTick}
                 onExecute={(sql: string) => void handleExecute(sql)}
                 onContentChange={handleContentChange}
                 onSave={() => saveActiveTab(false)}

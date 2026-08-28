@@ -624,6 +624,11 @@ export function remainingMinDelay(startedAt: number, minMs: number): number {
   return Math.max(0, minMs - (Date.now() - startedAt))
 }
 
+/** Livello del drago dopo una query eseguita: cresce di 1 fino a 100 (poi resta 100). */
+export function nextDragonLevel(current: number): number {
+  return Math.min(100, Math.max(0, current) + 1)
+}
+
 // ---------- Script "as" stile SSMS (tasto destro) ----------
 
 export type ScriptableKind = 'table' | 'view' | 'procedure' | 'function' | 'trigger'

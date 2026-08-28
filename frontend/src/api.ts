@@ -1,12 +1,18 @@
 import type {
   AutocompleteResponse,
   AutocompleteStatus,
+  BackupInfoResponse,
+  BackupRequest,
+  CertEntry,
   ConnectResponse,
   ConnectionRequest,
   ConnectionTestResult,
   DatabaseSummary,
+  DbFileEntry,
+  DbFileListResponse,
   DbMaintenanceResponse,
   QueryResult,
+  RestoreRequest,
   SavedConnectionDto,
   SearchResult,
 } from './types'
@@ -91,18 +97,42 @@ export const api = {
       body: JSON.stringify({ sql, timeoutSeconds }),
     }),
 
-  /** Backup del database corrente su file (.bak). */
-  backupDb: (connectionId: string, path: string) =>
+  /** Backup del database con le opzioni del dialogo SSMS. */
+  backupDb: (
+    connectionId: string,
+    req: BackupRequest,
+  ) =>
     http<DbMaintenanceResponse>(`/db/${connectionId}/backup`, {
       method: 'POST',
-      body: JSON.stringify({ path }),
+      body: JSON.stringify(req),
     }),
-  /** Ripristina il database da file (.bak) — sovrascrive (WITH REPLACE). */
-  restoreDb: (connectionId: string, path: string) =>
+  /** Ripristina il database/log dal file, con REPLACE, NORECOVERY, STOPAT e MOVE. */
+  restoreDb: (
+    connectionId: string,
+    req: RestoreRequest,
+  ) =>
     http<DbMaintenanceResponse>(`/db/${connectionId}/restore`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+  /** Legge i backup set contenuti nel file (RESTORE HEADERONLY): periodi, LSN, dimensioni. */
+  backupInfo: (connectionId: string, path: string) =>
+    http<BackupInfoResponse>(`/db/${connectionId}/backup-info`, {
       method: 'POST',
       body: JSON.stringify({ path }),
     }),
+  /** File contenuti nel backup set (RESTORE FILELISTONLY): per i MOVE del ripristino. */
+  restoreFileList: (connectionId: string, path: string, filePosition?: number) =>
+    http<DbFileListResponse>(`/db/${connectionId}/restore-filelist`, {
+      method: 'POST',
+      body: JSON.stringify({ path, filePosition }),
+    }),
+  /** File e filegroup del database attivo (BACKUP FILE/FILEGROUP e MOVE). */
+  maintenanceFiles: (connectionId: string) =>
+    http<DbFileEntry[]>(`/db/${connectionId}/files`),
+  /** Certificati del server (crittografia del backup). */
+  maintenanceCertificates: (connectionId: string) =>
+    http<CertEntry[]>(`/db/${connectionId}/certificates`),
 
   autocomplete: (connectionId: string, sql: string, apiKey?: string) =>
     http<AutocompleteResponse>(`/autocomplete/${connectionId}`, {

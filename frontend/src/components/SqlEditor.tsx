@@ -72,6 +72,10 @@ interface Props {
   onZoomFont?: (delta: number) => void
   /** Alterna tema chiaro/scuro. */
   onToggleTheme?: () => void
+  /** Livello del drago (0-100): il fuoco scaturito a ogni esecuzione cresce con esso. */
+  dragonLevel?: number
+  /** Contatore incrementato a ogni query eseguita: innesca il colpo di fuoco. */
+  fireTick?: number
   registerEditor: (editor: monaco.editor.IStandaloneCodeEditor) => void
 }
 
@@ -159,6 +163,8 @@ export default function SqlEditor({
   theme = 'vs-dark',
   onZoomFont,
   onToggleTheme,
+  dragonLevel = 0,
+  fireTick = 0,
   registerEditor,
 }: Props) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
@@ -174,6 +180,14 @@ export default function SqlEditor({
   // L'istanza editor in stato React: l'effect del colorizer si (ri)registra
   // automaticamente quando editor o schema cambiano (pulizia inclusa)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
+  // Colpo di fuoco del drago a ogni esecuzione
+  const [fireVisible, setFireVisible] = useState(false)
+  useEffect(() => {
+    if (!fireTick) return
+    setFireVisible(true)
+    const t = window.setTimeout(() => setFireVisible(false), 1900)
+    return () => window.clearTimeout(t)
+  }, [fireTick])
   // Pannello impostazioni di formattazione
   const [profileOpen, setProfileOpen] = useState(false)
   // Verifica di sintassi opzionale (errori reali di SQL Server con "Riga N:")
@@ -1355,18 +1369,40 @@ export default function SqlEditor({
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2">
         <div className="flex items-center gap-2">
-          <Button
-            variant="primary"
-            onClick={() => {
-              const sql = getSqlToExecute()
-              recordTablesFromSql(sql)
-              onExecute(sql)
-            }}
-            loading={executing}
-            title="Esegui (F5 / Ctrl+Invio) — se hai selezionato del testo esegue solo la selezione"
-          >
-            <Play className="h-4 w-4" /> Esegui
-          </Button>
+          <span className="relative">
+            <Button
+              variant="primary"
+              onClick={() => {
+                const sql = getSqlToExecute()
+                recordTablesFromSql(sql)
+                onExecute(sql)
+              }}
+              loading={executing}
+              title="Esegui (F5 / Ctrl+Invio) — se hai selezionato del testo esegue solo la selezione"
+            >
+              <Play className="h-4 w-4" /> Esegui
+            </Button>
+            {/* Fuoco del drago: scaturisce dal pulsante a ogni query eseguita */}
+            {fireVisible && (
+              <div className="pointer-events-none absolute -top-5 left-1/2 z-30 h-16 w-24 -translate-x-1/2">
+                {Array.from({ length: Math.min(6 + Math.floor(dragonLevel / 10), 18) }).map((_, i) => (
+                  <span
+                    key={`${fireTick}-${i}`}
+                    className="dragon-flame absolute text-lg leading-none"
+                    style={{
+                      left: `${6 + (i * 82) / Math.min(6 + Math.floor(dragonLevel / 10), 18)}%`,
+                      bottom: '4px',
+                      animationDelay: `${(i % 6) * 0.13}s`,
+                      animationDuration: `${1.2 + (i % 4) * 0.3}s`,
+                      fontSize: `${14 + Math.min(dragonLevel / 100, 1) * 10}px`,
+                    }}
+                  >
+                    🔥
+                  </span>
+                ))}
+              </div>
+            )}
+          </span>
           <Button variant="secondary" onClick={() => onSave?.()} title="Salva la query (Ctrl+S) — sovrascrive il file originale se aperto">
             <Save className="h-4 w-4" /> Salva
           </Button>

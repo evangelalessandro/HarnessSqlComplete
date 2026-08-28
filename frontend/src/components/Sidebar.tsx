@@ -51,6 +51,7 @@ import { DEFAULT_PANEL_STATE, dockSideFromDrop, normalizePanelState, resolveRigh
 import type { PanelSize, PanelState } from '../panelLayout'
 import { ColumnHoverCard, TableHoverCard } from './HoverCards'
 import type { HoverRect, HoverTarget } from './HoverCards'
+import MaintenanceDialog from './MaintenanceDialog'
 
 interface Props {
   summary: DatabaseSummary | null
@@ -251,14 +252,8 @@ export default function Sidebar({
   const [maintPath, setMaintPath] = useState('')
   const [maintBusy, setMaintBusy] = useState<null | 'backup' | 'restore'>(null)
   const [maintResult, setMaintResult] = useState<string | null>(null)
-  const maintPathRef = useRef<HTMLInputElement | null>(null)
-
-  /** Prepara la manutenzione dal menu contestuale del database: percorso suggerito + focus sul campo. */
-  const focusMaintPath = (path: string) => {
-    setMaintPath(path)
-    setMaintResult(null)
-    requestAnimationFrame(() => maintPathRef.current?.focus())
-  }
+  // Dialog completo stile SSMS (backup con tutte le opzioni / ripristino con periodi e punto nel tempo)
+  const [maintDialog, setMaintDialog] = useState<{ tab: 'backup' | 'restore'; path?: string } | null>(null)
 
   const runMaintenance = async (kind: 'backup' | 'restore') => {
     if (!connectionId) {
@@ -278,7 +273,21 @@ export default function Sidebar({
     setMaintBusy(kind)
     setMaintResult(null)
     try {
-      const res = kind === 'backup' ? await api.backupDb(connectionId, path) : await api.restoreDb(connectionId, path)
+      const res =
+        kind === 'backup'
+          ? await api.backupDb(connectionId, {
+              path,
+              type: 'full',
+              component: 'database',
+              database: activeDatabase,
+              overwriteMode: 'append',
+              compression: 'default',
+            })
+          : await api.restoreDb(connectionId, {
+              path,
+              setType: 'database',
+              databaseName: activeDatabase,
+            })
       if (res.error) {
         setMaintResult(`Errore: ${res.error}`)
       } else {
@@ -611,7 +620,6 @@ export default function Sidebar({
           <DatabaseBackup className="h-3 w-3" /> Manutenzione DB
         </div>
         <input
-          ref={maintPathRef}
           value={maintPath}
           onChange={e => setMaintPath(e.target.value)}
           placeholder="C:\Backup\db.bak"
@@ -647,6 +655,16 @@ export default function Sidebar({
           <pre className="mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap rounded bg-zinc-950/80 px-2 py-1 text-[10px] leading-snug text-zinc-400">
             {maintResult}
           </pre>
+        )}
+        {connectionId && (
+          <button
+            onClick={() => setMaintDialog({ tab: 'backup', path: maintPath })}
+            className="mt-1.5 w-full rounded border border-zinc-700 px-2 py-1 text-xs font-medium text-zinc-300 transition-colors hover:border-sky-700 hover:text-sky-300"
+            title="Apre il dialogo completo stile SSMS: tipo, componenti, supporti, compressione, crittografia, verifica…"
+          >
+            <SquarePen className="mr-1 inline h-3.5 w-3.5" />
+            Opzioni complete (SSMS)…
+          </button>
         )}
       </div>
     </div>
@@ -1170,21 +1188,21 @@ export default function Sidebar({
                 </div>
                 <button
                   onClick={() => {
-                    focusMaintPath(`C:\\Backup\\${colorMenu.db}.bak`)
+                    setMaintDialog({ tab: 'backup', path: `C:\\Backup\\${colorMenu.db}.bak` })
                     setColorMenu(null)
                   }}
                   className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-sky-300"
-                  title="Prepara il backup del database attivo (modifica il percorso e premi Backup)"
+                  title="Apre il dialogo di backup completo (stile SSMS)"
                 >
                   <DatabaseBackup className="h-3.5 w-3.5 text-sky-400" /> Backup database…
                 </button>
                 <button
                   onClick={() => {
-                    focusMaintPath('')
+                    setMaintDialog({ tab: 'restore', path: '' })
                     setColorMenu(null)
                   }}
                   className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-rose-300"
-                  title="Prepara il ripristino del database attivo (sovrascrive con REPLACE)"
+                  title="Apre il dialogo di ripristino con periodi leggibili dal file e punto nel tempo"
                 >
                   <RotateCcw className="h-3.5 w-3.5 text-rose-400" /> Ripristina database…
                 </button>
@@ -1213,6 +1231,17 @@ export default function Sidebar({
             onClose={() => setObjectMenu(null)}
           />
         </>
+      )}
+
+      {/* Dialog di manutenzione (backup/ripristino completo stile SSMS) */}
+      {maintDialog && connectionId && (
+        <MaintenanceDialog
+          connectionId={connectionId}
+          activeDatabase={activeDatabase}
+          initialTab={maintDialog.tab}
+          initialPath={maintDialog.path}
+          onClose={() => setMaintDialog(null)}
+        />
       )}
     </div>
   )

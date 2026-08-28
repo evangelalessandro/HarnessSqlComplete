@@ -4,7 +4,7 @@ import { createElement } from 'react'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import ConnectAnimation from '../components/ConnectAnimation'
-import { remainingMinDelay } from '../helpers'
+import { nextDragonLevel, remainingMinDelay } from '../helpers'
 
 // abilita il supporto a act() nell'ambiente jsdom
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -84,5 +84,21 @@ describe('remainingMinDelay: durata minima dell\'animazione di connessione', () 
 
   it('restituisce 0 appena iniziata se la durata minima è 0', () => {
     expect(remainingMinDelay(Date.now(), 0)).toBe(0)
+  })
+})
+
+describe('nextDragonLevel: il drago cresce a ogni query (max 100)', () => {
+  it('incrementa di 1', () => {
+    expect(nextDragonLevel(0)).toBe(1)
+    expect(nextDragonLevel(42)).toBe(43)
+  })
+
+  it('si ferma a 100', () => {
+    expect(nextDragonLevel(100)).toBe(100)
+    expect(nextDragonLevel(99)).toBe(100)
+  })
+
+  it('tratta i negativi come 0', () => {
+    expect(nextDragonLevel(-5)).toBe(1)
   })
 })
