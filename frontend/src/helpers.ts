@@ -1,4 +1,4 @@
-import type { CellValue, ColumnInfo, DatabaseSummary, ForeignKeyInfo, FunctionInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableUsage } from './types'
+import type { BackupSetInfo, CellValue, ColumnInfo, DatabaseSummary, ForeignKeyInfo, FunctionInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableUsage } from './types'
 
 /**
  * Identificatore SQL: restituisce il nome senza parentesi quadre se è "sicuro"
@@ -627,6 +627,29 @@ export function remainingMinDelay(startedAt: number, minMs: number): number {
 /** Livello del drago dopo una query eseguita: cresce di 1 fino a 100 (poi resta 100). */
 export function nextDragonLevel(current: number): number {
   return Math.min(100, Math.max(0, current) + 1)
+}
+
+// ---------- Punti di ripristino (catena di backup) ----------
+
+export interface RestorePoint {
+  set: BackupSetInfo
+  /** Catena di set da ripristinare in ordine (Completo → Differenziali → Log) per arrivare al punto. */
+  chain: BackupSetInfo[]
+}
+
+/**
+ * Punti/momenti ripristinabili da un elenco di backup set (RESTORE HEADERONLY):
+ * ogni set successivo all'ultimo Completo è un punto, con la catena completa
+ * (ultimo Completo + Differenziali + Log fino al set) necessaria per arrivarci.
+ */
+export function buildRestorePoints(sets: BackupSetInfo[]): RestorePoint[] {
+  const points: RestorePoint[] = []
+  let lastFullIdx = -1
+  for (let i = 0; i < sets.length; i++) {
+    if (sets[i].type === 1) lastFullIdx = i
+    if (lastFullIdx >= 0) points.push({ set: sets[i], chain: sets.slice(lastFullIdx, i + 1) })
+  }
+  return points
 }
 
 // ---------- Script "as" stile SSMS (tasto destro) ----------

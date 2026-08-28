@@ -4,12 +4,14 @@ import {
   DatabaseBackup,
   FileCode2,
   FolderOpen,
+  GitMerge,
   KeyRound,
   RotateCcw,
   ShieldCheck,
   X,
 } from 'lucide-react'
 import { api } from '../api'
+import { buildRestorePoints } from '../helpers'
 import type {
   BackupRequest,
   BackupSetInfo,
@@ -107,6 +109,8 @@ export default function MaintenanceDialog({
   const [rInfoErr, setRInfoErr] = useState<string | null>(null)
   const [rLoadingSets, setRLoadingSets] = useState(false)
   const [rSel, setRSel] = useState<BackupSetInfo | null>(null)
+  /** Catena di set necessaria per ripristinare fino al punto selezionato. */
+  const [rChain, setRChain] = useState<BackupSetInfo[] | null>(null)
   const [rDest, setRDest] = useState(activeDatabase)
   const [rReplace, setRReplace] = useState(false)
   const [rLeaveRestoring, setRLeaveRestoring] = useState(false)
@@ -224,8 +228,9 @@ export default function MaintenanceDialog({
     }
   }
 
-  const selectSet = async (s: BackupSetInfo) => {
+  const selectSet = async (s: BackupSetInfo, chain?: BackupSetInfo[]) => {
     setRSel(s)
+    setRChain(chain ?? [s])
     setRMoves(null)
     setRStopAt('')
     setRPit(false)
@@ -237,6 +242,10 @@ export default function MaintenanceDialog({
       setRInfoErr(e instanceof Error ? e.message : String(e))
     }
   }
+
+  /** Punti di ripristino: ogni set dopo l'ultimo Completo è un momento ripristinabile,
+   *  con la catena completa (Completo → Differenziali → Log) necessaria per arrivarci. */
+  const restorePoints = useMemo(() => buildRestorePoints(rSets ?? []), [rSets])
 
   /** Aggiunge un percorso manuale (lato server) alla lista dei file del media set. */
   const addManualPath = () => {
@@ -340,6 +349,59 @@ export default function MaintenanceDialog({
           ? res.messages
           : ['Ripristino completato.']
       setResult({ kind: res.error ? 'err' : 'ok', text: lines.join('\n') })
+    } catch (e) {
+      setResult({ kind: 'err', text: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setRBusy(false)
+    }
+  }
+
+  /** Ripristina la CATENA completa fino al punto selezionato: tutti i set in ordine,
+   *  NORECOVERY su tutti tranne l'ultimo (RECOVERY), STOPAT sull'ultimo se è un log. */
+  const runChainRestore = async () => {
+    if (!rChain || rChain.length === 0) return
+    const isLogLast = rChain[rChain.length - 1].type === 2
+    const stopAt = rPit && isLogLast ? normalizeStopAt(rStopAt) : undefined
+    if (rPit && isLogLast && !stopAt) {
+      setResult({ kind: 'err', text: 'Indica il punto nel tempo (es. 2026-08-28T08:04:38.000).' })
+      return
+    }
+    const chainDesc = rChain.map(s => `Pos ${s.position} (${typeLabel(s.type)})`).join(' → ')
+    const msg = `Ripristino della catena fino al punto selezionato:\n${chainDesc}\n\nin "${rDest}".${
+      rReplace ? '\nATTENZIONE: REPLACE sovrascriverà il database esistente!' : ''
+    }\nContinuare?`
+    if (!window.confirm(msg)) return
+    setRBusy(true)
+    setResult(null)
+    const lines: string[] = []
+    try {
+      for (let i = 0; i < rChain.length; i++) {
+        const s = rChain[i]
+        const isLog = s.type === 2
+        const isLast = i === rChain.length - 1
+        const req: RestoreRequest = {
+          path: rPaths[0],
+          paths: rPaths,
+          filePosition: s.position,
+          databaseName: rDest.trim() || undefined,
+          sourceDatabase: s.databaseName ?? undefined,
+          setType: isLog ? 'log' : 'database',
+          replace: rReplace && i === 0,
+          leaveRestoring: !isLast,
+          stopAt: isLast && isLog ? stopAt : undefined,
+          // MOVE valido solo sul RESTORE DATABASE iniziale (non sui log)
+          moveFiles: !isLog && i === 0 && rMoves && rMoves.length > 0 ? rMoves : undefined,
+          tailLogPath: i === 0 && rTailLog && rTailPath.trim() ? rTailPath.trim() : undefined,
+        }
+        const res = await api.restoreDb(connectionId, req)
+        lines.push(
+          `[${i + 1}/${rChain.length}] Pos ${s.position} ${typeLabel(s.type)}: ${
+            res.error ? `ERRORE — ${res.error.split('\n')[0]}` : 'OK'
+          }`,
+        )
+        if (res.error) break
+      }
+      setResult({ kind: lines.some(l => l.includes('ERRORE')) ? 'err' : 'ok', text: lines.join('\n') })
     } catch (e) {
       setResult({ kind: 'err', text: e instanceof Error ? e.message : String(e) })
     } finally {
@@ -806,15 +868,15 @@ export default function MaintenanceDialog({
               {rSets && rSets.length > 0 && (
                 <div className={sectionCls}>
                   <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                    Backup set trovati ({rSets.length}) — clicca per selezionare
+                    Punti di ripristino ({restorePoints.length}) — ogni momento ripristinabile, clicca per selezionare
                   </div>
                   <div className="max-h-52 space-y-1 overflow-y-auto">
-                    {rSets.map(s => {
+                    {restorePoints.map(({ set: s, chain }) => {
                       const active = rSel?.position === s.position
                       return (
                         <button
                           key={s.position}
-                          onClick={() => void selectSet(s)}
+                          onClick={() => void selectSet(s, chain)}
                           className={`flex w-full items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors ${
                             active
                               ? 'border-sky-600 bg-sky-950/40 text-zinc-100'
@@ -827,14 +889,15 @@ export default function MaintenanceDialog({
                               {typeLabel(s.type)}
                             </Badge>
                           </span>
-                          <span className="min-w-0 flex-1 truncate">
-                            <span className="font-semibold text-zinc-200">Pos. {s.position}</span>
-                            <span className="text-zinc-500"> · {s.databaseName}</span>
-                            {s.name && <span className="text-zinc-600"> · {s.name}</span>}
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-mono text-[11px] text-zinc-200">
+                              Momento: {s.finishDate ?? s.startDate}
+                            </span>
+                            <span className="block truncate text-[10px] text-zinc-600">
+                              Catena: {chain.map(c => `${typeLabel(c.type)} (pos ${c.position})`).join(' → ')}
+                            </span>
                           </span>
-                          <span className="shrink-0 font-mono text-[10px] text-zinc-500">
-                            {s.startDate} → {s.finishDate}
-                          </span>
+                          <span className="shrink-0 font-mono text-[10px] text-zinc-500">Pos. {s.position}</span>
                           <span className="shrink-0 text-right font-mono text-[10px] text-zinc-600">
                             {fmtBytes(s.sizeBytes)}
                           </span>
@@ -846,9 +909,15 @@ export default function MaintenanceDialog({
                     <div className="mt-2 grid gap-2 border-t border-zinc-800 pt-2 text-[11px] text-zinc-500 sm:grid-cols-2">
                       <div>LSN: {rSel.firstLsn} … {rSel.lastLsn}</div>
                       <div>Server: {rSel.serverName} · Checksum: {rSel.hasChecksums ? 'sì' : 'no'}</div>
+                      {rChain && rChain.length > 1 && (
+                        <div className="text-amber-300/90">
+                          Catena richiesta ({rChain.length} set):{' '}
+                          {rChain.map(c => `${typeLabel(c.type)} (pos ${c.position})`).join(' → ')}
+                        </div>
+                      )}
                       {rSel.type === 2 && (
                         <div className="text-sky-400/90">
-                          Periodo coperto: {rSel.startDate} — {rSel.finishDate}
+                          Periodo coperto dal log: {rSel.startDate} — {rSel.finishDate}
                         </div>
                       )}
                     </div>
@@ -974,10 +1043,15 @@ export default function MaintenanceDialog({
                     </div>
                   )}
 
-                  <div className="mt-3">
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
                     <Button onClick={() => void runRestore()} loading={rBusy} variant={rReplace ? 'danger' : 'primary'}>
                       <RotateCcw className="h-4 w-4" /> Ripristina set {rSel.position}
                     </Button>
+                    {rChain && rChain.length > 1 && (
+                      <Button variant="secondary" onClick={() => void runChainRestore()} loading={rBusy}>
+                        <GitMerge className="h-4 w-4" /> Ripristina la catena ({rChain.length} set) fino a questo punto
+                      </Button>
+                    )}
                   </div>
                 </div>
               )}
