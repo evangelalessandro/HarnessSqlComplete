@@ -543,27 +543,32 @@ export default function SqlEditor({
             // Oggetti dopo DROP/TRUNCATE/ALTER/USE (niente tabelle generiche)
             const objKind = detectObjectNameContext(textBefore)
             if (objKind) {
-              const pushObj = (label: string, detail: string, insertText: string) =>
+              const pushObj = (
+                label: string,
+                detail: string,
+                insertText: string,
+                kind: monaco.languages.CompletionItemKind,
+              ) =>
                 push({
                   label,
                   detail,
-                  kind: monaco.languages.CompletionItemKind.Struct,
+                  kind,
                   insertText,
                   range,
                   filterText: label.split('.').pop() ?? label,
                 })
               if (objKind === 'table') {
-                for (const t of st.summary.tables) pushObj(qualified(t.schema, t.name), `${t.columnCount} col.`, qualified(t.schema, t.name))
+                for (const t of st.summary.tables) pushObj(qualified(t.schema, t.name), `${t.columnCount} col.`, qualified(t.schema, t.name), monaco.languages.CompletionItemKind.Struct)
               } else if (objKind === 'view') {
-                for (const v of st.summary.views) pushObj(qualified(v.schema, v.name), 'vista', qualified(v.schema, v.name))
+                for (const v of st.summary.views) pushObj(qualified(v.schema, v.name), 'vista', qualified(v.schema, v.name), monaco.languages.CompletionItemKind.Interface)
               } else if (objKind === 'procedure') {
-                for (const p of st.summary.procedures) pushObj(qualified(p.schema, p.name), `proc · ${p.parameters?.length ?? 0} param.`, qualified(p.schema, p.name))
+                for (const p of st.summary.procedures) pushObj(qualified(p.schema, p.name), `proc · ${p.parameters?.length ?? 0} param.`, qualified(p.schema, p.name), monaco.languages.CompletionItemKind.Function)
               } else if (objKind === 'function') {
-                for (const f of st.summary.functions) pushObj(qualified(f.schema, f.name), f.type, qualified(f.schema, f.name))
+                for (const f of st.summary.functions) pushObj(qualified(f.schema, f.name), f.type, qualified(f.schema, f.name), monaco.languages.CompletionItemKind.Method)
               } else if (objKind === 'trigger') {
-                for (const tr of st.summary.triggers) pushObj(qualified(tr.schema, tr.name), tr.tableName, qualified(tr.schema, tr.name))
+                for (const tr of st.summary.triggers) pushObj(qualified(tr.schema, tr.name), tr.tableName, qualified(tr.schema, tr.name), monaco.languages.CompletionItemKind.Event)
               } else if (objKind === 'database') {
-                for (const d of st.summary.databases) pushObj(d.name, 'database', d.name)
+                for (const d of st.summary.databases) pushObj(d.name, 'database', d.name, monaco.languages.CompletionItemKind.Folder)
               }
               return { suggestions }
             }
@@ -1079,7 +1084,7 @@ export default function SqlEditor({
               push({
                 label: `${v.schema}.${v.name}`,
                 detail: 'vista',
-                kind: monaco.languages.CompletionItemKind.Class,
+                kind: monaco.languages.CompletionItemKind.Interface,
                 insertText: qualified(v.schema, v.name),
                 range,
               })
