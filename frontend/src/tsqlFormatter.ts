@@ -213,11 +213,43 @@ const cleanInline = (text: string) =>
     .replace(/\s+/g, ' ')
     .trim()
 
+/** Statement puri che meritano il layout "routine": CTE (WITH … AS (…) + statement)
+ *  oppure SELECT con almeno 2 assegnazioni "@var = …" a livello top. */
+function needsStatementLayout(sql: string): boolean {
+  const tokens = tokenizeSqlText(sql).filter(t => t.type !== 'comment')
+  const meaningful = tokens.filter(t => t.type !== 'string')
+  if (meaningful.length === 0) return false
+  let i = 0
+  if (meaningful[i]?.type === 'punct' && meaningful[i].text === ';') i++
+  if (meaningful[i]?.type === 'word' && meaningful[i].text.toUpperCase() === 'WITH') return true
+  if (!(meaningful[i]?.type === 'word' && meaningful[i].text.toUpperCase() === 'SELECT')) return false
+  // conta le assegnazioni "@var =" a profondità 0 (pattern "@word" seguito da "=")
+  let depth = 0
+  let assigns = 0
+  for (let k = 0; k < meaningful.length - 1; k++) {
+    const t = meaningful[k]
+    if (t.type === 'punct') {
+      if (t.text === '(') depth++
+      else if (t.text === ')') depth = Math.max(0, depth - 1)
+      continue
+    }
+    if (depth === 0 && t.type === 'word' && t.text.startsWith('@')) {
+      const next = meaningful[k + 1]
+      if (next.type === 'punct' && next.text === '=') assigns++
+    }
+  }
+  return assigns >= 2
+}
+
 /**
  * Formatta una query semplice secondo il profilo (motore query: clausole su righe proprie).
  */
 export function formatSqlWithProfile(sql: string, profile: FormatProfile): string {
   if (isRoutineText(sql)) return formatRoutineWithProfile(sql, profile)
+  // statement "a blocchi" senza parole procedurali (es. selezione di un CTE o di una
+  // SELECT TOP n @a=…): il motore delle routine ha il layout CTE/assegnazioni/condizioni
+  // che il motore query non possiede
+  if (needsStatementLayout(sql)) return formatRoutineWithProfile(sql, profile)
   const tokens = tokenizeSqlText(sql)
   if (tokens.length === 0) return sql
 
@@ -954,14 +986,9 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       continue
     }
 
-    // SELECT / INSERT / UPDATE / DELETE / SET: statement con clausole, con eventuale CASE inline
-    const caseLines = splitCaseLines(segment, up)
-    if (caseLines.length > 1) {
-      // il CASE inline viene spezzato su righe proprie indentate
-      caseLines.forEach(cl => pushLine(cl.text, lineIndent + cl.delta))
-    } else {
-      // SELECT TOP n @a = …, @b = … FROM … WHERE …: layout "a colonna" (assegnazioni
-      // verticali con virgola iniziale, condizioni AND/OR su righe proprie, ORDER BY per item)
+    // SELECT / INSERT / UPDATE / DELETE / SET: statement con clausole, con eventuale CASE inline.
+    // Prima il layout "a colonna" (SELECT TOP n @a = …, @b = …), poi CASE, poi clausole semplici.
+    {
       const unit = profile.tabSize || 2
       const basePad = ' '.repeat(lineIndent * unit)
       const assLayout = selectAssignmentLayout(segment, up, unit, basePad)
@@ -970,20 +997,26 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
         for (const row of assLayout) pushRawLine(row)
         continue
       }
-      // statement con clausole FROM/JOIN/WHERE…: spezza le clausole su righe proprie
-      // (come il motore delle query semplici) invece di compattare tutto su una riga
-      const clauseRows = splitStatementClauses(segment, up)
-      if (clauseRows.length > 1) {
-        clauseRows.forEach((r, idx) => {
-          // la prima riga (INSERT INTO t / SELECT …) all'indent dello statement;
-          // le clausole (SELECT, FROM, JOIN, WHERE…) un livello più in profondità
-          for (const sub of rowsNoDashEat(r.tokens, up))
-            pushLine(sub, idx === 0 ? lineIndent : lineIndent + 1)
-        })
+      const caseLines = splitCaseLines(segment, up)
+      if (caseLines.length > 1) {
+        // il CASE inline viene spezzato su righe proprie indentate
+        caseLines.forEach(cl => pushLine(cl.text, lineIndent + cl.delta))
       } else {
-        // un commento "--" dentro lo statement chiude la riga: il codice dopo NON deve
-        // finire commentato sulla stessa riga (romperebbe la query)
-        rowsNoDashEat(segment, up).forEach((r, idx) => pushLine(r, idx === 0 ? lineIndent : lineIndent + 1))
+        // statement con clausole FROM/JOIN/WHERE…: spezza le clausole su righe proprie
+        // (come il motore delle query semplici) invece di compattare tutto su una riga
+        const clauseRows = splitStatementClauses(segment, up)
+        if (clauseRows.length > 1) {
+          clauseRows.forEach((r, idx) => {
+            // la prima riga (INSERT INTO t / SELECT …) all'indent dello statement;
+            // le clausole (SELECT, FROM, JOIN, WHERE…) un livello più in profondità
+            for (const sub of rowsNoDashEat(r.tokens, up))
+              pushLine(sub, idx === 0 ? lineIndent : lineIndent + 1)
+          })
+        } else {
+          // un commento "--" dentro lo statement chiude la riga: il codice dopo NON deve
+          // finire commentato sulla stessa riga (romperebbe la query)
+          rowsNoDashEat(segment, up).forEach((r, idx) => pushLine(r, idx === 0 ? lineIndent : lineIndent + 1))
+        }
       }
     }
   }
@@ -1081,6 +1114,10 @@ function selectAssignmentLayout(
   const groups = splitStatementClauses(segment, up)
   if (groups.length < 2) return null
   const head = groups[0].tokens
+  // se la lista di assegnazioni contiene commenti di riga "--" (es. i "--when" disabilitati
+  // dentro un CASE) il layout a colonna li appiattirebbe su una riga (codice commentato):
+  // si ripiega sul percorso CASE/clausole che li spezza su righe proprie.
+  if (head.some(t => t.type === 'comment' && t.text.startsWith('--'))) return null
 
   // separa "SELECT TOP 1" dalla lista di assegnazioni "@var = …"
   const varStart = head.findIndex(t => t.type === 'word' && t.text.startsWith('@'))
@@ -1151,18 +1188,24 @@ function selectAssignmentLayout(
   return out.filter(Boolean)
 }
 
-/** Righe delle condizioni WHERE/HAVING: AND/OR su riga propria, parentesi indentate. */
+/** Righe delle condizioni WHERE/HAVING: AND/OR su riga propria, parentesi indentate,
+ *  ed eventuale CASE espanso (… = CASE WHEN … END) su righe proprie. */
 function conditionRows(basePad: string, tokens: Token[], up: (t: Token) => string, unit: number): string[] {
   const out: string[] = []
   let buf: Token[] = []
   let open = 0
   let first = true
   const flush = (colPad: string) => {
-    if (buf.length > 0) {
+    if (buf.length === 0) return
+    const hasCase = buf.some(t => t.type === 'word' && t.text.toUpperCase() === 'CASE')
+    if (hasCase) {
+      const cls = splitCaseLines(buf, up)
+      for (const cl of cls) out.push(`${colPad}${' '.repeat(cl.delta * unit)}${cl.text}`)
+    } else {
       const rows = rowsNoDashEat(buf, up)
       for (const r of rows) out.push(`${colPad}${cleanInline(r)}`)
-      buf = []
     }
+    buf = []
   }
   for (const t of tokens) {
     const upper = t.type === 'word' ? t.text.toUpperCase() : ''
