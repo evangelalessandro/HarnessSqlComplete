@@ -63,6 +63,75 @@ export default function App() {
   // Impostazioni editor (font e tema)
   const [settings, setSettings] = useState<EditorSettings>(() => loadSettings())
 
+  // --- Split editor/risultati: percentuale dell'editor (divider trascinabile) e visibilità risultati (Ctrl+R) ---
+  const [editorPct, setEditorPct] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem('sql-intelli:split-pct') ?? 52)
+      return Number.isFinite(v) ? Math.min(85, Math.max(15, v)) : 52
+    } catch {
+      return 52
+    }
+  })
+  const [resultsVisible, setResultsVisible] = useState<boolean>(() => {
+    try {
+      return (localStorage.getItem('sql-intelli:split-results') ?? '1') !== '0'
+    } catch {
+      return true
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('sql-intelli:split-pct', String(editorPct))
+    } catch {
+      /* ignora */
+    }
+  }, [editorPct])
+  useEffect(() => {
+    try {
+      localStorage.setItem('sql-intelli:split-results', resultsVisible ? '1' : '0')
+    } catch {
+      /* ignora */
+    }
+  }, [resultsVisible])
+
+  const editorPaneRef = useRef<HTMLDivElement | null>(null)
+  const resultsPaneRef = useRef<HTMLDivElement | null>(null)
+  const splitDrag = useRef<{ startY: number; startPct: number; totalH: number } | null>(null)
+
+  const startSplitDrag = (e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const totalH =
+      (editorPaneRef.current?.offsetHeight ?? 0) + (resultsPaneRef.current?.offsetHeight ?? 0)
+    if (totalH <= 0) return
+    splitDrag.current = { startY: e.clientY, startPct: editorPct, totalH }
+    const onMove = (ev: MouseEvent) => {
+      const d = splitDrag.current
+      if (!d) return
+      const next = Math.min(85, Math.max(15, d.startPct + ((ev.clientY - d.startY) / d.totalH) * 100))
+      setEditorPct(next)
+    }
+    const onUp = () => {
+      splitDrag.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  // Ctrl+R (o Cmd+R): nasconde/mostra il pannello dei risultati (evita il refresh del browser)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+        e.preventDefault()
+        setResultsVisible(v => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   // Layout dei pannelli: larghezza della sidebar e pannello agganciato a destra (persistiti)
   const [layout, setLayout] = useState<{
     sidebarWidth: number
@@ -801,9 +870,15 @@ export default function App() {
           )}
 
           <div
-            className="h-[52%] min-h-44 shrink-0"
-            style={{ border: `2px solid ${activeDbColor}` }}
-            title={`Query su database: ${activeDbName}`}
+            ref={editorPaneRef}
+            className="shrink-0"
+            style={{
+              flexGrow: resultsVisible ? editorPct : 1,
+              flexBasis: 0,
+              border: `2px solid ${activeDbColor}`,
+              minHeight: 0,
+            }}
+            title={`Query su database: ${activeDbName} — trascina il divisore sotto per ridimensionare`}
           >
             {activeEditorTab ? (
               <SqlEditor
@@ -842,31 +917,47 @@ export default function App() {
             )}
           </div>
 
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-900/40 px-2">
-              <TabButton
-                active={activeResultTab === 'results'}
-                onClick={() => setActiveResultTab('results')}
-                icon={<Table2 className="h-4 w-4" />}
-                label="Risultati"
-                count={activeResult?.resultSets.length}
-              />
-              <TabButton
-                active={activeResultTab === 'print'}
-                onClick={() => setActiveResultTab('print')}
-                icon={<TerminalSquare className="h-4 w-4" />}
-                label="Messaggi / PRINT"
-                count={activeResult?.messages.length}
-              />
+          {resultsVisible && (
+            <div
+              onMouseDown={startSplitDrag}
+              className="group relative z-10 flex h-1.5 shrink-0 cursor-row-resize items-center justify-center border-y border-zinc-800 bg-zinc-900/80 hover:bg-sky-950/60"
+              title="Trascina per ridimensionare editor/risultati"
+            >
+              <div className="h-0.5 w-10 rounded bg-zinc-700 group-hover:bg-sky-400" />
             </div>
-            <div className="min-h-0 flex-1">
-              {activeResultTab === 'results' ? (
-                <ResultsPanel result={activeResult} executing={activeExecuting} />
-              ) : (
-                <PrintPanel result={activeResult} />
-              )}
+          )}
+
+          {resultsVisible && (
+            <div
+              ref={resultsPaneRef}
+              className="flex min-h-0 flex-col"
+              style={{ flexGrow: 100 - editorPct, flexBasis: 0 }}
+            >
+              <div className="flex shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-900/40 px-2">
+                <TabButton
+                  active={activeResultTab === 'results'}
+                  onClick={() => setActiveResultTab('results')}
+                  icon={<Table2 className="h-4 w-4" />}
+                  label="Risultati"
+                  count={activeResult?.resultSets.length}
+                />
+                <TabButton
+                  active={activeResultTab === 'print'}
+                  onClick={() => setActiveResultTab('print')}
+                  icon={<TerminalSquare className="h-4 w-4" />}
+                  label="Messaggi / PRINT"
+                  count={activeResult?.messages.length}
+                />
+              </div>
+              <div className="min-h-0 flex-1">
+                {activeResultTab === 'results' ? (
+                  <ResultsPanel result={activeResult} executing={activeExecuting} />
+                ) : (
+                  <PrintPanel result={activeResult} />
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </main>
 
         {/* Colonna destra: ospita il pannello agganciato a destra (contenuto portato dalla Sidebar) */}
