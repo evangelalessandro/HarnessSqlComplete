@@ -185,3 +185,30 @@ END`
     expect(selectIdx).toBeGreaterThan(grantIdx)
   })
 })
+
+describe('formatRoutineWithProfile: DECLARE con variabili allineate (stile SQL Prompt)', () => {
+  it('virgole in colonna e tipi allineati su più variabili', () => {
+    const sql = `declare @nDestinationType int, @nSourceBay int, @nDstPitchLeft int = 0, @sTipoUdc nvarchar(5), @bIsEvacuation bit`
+    const out = formatRoutineWithProfile(sql, profile)
+    const lines = out.split('\n').filter(l => l.trim().length > 0)
+    expect(lines).toHaveLength(5)
+    expect(lines[0]).toBe('DECLARE @nDestinationType INT')
+    expect(lines[1]).toBe('       ,@nSourceBay       INT')
+    expect(lines[2]).toBe('       ,@nDstPitchLeft    INT = 0')
+    expect(lines[3]).toBe('       ,@sTipoUdc         NVARCHAR(5)')
+    expect(lines[4]).toBe('       ,@bIsEvacuation    BIT')
+  })
+
+  it('DECLARE annidato in un blocco mantiene l\'indentazione base e l\'allineamento', () => {
+    const sql = `begin
+  declare @a int, @bb nvarchar(10)
+end`
+    const out = formatRoutineWithProfile(sql, profile)
+    const lines = out.split('\n').filter(l => l.trim().length > 0)
+    // indentazione base (2 spazi dentro BEGIN) + allineamento tipi nella stessa colonna
+    expect(lines.find(l => l.includes('DECLARE'))).toMatch(/^  DECLARE @a +INT$/)
+    const decl = lines.findIndex(l => l.includes('DECLARE'))
+    expect(lines[decl]).toBe('  DECLARE @a  INT')
+    expect(lines[decl + 1]).toBe('         ,@bb NVARCHAR(10)')
+  })
+})

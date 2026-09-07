@@ -418,14 +418,9 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
   const lines: Row[] = []
   let indent = 0
 
-  const pushLine = (text: string, ind?: number) => {
-    const indN = ind ?? indent
-    // commento a blocco multilinea: preserva le righe interne (niente pulizia/spazi)
-    if (text.startsWith('/*') && text.includes('\n')) {
-      lines.push({ indent: indN, text })
-      return
-    }
-    const clean = text
+  // Pulizia di una riga/porzione "inline": spaziature attorno a punteggiatura e tipi.
+  const cleanInline = (text: string) =>
+    text
       .replace(/\s*\.\s*/g, '.')
       .replace(/\s*,/g, ',')
       .replace(/\(\s+/g, '(')
@@ -434,7 +429,23 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       .replace(/\b(NVARCHAR|VARCHAR|NCHAR|CHAR|DECIMAL|NUMERIC|BINARY|VARBINARY|DATETIME2|DATETIMEOFFSET)\s*\(/gi, '$1(')
       .replace(/\s+/g, ' ')
       .trim()
+
+  const pushLine = (text: string, ind?: number) => {
+    const indN = ind ?? indent
+    // commento a blocco multilinea: preserva le righe interne (niente pulizia/spazi)
+    if (text.startsWith('/*') && text.includes('\n')) {
+      lines.push({ indent: indN, text })
+      return
+    }
+    const clean = cleanInline(text)
     if (clean.length > 0) lines.push({ indent: indN, text: clean })
+  }
+
+  // Riga già formattata con spaziature significative (allineamenti a colonna):
+  // nessuna pulizia dello whitespace interno. text include l'indentazione base.
+  const pushRawLine = (text: string) => {
+    const t = text.replace(/\s+$/, '')
+    if (t.length > 0) lines.push({ indent: 0, text: t })
   }
 
   // Passo 1: separa la firma (CREATE/ALTER ... fino alla parentesi di chiusura + AS) dal corpo
@@ -828,7 +839,10 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       lineIndent = indent
     }
 
-    // DECLARE: variabili su righe proprie con virgola iniziale
+    // DECLARE: variabili su righe proprie con virgola iniziale e TIPI ALLINEATI in colonna
+    // (stile SQL Prompt):
+    //   DECLARE @nDestinationType INT
+    //          ,@nSourceBay       INT
     if (firstUpper === 'DECLARE') {
       const vars: string[][] = []
       let cur: string[] = []
@@ -847,6 +861,38 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
         cur.push(up(t))
       }
       if (cur.length > 0) vars.push(cur)
+
+      // estrai per ogni riga: nome variabile, tipo e valore iniziale ("= ...")
+      const parsed = vars.map((row, idx) => {
+        const start = idx === 0 ? 1 : 0 // la prima riga inizia con "DECLARE"
+        const name = row[start]
+        if (!name || !name.startsWith('@')) return null
+        const rest = row.slice(start + 1)
+        const eq = rest.indexOf('=')
+        return {
+          name,
+          type: eq === -1 ? rest : rest.slice(0, eq),
+          val: eq === -1 ? [] : rest.slice(eq),
+        }
+      })
+
+      if (parsed.length > 1 && parsed.every(p => p !== null)) {
+        const unit = profile.tabSize || 2
+        const basePad = ' '.repeat(lineIndent * unit)
+        const maxName = Math.max(...parsed.map(p => p!.name.length))
+        parsed.forEach((p, i) => {
+          const gap = maxName - p!.name.length + 1
+          const tail = cleanInline(p!.type.join(' ') + (p!.val.length > 0 ? ` ${p!.val.join(' ')}` : ''))
+          if (i === 0) {
+            pushRawLine(`${basePad}DECLARE ${p!.name}${' '.repeat(gap)}${tail}`)
+          } else {
+            // virgola allineata sotto lo spazio dopo "DECLARE" (colonna fissa)
+            pushRawLine(`${basePad}${' '.repeat('DECLARE'.length)},${p!.name}${' '.repeat(gap)}${tail}`)
+          }
+        })
+        continue
+      }
+
       vars.forEach((v, idx) => {
         if (idx === 0) pushLine(v.join(' '), lineIndent)
         else pushLine(`,` + v.join(' '), lineIndent)
