@@ -201,6 +201,18 @@ export function isRoutineText(sql: string): boolean {
   return false
 }
 
+// Pulizia di una riga/porzione "inline": spaziature attorno a punteggiatura e tipi.
+const cleanInline = (text: string) =>
+  text
+    .replace(/\s*\.\s*/g, '.')
+    .replace(/\s*,/g, ',')
+    .replace(/\(\s+/g, '(')
+    .replace(/\s+\)/g, ')')
+    // niente spazio tra tipo e parentesi: NVARCHAR(max), DECIMAL(18,2)
+    .replace(/\b(NVARCHAR|VARCHAR|NCHAR|CHAR|DECIMAL|NUMERIC|BINARY|VARBINARY|DATETIME2|DATETIMEOFFSET)\s*\(/gi, '$1(')
+    .replace(/\s+/g, ' ')
+    .trim()
+
 /**
  * Formatta una query semplice secondo il profilo (motore query: clausole su righe proprie).
  */
@@ -417,18 +429,6 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
 
   const lines: Row[] = []
   let indent = 0
-
-  // Pulizia di una riga/porzione "inline": spaziature attorno a punteggiatura e tipi.
-  const cleanInline = (text: string) =>
-    text
-      .replace(/\s*\.\s*/g, '.')
-      .replace(/\s*,/g, ',')
-      .replace(/\(\s+/g, '(')
-      .replace(/\s+\)/g, ')')
-      // niente spazio tra tipo e parentesi: NVARCHAR(max), DECIMAL(18,2)
-      .replace(/\b(NVARCHAR|VARCHAR|NCHAR|CHAR|DECIMAL|NUMERIC|BINARY|VARBINARY|DATETIME2|DATETIMEOFFSET)\s*\(/gi, '$1(')
-      .replace(/\s+/g, ' ')
-      .trim()
 
   const pushLine = (text: string, ind?: number) => {
     const indN = ind ?? indent
@@ -960,6 +960,16 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       // il CASE inline viene spezzato su righe proprie indentate
       caseLines.forEach(cl => pushLine(cl.text, lineIndent + cl.delta))
     } else {
+      // SELECT TOP n @a = …, @b = … FROM … WHERE …: layout "a colonna" (assegnazioni
+      // verticali con virgola iniziale, condizioni AND/OR su righe proprie, ORDER BY per item)
+      const unit = profile.tabSize || 2
+      const basePad = ' '.repeat(lineIndent * unit)
+      const assLayout = selectAssignmentLayout(segment, up, unit, basePad)
+      if (assLayout) {
+        flushLine()
+        for (const row of assLayout) pushRawLine(row)
+        continue
+      }
       // statement con clausole FROM/JOIN/WHERE…: spezza le clausole su righe proprie
       // (come il motore delle query semplici) invece di compattare tutto su una riga
       const clauseRows = splitStatementClauses(segment, up)
@@ -1044,6 +1054,168 @@ function splitCaseLines(segment: Token[], up: (t: Token) => string): CaseLine[] 
     cur.push(t)
   }
   if (cur.length > 0) flush(curDelta)
+  return out
+}
+
+/**
+ * SELECT TOP n @a = expr, @b = expr … FROM … WHERE …: impaginazione "SQL Prompt":
+ *   SELECT TOP 1
+ *      @nDestBay           = BCO_BAIA
+ *     ,@nDestPitch         = PZ_PIAZZOLA
+ *   FROM dbo.T
+ *     INNER JOIN dbo.U ON (…)
+ *   WHERE cond1
+ *         AND cond2
+ *           OR (…)
+ *   ORDER BY a
+ *           ,b
+ * Restituisce righe già complete (testo + indentazione) o null se lo statement non
+ * è di questo tipo (in tal caso si usa il layout a clausole semplice).
+ */
+function selectAssignmentLayout(
+  segment: Token[],
+  up: (t: Token) => string,
+  unit: number,
+  basePad: string,
+): string[] | null {
+  const groups = splitStatementClauses(segment, up)
+  if (groups.length < 2) return null
+  const head = groups[0].tokens
+
+  // separa "SELECT TOP 1" dalla lista di assegnazioni "@var = …"
+  const varStart = head.findIndex(t => t.type === 'word' && t.text.startsWith('@'))
+  if (varStart <= 0) return null
+  let depth = 0
+  const items: Token[][] = []
+  let cur: Token[] = []
+  const flushItem = () => {
+    if (cur.length > 0) {
+      items.push(cur)
+      cur = []
+    }
+  }
+  for (let i = varStart; i < head.length; i++) {
+    const t = head[i]
+    if (t.type === 'punct') {
+      if (t.text === '(') depth++
+      else if (t.text === ')') depth = Math.max(0, depth - 1)
+    }
+    if (t.type === 'punct' && t.text === ',' && depth === 0) {
+      flushItem()
+      continue
+    }
+    cur.push(t)
+  }
+  flushItem()
+  const isAssign = (toks: Token[]) =>
+    toks.length > 1 &&
+    toks[0].type === 'word' &&
+    toks[0].text.startsWith('@') &&
+    toks.some(x => x.type === 'punct' && x.text === '=')
+  if (items.length < 2 || !items.every(isAssign)) return null
+
+  const header = head.slice(0, varStart).map(up).join(' ')
+  const out: string[] = []
+  out.push(`${basePad}${cleanInline(header)}`)
+
+  const maxVar = Math.max(...items.map(it => it[0].text.length))
+  items.forEach((it, idx) => {
+    const name = it[0].text
+    const after = it.slice(1) // inizia con '='
+    const gap = maxVar - name.length + 1
+    const tail = cleanInline(after.map(up).join(' '))
+    if (idx === 0) {
+      out.push(`${basePad}   ${name}${' '.repeat(gap)}${tail}`)
+    } else {
+      out.push(`${basePad}  ,${name}${' '.repeat(gap)}${tail}`)
+    }
+  })
+
+  // clausole successive: FROM / JOIN / WHERE / GROUP / HAVING / ORDER / UNION / OUTPUT
+  for (let g = 1; g < groups.length; g++) {
+    const tokens = groups[g].tokens
+    const first = tokens[0]
+    const kw = first.type === 'word' ? first.text.toUpperCase() : ''
+    if (kw === 'FROM' || kw === 'OUTPUT' || kw === 'UNION') {
+      const r = rowsNoDashEat(tokens, up)[0]
+      if (r) out.push(`${basePad}${cleanInline(r)}`)
+    } else if (kw === 'INNER' || kw === 'LEFT' || kw === 'RIGHT' || kw === 'FULL' || kw === 'CROSS' || kw === 'JOIN' || kw === 'APPLY') {
+      const r = rowsNoDashEat(tokens, up)[0]
+      if (r) out.push(`${basePad}${' '.repeat(unit)}${cleanInline(r)}`)
+    } else if (kw === 'WHERE' || kw === 'HAVING') {
+      out.push(...conditionRows(basePad, tokens, up, unit))
+    } else if (kw === 'ORDER' || kw === 'GROUP') {
+      out.push(...listRows(basePad, tokens, up, `${kw} BY `))
+    }
+  }
+  return out.filter(Boolean)
+}
+
+/** Righe delle condizioni WHERE/HAVING: AND/OR su riga propria, parentesi indentate. */
+function conditionRows(basePad: string, tokens: Token[], up: (t: Token) => string, unit: number): string[] {
+  const out: string[] = []
+  let buf: Token[] = []
+  let open = 0
+  let first = true
+  const flush = (colPad: string) => {
+    if (buf.length > 0) {
+      const rows = rowsNoDashEat(buf, up)
+      for (const r of rows) out.push(`${colPad}${cleanInline(r)}`)
+      buf = []
+    }
+  }
+  for (const t of tokens) {
+    const upper = t.type === 'word' ? t.text.toUpperCase() : ''
+    if ((upper === 'AND' || upper === 'OR') && buf.length > 0) {
+      flush(first ? basePad : `${basePad}${' '.repeat(unit * (3 + open))}`)
+      first = false
+      buf.push(t)
+      continue
+    }
+    buf.push(t)
+    if (t.type === 'punct') {
+      if (t.text === '(') open++
+      else if (t.text === ')') open = Math.max(0, open - 1)
+    }
+  }
+  flush(first ? basePad : `${basePad}${' '.repeat(unit * (3 + open))}`)
+  return out
+}
+
+/** ORDER BY / GROUP BY: ogni elemento su riga propria con virgola allineata sotto il primo. */
+function listRows(basePad: string, tokens: Token[], up: (t: Token) => string, kw: string): string[] {
+  let open = 0
+  const items: Token[][] = []
+  let cur: Token[] = []
+  const flushItem = () => {
+    if (cur.length > 0) {
+      items.push(cur)
+      cur = []
+    }
+  }
+  for (const t of tokens) {
+    if (t.type === 'punct') {
+      if (t.text === '(') open++
+      else if (t.text === ')') open = Math.max(0, open - 1)
+    }
+    if (t.type === 'punct' && t.text === ',' && open === 0) {
+      flushItem()
+      continue
+    }
+    cur.push(t)
+  }
+  flushItem()
+  const out: string[] = []
+  const kwTrim = kw.trim()
+  items.forEach((it, i) => {
+    const text = cleanInline(it.map(up).join(' '))
+    if (i === 0) {
+      // il primo item contiene già la keyword (ORDER BY …) quando il gruppo inizia con essa
+      out.push(`${basePad}${text.toLowerCase().startsWith(kwTrim.toLowerCase()) ? text : `${kwTrim} ${text}`}`)
+    } else {
+      out.push(`${basePad}${' '.repeat(kw.length)} ,${text}`)
+    }
+  })
   return out
 }
 
