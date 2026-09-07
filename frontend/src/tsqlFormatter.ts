@@ -933,6 +933,15 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       continue
     }
 
+    // ; WITH <nome> AS ( SELECT … ) — CTE: apre su righe proprie con la parentesi
+    // prima della SELECT interna, e spezza le clausole della subquery (FROM/JOIN/WHERE).
+    const cteLayout = layoutCteSegment(segment, up)
+    if (cteLayout) {
+      flushLine()
+      for (const r of cteLayout) pushLine(r.text, lineIndent + r.ind)
+      continue
+    }
+
     // SELECT / INSERT / UPDATE / DELETE / SET: statement con clausole, con eventuale CASE inline
     const caseLines = splitCaseLines(segment, up)
     if (caseLines.length > 1) {
@@ -1056,6 +1065,107 @@ const CLAUSE_STARTERS = new Set([
   'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS',
 ])
 const JOIN_MODIFIERS = new Set(['INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS'])
+
+/** Riga relativa di un layout CTE (ind relativo all'indent dello statement). */
+interface CteRow {
+  ind: number
+  text: string
+}
+
+/**
+ * Riconosce un segmento "; WITH … AS (SELECT …)" (una o più CTE) e lo impagina su più
+ * righe con la parentesi PRIMA della SELECT interna:
+ *   ;WITH NOME [commento] AS
+ *   (
+ *       SELECT …
+ *       FROM …
+ *       INNER JOIN …
+ *   )
+ * Restituisce null se il segmento non è un CTE (così lo statement prosegue normalmente).
+ */
+function layoutCteSegment(segment: Token[], up: (t: Token) => string): CteRow[] | null {
+  let i = 0
+  if (segment[i]?.type === 'punct' && segment[i].text === ';') i++
+  if (!(segment[i]?.type === 'word' && segment[i].text.toUpperCase() === 'WITH')) return null
+  if (i === segment.length - 1) return null
+
+  const out: CteRow[] = []
+  let depth = 0
+  // trova l'indice di AS a profondità 0 (salta l'eventuale elenco colonne "nome (a, b)")
+  let asIdx = -1
+  for (let k = i + 1; k < segment.length; k++) {
+    const t = segment[k]
+    if (t.type === 'punct') {
+      if (t.text === '(') depth++
+      else if (t.text === ')') depth = Math.max(0, depth - 1)
+      continue
+    }
+    if (depth === 0 && t.type === 'word' && t.text.toUpperCase() === 'AS') {
+      asIdx = k
+      break
+    }
+  }
+  if (asIdx === -1) return null
+
+  // header: "; WITH nome [AS]" (+ eventuali commenti prima della "(")
+  let openIdx = -1
+  for (let k = asIdx + 1; k < segment.length; k++) {
+    const t = segment[k]
+    if (t.type === 'comment') continue
+    if (t.type === 'punct' && t.text === '(') {
+      openIdx = k
+      break
+    }
+    return null // ci si aspetta "(" subito dopo AS
+  }
+  if (openIdx === -1) return null
+
+  const headerTokens = segment.slice(0, openIdx)
+  out.push({ ind: 0, text: headerTokens.map(up).join(' ').replace(/\s+/g, ' ').trim() })
+  out.push({ ind: 0, text: '(' })
+
+  // corpo: fino alla ")" bilanciata
+  let par = 0
+  let closeIdx = -1
+  for (let k = openIdx; k < segment.length; k++) {
+    const t = segment[k]
+    if (t.type === 'punct') {
+      if (t.text === '(') par++
+      else if (t.text === ')') {
+        par--
+        if (par === 0) {
+          closeIdx = k
+          break
+        }
+      }
+    }
+  }
+  if (closeIdx === -1) return null
+  const bodyTokens = segment.slice(openIdx + 1, closeIdx)
+
+  // impagina il corpo come uno statement a clausole (SELECT … FROM … WHERE …)
+  const groups = splitStatementClauses(bodyTokens, up)
+  let any = false
+  for (const g of groups) {
+    for (const row of rowsNoDashEat(g.tokens, up)) {
+      out.push({ ind: 1, text: row })
+      any = true
+    }
+  }
+  if (!any) return null
+  out.push({ ind: 0, text: ')' })
+
+  // CTE successive: ", NOME2 AS ( … )" — gestite ricorsivamente dopo la virgola a livello 0
+  const rest = segment.slice(closeIdx + 1)
+  const commaAt = rest.findIndex(t => t.type === 'punct' && t.text === ',')
+  if (commaAt !== -1) {
+    const next = layoutCteSegment(rest.slice(commaAt + 1), up)
+    if (next) {
+      for (const r of next) out.push(r)
+    }
+  }
+  return out
+}
 
 /**
  * Spezza un segmento statement (SELECT / INSERT…SELECT / UPDATE / DELETE) in gruppi di

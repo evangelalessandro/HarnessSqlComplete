@@ -213,6 +213,22 @@ END`
     expect(out).toMatch(/^    INNER JOIN dbo\.U ON \(T\.id = U\.id\)$/m)
     expect(out).toMatch(/^    WHERE x = 1 AND y = 2$/m)
   })
+
+  it(';WITH … AS (SELECT…): parentesi su riga propria PRIMA della SELECT interna', () => {
+    const sql = `BEGIN
+; WITH TBL_MASTER_BAYS /* Master bays list */ AS (SELECT DISTINCT b.BCO_BAIA AS FLD_MASTER_BAY, b.BCO_ABI AS FLD_MASTER_BAY_ABI FROM dbo.MAG_BAIE b INNER JOIN dbo.MAG_BAIE bm ON (bm.BCO_MASTER = b.BCO_BAIA))
+  SELECT TOP 1 @nDestBay = BCO_BAIA FROM dbo.MAG_BAIE WHERE BCO_MASTER = @nDestBayMaster
+END`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toMatch(/^  ; WITH TBL_MASTER_BAYS \/\* Master bays list \*\/ AS$/m)
+    expect(out).toMatch(/^  \($/m)
+    expect(out).toMatch(/^    SELECT DISTINCT b\.BCO_BAIA AS FLD_MASTER_BAY, b\.BCO_ABI AS FLD_MASTER_BAY_ABI$/m)
+    expect(out).toMatch(/^    FROM dbo\.MAG_BAIE b$/m)
+    expect(out).toMatch(/^    INNER JOIN dbo\.MAG_BAIE bm ON \(bm\.BCO_MASTER = b\.BCO_BAIA\)$/m)
+    expect(out).toMatch(/^  \)$/m)
+    // lo statement che usa la CTE segue su riga propria
+    expect(out).toMatch(/^  SELECT TOP 1 @nDestBay = BCO_BAIA$/m)
+  })
 })
 
 describe('formatRoutineWithProfile: DECLARE con variabili allineate (stile SQL Prompt)', () => {
