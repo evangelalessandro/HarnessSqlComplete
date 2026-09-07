@@ -127,12 +127,15 @@ describe('formatRoutineWithProfile: BEGIN ... non deve mai perdere il resto del 
 ROLLBACK`
     const out = formatRoutineWithProfile(sql, profile)
     expect(out).toContain('BEGIN TRANSACTION')
-    expect(out).toContain('SELECT * FROM dbo.MAG_BAIE_INTERNE ORDER BY 1 DESC')
+    expect(out).toContain('FROM dbo.MAG_BAIE_INTERNE')
     expect(out).toContain('IF 12 = 0')
     expect(out).toContain('ROLLBACK')
     // il blocco dopo BEGIN TRANSACTION è indentato
     expect(out).toMatch(/^BEGIN TRANSACTION$/m)
-    expect(out).toMatch(/^  SELECT \* FROM dbo\.MAG_BAIE_INTERNE ORDER BY 1 DESC$/m)
+    // SELECT con FROM/ORDER BY spezzati a clausole (come le query semplici)
+    expect(out).toMatch(/^  SELECT \*$/m)
+    expect(out).toMatch(/^    FROM dbo\.MAG_BAIE_INTERNE$/m)
+    expect(out).toMatch(/^    ORDER BY 1 DESC$/m)
   })
 
   it('BEGIN TRAN e BEGIN TRY/CATCH con il resto sulla stessa riga: testo preservato', () => {
@@ -183,6 +186,32 @@ END`
     const selectIdx = out.indexOf('SELECT 1')
     expect(grantIdx).toBeGreaterThanOrEqual(0)
     expect(selectIdx).toBeGreaterThan(grantIdx)
+  })
+})
+
+describe('formatRoutineWithProfile: SELECT/INSERT…SELECT con clausole spezzate (come le query semplici)', () => {
+  it('INSERT INTO … SELECT: FROM e JOIN a capo, niente riga unica', () => {
+    const sql = `BEGIN
+  INSERT INTO @tblPitches
+  SELECT ROW_NUMBER() OVER (ORDER BY GM_ORD_PIAZZ), BPZ_PIAZZOLA FROM dbo.MAG_BAIE_PIAZ INNER JOIN dbo.GESTORI_MODULI ON (GM_PIAZZOLA = BPZ_PIAZZOLA) WHERE BPZ_BAIA = @nDestBay AND BPZ_PIAZZOLA > 0
+END`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toMatch(/^  INSERT INTO @tblPitches$/m)
+    expect(out).toMatch(/^  SELECT ROW_NUMBER \(\) OVER \(ORDER BY GM_ORD_PIAZZ\), BPZ_PIAZZOLA$/m)
+    expect(out).toMatch(/^    FROM dbo\.MAG_BAIE_PIAZ$/m)
+    expect(out).toMatch(/^    INNER JOIN dbo\.GESTORI_MODULI ON \(GM_PIAZZOLA = BPZ_PIAZZOLA\)$/m)
+    expect(out).toMatch(/^    WHERE BPZ_BAIA = @nDestBay AND BPZ_PIAZZOLA > 0$/m)
+  })
+
+  it('SELECT semplice con FROM/JOIN/WHERE spezzati su più righe', () => {
+    const sql = `BEGIN
+  SELECT a, b FROM dbo.T INNER JOIN dbo.U ON (T.id = U.id) WHERE x = 1 AND y = 2
+END`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toMatch(/^  SELECT a, b$/m)
+    expect(out).toMatch(/^    FROM dbo\.T$/m)
+    expect(out).toMatch(/^    INNER JOIN dbo\.U ON \(T\.id = U\.id\)$/m)
+    expect(out).toMatch(/^    WHERE x = 1 AND y = 2$/m)
   })
 })
 

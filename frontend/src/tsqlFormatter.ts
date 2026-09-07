@@ -939,9 +939,21 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       // il CASE inline viene spezzato su righe proprie indentate
       caseLines.forEach(cl => pushLine(cl.text, lineIndent + cl.delta))
     } else {
-      // un commento "--" dentro lo statement chiude la riga: il codice dopo NON deve
-      // finire commentato sulla stessa riga (romperebbe la query)
-      rowsNoDashEat(segment, up).forEach((r, idx) => pushLine(r, idx === 0 ? lineIndent : lineIndent + 1))
+      // statement con clausole FROM/JOIN/WHERE…: spezza le clausole su righe proprie
+      // (come il motore delle query semplici) invece di compattare tutto su una riga
+      const clauseRows = splitStatementClauses(segment, up)
+      if (clauseRows.length > 1) {
+        clauseRows.forEach((r, idx) => {
+          // la prima riga (INSERT INTO t / SELECT …) all'indent dello statement;
+          // le clausole (SELECT, FROM, JOIN, WHERE…) un livello più in profondità
+          for (const sub of rowsNoDashEat(r.tokens, up))
+            pushLine(sub, idx === 0 ? lineIndent : lineIndent + 1)
+        })
+      } else {
+        // un commento "--" dentro lo statement chiude la riga: il codice dopo NON deve
+        // finire commentato sulla stessa riga (romperebbe la query)
+        rowsNoDashEat(segment, up).forEach((r, idx) => pushLine(r, idx === 0 ? lineIndent : lineIndent + 1))
+      }
     }
   }
 
@@ -1036,6 +1048,76 @@ function rowsNoDashEat(tokens: Token[], up: (t: Token) => string): string[] {
   }
   flush()
   return rows.map(r => r.replace(/\s+/g, ' ').trim()).filter(Boolean)
+}
+
+// Clausole che iniziano una riga propria dentro SELECT/INSERT…SELECT/UPDATE/DELETE
+const CLAUSE_STARTERS = new Set([
+  'FROM', 'WHERE', 'GROUP', 'HAVING', 'ORDER', 'UNION', 'OUTPUT', 'APPLY', 'JOIN',
+  'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS',
+])
+const JOIN_MODIFIERS = new Set(['INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS'])
+
+/**
+ * Spezza un segmento statement (SELECT / INSERT…SELECT / UPDATE / DELETE) in gruppi di
+ * clausole: la prima riga contiene l'intestazione (INSERT INTO t / SELECT lista…), poi
+ * FROM, JOIN, WHERE… ciascuna su un gruppo proprio — come fa il motore delle query
+ * semplici. Restituisce un solo gruppo se non ci sono clausole a livello top.
+ */
+function splitStatementClauses(segment: Token[], _up: (t: Token) => string): { tokens: Token[] }[] {
+  const first = segment[0]
+  const firstUpper = first.type === 'word' ? first.text.toUpperCase() : ''
+  if (!['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE'].includes(firstUpper)) return [{ tokens: segment }]
+
+  // attiva il layout a clausole solo se c'è almeno FROM/JOIN/APPLY a livello top
+  let depth = 0
+  let hasClause = false
+  for (const t of segment) {
+    if (t.type === 'punct') {
+      if (t.text === '(') depth++
+      else if (t.text === ')') depth = Math.max(0, depth - 1)
+      continue
+    }
+    if (depth === 0 && t.type === 'word' && (t.text.toUpperCase() === 'FROM' || t.text.toUpperCase() === 'JOIN' || t.text.toUpperCase() === 'APPLY')) {
+      hasClause = true
+      break
+    }
+  }
+  if (!hasClause) return [{ tokens: segment }]
+
+  const groups: { tokens: Token[] }[] = []
+  let cur: Token[] = []
+  let par = 0
+  const startsSegment = firstUpper === 'SELECT'
+  const flush = () => {
+    if (cur.length > 0) groups.push({ tokens: cur })
+    cur = []
+  }
+  for (let i = 0; i < segment.length; i++) {
+    const t = segment[i]
+    const upper = t.type === 'word' ? t.text.toUpperCase() : ''
+    if (t.type === 'punct') {
+      if (t.text === '(') par++
+      else if (t.text === ')') par = Math.max(0, par - 1)
+    }
+    if (par === 0 && t.type === 'word') {
+      const isSelect = upper === 'SELECT' && !(i === 0 && startsSegment)
+      const isJoinTail =
+        (upper === 'JOIN' || upper === 'APPLY') &&
+        cur.length > 0 &&
+        cur[cur.length - 1].type === 'word' &&
+        JOIN_MODIFIERS.has(cur[cur.length - 1].text.toUpperCase())
+      if (isSelect || CLAUSE_STARTERS.has(upper)) {
+        if (!isJoinTail) {
+          flush()
+          cur = [t]
+          continue
+        }
+      }
+    }
+    cur.push(t)
+  }
+  flush()
+  return groups.length > 0 ? groups : [{ tokens: segment }]
 }
 
 /** Unisce i token in una sola riga con spaziatura normale. */
