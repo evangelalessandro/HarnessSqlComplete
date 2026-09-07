@@ -1263,10 +1263,12 @@ function listRows(basePad: string, tokens: Token[], up: (t: Token) => string, kw
 }
 
 /**
- * Divide i token di uno statement in righe: un commento di riga "--" seguito da altro
- * codice chiude la riga subito dopo il commento (altrimenti il codice successivo,
- * accodato sulla stessa riga dal formattatore, verrebbe COMMENTATO e romperebbe la
- * query). Le righe proseguono con lo stesso ordine dei token.
+ * Divide i token di uno statement in righe rispettando la POSIZIONE dei commenti:
+ * - un commento che nell'originale stava su una riga propria (ownLine) resta su una
+ *   riga propria (mai accodato al codice precedente, mai seguito da codice sulla stessa
+ *   riga: un "--" commenterebbe il resto della riga e romperebbe la query);
+ * - un commento a fine riga resta in coda alla sua riga di codice.
+ * Le righe proseguono con lo stesso ordine dei token.
  */
 function rowsNoDashEat(tokens: Token[], up: (t: Token) => string): string[] {
   const rows: string[] = []
@@ -1279,8 +1281,30 @@ function rowsNoDashEat(tokens: Token[], up: (t: Token) => string): string[] {
   }
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i]
+    if (t.type === 'comment') {
+      if (t.text.startsWith('--')) {
+        if (t.ownLine) {
+          // commento "--" su riga propria nell'originale: riga dedicata
+          flush()
+          rows.push(up(t))
+        } else {
+          // commento a fine riga: resta in coda alla riga di codice, poi a capo
+          cur.push(t)
+          flush()
+        }
+        continue
+      }
+      // commento a blocco: se occupava una riga propria resta su una riga propria,
+      // altrimenti resta inline (tra i token della stessa riga)
+      if (t.ownLine) {
+        flush()
+        rows.push(up(t))
+      } else {
+        cur.push(t)
+      }
+      continue
+    }
     cur.push(t)
-    if (t.type === 'comment' && t.text.startsWith('--') && i + 1 < tokens.length) flush()
   }
   flush()
   return rows.map(r => r.replace(/\s+/g, ' ').trim()).filter(Boolean)
