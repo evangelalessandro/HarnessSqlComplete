@@ -4,7 +4,7 @@ import { createElement } from 'react'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import ConnectAnimation from '../components/ConnectAnimation'
-import { nextDragonLevel, remainingMinDelay } from '../helpers'
+import { detectPrintMagic, nextDragonLevel, remainingMinDelay } from '../helpers'
 
 // abilita il supporto a act() nell'ambiente jsdom
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -84,6 +84,24 @@ describe('remainingMinDelay: durata minima dell\'animazione di connessione', () 
 
   it('restituisce 0 appena iniziata se la durata minima è 0', () => {
     expect(remainingMinDelay(Date.now(), 0)).toBe(0)
+  })
+})
+
+describe('detectPrintMagic: il drago/fuoco compare solo con PRINT "drago"/"fuoco"', () => {
+  it("PRINT 'drago' → drago", () => {
+    expect(detectPrintMagic("PRINT 'drago'")).toBe('drago')
+    expect(detectPrintMagic("print N'Drago' -- nota")).toBe('drago')
+  })
+
+  it("PRINT 'fuoco' → fuoco", () => {
+    expect(detectPrintMagic("PRINT 'fuoco'")).toBe('fuoco')
+    expect(detectPrintMagic("PRINT 'accendi il fuoco'")).toBe('fuoco')
+  })
+
+  it('query normali o altri PRINT → null (drago e fuoco restano nascosti)', () => {
+    expect(detectPrintMagic('SELECT TOP 100 * FROM dbo.T')).toBeNull()
+    expect(detectPrintMagic("PRINT 'ciao'")).toBeNull()
+    expect(detectPrintMagic("PRINT 'sparo'")).toBeNull()
   })
 })
 

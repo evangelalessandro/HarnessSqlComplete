@@ -629,6 +629,18 @@ export function nextDragonLevel(current: number): number {
   return Math.min(100, Math.max(0, current) + 1)
 }
 
+/** Comando magico dentro un PRINT: 'drago' evoca il drago, 'fuoco' la fiammata. */
+export function detectPrintMagic(sql: string): 'drago' | 'fuoco' | null {
+  const re = /\bprint\s+N?\s*['"]([^'"]*)['"]/gi
+  let fuoco: 'fuoco' | null = null
+  for (const m of sql.matchAll(re)) {
+    const payload = (m[1] ?? '').toLowerCase()
+    if (/\b(drago|dragon)\b/.test(payload)) return 'drago'
+    if (/\b(fuoco|fire|fiamma)\b/.test(payload)) fuoco = 'fuoco'
+  }
+  return fuoco
+}
+
 // ---------- Report utilizzo tabelle (ordinamento) ----------
 
 export type TableReportSortKey =

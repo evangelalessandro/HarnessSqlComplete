@@ -3,7 +3,7 @@ import { BookOpen, Database as DbIcon, FilePlus2, Pin, StickyNote, Table2, Termi
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
-import { dbTabColor, nextDragonLevel, toCreateOrAlterStatement } from './helpers'
+import { dbTabColor, detectPrintMagic, nextDragonLevel, toCreateOrAlterStatement } from './helpers'
 import { openSqlFiles, saveSqlFile } from './fileSave'
 import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
@@ -42,7 +42,8 @@ export default function App() {
   const [banner, setBanner] = useState<string | null>(null)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
 
-  // Drago del fuoco: cresce a ogni query eseguita (0-100, persistito)
+  // Drago e fuoco: compaiono SOLO se la query eseguita contiene PRINT 'drago' / PRINT 'fuoco'.
+  // Il drago si "nutre" (livello 0-100 persistito) a ogni invocazione e resta visibile ~8s.
   const [dragonLevel, setDragonLevel] = useState<number>(() => {
     try {
       const v = Number(localStorage.getItem('sql-intelli:dragon') ?? 0)
@@ -51,8 +52,17 @@ export default function App() {
       return 0
     }
   })
-  // Colpo di fuoco da mostrare all'esecuzione (incrementato a ogni query)
+  const [dragonShow, setDragonShow] = useState(false)
+  const dragonTimer = useRef<number | null>(null)
+  // Colpo di fuoco: incrementato SOLO quando la query contiene PRINT 'fuoco'
   const [fireTick, setFireTick] = useState(0)
+
+  /** Evoca il drago per ~8 secondi. */
+  const summonDragon = () => {
+    setDragonShow(true)
+    if (dragonTimer.current !== null) window.clearTimeout(dragonTimer.current)
+    dragonTimer.current = window.setTimeout(() => setDragonShow(false), 8000)
+  }
 
   // Pagina di aiuto (apribile dal sito)
   const [helpOpen, setHelpOpen] = useState(false)
@@ -503,17 +513,23 @@ export default function App() {
   const handleExecute = useCallback(
     async (sql: string) => {
       if (!connection) return
-      // il drago cresce a ogni query eseguita (max 100, persistito in localStorage)
-      setDragonLevel(prev => {
-        const next = nextDragonLevel(prev)
-        try {
-          localStorage.setItem('sql-intelli:dragon', String(next))
-        } catch {
-          /* ignora */
-        }
-        return next
-      })
-      setFireTick(t => t + 1)
+      // drago e fuoco compaiono SOLO con PRINT 'drago' / PRINT 'fuoco' nella query
+      const magic = detectPrintMagic(sql)
+      if (magic === 'drago') {
+        // il drago si nutre a ogni evocazione (max 100, persistito)
+        setDragonLevel(prev => {
+          const next = nextDragonLevel(prev)
+          try {
+            localStorage.setItem('sql-intelli:dragon', String(next))
+          } catch {
+            /* ignora */
+          }
+          return next
+        })
+        summonDragon()
+      } else if (magic === 'fuoco') {
+        setFireTick(t => t + 1)
+      }
       // il risultato va alla tab ATTIVA al momento dell'esecuzione
       const tabId = activeEditorTab
       if (!tabId) return
@@ -709,7 +725,7 @@ export default function App() {
   return (
     <FileDropZone onFiles={handleOpenFiles}>
       <div className="flex h-full flex-col">
-        <DragonBackground level={dragonLevel} />
+        <DragonBackground level={dragonLevel} visible={dragonShow} />
         <header className="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/70 px-4 py-2">
         <div className="flex items-center gap-2 font-semibold text-zinc-100">
           <DbIcon className="h-5 w-5 text-sky-400" />
