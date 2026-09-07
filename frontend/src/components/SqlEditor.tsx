@@ -1,6 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { Eraser, FolderOpen, Moon, Play, Save, Settings2, Sun, Table2, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
+import {
+  Eraser,
+  FolderOpen,
+  IndentDecrease,
+  IndentIncrease,
+  MessageSquare,
+  Moon,
+  Play,
+  Save,
+  Settings2,
+  Sun,
+  Table2,
+  Wand2,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react'
 import monaco from '../monacoSetup'
 import { api } from '../api'
 import { syntaxIssuesFromCheck } from '../syntaxCheck'
@@ -1416,6 +1431,36 @@ export default function SqlEditor({
           </Button>
           <Button variant="ghost" onClick={() => onOpenFile?.()} title="Apri file .sql (permette di sovrascrivere l'originale)">
             <FolderOpen className="h-4 w-4" /> Apri file
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              editorRef.current?.focus()
+              void editorRef.current?.getAction('editor.action.commentLine')?.run()
+            }}
+            title="Commenta / togli il commento alle righe selezionate (Ctrl+/)"
+          >
+            <MessageSquare className="h-4 w-4" /> Commenta
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              editorRef.current?.focus()
+              void editorRef.current?.getAction('editor.action.indentLines')?.run()
+            }}
+            title="Aumenta il rientro delle righe selezionate (Tab)"
+          >
+            <IndentIncrease className="h-4 w-4" /> Rientra
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              editorRef.current?.focus()
+              void editorRef.current?.getAction('editor.action.outdentLines')?.run()
+            }}
+            title="Riduce il rientro delle righe selezionate (Shift+Tab)"
+          >
+            <IndentDecrease className="h-4 w-4" /> Fuori rientro
           </Button>
           <Button variant="secondary" onClick={handleFormat} title="Formatta (Ctrl+Shift+F) — con una selezione formatta solo quella parte">
             <Wand2 className="h-4 w-4" /> Formatta
