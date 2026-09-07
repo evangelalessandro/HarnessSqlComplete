@@ -132,10 +132,10 @@ ROLLBACK`
     expect(out).toContain('ROLLBACK')
     // il blocco dopo BEGIN TRANSACTION è indentato
     expect(out).toMatch(/^BEGIN TRANSACTION$/m)
-    // SELECT con FROM/ORDER BY spezzati a clausole (come le query semplici)
+    // SELECT con FROM/ORDER BY spezzati a clausole (clausole allineate alla SELECT)
     expect(out).toMatch(/^  SELECT \*$/m)
-    expect(out).toMatch(/^    FROM dbo\.MAG_BAIE_INTERNE$/m)
-    expect(out).toMatch(/^    ORDER BY 1 DESC$/m)
+    expect(out).toMatch(/^  FROM dbo\.MAG_BAIE_INTERNE$/m)
+    expect(out).toMatch(/^  ORDER BY 1 DESC$/m)
   })
 
   it('BEGIN TRAN e BEGIN TRY/CATCH con il resto sulla stessa riga: testo preservato', () => {
@@ -198,9 +198,10 @@ END`
     const out = formatRoutineWithProfile(sql, profile)
     expect(out).toMatch(/^  INSERT INTO @tblPitches$/m)
     expect(out).toMatch(/^  SELECT ROW_NUMBER \(\) OVER \(ORDER BY GM_ORD_PIAZZ\), BPZ_PIAZZOLA$/m)
-    expect(out).toMatch(/^    FROM dbo\.MAG_BAIE_PIAZ$/m)
+    expect(out).toMatch(/^  FROM dbo\.MAG_BAIE_PIAZ$/m)
     expect(out).toMatch(/^    INNER JOIN dbo\.GESTORI_MODULI ON \(GM_PIAZZOLA = BPZ_PIAZZOLA\)$/m)
-    expect(out).toMatch(/^    WHERE BPZ_BAIA = @nDestBay AND BPZ_PIAZZOLA > 0$/m)
+    expect(out).toMatch(/^  WHERE BPZ_BAIA = @nDestBay$/m)
+    expect(out).toMatch(/^\s{8}AND BPZ_PIAZZOLA > 0$/m)
   })
 
   it('SELECT semplice con FROM/JOIN/WHERE spezzati su più righe', () => {
@@ -209,9 +210,20 @@ END`
 END`
     const out = formatRoutineWithProfile(sql, profile)
     expect(out).toMatch(/^  SELECT a, b$/m)
-    expect(out).toMatch(/^    FROM dbo\.T$/m)
+    expect(out).toMatch(/^  FROM dbo\.T$/m)
     expect(out).toMatch(/^    INNER JOIN dbo\.U ON \(T\.id = U\.id\)$/m)
-    expect(out).toMatch(/^    WHERE x = 1 AND y = 2$/m)
+    expect(out).toMatch(/^  WHERE x = 1$/m)
+    expect(out).toMatch(/^\s{8}AND y = 2$/m)
+  })
+
+  it('SELECT semplice: WHERE con AND spezzati su righe proprie (come le query semplici)', () => {
+    const sql = `BEGIN
+  SELECT a, b FROM dbo.T INNER JOIN dbo.U ON (T.id = U.id) WHERE x = 1 AND y = 2 AND z = 3
+END`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toMatch(/^  WHERE x = 1$/m)
+    expect(out).toMatch(/^        AND y = 2$/m)
+    expect(out).toMatch(/^        AND z = 3$/m)
   })
 
   it(';WITH … AS (SELECT…): parentesi su riga propria PRIMA della SELECT interna', () => {

@@ -991,10 +991,10 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     {
       const unit = profile.tabSize || 2
       const basePad = ' '.repeat(lineIndent * unit)
-      const assLayout = selectAssignmentLayout(segment, up, unit, basePad)
-      if (assLayout) {
+      const detailedRows = detailedSelectRows(segment, up, unit, basePad)
+      if (detailedRows) {
         flushLine()
-        for (const row of assLayout) pushRawLine(row)
+        for (const row of detailedRows) pushRawLine(row)
         continue
       }
       const caseLines = splitCaseLines(segment, up)
@@ -1091,7 +1091,8 @@ function splitCaseLines(segment: Token[], up: (t: Token) => string): CaseLine[] 
 }
 
 /**
- * SELECT TOP n @a = expr, @b = expr … FROM … WHERE …: impaginazione "SQL Prompt":
+ * SELECT [TOP n] [@a = …,] @x = …, col … FROM … WHERE …: impaginazione "dettagliata"
+ * per le SELECT con clausole:
  *   SELECT TOP 1
  *      @nDestBay           = BCO_BAIA
  *     ,@nDestPitch         = PZ_PIAZZOLA
@@ -1102,10 +1103,11 @@ function splitCaseLines(segment: Token[], up: (t: Token) => string): CaseLine[] 
  *           OR (…)
  *   ORDER BY a
  *           ,b
- * Restituisce righe già complete (testo + indentazione) o null se lo statement non
- * è di questo tipo (in tal caso si usa il layout a clausole semplice).
+ * La lista di assegnazioni è verticale solo se ci sono ≥2 "@var = …"; altrimenti la
+ * testata (colonne o singola assegnazione) resta su una riga. Se la TESTATA contiene
+ * un CASE (es. SELECT @x = CASE …) si restituisce null (percorso CASE dedicato).
  */
-function selectAssignmentLayout(
+function detailedSelectRows(
   segment: Token[],
   up: (t: Token) => string,
   unit: number,
@@ -1114,59 +1116,60 @@ function selectAssignmentLayout(
   const groups = splitStatementClauses(segment, up)
   if (groups.length < 2) return null
   const head = groups[0].tokens
-  // se la lista di assegnazioni contiene commenti di riga "--" (es. i "--when" disabilitati
-  // dentro un CASE) il layout a colonna li appiattirebbe su una riga (codice commentato):
-  // si ripiega sul percorso CASE/clausole che li spezza su righe proprie.
+  if (head.some(t => t.type === 'word' && t.text.toUpperCase() === 'CASE')) return null
+  // commenti "--" nella testata: niente layout a colonna (il codice dopo il commento
+  // non deve finire commentato); si ripiega sul percorso CASE/clausole
   if (head.some(t => t.type === 'comment' && t.text.startsWith('--'))) return null
 
-  // separa "SELECT TOP 1" dalla lista di assegnazioni "@var = …"
-  const varStart = head.findIndex(t => t.type === 'word' && t.text.startsWith('@'))
-  if (varStart <= 0) return null
-  let depth = 0
-  const items: Token[][] = []
-  let cur: Token[] = []
-  const flushItem = () => {
-    if (cur.length > 0) {
-      items.push(cur)
-      cur = []
-    }
-  }
-  for (let i = varStart; i < head.length; i++) {
-    const t = head[i]
-    if (t.type === 'punct') {
-      if (t.text === '(') depth++
-      else if (t.text === ')') depth = Math.max(0, depth - 1)
-    }
-    if (t.type === 'punct' && t.text === ',' && depth === 0) {
-      flushItem()
-      continue
-    }
-    cur.push(t)
-  }
-  flushItem()
-  const isAssign = (toks: Token[]) =>
-    toks.length > 1 &&
-    toks[0].type === 'word' &&
-    toks[0].text.startsWith('@') &&
-    toks.some(x => x.type === 'punct' && x.text === '=')
-  if (items.length < 2 || !items.every(isAssign)) return null
-
-  const header = head.slice(0, varStart).map(up).join(' ')
   const out: string[] = []
-  out.push(`${basePad}${cleanInline(header)}`)
-
-  const maxVar = Math.max(...items.map(it => it[0].text.length))
-  items.forEach((it, idx) => {
-    const name = it[0].text
-    const after = it.slice(1) // inizia con '='
-    const gap = maxVar - name.length + 1
-    const tail = cleanInline(after.map(up).join(' '))
-    if (idx === 0) {
-      out.push(`${basePad}   ${name}${' '.repeat(gap)}${tail}`)
-    } else {
-      out.push(`${basePad}  ,${name}${' '.repeat(gap)}${tail}`)
+  const varStart = head.findIndex(t => t.type === 'word' && t.text.startsWith('@'))
+  if (varStart > 0) {
+    // lista di assegnazioni "@var = …" separate da virgole a livello top
+    let depth = 0
+    const items: Token[][] = []
+    let cur: Token[] = []
+    const flushItem = () => {
+      if (cur.length > 0) {
+        items.push(cur)
+        cur = []
+      }
     }
-  })
+    for (let i = varStart; i < head.length; i++) {
+      const t = head[i]
+      if (t.type === 'punct') {
+        if (t.text === '(') depth++
+        else if (t.text === ')') depth = Math.max(0, depth - 1)
+      }
+      if (t.type === 'punct' && t.text === ',' && depth === 0) {
+        flushItem()
+        continue
+      }
+      cur.push(t)
+    }
+    flushItem()
+    const isAssign = (toks: Token[]) =>
+      toks.length > 1 &&
+      toks[0].type === 'word' &&
+      toks[0].text.startsWith('@') &&
+      toks.some(x => x.type === 'punct' && x.text === '=')
+    if (items.length >= 2 && items.every(isAssign)) {
+      out.push(`${basePad}${cleanInline(head.slice(0, varStart).map(up).join(' '))}`)
+      const maxVar = Math.max(...items.map(it => it[0].text.length))
+      items.forEach((it, idx) => {
+        const name = it[0].text
+        const tail = cleanInline(it.slice(1).map(up).join(' '))
+        const gap = maxVar - name.length + 1
+        if (idx === 0) out.push(`${basePad}   ${name}${' '.repeat(gap)}${tail}`)
+        else out.push(`${basePad}  ,${name}${' '.repeat(gap)}${tail}`)
+      })
+    } else {
+      const r = rowsNoDashEat(head, up)[0]
+      if (r) out.push(`${basePad}${cleanInline(r)}`)
+    }
+  } else {
+    const r = rowsNoDashEat(head, up)[0]
+    if (r) out.push(`${basePad}${cleanInline(r)}`)
+  }
 
   // clausole successive: FROM / JOIN / WHERE / GROUP / HAVING / ORDER / UNION / OUTPUT
   for (let g = 1; g < groups.length; g++) {
@@ -1225,40 +1228,52 @@ function conditionRows(basePad: string, tokens: Token[], up: (t: Token) => strin
   return out
 }
 
-/** ORDER BY / GROUP BY: ogni elemento su riga propria con virgola allineata sotto il primo. */
+/** ORDER BY / GROUP BY: ogni elemento su riga propria con virgola allineata sotto il
+ *  primo; i commenti in mezzo restano su righe proprie (mai codice dopo un "--"). */
 function listRows(basePad: string, tokens: Token[], up: (t: Token) => string, kw: string): string[] {
   let open = 0
-  const items: Token[][] = []
   let cur: Token[] = []
+  let firstCode = true
+  let lastWasComma = false
+  const out: string[] = []
   const flushItem = () => {
-    if (cur.length > 0) {
-      items.push(cur)
-      cur = []
+    if (cur.length === 0) return
+    const text = cleanInline(cur.map(up).join(' '))
+    if (firstCode) {
+      // il primo item contiene già la keyword (ORDER BY …)
+      out.push(`${basePad}${text.toLowerCase().startsWith(kw.trim().toLowerCase()) ? text : `${kw.trim()} ${text}`}`)
+      firstCode = false
+    } else {
+      out.push(`${basePad}${' '.repeat(kw.length)} ,${text}`)
     }
+    cur = []
+    lastWasComma = false
   }
   for (const t of tokens) {
     if (t.type === 'punct') {
       if (t.text === '(') open++
       else if (t.text === ')') open = Math.max(0, open - 1)
+      if (t.text === ',' && open === 0) {
+        flushItem()
+        lastWasComma = true
+        continue
+      }
+      cur.push(t)
+      continue
     }
-    if (t.type === 'punct' && t.text === ',' && open === 0) {
+    if (t.type === 'comment' && (t.ownLine || t.text.startsWith('--'))) {
       flushItem()
+      out.push(`${basePad}${' '.repeat(kw.length)}${up(t)}`)
       continue
     }
     cur.push(t)
   }
   flushItem()
-  const out: string[] = []
-  const kwTrim = kw.trim()
-  items.forEach((it, i) => {
-    const text = cleanInline(it.map(up).join(' '))
-    if (i === 0) {
-      // il primo item contiene già la keyword (ORDER BY …) quando il gruppo inizia con essa
-      out.push(`${basePad}${text.toLowerCase().startsWith(kwTrim.toLowerCase()) ? text : `${kwTrim} ${text}`}`)
-    } else {
-      out.push(`${basePad}${' '.repeat(kw.length)} ,${text}`)
-    }
-  })
+  // se la lista terminava con una virgola (continua oltre un commento successivo),
+  // non si perde il delimitatore: lo si riattacca all'ultima riga emessa
+  if (lastWasComma && cur.length === 0 && out.length > 0 && !out[out.length - 1].endsWith(',')) {
+    out[out.length - 1] += ','
+  }
   return out
 }
 
