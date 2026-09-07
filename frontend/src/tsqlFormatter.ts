@@ -620,6 +620,17 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     tokens[idx + 1]?.type === 'punct' &&
     tokens[idx + 1].text === ':' &&
     segDepth === 0
+
+  /** Prossima parola significativa (salta commenti) dopo l'indice dato. */
+  const nextMeaningfulWordAfter = (tokens: Token[], idx: number): string => {
+    for (let m = idx + 1; m < tokens.length; m++) {
+      const tok = tokens[m]
+      if (tok.type === 'comment') continue
+      if (tok.type === 'word') return tok.text.toUpperCase()
+      break // punct/stringa: non è una parola → stop
+    }
+    return ''
+  }
   for (let k = startIdx; k < body.length; k++) {
     const t = body[k]
     // commento su riga propria (già indentato): segmento a sé, così resta sulla sua riga
@@ -653,7 +664,12 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     if (isStarter || isElse || isSemi || isLab) {
       if (seg.length > 0) segments.push(seg)
       seg = []
-      if (isSemi) continue
+      if (isSemi) {
+        // ";WITH …" (CTE): il ';' è significativo — senza, "END WITH …" sarebbe sintassi
+        // invalida. Va conservato come primo token del segmento che inizia con WITH.
+        if (nextMeaningfulWordAfter(body, k) === 'WITH') seg.push(t)
+        continue
+      }
     }
     seg.push(t)
   }
@@ -754,7 +770,7 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       // registra il livello dell'IF (per allineare il suo ELSE)
       if (firstUpper === 'IF') ifStack.push(indent)
       // condizione sulla stessa riga, ma "BEGIN" successivo va su riga propria
-      const cond: string[] = []
+      const cond: Token[] = []
       let j = 0
       let par = 0
       for (; j < segment.length; j++) {
@@ -764,9 +780,10 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
           else if (t.text === ')') par = Math.max(0, par - 1)
         }
         if (t.type === 'word' && t.text.toUpperCase() === 'BEGIN' && par === 0 && j > 0) break
-        cond.push(up(t))
+        cond.push(t)
       }
-      pushLine(cond.join(' '), indent)
+      // commento "--" in mezzo alla condizione: chiude la riga, il codice prosegue sotto
+      rowsNoDashEat(cond, up).forEach((r, idx) => pushLine(r, idx === 0 ? indent : indent + 1))
       const after = segment.slice(j)
       if (after.length > 0 && after[0].type === 'word' && after[0].text.toUpperCase() === 'BEGIN') {
         pushLine('BEGIN', indent)
@@ -876,8 +893,9 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       // il CASE inline viene spezzato su righe proprie indentate
       caseLines.forEach(cl => pushLine(cl.text, lineIndent + cl.delta))
     } else {
-      line = segment.map(up)
-      flushLine()
+      // un commento "--" dentro lo statement chiude la riga: il codice dopo NON deve
+      // finire commentato sulla stessa riga (romperebbe la query)
+      rowsNoDashEat(segment, up).forEach((r, idx) => pushLine(r, idx === 0 ? lineIndent : lineIndent + 1))
     }
   }
 
@@ -904,14 +922,18 @@ function splitCaseLines(segment: Token[], up: (t: Token) => string): CaseLine[] 
 
   const out: CaseLine[] = []
   const head = segment.slice(0, idx)
-  if (head.length > 0) out.push({ text: head.map(up).join(' '), delta: 0 })
+  if (head.length > 0) {
+    // commenti "--" nel preambolo: spezza anche qui (il codice dopo non va commentato)
+    for (const row of rowsNoDashEat(head, up)) out.push({ text: row, delta: 0 })
+  }
 
   let depth = 0
-  let cur: string[] = []
+  let cur: Token[] = []
   let curDelta = 1
-  const flush = (text: string, delta: number) => {
-    const t = text.trim()
-    if (t.length > 0) out.push({ text: t, delta })
+  const flush = (delta: number) => {
+    // ogni "--" in mezzo ai token chiude la riga: il codice prosegue sulla successiva
+    for (const row of rowsNoDashEat(cur, up)) out.push({ text: row, delta })
+    cur = []
   }
   for (let i = idx; i < segment.length; i++) {
     const t = segment[i]
@@ -926,26 +948,48 @@ function splitCaseLines(segment: Token[], up: (t: Token) => string): CaseLine[] 
     const isElse = upper === 'ELSE' && depth === 0 && cur.length > 0
     const isEnd = upper === 'END' && depth === 0
     if (isWhen || isThen || isElse || isEnd) {
-      flush(cur.join(' '), curDelta)
-      cur = []
+      flush(curDelta)
       if (upper === 'WHEN') curDelta = 2
       else if (upper === 'THEN') curDelta = 3
       else if (upper === 'ELSE') curDelta = 2
       else curDelta = 1
-      cur.push(up(t))
+      cur.push(t)
       if (isEnd) {
         // END chiude: flush immediato e il resto continua sullo stesso livello
-        flush(cur.join(' '), 1)
-        cur = []
+        flush(1)
         curDelta = 0
         continue
       }
       continue
     }
-    cur.push(up(t))
+    cur.push(t)
   }
-  if (cur.length > 0) flush(cur.join(' '), curDelta)
+  if (cur.length > 0) flush(curDelta)
   return out
+}
+
+/**
+ * Divide i token di uno statement in righe: un commento di riga "--" seguito da altro
+ * codice chiude la riga subito dopo il commento (altrimenti il codice successivo,
+ * accodato sulla stessa riga dal formattatore, verrebbe COMMENTATO e romperebbe la
+ * query). Le righe proseguono con lo stesso ordine dei token.
+ */
+function rowsNoDashEat(tokens: Token[], up: (t: Token) => string): string[] {
+  const rows: string[] = []
+  let cur: Token[] = []
+  const flush = () => {
+    if (cur.length > 0) {
+      rows.push(cur.map(up).join(' '))
+      cur = []
+    }
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]
+    cur.push(t)
+    if (t.type === 'comment' && t.text.startsWith('--') && i + 1 < tokens.length) flush()
+  }
+  flush()
+  return rows.map(r => r.replace(/\s+/g, ' ').trim()).filter(Boolean)
 }
 
 /** Unisce i token in una sola riga con spaziatura normale. */
