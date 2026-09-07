@@ -505,11 +505,23 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
 
   if (headerTokens.length > 0) {
     // riga intestazione: CREATE/ALTER PROCEDURE [schema].[nome]
-    const header: string[] = []
+    // I commenti iniziali (es. blocco di documentazione che termina con "*/") vanno su
+    // righe proprie: la CREATE/ALTER deve iniziare su una NUOVA riga, non dopo il "*/".
     let k = 0
+    while (k < headerTokens.length && headerTokens[k].type === 'comment') {
+      pushLine(headerTokens[k].text, 0)
+      k++
+    }
+    const header: string[] = []
     while (k < headerTokens.length) {
       const t = headerTokens[k]
       if (t.type === 'punct' && t.text === '(') break
+      if (t.type === 'comment') {
+        // commento inline nell'intestazione: lo si accoda alla riga (senza perdere testo)
+        header.push(t.text)
+        k++
+        continue
+      }
       header.push(up(t))
       k++
     }

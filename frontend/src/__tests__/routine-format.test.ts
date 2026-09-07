@@ -231,6 +231,26 @@ END`
   })
 })
 
+describe('formatRoutineWithProfile: header CREATE/ALTER su riga propria dopo i commenti', () => {
+  it('commento a blocco prima di CREATE PROCEDURE → CREATE su nuova riga', () => {
+    const sql = `/*
+    Returns:
+      -1 = Runtime error
+       0 = Ok
+
+*/ CREATE PROCEDURE [dbo] . [ws_LGV_Redirection]
+(
+ @pLgvManager NVARCHAR(30) /* Lgv manager */
+)
+AS
+SET NOCOUNT ON`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toMatch(/^\*\/\s*$/m) // il commento chiude su una riga propria
+    expect(out).toMatch(/^CREATE PROCEDURE \[dbo\]\.\[ws_LGV_Redirection\]$/m)
+    expect(out).not.toMatch(/\*\/ CREATE/)
+  })
+})
+
 describe('formatRoutineWithProfile: DECLARE con variabili allineate (stile SQL Prompt)', () => {
   it('virgole in colonna e tipi allineati su più variabili', () => {
     const sql = `declare @nDestinationType int, @nSourceBay int, @nDstPitchLeft int = 0, @sTipoUdc nvarchar(5), @bIsEvacuation bit`
