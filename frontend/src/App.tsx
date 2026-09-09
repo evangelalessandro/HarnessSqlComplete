@@ -33,6 +33,8 @@ export default function App() {
   const [tabResults, setTabResults] = useState<Record<string, QueryResult | null>>({})
   const [tabExecuting, setTabExecuting] = useState<Record<string, boolean>>({})
   const [tabResultTab, setTabResultTab] = useState<Record<string, Tab>>({})
+  // SQL eseguito per tab: propone la tabella target del generatore della griglia risultati
+  const [tabSql, setTabSql] = useState<Record<string, string>>({})
   // descrizione libera della tab (nota utente): tab in modifica + bozza
   const [descEditingTab, setDescEditingTab] = useState<string | null>(null)
   const [descDraft, setDescDraft] = useState('')
@@ -340,6 +342,7 @@ export default function App() {
         setTabResults({})
         setTabExecuting({})
         setTabResultTab({})
+        setTabSql({})
         setSummary(await api.getSummary(res.connectionId))
         const targetTab = tabId ?? activeEditorTab
         setEditorTabs(prev => prev.map(t => (t.id === targetTab ? { ...t, database: res.database } : t)))
@@ -412,6 +415,11 @@ export default function App() {
           return c
         })
         setTabResultTab(r => {
+          const c = { ...r }
+          delete c[id]
+          return c
+        })
+        setTabSql(r => {
           const c = { ...r }
           delete c[id]
           return c
@@ -489,10 +497,11 @@ export default function App() {
       const persisted = loadPersistedTabs(res.server)
       setEditorTabs(persisted?.tabs ?? [firstTab()])
       setActiveEditorTab(persisted?.tabs.some(t => t.id === persisted.active) ? persisted.active : 'tab-1')
-      // nuova connessione: i risultati delle tab appartenevano al DB precedente
-      setTabResults({})
-      setTabExecuting({})
-      setTabResultTab({})
+        // nuova connessione: i risultati delle tab appartenevano al DB precedente
+        setTabResults({})
+        setTabExecuting({})
+        setTabResultTab({})
+        setTabSql({})
       setLoadingSummary(true)
       try {
         setSummary(await api.getSummary(res.connectionId))
@@ -535,6 +544,7 @@ export default function App() {
       // il risultato va alla tab ATTIVA al momento dell'esecuzione
       const tabId = activeEditorTab
       if (!tabId) return
+      setTabSql(prev => ({ ...prev, [tabId]: sql }))
       setTabExecuting(prev => ({ ...prev, [tabId]: true }))
       setBanner(null)
       try {
@@ -564,6 +574,7 @@ export default function App() {
     setTabResults({})
     setTabExecuting({})
     setTabResultTab({})
+    setTabSql({})
     setBanner(null)
     setAiStatus(null)
     setEditor(null)
@@ -718,6 +729,7 @@ export default function App() {
   // risultati/esecuzione/sottotab legati alla tab attiva
   const activeResult = activeEditorTab ? (tabResults[activeEditorTab] ?? null) : null
   const activeExecuting = activeEditorTab ? (tabExecuting[activeEditorTab] ?? false) : false
+  const activeSql = activeEditorTab ? (tabSql[activeEditorTab] ?? '') : ''
   const activeResultTab: Tab = activeEditorTab ? (tabResultTab[activeEditorTab] ?? 'results') : 'results'
   const setActiveResultTab = (t: Tab) => {
     if (!activeEditorTab) return
@@ -975,7 +987,7 @@ export default function App() {
               </div>
               <div className="min-h-0 flex-1">
                 {activeResultTab === 'results' ? (
-                  <ResultsPanel result={activeResult} executing={activeExecuting} />
+                  <ResultsPanel result={activeResult} executing={activeExecuting} sourceSql={activeSql} />
                 ) : (
                   <PrintPanel result={activeResult} />
                 )}

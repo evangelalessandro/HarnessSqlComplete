@@ -1,20 +1,27 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ChevronLeft, ChevronRight, Code2, Table2 } from 'lucide-react'
 import type { CellValue, QueryResult } from '../types'
+import { suggestTargetTables } from '../sqlGen'
 import { Badge, Button, Spinner } from './ui'
 import SelectableResultGrid from './SelectableResultGrid'
 
 interface Props {
   result: QueryResult | null
   executing: boolean
+  /** SQL eseguito che ha prodotto `result`: serve a proporre la tabella target del generatore. */
+  sourceSql?: string
 }
 
-export default function ResultsPanel({ result, executing }: Props) {
+export default function ResultsPanel({ result, executing, sourceSql }: Props) {
   const [setIndex, setSetIndex] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   // modalità generatore: seleziona righe/colonne e genera INSERT/UPDATE/MERGE/DELETE/#tmp
   const [genMode, setGenMode] = useState(false)
+
+  // Tabella target PROPOSTA (modificabile) per ogni result set: ricavata dal SQL
+  // eseguito ("data un recordset non serve digitare il nome tabella: lo proponiamo").
+  const suggestedTargets = useMemo(() => (sourceSql ? suggestTargetTables(sourceSql) : []), [sourceSql])
 
   useEffect(() => {
     setSetIndex(0)
@@ -101,7 +108,12 @@ export default function ResultsPanel({ result, executing }: Props) {
 
       {genMode ? (
         <div className="min-h-0 flex-1">
-          <SelectableResultGrid columns={activeSet.columns} rows={pageRows as CellValue[][]} />
+          <SelectableResultGrid
+            key={setIndex}
+            columns={activeSet.columns}
+            rows={pageRows as CellValue[][]}
+            initialTarget={suggestedTargets[setIndex] || suggestedTargets.find(t => t !== '') || ''}
+          />
         </div>
       ) : (
         <>

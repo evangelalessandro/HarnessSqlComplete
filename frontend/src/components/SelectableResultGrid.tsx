@@ -194,6 +194,7 @@ export default function SelectableResultGrid({ columns, rows, initialTarget, ide
             value={targetTable}
             onChange={e => setTargetTable(e.target.value)}
             placeholder="schema.tabella"
+            title="Tabella target degli statement: proposta automaticamente dal SQL eseguito, ma sempre modificabile"
             className="w-44 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono text-xs text-zinc-200 focus:border-sky-500 focus:outline-none"
           />
         </label>
