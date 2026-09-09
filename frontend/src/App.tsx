@@ -819,18 +819,24 @@ export default function App() {
                   const fromId = e.dataTransfer.getData('text/tab-id')
                   if (fromId) moveTab(fromId, t.id)
                 }}
-                className={`group flex shrink-0 cursor-grab items-center gap-1 border-t-2 border-r border-zinc-800 px-2 py-1 text-xs active:cursor-grabbing ${
+                className={`group relative flex shrink-0 cursor-grab items-center gap-1 border-t-2 border-r px-3 py-1 text-xs active:cursor-grabbing ${
                   t.id === activeEditorTab
-                    ? 'bg-zinc-800/80 text-zinc-100'
-                    : 'text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300'
+                    ? 'border-x border-x-zinc-700 border-b-2 border-b-zinc-900 bg-zinc-700/90 font-semibold text-white shadow-[0_-2px_10px_rgba(56,189,248,0.12)]'
+                    : 'border-r-zinc-800 text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300'
                 }`}
                 style={{ borderTopColor: dbTabColor(t.database ?? connection.database, dbColors) }}
-                title={`${t.title} · db: ${t.database || connection.database}${t.description ? ` — ${t.description}` : ''}${t.pinned ? ' (appuntata)' : ''}${t.id === activeEditorTab ? ' — trascina per riordinare' : ''}`}
+                title={`${t.title} · db: ${t.database || connection.database}${t.description ? ` — ${t.description}` : ''}${t.pinned ? ' (appuntata)' : ''}${t.id === activeEditorTab ? ' — SCHEDA ATTIVA — trascina per riordinare' : ''}`}
               >
+                {t.id === activeEditorTab && (
+                  <span
+                    className="absolute inset-x-0 -bottom-0.5 h-0.5"
+                    style={{ backgroundColor: dbTabColor(t.database ?? connection.database, dbColors) }}
+                  />
+                )}
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: dbTabColor(t.database ?? connection.database, dbColors) }} />
                 <button
                   onClick={() => switchEditorTab(t.id)}
-                  className="max-w-40 truncate font-medium"
+                  className={`max-w-40 truncate ${t.id === activeEditorTab ? 'font-bold' : 'font-medium'}`}
                   title={t.title}
                 >
                   {t.title}
