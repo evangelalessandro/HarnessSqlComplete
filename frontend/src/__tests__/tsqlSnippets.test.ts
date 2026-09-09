@@ -248,6 +248,29 @@ describe('tsqlSnippets: variabili dichiarate (DECLARE @var)', () => {
     expect(vars[1].dataType).toBe('nvarchar')
   })
 
+  it('DECLARE multilinea allineato SENZA virgola iniziale (stile reale SP)', () => {
+    const text = `declare @retVal int,
+        @ordine nvarchar(20),
+         @fTransaction bit,
+        @riga int,
+        @fArtScoOk bit
+
+set @retVal = 0
+select @cau`
+    const names = extractDeclaredVariables(text).map(v => v.name)
+    expect(names).toEqual(['@retVal', '@ordine', '@fTransaction', '@riga', '@fArtScoOk'])
+  })
+
+  it('la dichiarazione termina alla prima riga che non inizia con @ o ,', () => {
+    const text = `declare @a int
+        @b int
+if @a > 0
+  declare @c int`
+    const vars = extractDeclaredVariables(text)
+    // '@c' è in un secondo DECLARE e va estratto; 'if' non fa parte della dichiarazione
+    expect(vars.map(v => v.name)).toEqual(['@a', '@b', '@c'])
+  })
+
   it('detectVariableContext: dopo "@nome" o "@" → true; "@@..." → false', () => {
     expect(detectVariableContext('select @p')).toBe(true)
     expect(detectVariableContext('set @x = @')).toBe(true)

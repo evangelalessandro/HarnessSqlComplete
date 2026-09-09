@@ -412,7 +412,7 @@ export default function SqlEditor({
   const registerSchemaCompletions = () => {
     disposablesRef.current.push(
       monaco.languages.registerCompletionItemProvider('sql', {
-        triggerCharacters: ['.', ' ', '[', '"', '(', '*'],
+        triggerCharacters: ['.', ' ', '[', '"', '(', '*', '@'],
         provideCompletionItems: (model, position) => {
           // la preview dati ha il SUO provider filtrato sulla tabella
           if (model.uri.toString().startsWith('sql-intelli://preview')) return { suggestions: [] }

@@ -379,19 +379,38 @@ export interface DeclaredVariable {
 }
 
 /**
- * Estrae le variabili dichiarate con DECLARE, incluse le continuazioni su più righe
- * con virgola iniziale: "DECLARE @t NVARCHAR(max)\n,@prova INT" → [@t, @prova].
- * Lo statement DECLARE finisce a ';', a una riga vuota o a una riga che non inizia con ','.
+ * Estrae le variabili dichiarate con DECLARE, incluse le continuazioni su più righe:
+ * sia con virgola iniziale (",@prova INT") sia allineate senza virgola (" @prova INT").
+ * Lo statement DECLARE finisce a ';' oppure alla prima riga che non inizia con '@' o ','.
  */
 export function extractDeclaredVariables(text: string): DeclaredVariable[] {
   const out: DeclaredVariable[] = []
-  const re = /\bDECLARE\b([\s\S]*?)(?=;|\r?\n[ \t]*\r?\n|\r?\n[ \t]*(?=[A-Za-z_@])|$)/gi
+  const declRe = /\bDECLARE\b/gi
   let m: RegExpExecArray | null
-  while ((m = re.exec(text)) !== null) {
-    const span = m[1]
-    const vr = /@([A-Za-z_][\w]*)\s+([A-Za-z_][\w]*)/g
+  while ((m = declRe.exec(text)) !== null) {
+    let i = m.index + m[0].length
+    const n = text.length
+    const span: string[] = []
+    while (i < n) {
+      const eol = text.indexOf('\n', i)
+      const line = text.slice(i, eol === -1 ? n : eol)
+      const t = line.trimStart()
+      if (t === '') {
+        i = eol === -1 ? n : eol + 1
+        continue
+      }
+      if (span.length === 0 || t[0] === '@' || t[0] === ',') {
+        const semi = t.indexOf(';')
+        span.push(semi === -1 ? t : t.slice(0, semi))
+        if (semi !== -1) break
+        i = eol === -1 ? n : eol + 1
+        continue
+      }
+      break
+    }
+    const vr = /@([A-Za-z_][\w]*)\s+(?:as\s+)?([A-Za-z_][\w]*)/gi
     let v: RegExpExecArray | null
-    while ((v = vr.exec(span)) !== null) {
+    while ((v = vr.exec(span.join('\n'))) !== null) {
       out.push({ name: `@${v[1]}`, dataType: v[2] })
     }
   }
