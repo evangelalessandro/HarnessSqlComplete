@@ -1447,6 +1447,30 @@ export function colorClassFor(tableKey: string): string {
   return TABLE_COLOR_PALETTE[h % TABLE_COLOR_PALETTE.length]
 }
 
+/**
+ * Assegna ai `tableKeys` del documento classi colore TUTTE diverse (finché ci sono
+ * colori disponibili): se l'hash di due tabelle collide (es. in una query con 4
+ * tabelle ne comparivano solo 2 di colori), la seconda viene spostata sul primo
+ * colore libero della palette — così OGNI tabella ha il suo colore.
+ * Il colore resta stabile quando non ci sono collisioni (stesso hash di prima).
+ */
+export function colorClassMapForKeys(keys: Iterable<string>): Map<string, string> {
+  const map = new Map<string, string>()
+  const used = new Set<string>()
+  for (const key of keys) {
+    let cls = colorClassFor(key)
+    let guard = 0
+    while (used.has(cls) && guard < TABLE_COLOR_PALETTE.length) {
+      const idx = TABLE_COLOR_PALETTE.indexOf(cls)
+      cls = TABLE_COLOR_PALETTE[(idx + 1) % TABLE_COLOR_PALETTE.length]
+      guard += 1
+    }
+    used.add(cls)
+    map.set(key, cls)
+  }
+  return map
+}
+
 // ---------- Tokenizer SQL + colorazione tabelle/colonne ----------
 
 export interface SqlToken {

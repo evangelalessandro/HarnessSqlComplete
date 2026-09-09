@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { colorClassFor, colorizeSqlTokens, splitUserFunctions, tokenizeSql } from '../helpers'
+import { colorClassFor, colorClassMapForKeys, colorizeSqlTokens, splitUserFunctions, tokenizeSql } from '../helpers'
 import type { DatabaseSummary } from '../types'
 import { wsbritvicLikeSummary } from './schema'
 
@@ -170,6 +170,30 @@ describe('colori funzioni tabellari e tabelle temporanee', () => {
 
   it('tabelle temporanee diverse → colori diversi (chiavi diverse)', () => {
     expect(colorClassFor('#tmp1')).not.toBe(colorClassFor('#tmp2'))
+  })
+
+  it('in un documento ogni tabella DISTINTA ha un colore suo (niente collisioni di hash)', () => {
+    // regressione utente: query con 4 tabelle dove ne comparivano solo 2 di colori
+    const keys = [
+      'dbo.RUN_ESEGUI',
+      '#tbl_InventoryKitting_St1',
+      'dbo.DAT_SCOMPART',
+      'dbo.DAT_ORDINI_RIGHE',
+    ]
+    const map = colorClassMapForKeys(keys)
+    expect(map.size).toBe(4)
+    expect(new Set(map.values()).size).toBe(4) // tutti diversi
+    for (const k of keys) expect(map.get(k)).toMatch(/^sql-tbl-\d+$/)
+  })
+
+  it('colorClassMapForKeys: il colore non collide finché la palette basta (12)', () => {
+    const twelve = Array.from({ length: 12 }, (_, i) => `tbl_${String.fromCharCode(97 + i)}`)
+    const map12 = colorClassMapForKeys(twelve)
+    expect(new Set(map12.values()).size).toBe(12)
+    // oltre la palette qualcosa si ripete (limite fisico di 12 colori)
+    const thirteen = [...twelve, 'tbl_extra']
+    const map13 = colorClassMapForKeys(thirteen)
+    expect(new Set(map13.values()).size).toBe(12)
   })
 
   it('splitUserFunctions: FN → scalari (espressioni), IF/TF → tabellari (sorgenti)', () => {
