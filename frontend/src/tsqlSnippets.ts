@@ -117,11 +117,30 @@ export function detectDeclareTypeContext(textBefore: string): boolean {
 
 export type SetContext = { kind: 'options' } | { kind: 'values'; option: string }
 
-/** Contesto SET a inizio statement: dopo "SET " → nomi opzioni; dopo "SET <opzione> " → valori (ON/OFF…). */
+/**
+ * Contesto SET a inizio statement: dopo "SET " → nomi opzioni; dopo "SET <opzione> " → valori (ON/OFF…).
+ * Il SET è "a inizio statement" anche quando è su una riga NUOVA solo se la riga precedente
+ * chiude uno statement (vuota, ';', GO/BEGIN/END/AS/ELSE…): NON se continua un UPDATE
+ * ("UPDATE dbo.T\nSET " deve proporre le colonne della tabella, non le opzioni SET).
+ */
 export function detectSetContext(textBefore: string): SetContext | null {
+  const lastNl = textBefore.lastIndexOf('\n')
+  let eff = textBefore
+  if (lastNl !== -1) {
+    const before = textBefore.slice(0, lastNl)
+    const prevLine = before.slice(before.lastIndexOf('\n') + 1).trimEnd()
+    const closesStatement =
+      prevLine === '' ||
+      /;$/.test(prevLine) ||
+      /^(?:GO|BEGIN|END|ELSE|AS|THEN|DO|TRY|CATCH)\b/i.test(prevLine)
+    if (!closesStatement) {
+      // la riga precedente continua lo statement: il SET non è un'opzione
+      eff = before + ' ' + textBefore.slice(lastNl + 1)
+    }
+  }
   const boundary = '(?:^|;|\\bGO\\b|\\n)[ \\t]*'
-  if (new RegExp(boundary + 'SET\\s*$', 'i').test(textBefore)) return { kind: 'options' }
-  const m = new RegExp(boundary + 'SET\\s+([A-Za-z_@][\\w]*)\\s*$', 'i').exec(textBefore)
+  if (new RegExp(boundary + 'SET\\s*$', 'i').test(eff)) return { kind: 'options' }
+  const m = new RegExp(boundary + 'SET\\s+([A-Za-z_@][\\w]*)\\s*$', 'i').exec(eff)
   if (m) return { kind: 'values', option: m[1].toUpperCase() }
   return null
 }

@@ -4,7 +4,7 @@ import { createElement } from 'react'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import ConnectAnimation from '../components/ConnectAnimation'
-import { detectPrintMagic, nextDragonLevel, remainingMinDelay } from '../helpers'
+import { detectPrintMagic, isTextOffsetInComment, nextDragonLevel, remainingMinDelay } from '../helpers'
 
 // abilita il supporto a act() nell'ambiente jsdom
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -102,6 +102,31 @@ describe('detectPrintMagic: il drago/fuoco compare solo con PRINT "drago"/"fuoco
     expect(detectPrintMagic('SELECT TOP 100 * FROM dbo.T')).toBeNull()
     expect(detectPrintMagic("PRINT 'ciao'")).toBeNull()
     expect(detectPrintMagic("PRINT 'sparo'")).toBeNull()
+  })
+})
+
+describe('isTextOffsetInComment: nessun suggerimento dentro i commenti', () => {
+  const sql = "SELECT a, b -- nota riga\nFROM dbo.T /* blocco */\nWHERE x = 'a -- b' AND y = 1"
+
+  it('dentro commento di riga → true', () => {
+    const idx = sql.indexOf('nota')
+    expect(isTextOffsetInComment(sql, idx)).toBe(true)
+    // a fine riga dopo il commento (prima del \n) è ancora commento
+    expect(isTextOffsetInComment(sql, sql.indexOf('riga') + 4)).toBe(true)
+  })
+
+  it('dopo la riga commentata il codice NON è in commento', () => {
+    expect(isTextOffsetInComment(sql, sql.indexOf('FROM dbo.T') + 2)).toBe(false)
+  })
+
+  it('dentro commento a blocco → true, fuori → false', () => {
+    expect(isTextOffsetInComment(sql, sql.indexOf('blocco') + 1)).toBe(true)
+    expect(isTextOffsetInComment(sql, sql.indexOf('WHERE x') + 3)).toBe(false)
+  })
+
+  it('le stringhe con "--" o "/*" non sono commenti', () => {
+    const inStr = sql.indexOf("'a -- b'")
+    expect(isTextOffsetInComment(sql, inStr + 3)).toBe(false)
   })
 })
 

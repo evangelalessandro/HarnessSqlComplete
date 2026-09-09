@@ -65,6 +65,14 @@ describe('tsqlSnippets: SET <opzione> → ON/OFF e opzioni', () => {
     expect(detectSetContext('update t set a = 1 ')).toBeNull()
   })
 
+  it('UPDATE … \nSET (a capo) non è un\'opzione: servono le colonne', () => {
+    expect(detectSetContext('UPDATE dbo.T\nSET ')).toBeNull()
+    expect(detectSetContext('UPDATE dbo.T\nSET a = ')).toBeNull()
+    // il SET opzione a inizio riga (dopo GO / AS) resta un'opzione
+    expect(detectSetContext('GO\nSET ')).toEqual({ kind: 'options' })
+    expect(detectSetContext('AS\nSET NOCOUNT ')).toEqual({ kind: 'values', option: 'NOCOUNT' })
+  })
+
   it('opzioni principali presenti con ON/OFF', () => {
     for (const n of ['NOCOUNT', 'XACT_ABORT', 'ANSI_NULLS', 'QUOTED_IDENTIFIER', 'ARITHABORT', 'IMPLICIT_TRANSACTIONS']) {
       const opt = TSQL_SET_OPTIONS.find(o => o.name === n)

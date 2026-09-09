@@ -641,6 +641,59 @@ export function detectPrintMagic(sql: string): 'drago' | 'fuoco' | null {
   return fuoco
 }
 
+/** True se l'offset è DENTRO un commento (di riga o a blocco), rispettando le stringhe. */
+export function isTextOffsetInComment(text: string, offset: number): boolean {
+  let i = 0
+  let lineComment = false
+  let block = false
+  let str = false
+  const n = Math.min(offset, text.length)
+  while (i < n) {
+    const c = text[i]
+    const nx = i + 1 < text.length ? text[i + 1] : ''
+    if (block) {
+      if (c === '*' && nx === '/') {
+        block = false
+        i += 2
+        continue
+      }
+      i++
+      continue
+    }
+    if (str) {
+      if (c === "'") {
+        if (nx === "'") {
+          i += 2
+          continue
+        }
+        str = false
+      }
+      i++
+      continue
+    }
+    if (c === "'") {
+      str = true
+      i++
+      continue
+    }
+    if (c === '-' && nx === '-') {
+      lineComment = true
+      const eol = text.indexOf('\n', i)
+      if (eol === -1 || eol >= n) break
+      i = eol + 1
+      lineComment = false
+      continue
+    }
+    if (c === '/' && nx === '*') {
+      block = true
+      i += 2
+      continue
+    }
+    i++
+  }
+  return lineComment || block
+}
+
 // ---------- Report utilizzo tabelle (ordinamento) ----------
 
 export type TableReportSortKey =

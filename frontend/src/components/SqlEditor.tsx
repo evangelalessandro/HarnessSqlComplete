@@ -20,6 +20,7 @@ import monaco from '../monacoSetup'
 import { api } from '../api'
 import { syntaxIssuesFromCheck } from '../syntaxCheck'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from '../types'
+import { isTextOffsetInComment } from '../helpers'
 import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, resolveTokenAt, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
 import DataPreviewModal from './DataPreviewModal'
 import { shouldSuggestSystemObjects, systemObjectsFor } from '../systemObjects'
@@ -426,6 +427,8 @@ export default function SqlEditor({
           // Contesto dello statement corrente (per la classificazione e i rami successivi)
           const fullText = model.getValue()
           const cursorOffset = model.getOffsetAt(position)
+          // dentro un commento non si propone alcun suggerimento
+          if (isTextOffsetInComment(fullText, cursorOffset)) return { suggestions: [] }
           const stmtRange = statementRangeAt(fullText, cursorOffset)
           const stmtText = fullText.slice(stmtRange.start, stmtRange.end)
           const stmtBefore = stmtText.slice(0, cursorOffset - stmtRange.start)
