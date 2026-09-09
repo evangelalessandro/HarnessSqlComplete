@@ -48,6 +48,11 @@ export const HELP_SECTIONS: HelpSection[] = [
           'Apri più query in tab separate: trascina per riordinarle, clicca la puntina per appuntarle (non chiudibili, restano in testa), chiudi con la X. Le tab vengono ripristinate al riavvio.',
       },
       {
+        title: 'Tante tab? Tasto destro e "»"',
+        detail:
+          'Tasto destro su una tab per chiudere in blocco come in SSMS: tutte le altre, quelle a destra, quelle a sinistra, o tutte le non appuntate (le appuntate sono protette). Quando le tab non stanno in una riga vanno a capo su una seconda riga; se non bastano nemmeno due righe compare il pulsante "»" che elenca tutte le tab aperte.',
+      },
+      {
         title: 'Esegui query',
         detail:
           'F5 o Ctrl+Invio esegue lo statement corrente. Supporta più batch separati da GO, cattura i PRINT e mostra più result set (limite 5000 righe per griglia).',

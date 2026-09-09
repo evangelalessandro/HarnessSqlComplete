@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { BookOpen, Database as DbIcon, FilePlus2, Pin, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
@@ -9,6 +9,8 @@ import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
+import { buildTabClosePlan, countClosableTabs } from './tabOps'
+import type { TabCloseMode } from './tabOps'
 import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryResult } from './types'
 import { chooseResultTab } from './queryTabs'
 import LoginScreen from './components/LoginScreen'
@@ -39,6 +41,12 @@ export default function App() {
   const [descEditingTab, setDescEditingTab] = useState<string | null>(null)
   const [descDraft, setDescDraft] = useState('')
   const [titleDraft, setTitleDraft] = useState('')
+  // Menu contestuale della tab (tasto destro): chiusure multiple in stile SSMS
+  const [tabMenu, setTabMenu] = useState<{ id: string; x: number; y: number } | null>(null)
+  // Overflow delle tab: a capo su 2 righe; oltre compare il pulsante "»" con l'elenco
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  const [tabOverflow, setTabOverflow] = useState(false)
+  const [overflowOpen, setOverflowOpen] = useState(false)
   const [aiEnabled, setAiEnabled] = useState(true)
   const [aiStatus, setAiStatus] = useState<AutocompleteStatus | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
@@ -438,6 +446,67 @@ export default function App() {
     [activeEditorTab],
   )
 
+  /** Rimuove i dati laterali (risultati, esecuzione, sql…) delle tab chiuse in massa. */
+  const dropTabSideData = useCallback((ids: string[]) => {
+    const gone = new Set(ids)
+    const without = <T,>(m: Record<string, T>): Record<string, T> => {
+      const c = { ...m }
+      for (const id of gone) delete c[id]
+      return c
+    }
+    setTabResults(without)
+    setTabExecuting(without)
+    setTabResultTab(without)
+    setTabSql(without)
+  }, [])
+
+  /** Applica un'azione di chiusura multipla (menu tasto destro) della tab `anchorId`. */
+  const applyTabClosePlan = useCallback(
+    (anchorId: string, mode: TabCloseMode) => {
+      if (!editorTabs.some(t => t.id === anchorId)) {
+        setTabMenu(null)
+        return
+      }
+      const plan = buildTabClosePlan(editorTabs, anchorId, mode)
+      setTabMenu(null)
+      if (plan.removedIds.length === 0) return
+      dropTabSideData(plan.removedIds)
+      setEditorTabs(plan.kept)
+      setActiveEditorTab(prev => (prev && plan.removedIds.includes(prev) ? plan.focusId : prev))
+    },
+    [editorTabs, dropTabSideData],
+  )
+
+  // Tab in overflow: a capo automatico fino a 2 righe; oltre compare "»" con l'elenco.
+  const measureTabOverflow = useCallback(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const probe = el.querySelector<HTMLElement>('.sql-tab')
+    if (!probe) {
+      setTabOverflow(false)
+      setOverflowOpen(false)
+      return
+    }
+    const twoRows = probe.offsetHeight * 2 + 4 // gap-1 tra le righe
+    const top = el.getBoundingClientRect().top
+    const clipped = [...el.children].some(
+      c => c.getBoundingClientRect().bottom > top + twoRows + 1,
+    )
+    el.style.maxHeight = clipped ? `${twoRows}px` : ''
+    setTabOverflow(clipped)
+    if (!clipped) setOverflowOpen(false)
+  }, [])
+  useLayoutEffect(() => {
+    measureTabOverflow()
+  }, [measureTabOverflow, editorTabs])
+  useLayoutEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const ro = new ResizeObserver(measureTabOverflow)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [measureTabOverflow])
+
   /** Salva titolo e descrizione libera della tab in modifica. */
   const saveTabDescription = useCallback(() => {
     if (!descEditingTab) return
@@ -799,8 +868,8 @@ export default function App() {
         </aside>
 
         <main className="flex min-w-0 flex-1 flex-col">
-          {/* Barra delle tab dell'editor */}
-          <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-zinc-800 bg-zinc-900/60 px-1">
+          {/* Barra delle tab dell'editor: a capo su 2 righe, poi elenco "»" */}
+          <div className="flex items-center gap-1 border-b border-zinc-800 bg-zinc-900/60 px-1">
             <select
               value={connection.database}
               onChange={e => void handleSwitchDatabase(e.target.value)}
@@ -814,9 +883,21 @@ export default function App() {
                 </option>
               ))}
             </select>
+            <div
+              ref={wrapRef}
+              className="flex min-w-0 flex-1 flex-wrap items-center gap-1 overflow-hidden"
+            >
             {editorTabs.map(t => (
               <div
                 key={t.id}
+                onContextMenu={e => {
+                  e.preventDefault()
+                  setTabMenu({
+                    id: t.id,
+                    x: Math.min(e.clientX, window.innerWidth - 230),
+                    y: Math.min(e.clientY, window.innerHeight - 280),
+                  })
+                }}
                 draggable
                 onDragStart={e => {
                   e.dataTransfer.setData('text/tab-id', t.id)
@@ -831,13 +912,13 @@ export default function App() {
                   const fromId = e.dataTransfer.getData('text/tab-id')
                   if (fromId) moveTab(fromId, t.id)
                 }}
-                className={`group relative flex shrink-0 cursor-grab items-center gap-1 border-t-2 border-r px-3 py-1 text-xs active:cursor-grabbing ${
+                className={`group sql-tab relative flex h-7 shrink-0 cursor-grab items-center gap-1 border-t-2 border-r px-3 text-xs active:cursor-grabbing ${
                   t.id === activeEditorTab
                     ? 'border-x border-x-zinc-700 border-b-2 border-b-zinc-900 bg-zinc-700/90 font-semibold text-white shadow-[0_-2px_10px_rgba(56,189,248,0.12)]'
                     : 'border-r-zinc-800 text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300'
                 }`}
                 style={{ borderTopColor: dbTabColor(t.database ?? connection.database, dbColors) }}
-                title={`${t.title} · db: ${t.database || connection.database}${t.description ? ` — ${t.description}` : ''}${t.pinned ? ' (appuntata)' : ''}${t.id === activeEditorTab ? ' — SCHEDA ATTIVA — trascina per riordinare' : ''}`}
+                title={`${t.title} · db: ${t.database || connection.database}${t.description ? ` — ${t.description}` : ''}${t.pinned ? ' (appuntata)' : ''}${t.id === activeEditorTab ? ' — SCHEDA ATTIVA — trascina per riordinare' : ''} — tasto destro: chiudi le altre / a destra / a sinistra / le non appuntate`}
               >
                 {t.id === activeEditorTab && (
                   <span
@@ -886,6 +967,51 @@ export default function App() {
                 )}
               </div>
             ))}
+            </div>
+            {tabOverflow && (
+              <div className="relative shrink-0">
+                <button
+                  onClick={() => setOverflowOpen(v => !v)}
+                  className={`inline-flex h-7 items-center rounded px-2 text-sm text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 ${
+                    overflowOpen ? 'bg-zinc-800 text-zinc-200' : ''
+                  }`}
+                  title={`${editorTabs.length} tab aperte: mostra l'elenco`}
+                >
+                  <span className="leading-none">»</span>
+                </button>
+                {overflowOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setOverflowOpen(false)} />
+                    <div className="absolute right-0 top-full z-50 mt-1 max-h-80 w-72 overflow-y-auto rounded-md border border-zinc-700 bg-zinc-900 py-1 shadow-2xl">
+                      <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                        {editorTabs.length} tab aperte
+                      </div>
+                      {editorTabs.map(t => (
+                        <button
+                          key={t.id}
+                          onClick={() => {
+                            switchEditorTab(t.id)
+                            setOverflowOpen(false)
+                          }}
+                          className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-zinc-800 ${
+                            t.id === activeEditorTab ? 'bg-zinc-800/70 text-white' : 'text-zinc-300'
+                          }`}
+                          title={t.title}
+                        >
+                          <span
+                            className="h-2 w-2 shrink-0 rounded-full"
+                            style={{ backgroundColor: dbTabColor(t.database ?? connection.database, dbColors) }}
+                          />
+                          <span className="min-w-0 flex-1 truncate">{t.title}</span>
+                          {t.pinned && <Pin className="h-3 w-3 shrink-0 text-amber-400" />}
+                          {t.id === activeEditorTab && <span className="shrink-0 text-sky-400">●</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
             <button
               onClick={() => newEditorTab()}
               className="ml-1 inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
@@ -1068,6 +1194,71 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* Menu contestuale della tab (tasto destro): chiusure multiple in stile SSMS */}
+      {tabMenu &&
+        (() => {
+          const anchor = editorTabs.find(t => t.id === tabMenu.id)
+          const pinned = !!anchor?.pinned
+          const n = (mode: TabCloseMode) => countClosableTabs(editorTabs, tabMenu.id, mode)
+          const run = (mode: TabCloseMode) => applyTabClosePlan(tabMenu.id, mode)
+          const itemCls =
+            'flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-zinc-200 transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600'
+          const item = (label: string, count: number, mode: TabCloseMode) => (
+            <button className={itemCls} disabled={count === 0} onClick={() => run(mode)}>
+              <span className="flex-1">{label}</span>
+              <span className="tabular-nums text-zinc-500">{count}</span>
+            </button>
+          )
+          return (
+            <>
+              <div
+                className="fixed inset-0 z-50"
+                onClick={() => setTabMenu(null)}
+                onContextMenu={e => {
+                  e.preventDefault()
+                  setTabMenu(null)
+                }}
+              />
+              <div
+                className="fixed z-50 min-w-56 rounded-md border border-zinc-700 bg-zinc-900 py-1 shadow-2xl"
+                style={{ left: tabMenu.x, top: tabMenu.y }}
+              >
+                <div className="flex items-center gap-2 border-b border-zinc-800 px-3 pb-1.5 pt-1">
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: dbTabColor(anchor?.database ?? connection.database, dbColors) }}
+                  />
+                  <span className="min-w-0 flex-1 truncate text-xs font-semibold text-zinc-100">
+                    {anchor?.title ?? 'Tab'}
+                  </span>
+                  {pinned && (
+                    <span className="flex items-center gap-1 text-[10px] text-amber-400">
+                      <Pin className="h-3 w-3" /> appuntata
+                    </span>
+                  )}
+                </div>
+                <button
+                  className={itemCls}
+                  disabled={pinned}
+                  onClick={() => {
+                    const id = tabMenu.id
+                    setTabMenu(null)
+                    closeEditorTab(id)
+                  }}
+                  title={pinned ? 'Le tab appuntate non si chiudono: togli prima il pin' : undefined}
+                >
+                  Chiudi
+                </button>
+                <div className="my-1 h-px bg-zinc-800" />
+                {item('Chiudi tutte le altre', n('others'), 'others')}
+                {item('Chiudi quelle a destra', n('right'), 'right')}
+                {item('Chiudi quelle a sinistra', n('left'), 'left')}
+                <div className="my-1 h-px bg-zinc-800" />
+                {item('Chiudi le non appuntate', n('unpinned'), 'unpinned')}
+              </div>
+            </>
+          )
+        })()}
     </FileDropZone>
   )
 }
