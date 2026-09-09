@@ -20,6 +20,7 @@ import {
   SquarePen,
   Table2,
   Trash2,
+  X,
   Zap,
 } from 'lucide-react'
 import type { ColumnInfo, DatabaseSummary, ProcedureInfo, TableInfo, TriggerInfo, ViewInfo } from '../types'
@@ -121,6 +122,8 @@ export default function Sidebar({
   onRightDockChange,
 }: Props) {
   const [query, setQuery] = useState('')
+  // Filtro per nome nella lista dei database
+  const [dbFilter, setDbFilter] = useState('')
   // Pannelli (stile Visual Studio): database in alto, oggetti+ricerca sotto.
   // Ogni pannello è chiudibile, staccabile (floating), ridimensionabile e agganciabile
   // a sinistra (sidebar) o a destra (colonna laterale); il divider tra i due è spostabile.
@@ -513,10 +516,41 @@ export default function Sidebar({
 
   // Contenuti dei pannelli: riutilizzati in ogni posizione (ancorato a sinistra,
   // flottante o ancorato a destra via portal)
-  const dbListContent = () => (
+  const dbListContent = () => {
+    const q = dbFilter.trim().toLowerCase()
+    // il database attivo resta sempre visibile (anche se non corrisponde al filtro)
+    const dbs = q
+      ? summary.databases.filter(d => d.name.toLowerCase().includes(q) || d.name === activeDatabase)
+      : summary.databases
+    return (
     <div className="flex h-full min-h-0 flex-col">
+      {/* Filtro per nome database */}
+      <div className="shrink-0 border-b border-zinc-800 p-2">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
+          <input
+            value={dbFilter}
+            onChange={e => setDbFilter(e.target.value)}
+            placeholder="Filtra database…"
+            className="w-full rounded-md border border-zinc-700 bg-zinc-900 py-1 pl-8 pr-7 text-xs text-zinc-100 placeholder-zinc-600 focus:border-sky-500 focus:outline-none"
+            title="Filtra i database per nome"
+          />
+          {dbFilter && (
+            <button
+              onClick={() => setDbFilter('')}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+              title="Cancella il filtro"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
       <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
-      {summary.databases.map(d => {
+      {dbs.length === 0 && q && (
+        <p className="p-2 text-xs text-zinc-600">Nessun database corrisponde a "{dbFilter}".</p>
+      )}
+      {dbs.map(d => {
         const isActive = d.name === activeDatabase
         const isOpen = isActive && !collapsedDb
         const objectCount =
@@ -574,7 +608,8 @@ export default function Sidebar({
         </div>
       )}
     </div>
-  )
+    )
+  }
 
   const objectsContent = () => (
     <>
