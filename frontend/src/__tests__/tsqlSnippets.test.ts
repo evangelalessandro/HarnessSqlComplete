@@ -20,6 +20,7 @@ import {
   detectTableHintsContext,
   detectVariableContext,
   extractDeclaredVariables,
+  extractRoutineParameters,
   systemVariablePrefixLen,
   variablePrefixLen,
 } from '../tsqlSnippets'
@@ -282,5 +283,54 @@ if @a > 0
     expect(variablePrefixLen('select @p')).toBe(2)
     expect(variablePrefixLen('set @x = @')).toBe(1)
     expect(variablePrefixLen('if @@ERROR')).toBe(0)
+  })
+})
+
+describe('extractRoutineParameters: in modifica propone i PARAMETRI della routine', () => {
+  it('procedure con parametri e default → li estrae dalla firma (anche se non DECLARATI)', () => {
+    const text = `CREATE OR ALTER PROCEDURE [dbo].[ws_L2_LancioImmed]
+    @pRiga int = 0
+    ,@pOrdine nvarchar(50)
+    ,@baia int OUTPUT
+    ,@esito nvarchar(4000) = NULL OUTPUT
+AS
+BEGIN
+  DECLARE @locale int = 0
+  SELECT @p`
+    const params = extractRoutineParameters(text)
+    expect(params.map(p => p.name)).toEqual(['@pRiga', '@pOrdine', '@baia', '@esito'])
+    // i tipi (con lunghezza) sono catturati
+    expect(params[1]).toEqual({ name: '@pOrdine', dataType: 'nvarchar(50)' })
+    expect(params[3]).toEqual({ name: '@esito', dataType: 'nvarchar(4000)' })
+    // le variabili dichiarate restano separate (le estrae extractDeclaredVariables)
+    expect(extractDeclaredVariables(text).map(v => v.name)).toEqual(['@locale'])
+  })
+
+  it('function: parametri tra parentesi', () => {
+    const text = `CREATE FUNCTION dbo.FnTest(@a INT, @b NVARCHAR(10))
+RETURNS INT
+AS
+BEGIN
+  RETURN @a
+END`
+    const params = extractRoutineParameters(text)
+    expect(params.map(p => p.name)).toEqual(['@a', '@b'])
+  })
+
+  it('trigger o testo senza routine → nessun parametro', () => {
+    expect(extractRoutineParameters('CREATE TRIGGER tr ON dbo.T FOR INSERT AS SELECT 1')).toEqual([])
+    expect(extractRoutineParameters('SELECT @x = 1')).toEqual([])
+    expect(extractRoutineParameters('')).toEqual([])
+  })
+
+  it('in un file con più routine prende l\'ULTIMA (quella aperta/modificata)', () => {
+    const text = `CREATE OR ALTER PROCEDURE dbo.Prima(@a INT) AS SELECT @a
+GO
+CREATE OR ALTER PROCEDURE dbo.Seconda(@x NVARCHAR(10), @y INT = 0) AS
+BEGIN
+  SELECT @x, @y
+END`
+    const params = extractRoutineParameters(text)
+    expect(params.map(p => p.name)).toEqual(['@x', '@y'])
   })
 })

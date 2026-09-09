@@ -431,3 +431,32 @@ export function variablePrefixLen(textBefore: string): number {
   const m = /@[A-Za-z_]*$/i.exec(t)
   return m ? m[0].length : 0
 }
+
+// ---------- Parametri della routine aperta in modifica ----------
+
+/**
+ * Parametri della stored procedure/funzione che contiene il cursore: quando si
+ * modifica una routine ("CREATE OR ALTER PROCEDURE …") l'intellisense deve
+ * proporre anche i PARAMETRI (@… della firma), non solo le variabili DECLARATE
+ * dentro il corpo. Restituisce quelli dell'ULTIMO header (CREATE/ALTER …
+ * PROC/FUNCTION) presente nel testo prima del cursore; per un trigger → vuoto.
+ */
+export function extractRoutineParameters(text: string): DeclaredVariable[] {
+  const headerRe =
+    /(?:^|;|\bGO\b|(?:\r?\n)\s*)(?:ALTER|CREATE)\s+(?:OR\s+ALTER\s+)?(?:PROC(?:EDURE)?|PROCEDURE|FUNCTION|FUN)\s+(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?([\s\S]*?)\bAS\b/gi
+  let last: RegExpExecArray | null = null
+  let m: RegExpExecArray | null
+  while ((m = headerRe.exec(text)) !== null) last = m
+  if (!last) return []
+
+  const out: DeclaredVariable[] = []
+  const signature = last[1]
+  // nome@(eventuale AS) tipo(con lunghezza opzionale tipo "nvarchar(50)")
+  const paramRe =
+    /@([A-Za-z_][A-Za-z0-9_]*)\s+(?:(?:AS\s+)?)((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\(\s*\d+(?:\s*,\s*\d+)?\s*\))?)/gi
+  let p: RegExpExecArray | null
+  while ((p = paramRe.exec(signature)) !== null) {
+    out.push({ name: `@${p[1]}`, dataType: p[2].replace(/\[|\]/g, '') })
+  }
+  return out
+}

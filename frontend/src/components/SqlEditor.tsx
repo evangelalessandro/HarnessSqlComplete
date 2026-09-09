@@ -51,6 +51,7 @@ import {
   detectTableHintsContext,
   detectVariableContext,
   extractDeclaredVariables,
+  extractRoutineParameters,
   systemVariablePrefixLen,
   variablePrefixLen,
 } from '../tsqlSnippets'
@@ -689,23 +690,30 @@ export default function SqlEditor({
               return { suggestions }
             }
 
-            // Variabili dichiarate (@var): "select @p" dopo un DECLARE → @t, @prova
+            // Variabili (@var): "select @p" in una routine → i PARAMETRI della firma
+            // (modifica di una store: @pRiga, @pOrdine…) PIÙ le variabili dichiarate
             if (detectVariableContext(textBefore)) {
-              const vars = extractDeclaredVariables(textBefore)
-              if (vars.length > 0) {
+              const locals = extractDeclaredVariables(textBefore)
+              const params = extractRoutineParameters(textBefore)
+              const all = new Map<string, { dataType: string; isParam: boolean }>()
+              for (const p of params)
+                if (!all.has(p.name)) all.set(p.name, { dataType: p.dataType, isParam: true })
+              for (const v of locals)
+                if (!all.has(v.name)) all.set(v.name, { dataType: v.dataType, isParam: false })
+              if (all.size > 0) {
                 const prefixLen = variablePrefixLen(textBefore)
                 const startOffset = cursorOffset - prefixLen
                 const startPos = model.getPositionAt(startOffset)
                 const endPos = model.getPositionAt(cursorOffset)
                 const varRange = new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column)
-                for (const v of vars) {
+                for (const [name, v] of all) {
                   push({
-                    label: v.name,
-                    detail: `${v.dataType} · variabile dichiarata`,
+                    label: name,
+                    detail: v.isParam ? `${v.dataType} · parametro della routine` : `${v.dataType} · variabile dichiarata`,
                     kind: monaco.languages.CompletionItemKind.Variable,
-                    insertText: v.name,
+                    insertText: name,
                     range: varRange,
-                    filterText: v.name,
+                    filterText: name,
                   })
                 }
                 return { suggestions }
