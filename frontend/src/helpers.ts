@@ -1558,11 +1558,27 @@ export function tokenizeSql(text: string): SqlToken[] {
   return tokens
 }
 
-/** Offset di inizio di ogni statement SQL (dopo i ';' fuori da stringhe/commenti). */
+/** Keyword che, a inizio riga (fuori parentesi), aprono una nuova istruzione di un batch senza ';'. */
+const SQL_STATEMENT_STARTERS = new Set([
+  'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'EXEC', 'EXECUTE', 'DECLARE', 'SET',
+  'PRINT', 'IF', 'WHILE', 'BEGIN', 'CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'USE', 'GO',
+  'BACKUP', 'RESTORE', 'GRANT', 'REVOKE', 'DENY', 'WITH', 'COMMIT', 'ROLLBACK', 'SAVE',
+  'RAISERROR', 'THROW', 'RETURN', 'WAITFOR', 'CHECKPOINT', 'DBCC', 'KILL',
+])
+
+/**
+ * Offset di inizio di ogni statement SQL: dopo i ';' fuori da stringhe/commenti,
+ * dopo una riga "GO" e dopo un a-capo a profondità 0 seguito da una keyword di
+ * statement ("declare @a int\nupdate dbo.T set …" sono DUE statement anche senza ';').
+ * Così una SELECT di un'istruzione PRECEDENTE non inquina le colonne dello statement
+ * corrente (es. "update ... set CAMPO" non antepone il nome tabella a un campo che
+ * è univoco NEL SUO statement ma condiviso con le tabelle di prima).
+ */
 export function findSqlStatementStarts(text: string): number[] {
   const starts = [0]
   let i = 0
   const n = text.length
+  let depth = 0
   while (i < n) {
     const ch = text[i]
     if (ch === "'" || ch === '"') {
@@ -1578,10 +1594,38 @@ export function findSqlStatementStarts(text: string): number[] {
       i = end === -1 ? n : end + 2
       continue
     }
+    if (ch === '(') {
+      depth += 1
+      i++
+      continue
+    }
+    if (ch === ')') {
+      depth = Math.max(0, depth - 1)
+      i++
+      continue
+    }
     if (ch === ';') {
       starts.push(i + 1)
       i++
       continue
+    }
+    if (ch === '\n' && depth === 0) {
+      // la riga successiva (dopo spazi/tab) inizia con una keyword di statement → nuovo statement
+      let j = i + 1
+      while (j < n && (text[j] === ' ' || text[j] === '\t' || text[j] === '\r' || text[j] === '\n')) j++
+      const word = /^[A-Za-z_][A-Za-z0-9_]*/.exec(text.slice(j, j + 40))
+      if (word && SQL_STATEMENT_STARTERS.has(word[0].toUpperCase())) {
+        // "SET" a inizio riga NON rompe un UPDATE scritto su più righe:
+        // "update dbo.T\nset col = …" è UN solo statement.
+        const prevChunk = text.slice(starts[starts.length - 1], j)
+        const setContinuesUpdate =
+          word[0].toUpperCase() === 'SET' && /\bUPDATE\b/i.test(prevChunk)
+        if (!setContinuesUpdate) {
+          starts.push(j)
+          i = j
+          continue
+        }
+      }
     }
     i++
   }
