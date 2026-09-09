@@ -119,6 +119,16 @@ export interface TriggerInfo {
   name: string
 }
 
+/** Vincolo CHECK di una tabella: nome, tabella e testo della condizione. */
+export interface CheckConstraintInfo {
+  schema: string
+  tableName: string
+  name: string
+  /** Testo della condizione (es. "([importo]>=(0))"). */
+  definition: string
+  isDisabled?: boolean
+}
+
 export interface FunctionInfo {
   schema: string
   name: string
@@ -141,6 +151,8 @@ export interface DatabaseSummary {
   views: ViewInfo[]
   procedures: ProcedureInfo[]
   triggers: TriggerInfo[]
+  /** Vincoli CHECK delle tabelle (per mostrarli e modificarli). */
+  checkConstraints?: CheckConstraintInfo[] | null
   functions: FunctionInfo[]
   foreignKeys: ForeignKeyInfo[]
   databases: DatabaseInfo[]

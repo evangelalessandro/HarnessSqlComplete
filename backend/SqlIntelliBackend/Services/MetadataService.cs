@@ -30,6 +30,7 @@ public class MetadataService
         var procs = new List<ProcedureInfo>();
         var procParams = new Dictionary<(string, string), List<ProcParamInfo>>();
         var triggers = new List<TriggerInfo>();
+        var checkConstraints = new List<CheckConstraintInfo>();
         var functions = new List<FunctionInfo>();
         var foreignKeys = new List<ForeignKeyInfo>();
         var dependencyCounts = new Dictionary<(string, string), int>();
@@ -283,6 +284,27 @@ public class MetadataService
                 triggers.Add(new TriggerInfo(r.GetString(0), r.GetString(1), r.GetString(2)));
         }
 
+        // Vincoli CHECK (una riga per vincolo: nome, tabella e testo della condizione)
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT s.name, t.name, cc.name, cc.definition, cc.is_disabled
+                FROM sys.check_constraints cc
+                INNER JOIN sys.tables t ON cc.parent_object_id = t.object_id
+                INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+                WHERE cc.is_ms_shipped = 0 AND t.is_ms_shipped = 0
+                ORDER BY s.name, t.name, cc.name;
+                """;
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                checkConstraints.Add(new CheckConstraintInfo(
+                    r.GetString(0),
+                    r.GetString(1),
+                    r.GetString(2),
+                    r.GetString(3),
+                    r.GetBoolean(4)));
+        }
+
         // Funzioni utente
         await using (var cmd = conn.CreateCommand())
         {
@@ -414,7 +436,7 @@ public class MetadataService
             .ToList();
 
         var databases = (await ListDatabasesAsync(connectionString, ct)).Select(d => new DatabaseInfo(d)).ToList();
-        return new DatabaseSummary(tables, views, procs, triggers, functions, foreignKeys, databases, cooccurrences);
+        return new DatabaseSummary(tables, views, procs, triggers, checkConstraints, functions, foreignKeys, databases, cooccurrences);
     }
 
     public async Task<List<ColumnInfo>> GetTableColumnsAsync(string connectionString, string schema, string table, CancellationToken ct = default)

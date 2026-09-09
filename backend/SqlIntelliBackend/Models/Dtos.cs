@@ -90,6 +90,14 @@ public record ProcedureInfo(
 
 public record TriggerInfo(string Schema, string TableName, string Name);
 
+/// <summary>Vincolo CHECK di una tabella: nome, tabella di appartenenza e testo della condizione.</summary>
+public record CheckConstraintInfo(
+    string Schema,
+    string TableName,
+    string Name,
+    string Definition,
+    bool IsDisabled);
+
 public record FunctionInfo(string Schema, string Name, string Type);
 
 public record SearchResult(string Schema, string Name, string ObjectType);
@@ -102,6 +110,7 @@ public record DatabaseSummary(
     List<ViewInfo> Views,
     List<ProcedureInfo> Procedures,
     List<TriggerInfo> Triggers,
+    List<CheckConstraintInfo> CheckConstraints,
     List<FunctionInfo> Functions,
     List<ForeignKeyInfo> ForeignKeys,
     List<DatabaseInfo> Databases,

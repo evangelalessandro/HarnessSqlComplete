@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { DragEvent, MouseEvent, ReactNode } from 'react'
 import {
+  BadgeCheck,
   Braces,
   Boxes,
   ChevronDown,
@@ -23,7 +24,15 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import type { ColumnInfo, DatabaseSummary, ProcedureInfo, TableInfo, TriggerInfo, ViewInfo } from '../types'
+import type {
+  CheckConstraintInfo,
+  ColumnInfo,
+  DatabaseSummary,
+  ProcedureInfo,
+  TableInfo,
+  TriggerInfo,
+  ViewInfo,
+} from '../types'
 import {
   dbColorPalette,
   dbTabColor,
@@ -32,6 +41,7 @@ import {
   scriptCreateTable,
   scriptDeleteTable,
   scriptDropObject,
+  scriptCheckConstraint,
   scriptExecProcedure,
   scriptInsertTable,
   scriptMergeTable,
@@ -81,7 +91,7 @@ interface Props {
   ) => void
 }
 
-type HitKind = 'tabella' | 'vista' | 'procedura' | 'funzione' | 'trigger'
+type HitKind = 'tabella' | 'vista' | 'procedura' | 'funzione' | 'trigger' | 'check'
 
 interface SearchHit {
   kind: HitKind
@@ -93,6 +103,7 @@ interface SearchHit {
   proc?: ProcedureInfo
   view?: ViewInfo
   trigger?: TriggerInfo
+  check?: CheckConstraintInfo
 }
 
 /** Voce del menu contestuale (SSMS): azione foglia oppure sottomenu "Script ...". */
@@ -288,6 +299,22 @@ export default function Sidebar({
     return { map, orphans }
   }, [summary])
 
+  // Vincoli CHECK annidati sotto la loro tabella (stile SSMS), con testo per la modifica
+  const checksByTable = useMemo(() => {
+    const map = new Map<string, CheckConstraintInfo[]>()
+    if (!summary) return map
+    const tableByKey = new Map(summary.tables.map(t => [`${t.schema}.${t.name}`.toLowerCase(), t]))
+    for (const cc of summary.checkConstraints ?? []) {
+      const t = tableByKey.get(`${cc.schema}.${cc.tableName}`.toLowerCase())
+      if (!t) continue
+      const key = `${t.schema}.${t.name}`
+      const arr = map.get(key) ?? []
+      arr.push(cc)
+      map.set(key, arr)
+    }
+    return map
+  }, [summary])
+
   const toggleTable = (key: string) =>
     setExpandedTables(prev => {
       const next = new Set(prev)
@@ -473,6 +500,23 @@ export default function Sidebar({
             ],
           },
         ]
+      case 'check': {
+        const cc = hit.check!
+        const label = `Vincolo CHECK ${cc.name}`
+        return [
+          {
+            id: 'modify',
+            label: 'Modifica (ALTER TABLE …)',
+            icon: <SquarePen className="h-3.5 w-3.5" />,
+            hint: 'Apre ALTER TABLE … ADD CONSTRAINT CHECK in una nuova tab per vedere/modificare il vincolo',
+            run: () =>
+              onOpenScript?.(
+                label,
+                scriptCheckConstraint(cc.schema, cc.tableName, cc.name, cc.definition, cc.isDisabled),
+              ),
+          },
+        ]
+      }
     }
   }
 
@@ -700,6 +744,7 @@ export default function Sidebar({
                           const tKey = `${t.schema}.${t.name}`
                           const expanded = expandedTables.has(tKey)
                           const tableTriggers = triggersByTable.map.get(tKey) ?? []
+                          const tableChecks = checksByTable.get(tKey) ?? []
                           return (
                             <TableRow
                               key={tKey}
@@ -777,6 +822,33 @@ export default function Sidebar({
                                     >
                                       <Flame className="h-3 w-3 shrink-0 text-rose-400/70" />
                                       <span className="min-w-0 break-all font-mono">{trg.name}</span>
+                                    </button>
+                                  ))}
+                                  {tableChecks.length > 0 && (
+                                    <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
+                                      Vincoli CHECK
+                                    </div>
+                                  )}
+                                  {tableChecks.map(cc => (
+                                    <button
+                                      key={cc.name}
+                                      onClick={() =>
+                                        onOpenScript?.(
+                                          `Vincolo CHECK ${cc.name}`,
+                                          scriptCheckConstraint(cc.schema, cc.tableName, cc.name, cc.definition, cc.isDisabled),
+                                        )
+                                      }
+                                      onContextMenu={e =>
+                                        openObjectMenu(e, { kind: 'check', schema: cc.schema, name: cc.name, detail: cc.tableName, check: cc })
+                                      }
+                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                                      title={`Clicca per vedere/modificare il vincolo — tasto destro per le azioni`}
+                                    >
+                                      <BadgeCheck className="h-3 w-3 shrink-0 text-emerald-400/70" />
+                                      <span className="min-w-0 break-all font-mono">{cc.name}</span>
+                                      {cc.isDisabled && (
+                                        <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-amber-400">off</span>
+                                      )}
                                     </button>
                                   ))}
                                 </>

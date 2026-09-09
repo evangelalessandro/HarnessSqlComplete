@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  scriptCheckConstraint,
   scriptCreateTable,
   scriptDeleteTable,
   scriptDropObject,
@@ -145,6 +146,26 @@ describe('script stile SSMS (Select/Drop/Insert/Update/Delete)', () => {
   it('senza identity usa la prima colonna come chiave', () => {
     const noId = mkTbl('dbo', 'T', [mkCol('a'), mkCol('b')])
     expect(scriptDeleteTable(noId)).toBe('DELETE FROM T WHERE a = 0;\n')
+  })
+})
+
+describe('scriptCheckConstraint: ALTER TABLE per vedere/modificare un vincolo CHECK', () => {
+  it('genera ALTER TABLE … ADD CONSTRAINT … CHECK con la definizione originale', () => {
+    const sql = scriptCheckConstraint('dbo', 'TIPI_EVENTI', 'CK_TIPI_EVENTI_CEL', '([CEL]>=(0))')
+    expect(sql).toContain('-- Vincolo CHECK "CK_TIPI_EVENTI_CEL" su TIPI_EVENTI')
+    expect(sql).toContain('-- Testo originale: CHECK (([CEL]>=(0)))')
+    expect(sql).toContain(
+      'ALTER TABLE TIPI_EVENTI WITH CHECK ADD CONSTRAINT CK_TIPI_EVENTI_CEL CHECK (([CEL]>=(0)));',
+    )
+  })
+
+  it('schema non dbo e vincolo disabilitato: commenti e note presenti', () => {
+    const sql = scriptCheckConstraint('ws', 'ST_OPS', 'CK_ST_OPS_ACTIVE', "([STATO] in ('A','I'))", true)
+    expect(sql).toContain('su ws.ST_OPS')
+    expect(sql).toContain('il vincolo è DISABILITATO nel database')
+    expect(sql).toContain('ALTER TABLE ws.ST_OPS')
+    expect(sql).toContain('ADD CONSTRAINT CK_ST_OPS_ACTIVE CHECK (([STATO] in (\'A\',\'I\')));')
+    expect(sql).toContain('CHECK CONSTRAINT CK_ST_OPS_ACTIVE;')
   })
 })
 

@@ -586,6 +586,29 @@ export function scriptCreateTable(table: TableInfo): string {
   return `CREATE TABLE ${qualified(table.schema, table.name)} (\n${defs.join(',\n')}\n);\n`
 }
 
+/** Script ALTER TABLE ... ADD CONSTRAINT ... CHECK: per vedere/modificare un vincolo CHECK esistente. */
+export function scriptCheckConstraint(
+  schema: string,
+  tableName: string,
+  name: string,
+  definition: string,
+  isDisabled = false,
+): string {
+  const target = qualified(schema, tableName)
+  const lines = [
+    `-- Vincolo CHECK "${name}" su ${target}`,
+    `-- Testo originale: CHECK (${definition})`,
+  ]
+  if (isDisabled) {
+    lines.push(
+      '-- ⚠ il vincolo è DISABILITATO nel database (dati esistenti non verificati)',
+      `-- per riabilitarlo: ALTER TABLE ${target} WITH CHECK CHECK CONSTRAINT ${sqlIdent(name)};`,
+    )
+  }
+  lines.push(`ALTER TABLE ${target} WITH CHECK ADD CONSTRAINT ${sqlIdent(name)} CHECK (${definition});`)
+  return lines.join('\n') + '\n'
+}
+
 /** Script MERGE generato: chiave = colonna IDENTITY (o la prima), sorgente con valori di default. */
 export function scriptMergeTable(table: TableInfo): string {
   const cols = table.columns ?? []
