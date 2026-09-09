@@ -100,6 +100,30 @@ describe('toCreateOrAlterStatement: CREATE → CREATE OR ALTER', () => {
     )
   })
 
+  it('commento iniziale prima di CREATE → CREATE OR ALTER (commento conservato)', () => {
+    const def = '-- =============================================\n-- Author: pippo\n-- =============================================\nCREATE PROCEDURE dbo.X AS SELECT 1'
+    const out = toCreateOrAlterStatement(def)
+    expect(out).toContain('-- Author: pippo')
+    expect(out).toMatch(/CREATE OR ALTER PROCEDURE dbo\.X/)
+  })
+
+  it('commento a blocco iniziale → CREATE OR ALTER', () => {
+    const def = '/* script ri-creato con header */\nALTER PROCEDURE dbo.X AS SELECT 1'
+    const out = toCreateOrAlterStatement(def)
+    expect(out).toContain('/* script ri-creato con header */')
+    expect(out).toContain('CREATE OR ALTER PROCEDURE dbo.X')
+  })
+
+  it('BOM iniziale → CREATE OR ALTER', () => {
+    const def = '\uFEFFCREATE PROCEDURE dbo.X AS SELECT 1'
+    expect(toCreateOrAlterStatement(def)).toBe('CREATE OR ALTER PROCEDURE dbo.X AS SELECT 1')
+  })
+
+  it('solo commenti senza CREATE/ALTER → invariato', () => {
+    const def = '-- niente header qui\nSELECT 1'
+    expect(toCreateOrAlterStatement(def)).toBe(def)
+  })
+
   it('ALTER FUNCTION → CREATE OR ALTER FUNCTION', () => {
     expect(toCreateOrAlterStatement('ALTER FUNCTION dbo.F(@a INT) RETURNS INT AS BEGIN RETURN 1 END')).toBe(
       'CREATE OR ALTER FUNCTION dbo.F(@a INT) RETURNS INT AS BEGIN RETURN 1 END',

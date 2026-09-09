@@ -2059,11 +2059,38 @@ export function buildExecParamSnippet(parameters: ProcParamInfo[]): string {
  * Prepara una definizione per la modifica: "CREATE PROCEDURE ..." o "ALTER PROCEDURE ..."
  * → "CREATE OR ALTER PROCEDURE ..." (eseguibile anche su un oggetto esistente).
  * "CREATE OR ALTER ..." resta invariato; se non inizia con CREATE/ALTER, testo invariato.
+ * Prima dell'intestazione salta BOM, spazi e commenti iniziali (riga o a blocco), così
+ * "Modifica" apre SEMPRE in CREATE OR ALTER anche se la definizione non parte
+ * letteralmente con CREATE/ALTER.
  */
 export function toCreateOrAlterStatement(definition: string): string {
-  const m = /^\s*(?:CREATE|ALTER)\s+(?:OR\s+ALTER\s+)?/i.exec(definition)
+  let i = definition.charCodeAt(0) === 0xfeff ? 1 : 0
+  const n = definition.length
+  let prefix = ''
+  for (;;) {
+    // spazi e righe vuote: non fanno parte del prefisso conservato
+    while (i < n && (definition[i] === ' ' || definition[i] === '\t' || definition[i] === '\n' || definition[i] === '\r')) i += 1
+    const ch = definition[i]
+    if (ch === '-' && definition[i + 1] === '-') {
+      const eol = definition.indexOf('\n', i + 2)
+      const end = eol === -1 ? n : eol + 1
+      prefix += definition.slice(i, end)
+      i = end
+      continue
+    }
+    if (ch === '/' && definition[i + 1] === '*') {
+      const close = definition.indexOf('*/', i + 2)
+      const end = close === -1 ? n : close + 2
+      prefix += definition.slice(i, end)
+      i = end
+      continue
+    }
+    break
+  }
+  const head = definition.slice(i)
+  const m = /^(?:CREATE|ALTER)\s+(?:OR\s+ALTER\s+)?/i.exec(head)
   if (!m) return definition
-  return 'CREATE OR ALTER ' + definition.slice(m[0].length)
+  return prefix + 'CREATE OR ALTER ' + head.slice(m[0].length)
 }
 
 /** Parole chiave che non possono essere alias di tabella: se seguono il nome, la tabella non ha alias. */
