@@ -530,6 +530,8 @@ export default function App() {
       } else if (magic === 'fuoco') {
         setFireTick(t => t + 1)
       }
+      // eseguendo una query i risultati compaiono sempre, anche se nascosti con Ctrl+R
+      setResultsVisible(true)
       // il risultato va alla tab ATTIVA al momento dell'esecuzione
       const tabId = activeEditorTab
       if (!tabId) return
