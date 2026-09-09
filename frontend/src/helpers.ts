@@ -2052,12 +2052,12 @@ export function buildExecParamSnippet(parameters: ProcParamInfo[]): string {
 // ---------- Definizioni oggetti (Create or Alter) ----------
 
 /**
- * Prepara una definizione per la modifica: "CREATE PROCEDURE ..." →
- * "CREATE OR ALTER PROCEDURE ..." (eseguibile anche su un oggetto esistente).
- * "CREATE OR ALTER ..." resta invariato; se non inizia con CREATE, testo invariato.
+ * Prepara una definizione per la modifica: "CREATE PROCEDURE ..." o "ALTER PROCEDURE ..."
+ * → "CREATE OR ALTER PROCEDURE ..." (eseguibile anche su un oggetto esistente).
+ * "CREATE OR ALTER ..." resta invariato; se non inizia con CREATE/ALTER, testo invariato.
  */
 export function toCreateOrAlterStatement(definition: string): string {
-  const m = /^\s*CREATE\s+(?:OR\s+ALTER\s+)?/i.exec(definition)
+  const m = /^\s*(?:CREATE|ALTER)\s+(?:OR\s+ALTER\s+)?/i.exec(definition)
   if (!m) return definition
   return 'CREATE OR ALTER ' + definition.slice(m[0].length)
 }

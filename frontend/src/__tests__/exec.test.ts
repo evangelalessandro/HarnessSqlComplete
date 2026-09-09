@@ -94,6 +94,18 @@ describe('toCreateOrAlterStatement: CREATE → CREATE OR ALTER', () => {
     )
   })
 
+  it('ALTER PROCEDURE (definizione modificata in passato) → CREATE OR ALTER PROCEDURE', () => {
+    expect(toCreateOrAlterStatement('ALTER PROCEDURE dbo.X AS SELECT 1')).toBe(
+      'CREATE OR ALTER PROCEDURE dbo.X AS SELECT 1',
+    )
+  })
+
+  it('ALTER FUNCTION → CREATE OR ALTER FUNCTION', () => {
+    expect(toCreateOrAlterStatement('ALTER FUNCTION dbo.F(@a INT) RETURNS INT AS BEGIN RETURN 1 END')).toBe(
+      'CREATE OR ALTER FUNCTION dbo.F(@a INT) RETURNS INT AS BEGIN RETURN 1 END',
+    )
+  })
+
   it('testo che non inizia con CREATE: invariato', () => {
     const def = 'SELECT 1'
     expect(toCreateOrAlterStatement(def)).toBe(def)
