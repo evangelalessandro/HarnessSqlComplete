@@ -78,7 +78,23 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
     /(?:WHERE|ON|HAVING|AND|OR|SET|BY|GROUP|ORDER)\s*$/i.test(prefix) ||
     /(?:=|<>|!=|<=|>=|<|>)\s*$/i.test(prefix) ||
     commaContinuation
-  const inSelectList = /\bSELECT\b/i.test(stmtBefore) && !/\bFROM\b/i.test(stmtBefore)
+  // Zona "select-list": il cursore è tra l'ULTIMO SELECT e il suo FROM. La flag vale
+  // solo se dopo quell'SELECT non è già comparsa una clausola che chiude la lista o
+  // apre un'altra istruzione (FROM/JOIN/INTO/UPDATE/TABLE) — e NON se la posizione
+  // corrente è una di quelle clausole (fine del prefix).
+  // Senza questo controllo, in un batch scritto senza ';' ("BEGIN TRAN … DECLARE …
+  // SELECT @caus = 1 … INSERT INTO ti…") lo statement si estende sulle istruzioni
+  // precedenti e una posizione INTO/JOIN verrebbe scambiata per select-list: invece
+  // delle TABELLE (es. dbo.TIPI_EVENTI) il provider proporrebbe solo colonne
+  // (bug utente: "quando scrivo 'insert into tipi' non mi suggerisce le tabelle").
+  const inSelectList = (() => {
+    const selects = [...stmtBefore.matchAll(/\bSELECT\b/gi)]
+    if (selects.length === 0) return false
+    const last = selects[selects.length - 1]
+    const after = stmtBefore.slice(last.index + last[0].length)
+    if (/(?:FROM|JOIN|INTO|UPDATE|TABLE)\b/i.test(after)) return false
+    return !isTablePosition && !isJoinPosition && !isExecPosition
+  })()
   const statementStart = /(?:^|;|\bGO\b|\n\s*\n)\s*$/i.test(prefix)
 
   // dopo "FROM t " / "JOIN t " (spazio dopo il nome tabella): la clausola successiva

@@ -52,6 +52,43 @@ describe('INTELLIGENZA INTELLISENSE — classificazione del contesto', () => {
     expect(allows(ctx, 'columns')).toBe(false)
   })
 
+  it('batch senza ";" (BEGIN TRAN) con SELECT precedente: "INSERT INTO ti" resta tablePosition → tabelle', () => {
+    // scenario utente: dentro un batch senza ';' la posizione INTO è preceduta da
+    // "select @caus = …" senza FROM. Prima la flag "inSelectList" vedeva quel SELECT
+    // e dirottava la posizione su colonne/funzioni: "insert into tipi" non mostrava
+    // le tabelle (es. dbo.TIPI_EVENTI). Serve il contrario: TUTTE le tabelle.
+    const prefix = 'BEGIN TRAN\nDECLARE @caus INT, @ret INT\nSELECT @caus = 1\nSET @caus = @caus + 1\nINSERT INTO '
+    const ctx = classifyContext({ prefix, stmtBefore: prefix })
+    expect(ctx.kind).toBe('tablePosition')
+    expect(ctx.isTablePosition).toBe(true)
+    expect(ctx.inSelectList).toBe(false)
+    expect(allows(ctx, 'tables')).toBe(true)
+    expect(allows(ctx, 'columns')).toBe(false)
+    expect(allows(ctx, 'functions')).toBe(false)
+  })
+
+  it('batch senza ";" con SELECT precedente: anche "UPDATE " e "FROM " restano posizioni di tabelle', () => {
+    const before = 'BEGIN TRAN\nSELECT @caus = 1\nUPDATE '
+    const ctxU = classifyContext({ prefix: before, stmtBefore: before })
+    expect(ctxU.kind).toBe('tablePosition')
+    expect(ctxU.inSelectList).toBe(false)
+    const beforeF = 'BEGIN TRAN\nSELECT @caus = 1\nSELECT * FROM '
+    const ctxF = classifyContext({ prefix: beforeF, stmtBefore: beforeF })
+    expect(ctxF.kind).toBe('tablePosition')
+    expect(ctxF.inSelectList).toBe(false)
+  })
+
+  it('la select-list resta select-list: l\'ultimo SELECT non ha ancora né FROM né INTO', () => {
+    // primo SELECT senza FROM ancora in corso (assegnazione @var o "select 1")
+    expect(ctxFor('SELECT ').kind).toBe('selectList')
+    const ctxMid = classifyContext({
+      prefix: 'DECLARE @a INT\nSELECT @a = ',
+      stmtBefore: 'DECLARE @a INT\nSELECT @a = ',
+    })
+    expect(ctxMid.kind).toBe('selectList')
+    expect(ctxMid.inSelectList).toBe(true)
+  })
+
   it('dopo "FROM t " (con spazio) → afterTableName (keyword di clausola + tabelle)', () => {
     const ctx = ctxFor('SELECT * FROM RUN_MISSIONI ')
     expect(ctx.kind).toBe('afterTableName')

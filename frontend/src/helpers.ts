@@ -375,7 +375,11 @@ export function parseInsertContext(text: string, base = 0): InsertContext | null
   const schema = parts.length > 1 ? parts[0] : null
   const table = parts[parts.length - 1]
 
-  const valuesIdx = text.search(/\bVALUES\b/i)
+  // VALUES/SELECT contano SOLO se compaiono DOPO il nome della tabella corrente:
+  // in un batch ("BEGIN TRAN … INSERT INTO LOG (a) VALUES (1) … INSERT INTO
+  // TIPI_EVENTI (TI…") un VALUES di un INSERT precedente non deve far scambiare
+  // la '(' del secondo INSERT per una subquery (colOpen = -1 → niente colonne).
+  const valuesIdx = text.indexOf('VALUES', tableEnd)
   const selectIdx = searchSelectKeyword(text, tableEnd)
   const firstParen = text.indexOf('(', tableEnd)
   let colOpen = -1
