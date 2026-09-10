@@ -425,6 +425,7 @@ export default function SqlEditor({
         provideCompletionItems: (model, position) => {
           // la preview dati ha il SUO provider filtrato sulla tabella
           if (model.uri.toString().startsWith('sql-intelli://preview')) return { suggestions: [] }
+          try {
           const baseSt = stateRef.current
           const word = model.getWordUntilPosition(position)
           const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn)
@@ -1341,7 +1342,34 @@ export default function SqlEditor({
             }
           }
           return { suggestions }
-        },
+        } catch (e) {
+          // Un errore interno non deve MAI lasciare l'editor muto ("No suggestions."):
+          // si registra in console e si restituisce un fallback utile (funzioni + keyword).
+          console.error('[intellisense] errore nel provider di completamento:', e)
+          const w = model.getWordUntilPosition(position)
+          const r = new monaco.Range(position.lineNumber, w.startColumn, position.lineNumber, w.endColumn)
+          const fallback: monaco.languages.CompletionItem[] = []
+          for (const f of SQL_FUNCTIONS) {
+            fallback.push({
+              label: f,
+              kind: monaco.languages.CompletionItemKind.Keyword,
+              insertText: f,
+              range: r,
+              filterText: f,
+              sortText: completionSortText(fallback.length),
+            })
+          }
+          for (const k of SQL_KEYWORDS) {
+            fallback.push({
+              label: k,
+              kind: monaco.languages.CompletionItemKind.Keyword,
+              insertText: k,
+              range: r,
+              sortText: completionSortText(fallback.length),
+            })
+          }
+          return { suggestions: fallback }
+        }
       }),
     )
   }

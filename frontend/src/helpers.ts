@@ -679,12 +679,15 @@ export function detectPrintMagic(sql: string): 'drago' | 'fuoco' | null {
   return fuoco
 }
 
-/** True se l'offset è DENTRO un commento (di riga o a blocco), rispettando le stringhe. */
+/** True se l'offset è DENTRO un commento (di riga o a blocco), rispettando stringhe,
+ *  identificatori tra [] e stringhe tra "". Un solo costrutto "sballato" in un file lungo
+ *  (es. un apostrofo dentro [un'identificatore]) faceva credere di essere dentro un
+ *  commento → il provider restituiva lista vuota ("No suggestions."). */
 export function isTextOffsetInComment(text: string, offset: number): boolean {
   let i = 0
   let lineComment = false
   let block = false
-  let str = false
+  let quote: string | null = null
   const n = Math.min(offset, text.length)
   while (i < n) {
     const c = text[i]
@@ -698,19 +701,25 @@ export function isTextOffsetInComment(text: string, offset: number): boolean {
       i++
       continue
     }
-    if (str) {
-      if (c === "'") {
-        if (nx === "'") {
+    if (quote) {
+      if (c === quote) {
+        if (nx === quote) {
           i += 2
           continue
         }
-        str = false
+        quote = null
       }
       i++
       continue
     }
-    if (c === "'") {
-      str = true
+    // identificatore tra parentesi quadre: [Quantita'] NON apre una stringa
+    if (c === '[') {
+      const end = text.indexOf(']', i + 1)
+      i = end === -1 ? i + 1 : end + 1
+      continue
+    }
+    if (c === "'" || c === '"') {
+      quote = c
       i++
       continue
     }
