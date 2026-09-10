@@ -158,4 +158,28 @@ describe('tsqlFormatter: formatta secondo il profilo', () => {
     expect(out).toContain('#tbl_InventoryKitting_St1')
     expect(out).not.toContain('# tbl')
   })
+
+  it('EXEC: parametri e valori incolonnati sotto il primo parametro', () => {
+    const out = formatSqlWithProfile(
+      'EXEC ws_CUSTOM_Handheld_InventoryKitting_St1_GetList @user = @user, @udc = @pUDC',
+      profile,
+    )
+    expect(out).toBe(
+      'EXEC ws_CUSTOM_Handheld_InventoryKitting_St1_GetList @user = @user\n' +
+        '                                                    ,@udc  = @pUDC\n',
+    )
+  })
+
+  it('EXEC dentro una routine: incolonnato con l\'indentazione del blocco', () => {
+    const out = formatSqlWithProfile(
+      'alter procedure [dbo].[x]\nas\nbegin\n  EXEC ws_p @user = @user, @udc = @pUDC, @flag = 1 OUTPUT\nend',
+      profile,
+    )
+    expect(out).toContain('    EXEC ws_p @user = @user\n             ,@udc  = @pUDC\n             ,@flag = 1 OUTPUT')
+  })
+
+  it('EXEC con un solo parametro resta su una riga', () => {
+    const out = formatSqlWithProfile('EXEC ws_p @udc = @pUDC', profile)
+    expect(out).toBe('EXEC ws_p @udc = @pUDC\n')
+  })
 })

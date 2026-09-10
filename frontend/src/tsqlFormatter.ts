@@ -223,6 +223,35 @@ const cleanInline = (text: string) =>
     .replace(/\s+/g, ' ')
     .trim()
 
+/**
+ * True se i token contengono UNA sola istruzione (usato per i layout speciali che
+ * riscrivono l'intero testo: CREATE TABLE). Evita di perdere le istruzioni successive
+ * in un batch senza ';' ("create table …\nselect …").
+ */
+function singleStatementTokens(tokens: Token[]): boolean {
+  const STARTERS = new Set([
+    'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'DECLARE', 'SET', 'IF', 'WHILE', 'BEGIN',
+    'CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'PRINT', 'RETURN', 'GOTO', 'EXEC', 'EXECUTE', 'WITH',
+    'GO', 'RAISERROR', 'THROW', 'COMMIT', 'ROLLBACK', 'BACKUP', 'RESTORE', 'GRANT', 'REVOKE',
+    'DENY', 'USE', 'DBCC', 'CHECKPOINT',
+  ])
+  let d = 0
+  let seen = 0
+  for (const t of tokens) {
+    if (t.type === 'punct') {
+      if (t.text === '(') d++
+      else if (t.text === ')') d = Math.max(0, d - 1)
+      continue
+    }
+    if (t.type !== 'word' || d !== 0) continue
+    if (STARTERS.has(t.text.toUpperCase())) {
+      seen++
+      if (seen > 1) return false
+    }
+  }
+  return true
+}
+
 /** Statement puri che meritano il layout "routine": CTE (WITH … AS (…) + statement)
  *  oppure SELECT con almeno 2 assegnazioni "@var = …" a livello top. */
 function needsStatementLayout(sql: string): boolean {
@@ -276,7 +305,7 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
   // CREATE TABLE: colonne una per riga (con il tipo di dato), indentate
   {
     const head = tokens.find(t => t.type !== 'comment')
-    if (head?.type === 'word' && head.text.toUpperCase() === 'CREATE') {
+    if (head?.type === 'word' && head.text.toUpperCase() === 'CREATE' && singleStatementTokens(tokens)) {
       const unitC = profile.tabSize || 2
       const tableRows = createTableRows(tokens, up, unitC, '')
       if (tableRows) return tableRows.join('\n').trimEnd() + '\n'
@@ -1047,34 +1076,29 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       continue
     }
 
-    // EXEC: riga principale + parametri allineati con virgola iniziale
+    // EXEC: parametri e valori incolonnati (virgola allineata sotto il primo parametro)
     if (firstUpper === 'EXEC' || firstUpper === 'EXECUTE') {
-      const parts: string[] = []
-      let cur: string[] = []
-      let par = 0
-      for (let j = 0; j < segment.length; j++) {
-        const t = segment[j]
-        if (t.type === 'punct') {
-          if (t.text === '(') par++
-          else if (t.text === ')') par = Math.max(0, par - 1)
-        }
-        if (t.type === 'punct' && t.text === ',' && par === 0 && cur.length > 0) {
-          parts.push(cur.join(' '))
-          cur = []
-          continue
-        }
-        cur.push(up(t))
-      }
-      if (cur.length > 0) parts.push(cur.join(' '))
+      const unitE = profile.tabSize || 2
+      const basePad = ' '.repeat(lineIndent * unitE)
+      const parts = splitExecParts(segment, up)
       if (parts.length === 1) {
         pushLine(parts[0], indent)
       } else {
-        // allinea i parametri alla colonna di "exec ... " (primo token dopo exec)
-        const firstLine = parts[0]
-        const paramPad = firstLine.length + 1
-        pushLine(firstLine, indent)
-        for (let p = 1; p < parts.length; p++) {
-          pushLine(`,` + parts[p], Math.max(indent, Math.round(paramPad / 2)))
+        const aligned = execParamRows(parts, basePad)
+        if (aligned) {
+          flushLine()
+          for (const row of aligned) pushRawLine(row)
+        } else {
+          // parametri posizionali (non "@nome = valore"): riga EXEC + un parametro per riga,
+          // incolonnati sotto il primo parametro quando è individuabile
+          flushLine()
+          const firstLine = parts[0]
+          const paramAt = firstLine.search(/@[A-Za-z_]/)
+          pushRawLine(`${basePad}${firstLine}`)
+          const col = paramAt === -1 ? basePad.length + 2 : basePad.length + paramAt
+          for (let p = 1; p < parts.length; p++) {
+            pushRawLine(`${' '.repeat(Math.max(0, col - 1))},${parts[p]}`)
+          }
         }
       }
       continue
@@ -1402,6 +1426,56 @@ function createTableRows(
   const tail = closeIdx === -1 ? '' : cleanInline(segment.slice(closeIdx).map(up).join(' '))
   out.push(`${basePad}${tail || ')'}`)
   return out
+}
+
+/**
+ * Divide i token di un EXEC nei singoli parametri (virgole a livello 0, così le
+ * virgole dentro le funzioni nei valori non spezzano).
+ */
+function splitExecParts(tokens: Token[], up: (t: Token) => string): string[] {
+  const parts: string[] = []
+  let cur: string[] = []
+  let par = 0
+  for (const t of tokens) {
+    if (t.type === 'punct') {
+      if (t.text === '(') par++
+      else if (t.text === ')') par = Math.max(0, par - 1)
+    }
+    if (t.type === 'punct' && t.text === ',' && par === 0 && cur.length > 0) {
+      parts.push(cur.join(' '))
+      cur = []
+      continue
+    }
+    cur.push(up(t))
+  }
+  if (cur.length > 0) parts.push(cur.join(' '))
+  return parts
+}
+
+/**
+ * EXEC con più parametri: parametri e valori INCOLONNATI. Il primo parametro resta
+ * sulla riga dell'EXEC, gli altri con la virgola allineata sotto il primo parametro
+ * e i valori allineati dopo "=" (nomi paddati alla stessa larghezza):
+ *   EXEC ws_PROC @user = @user
+ *              ,@udc  = @pUDC
+ * Restituisce null se i parametri non sono tutti nella forma "@nome = valore"
+ * (in quel caso si usa il layout semplice).
+ */
+function execParamRows(parts: string[], basePad: string): string[] | null {
+  const parsed: { prefix: string; name: string; value: string }[] = []
+  for (const p of parts) {
+    const m = /^(.*?)(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*([\s\S]*)$/.exec(p)
+    if (!m) return null
+    parsed.push({ prefix: m[1], name: m[2], value: m[3] })
+  }
+  if (parsed.length < 2) return null
+  const firstCol = basePad.length + parsed[0].prefix.length
+  const maxName = Math.max(...parsed.map(p => p.name.length))
+  return parsed.map((p, idx) => {
+    const namePad = p.name + ' '.repeat(maxName - p.name.length)
+    if (idx === 0) return `${basePad}${p.prefix}${namePad} = ${p.value}`
+    return `${' '.repeat(Math.max(0, firstCol - 1))},${namePad} = ${p.value}`
+  })
 }
 
 /**
