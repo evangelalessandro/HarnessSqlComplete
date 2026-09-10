@@ -18,6 +18,10 @@ export type SuggestionCategory =
   | 'counterparts' // controparti di JOIN (FK/token)
   | 'insertColumns' // colonne della tabella in INSERT INTO t (
   | 'values' // valori di default per la colonna in VALUES
+  | 'orderDirections' // ASC / DESC nella ORDER BY
+
+/** Direzioni di ordinamento proposte nella ORDER BY. */
+export const ORDER_DIRECTIONS = ['ASC', 'DESC'] as const
 
 export interface IntellisenseContext {
   /** Nome leggibile del contesto (per debug e test). */
@@ -29,6 +33,7 @@ export interface IntellisenseContext {
     | 'execPosition'
     | 'selectList'
     | 'columnContext'
+    | 'orderBy'
     | 'generic'
   /** Categorie di suggerimenti ammesse in questo contesto. */
   allowed: SuggestionCategory[]
@@ -37,6 +42,8 @@ export interface IntellisenseContext {
   isExecPosition: boolean
   isColumnContext: boolean
   inSelectList: boolean
+  /** True quando il cursore è dentro la ORDER BY (… ORDER BY a, b ▮): solo colonne + ASC/DESC. */
+  inOrderBy: boolean
   /** True dopo "FROM t " / "JOIN t " (c'è già una tabella, serve la clausola successiva). */
   afterTableName: boolean
   statementStart: boolean
@@ -97,6 +104,18 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
   })()
   const statementStart = /(?:^|;|\bGO\b|\n\s*\n)\s*$/i.test(prefix)
 
+  // ORDER BY: se l'ULTIMA clausola di column-list dello statement è "ORDER BY" e non
+  // sono comparse clausole successive (WHERE/GROUP/HAVING/UNION/SET/FROM), il cursore
+  // è nella lista di ordinamento. Lì servono SOLO colonne delle tabelle dello statement
+  // più ASC/DESC: niente tabelle, procedure o funzioni.
+  const inOrderBy = (() => {
+    let last = ''
+    for (const m of stmtBefore.matchAll(/\b(ORDER\s+BY|GROUP\s+BY|WHERE|HAVING|UNION|FROM|SET)\b/gi)) {
+      last = m[1].toUpperCase()
+    }
+    return last.startsWith('ORDER')
+  })()
+
   // dopo "FROM t " / "JOIN t " (spazio dopo il nome tabella): la clausola successiva
   const afterTableName =
     /(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+[^\s,;()]+\s*$/i.test(prefix) &&
@@ -115,6 +134,10 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
   } else if (isTablePosition) {
     kind = 'tablePosition'
     allowed = ['tables', 'views']
+  } else if (inOrderBy) {
+    // dentro la ORDER BY: colonne dello statement + ASC/DESC (niente funzioni/procedure/tabelle)
+    kind = 'orderBy'
+    allowed = ['columns', 'orderDirections']
   } else if (inSelectList) {
     kind = 'selectList'
     allowed = ['columns', 'functions', 'snippets']
@@ -141,6 +164,7 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
     isExecPosition,
     isColumnContext,
     inSelectList,
+    inOrderBy,
     afterTableName,
     statementStart,
   }

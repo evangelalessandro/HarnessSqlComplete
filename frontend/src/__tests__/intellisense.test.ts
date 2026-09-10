@@ -127,9 +127,15 @@ describe('INTELLIGENZA INTELLISENSE — classificazione del contesto', () => {
     expect(ctx.kind).toBe('columnContext')
   })
 
-  it('dopo "ORDER BY " → columnContext', () => {
+  it('dopo "ORDER BY " → orderBy (colonne + ASC/DESC, niente funzioni/tabelle)', () => {
     const ctx = ctxFor('SELECT a FROM T ORDER BY ')
-    expect(ctx.kind).toBe('columnContext')
+    expect(ctx.kind).toBe('orderBy')
+    expect(ctx.inOrderBy).toBe(true)
+    expect(allows(ctx, 'columns')).toBe(true)
+    expect(allows(ctx, 'orderDirections')).toBe(true)
+    expect(allows(ctx, 'functions')).toBe(false)
+    expect(allows(ctx, 'tables')).toBe(false)
+    expect(allows(ctx, 'procedures')).toBe(false)
   })
 })
 
@@ -243,7 +249,8 @@ describe('INTELLIGENZA INTELLISENSE — qualità del ranking (casi reali)', () =
   })
 
   it('virgola che continua liste di colonne: ORDER BY / WHERE IN / ON / SET', () => {
-    expect(ctxFor('SELECT a FROM t order by a, b, ').kind).toBe('columnContext')
+    expect(ctxFor('SELECT a FROM t order by a, b, ').kind).toBe('orderBy')
+    expect(ctxFor('SELECT a FROM t order by a, b, ').inOrderBy).toBe(true)
     expect(ctxFor('SELECT a FROM t where x in (1, ').kind).toBe('columnContext')
     expect(ctxFor('SELECT a FROM t join u on a = b, ').kind).toBe('columnContext')
     expect(ctxFor('UPDATE t set a = 1, ').kind).toBe('columnContext')

@@ -57,6 +57,7 @@ import {
 } from '../tsqlSnippets'
 import { registerTableColorizer } from '../sqlTableColors'
 import { extractLocalTables } from '../localTables'
+import { ORDER_DIRECTIONS } from '../intellisenseContext'
 import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../history'
 import { registerSqlHover } from '../sqlHover'
 import { classifyContext, filterKeywordsForContext, isAfterOrderKeyword, isOrderWordTyped, shouldSuggestJoinConditions } from '../intellisenseContext'
@@ -442,7 +443,7 @@ export default function SqlEditor({
           const stmtText = fullText.slice(stmtRange.start, stmtRange.end)
           const stmtBefore = stmtText.slice(0, cursorOffset - stmtRange.start)
           const ctx = classifyContext({ prefix, stmtBefore })
-          const { isTablePosition, isJoinPosition, isExecPosition, isColumnContext, inSelectList } = ctx
+          const { isTablePosition, isJoinPosition, isExecPosition, isColumnContext, inSelectList, inOrderBy } = ctx
 
           const suggestions: monaco.languages.CompletionItem[] = []
           let rank = 0
@@ -909,6 +910,51 @@ export default function SqlEditor({
             const contextTables = findTableRefs(stmtBefore)
             const summaryTables = st.summary.tables
 
+            // ORDER BY: SOLO colonne delle tabelle dello statement + ASC/DESC.
+            // Niente tabelle, viste, procedure o funzioni: nella ORDER BY non si possono usare.
+            if (isOrderBy) {
+              // dopo "ORDER " serve "BY" per completare la clausola
+              if (isAfterOrderKeyword(prefix)) {
+                push({
+                  label: 'BY',
+                  detail: 'completa ORDER BY',
+                  kind: monaco.languages.CompletionItemKind.Keyword,
+                  insertText: 'BY',
+                  range,
+                  filterText: 'by',
+                })
+              }
+              for (const dir of ORDER_DIRECTIONS) {
+                push({
+                  label: dir,
+                  detail: 'direzione di ordinamento',
+                  kind: monaco.languages.CompletionItemKind.Keyword,
+                  insertText: dir,
+                  range,
+                  filterText: dir.toLowerCase(),
+                })
+              }
+              const orderCols = buildColumnContextSuggestions(
+                stmtText,
+                stmtBefore,
+                word.word,
+                st.summary,
+                historyColumnBoost,
+              )
+              for (const col of orderCols) {
+                push({
+                  label: col.name,
+                  detail: `${col.dataType}${col.isNullable ? ' NULL' : ''} · ${col.ownerLabel}`,
+                  documentation: col.documentation,
+                  kind: monaco.languages.CompletionItemKind.Field,
+                  insertText: col.insertText,
+                  range,
+                  filterText: completionFilterText(col.name),
+                })
+              }
+              return { suggestions }
+            }
+
             // Aiuto SELECT: se il cursore è nella select-list (tra SELECT e FROM dello statement),
             // suggerisce le colonne delle tabelle referenziate in tutto lo statement (anche dopo il cursore)
             if (inSelectList) {
@@ -1037,7 +1083,7 @@ export default function SqlEditor({
               }
             }
 
-            // Contesti di colonne (WHERE/ON/HAVING/GROUP BY/ORDER BY/SET/AND/OR/=):
+            // Contesti di colonne (WHERE/ON/HAVING/GROUP BY/SET/AND/OR/=):
             // SOLO colonne delle tabelle dello statement + funzioni SQL.
             // Con una parola in corso: solo le colonne con affinità, ordinate per punteggio,
             // più le controparti di JOIN (FK esatte o token condivisi) dopo "col = ".
