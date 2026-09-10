@@ -130,12 +130,28 @@ ROLLBACK`
     expect(out).toContain('FROM dbo.MAG_BAIE_INTERNE')
     expect(out).toContain('IF 12 = 0')
     expect(out).toContain('ROLLBACK')
-    // il blocco dopo BEGIN TRANSACTION è indentato
+    // BEGIN TRANSACTION NON apre un blocco: i statement successivi restano a margine
     expect(out).toMatch(/^BEGIN TRANSACTION$/m)
     // SELECT con FROM/ORDER BY spezzati a clausole (clausole allineate alla SELECT)
-    expect(out).toMatch(/^  SELECT \*$/m)
-    expect(out).toMatch(/^  FROM dbo\.MAG_BAIE_INTERNE$/m)
-    expect(out).toMatch(/^  ORDER BY 1 DESC$/m)
+    expect(out).toMatch(/^SELECT \*$/m)
+    expect(out).toMatch(/^FROM dbo\.MAG_BAIE_INTERNE$/m)
+    expect(out).toMatch(/^ORDER BY 1 DESC$/m)
+  })
+
+  it('IF + BEGIN TRANSACTION non apre un blocco: niente indentazione dei successivi (bug utente)', () => {
+    const sql = `DECLARE @trancount INT = @@trancount
+IF @trancount < 1
+BEGIN TRANSACTION
+
+EXEC @retVal = ws_L2_LockRunHandHeld @errore = @txtError out
+IF @retVal <> 0
+GOTO lblExit`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toMatch(/^IF @trancount < 1\nBEGIN TRANSACTION$/m)
+    // i statement successivi restano a margine (non indentati come dentro un BEGIN…END)
+    expect(out).toMatch(/^EXEC @retVal = ws_L2_LockRunHandHeld/m)
+    expect(out).toMatch(/^IF @retVal <> 0$/m)
+    expect(out).toMatch(/^  GOTO lblExit$/m)
   })
 
   it('BEGIN TRAN e BEGIN TRY/CATCH con il resto sulla stessa riga: testo preservato', () => {

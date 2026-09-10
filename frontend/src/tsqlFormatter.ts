@@ -935,8 +935,17 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     // BEGIN / IF / WHILE / CASE: apri blocco
     if (firstUpper === 'BEGIN') {
       flushLine()
-      // "BEGIN TRANSACTION"/"BEGIN TRAN"/"BEGIN TRY"/"BEGIN CATCH": il resto del
-      // segmento (es. TRANSACTION) NON deve andare perso (bug: scompariva dal risultato)
+      // "BEGIN TRANSACTION"/"BEGIN TRAN"/"BEGIN DISTRIBUTED TRAN(SACTION)": NON è un
+      // blocco (non si chiude con END): niente indentazione dei statement successivi
+      if (isBeginTransaction(segment)) {
+        // "BEGIN TRANSACTION" come corpo di un IF/ELSE resta al livello dell'IF
+        // (stile del resto del formattatore, dove BEGIN sta al livello dell'IF)
+        const lvl = pendingIndent !== null ? Math.max(0, pendingIndent - 1) : indent
+        pushLine(segment.map(up).join(' '), lvl)
+        pendingIndent = null
+        continue
+      }
+      // "BEGIN TRY"/"BEGIN CATCH": il resto del segmento NON deve andare perso
       const extra = segment.slice(1).map(up).join(' ')
       pushLine(extra ? `BEGIN ${extra}` : 'BEGIN', indent)
       blockStack.push('begin')
@@ -960,7 +969,7 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       const rest = segment.slice(1).map(up).join(' ')
       const level = ifStack.pop() ?? Math.max(0, indent - 1)
       pushLine(rest ? `ELSE ${rest}` : 'ELSE', level)
-      if (/\bBEGIN\b/i.test(rest)) {
+      if (/\bBEGIN\b/i.test(rest) && !/\bBEGIN\s+(?:TRAN|TRANSACTION|DISTRIBUTED)\b/i.test(rest)) {
         blockStack.push('begin')
         indent = level + 1
       } else {
@@ -991,6 +1000,14 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       rowsNoDashEat(cond, up).forEach((r, idx) => pushLine(r, idx === 0 ? indent : indent + 1))
       const after = segment.slice(j)
       if (after.length > 0 && after[0].type === 'word' && after[0].text.toUpperCase() === 'BEGIN') {
+        if (isBeginTransaction(after)) {
+          // "IF @trancount < 1 BEGIN TRANSACTION": è il corpo dell'IF, ma NON apre un
+          // blocco → la transazione resta al livello dell'IF e i statement successivi
+          // NON vengono indentati
+          pushLine(after.map(up).join(' '), indent)
+          pendingIndent = null
+          continue
+        }
         pushLine('BEGIN', indent)
         blockStack.push('begin')
         indent++
@@ -1469,6 +1486,19 @@ function createTableRows(
   const tail = closeIdx === -1 ? '' : cleanInline(segment.slice(closeIdx).map(up).join(' '))
   out.push(`${basePad}${tail || ')'}`)
   return out
+}
+
+/**
+ * True se il segmento è "BEGIN TRANSACTION" / "BEGIN TRAN" / "BEGIN DISTRIBUTED
+ * TRAN(SACTION)": apre una TRANSAZIONE, non un blocco BEGIN…END (quindi i statement
+ * successivi NON vanno indentati).
+ */
+function isBeginTransaction(segment: Token[]): boolean {
+  if (!(segment[0]?.type === 'word' && segment[0].text.toUpperCase() === 'BEGIN')) return false
+  const next = segment.find((t, i) => i > 0 && t.type === 'word')
+  if (!next || next.type !== 'word') return false
+  const w = next.text.toUpperCase()
+  return w === 'TRAN' || w === 'TRANSACTION' || w === 'DISTRIBUTED'
 }
 
 /**
