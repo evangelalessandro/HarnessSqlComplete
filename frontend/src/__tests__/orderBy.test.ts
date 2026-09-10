@@ -1,7 +1,7 @@
 // ORDER BY: l'intellisense deve proporre SOLO le colonne delle tabelle dello statement
 // più ASC/DESC — mai tabelle, viste, procedure o funzioni (non utilizzabili lì).
 import { describe, expect, it } from 'vitest'
-import { buildColumnContextSuggestions } from '../helpers'
+import { buildColumnContextSuggestions, statementRangeAt } from '../helpers'
 import { allows, classifyContext, ORDER_DIRECTIONS } from '../intellisenseContext'
 import { extractLocalTables } from '../localTables'
 import type { DatabaseSummary } from '../types'
@@ -43,6 +43,75 @@ describe('ORDER BY: contesto e categorie ammesse', () => {
 
   it('ORDER_DIRECTIONS contiene ASC e DESC', () => {
     expect([...ORDER_DIRECTIONS]).toEqual(['ASC', 'DESC'])
+  })
+})
+
+describe('ORDER BY: caso utente reale (batch con temporanea, CASE e alias)', () => {
+  // Testo completo dell'utente: temp table + EXEC + IF/BEGIN + SELECT con CASE + JOIN + ORDER BY
+  const FULL = `CREATE TABLE #tbl_InventoryKitting_St1 (
+  X_SSCC NVARCHAR(50)
+  ,X_SKU NVARCHAR(50)
+  ,X_MODULO NVARCHAR(50)
+)
+
+EXEC ws_CUSTOM_Handheld_InventoryKitting_St1_GetList @user = @user
+                                                    ,@udc  = @pUDC
+IF @@rowcount = 0
+BEGIN
+  SET @txtError = 'No task find !'
+  GOTO lblExit
+END
+
+SELECT @txtError =
+  CASE
+    WHEN ISNULL (@ssccLu, '') = ''
+      THEN dbo.fn_td ('SSCC not set !')
+    WHEN X_UDC IS NULL
+      THEN dbo.fn_td ('Lu not found !')
+    WHEN X_SSCC <> @ssccLu
+      THEN dbo.fn_td ('SSCC not match !')
+    WHEN @Qty <= 0
+      THEN dbo.fn_td ('Qta is invalid !')
+    ELSE ''
+  END
+  ,@modulo = X_MODULO
+FROM (SELECT 1 TT) a
+  LEFT JOIN #tbl_InventoryKitting_St1 b ON 1 = 1
+ ORDER BY X_SSCC`
+
+  /** Riproduce esattamente quello che fa il provider (statementRangeAt + classifyContext). */
+  function providerContext(word: string) {
+    const cursorOffset = FULL.length
+    const prefix = FULL.slice(0, Math.max(0, FULL.length - word.length))
+    const stmtRange = statementRangeAt(FULL, cursorOffset)
+    const stmtText = FULL.slice(stmtRange.start, stmtRange.end)
+    const stmtBefore = stmtText.slice(0, cursorOffset - stmtRange.start)
+    return { ctx: classifyContext({ prefix, stmtBefore }), stmtText, stmtBefore }
+  }
+
+  it('dopo "ORDER BY X_SSCC" (parola in corso e dopo lo spazio) NON propone tabelle', () => {
+    for (const word of ['X_SSCC', '']) {
+      const { ctx } = providerContext(word)
+      expect(ctx.kind).toBe('orderBy')
+      expect(ctx.inOrderBy).toBe(true)
+      expect(allows(ctx, 'orderDirections')).toBe(true)
+      expect(allows(ctx, 'columns')).toBe(true)
+      expect(allows(ctx, 'tables')).toBe(false)
+      expect(allows(ctx, 'views')).toBe(false)
+      expect(allows(ctx, 'procedures')).toBe(false)
+      expect(allows(ctx, 'functions')).toBe(false)
+    }
+  })
+
+  it('la temporanea #tbl_… è nello scope: le sue colonne sono proponibili', () => {
+    const { stmtText, stmtBefore } = providerContext('')
+    const local = extractLocalTables(FULL)
+    const merged: DatabaseSummary = { ...summary, tables: [...summary.tables, ...local] }
+    const cols = buildColumnContextSuggestions(stmtText, stmtBefore, '', merged)
+    const names = cols.map(c => c.name)
+    expect(names).toContain('X_SSCC')
+    expect(names).toContain('X_MODULO')
+    expect(names).toContain('X_SKU')
   })
 })
 
