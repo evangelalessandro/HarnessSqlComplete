@@ -80,7 +80,7 @@ export function tokenizeSqlText(text: string): Token[] {
       continue
     }
     // tabella temporanea: "#nome" / "##nome" restano UN token (niente spazio dopo #)
-    if (ch === '#' && /[A-Za-z0-9_]/.test(text[i + 1] ?? '')) {
+    if (ch === '#' && /[A-Za-z0-9_#]/.test(text[i + 1] ?? '')) {
       const m = /^#+[A-Za-z0-9_]*/.exec(text.slice(i))
       if (m) {
         pushToken({ type: 'word', text: m[0] })
@@ -330,6 +330,13 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
     }
   }
 
+  // Testo con PIÙ istruzioni (batch senza ';'): il motore query non separa gli
+  // statement e i commenti "--" potrebbero "mangiare" il codice successivo → usa il
+  // motore routine, che spezza gli statement e protegge i commenti.
+  if (!singleStatementTokens(tokens)) {
+    return formatRoutineWithProfile(sql, profile)
+  }
+
   const words = tokens.filter(t => t.type === 'word').length
   const chars = tokens.reduce((acc, t) => acc + t.text.length, 0)
   // La regola "query corta su una riga" NON deve scavalcare le opzioni del profilo:
@@ -445,6 +452,13 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
       flush()
       lines.push({ indent: currentIndent, text: t.text })
       current = []
+      continue
+    }
+    // commento "--" in coda alla riga: chiude la riga — il codice successivo NON deve
+    // finire dentro il commento (altrimenti sparirebbe dalla query)
+    if (t.type === 'comment' && t.text.startsWith('--')) {
+      current.push(up(t))
+      flush()
       continue
     }
 
@@ -1393,6 +1407,30 @@ function detailedSelectRows(
 }
 
 /**
+ * Rende una lista di token in righe "sicure" rispetto ai commenti "--": il commento
+ * chiude la riga e il codice che segue riparte su una riga nuova (mai codice dopo "--").
+ */
+function tokensToSafeLines(tokens: Token[], up: (t: Token) => string): string[] {
+  const out: string[] = []
+  let cur: string[] = []
+  for (const t of tokens) {
+    if (t.type === 'comment' && t.text.startsWith('--')) {
+      cur.push(up(t))
+      const text = cleanInline(cur.join(' '))
+      if (text) out.push(text)
+      cur = []
+      continue
+    }
+    cur.push(up(t))
+  }
+  if (cur.length > 0) {
+    const text = cleanInline(cur.join(' '))
+    if (text) out.push(text)
+  }
+  return out
+}
+
+/**
  * CREATE TABLE: intestazione con la parentesi aperta sulla prima riga, OGNI COLONNA
  * (con il suo tipo di dato) su una riga propria indentata, virgola in testa, e la
  * parentesi di chiusura su riga propria:
@@ -1477,14 +1515,18 @@ function createTableRows(
   if (items.length === 0) return null
 
   const out: string[] = []
-  const header = cleanInline(segment.slice(0, openIdx + 1).map(up).join(' '))
-  out.push(`${basePad}${header}`)
+  const headerLines = tokensToSafeLines(segment.slice(0, openIdx + 1), up)
+  for (const h of headerLines) out.push(`${basePad}${h}`)
   items.forEach((it, idx) => {
-    const text = cleanInline(it.map(up).join(' '))
-    out.push(`${basePad}${' '.repeat(unit)}${idx === 0 ? '' : ','}${text}`)
+    const lines = tokensToSafeLines(it, up)
+    lines.forEach((text, li) => {
+      const comma = idx > 0 && li === 0 ? ',' : ''
+      out.push(`${basePad}${' '.repeat(unit)}${comma}${text}`)
+    })
   })
-  const tail = closeIdx === -1 ? '' : cleanInline(segment.slice(closeIdx).map(up).join(' '))
-  out.push(`${basePad}${tail || ')'}`)
+  const tailLines = tokensToSafeLines(closeIdx === -1 ? [] : segment.slice(closeIdx), up)
+  if (tailLines.length === 0) out.push(`${basePad})`)
+  else for (const t of tailLines) out.push(`${basePad}${t}`)
   return out
 }
 
