@@ -216,6 +216,7 @@ const cleanInline = (text: string) =>
   text
     .replace(/\s*\.\s*/g, '.')
     .replace(/\s*,/g, ',')
+    .replace(/\s+;/g, ';')
     .replace(/\(\s+/g, '(')
     .replace(/\s+\)/g, ')')
     // niente spazio tra tipo e parentesi: NVARCHAR(max), DECIMAL(18,2)
@@ -423,6 +424,8 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
   let activeClause: string | null = null
   /** True dopo un a-capo di campo SET: la virgola iniziale va attaccata al campo (",col = …"). */
   let setCommaPending = false
+  /** True dopo un a-capo della select-list: virgola in testa al campo (",campo"). */
+  let stackCommaPending = false
 
   const flush = () => {
     if (current.length > 0) {
@@ -450,8 +453,20 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
     // commento su riga propria: resta sulla sua riga (i token successivi ripartono da capo)
     if (t.type === 'comment' && t.ownLine) {
       flush()
-      lines.push({ indent: currentIndent, text: t.text })
+      // se il prossimo token "utile" è la virgola della select-list, il commento appartiene
+      // alla lista → rientro dei campi (serve per l'idempotenza di "SELECT a\n -- c\n ,b")
+      let j = i + 1
+      while (j < tokens.length && tokens[j].type === 'comment') j++
+      const nextTok = tokens[j]
+      const lastLine = lines.length > 0 ? lines[lines.length - 1].text : ''
+      const inSelectColumns = /^SELECT\b/i.test(lastLine) || lastLine.startsWith(',')
+      const commentIndent =
+        inSelectColumns && nextTok?.type === 'punct' && nextTok.text === ',' && depth === 0
+          ? profile.selectColumnIndent
+          : currentIndent
+      lines.push({ indent: commentIndent, text: t.text })
       current = []
+      currentIndent = commentIndent
       continue
     }
     // commento "--" in coda alla riga: chiude la riga — il codice successivo NON deve
@@ -549,10 +564,13 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
       continue
     }
 
+    // select-list impilata: la virgola va IN TESTA alla riga successiva (così la query
+    // resta valida e la formattazione è idempotente: prima la virgola veniva persa e
+    // riformattando le colonne si univano — "SELECT a b", query rotta).
     if (
       profile.stackSelectColumns &&
       current.length > 0 &&
-      current[0].toUpperCase() === 'SELECT' &&
+      (current[0].toUpperCase() === 'SELECT' || current[0].startsWith(',')) &&
       t.type === 'punct' &&
       t.text === ',' &&
       depth === 0 &&
@@ -561,6 +579,14 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
       flush()
       currentIndent = profile.selectColumnIndent
       current = []
+      stackCommaPending = true
+      continue
+    }
+
+    // virgola all'inizio di una riga (dopo un commento della select-list): si attacca
+    // al campo successivo senza spazio (",campo"), così la formattazione è idempotente
+    if (t.type === 'punct' && t.text === ',' && current.length === 0) {
+      stackCommaPending = true
       continue
     }
 
@@ -571,8 +597,9 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
     }
 
     if (current.length === 0) {
-      current.push((setCommaPending ? ',' : '') + up(t))
+      current.push((setCommaPending || stackCommaPending ? ',' : '') + up(t))
       setCommaPending = false
+      stackCommaPending = false
     } else {
       const prev = current[current.length - 1]
       if (t.type === 'punct' && (t.text === ',' || t.text === ')')) {
@@ -590,6 +617,7 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
     s
       .replace(/\s*\.\s*/g, '.')
       .replace(/\s*,/g, ',')
+      .replace(/\s+;/g, ';')
       .replace(/\(\s+/g, '(')
       .replace(/\s+\)/g, ')')
       .replace(/\s+/g, ' ')
@@ -887,6 +915,12 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
         // ";WITH …" (CTE): il ';' è significativo — senza, "END WITH …" sarebbe sintassi
         // invalida. Va conservato come primo token del segmento che inizia con WITH.
         if (nextMeaningfulWordAfter(body, k) === 'WITH') seg.push(t)
+        else if (segments.length > 0) {
+          // il ';' chiude lo statement precedente: resta in coda (fidelity del testo)
+          const prev = segments[segments.length - 1]
+          const last = prev[prev.length - 1]
+          if (!(last?.type === 'punct' && last.text === ';')) segments[segments.length - 1] = [...prev, t]
+        }
         continue
       }
     }
@@ -1141,12 +1175,12 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
           // parametri posizionali (non "@nome = valore"): riga EXEC + un parametro per riga,
           // incolonnati sotto il primo parametro quando è individuabile
           flushLine()
-          const firstLine = parts[0]
+          const firstLine = cleanInline(parts[0])
           const paramAt = firstLine.search(/@[A-Za-z_]/)
           pushRawLine(`${basePad}${firstLine}`)
           const col = paramAt === -1 ? basePad.length + 2 : basePad.length + paramAt
           for (let p = 1; p < parts.length; p++) {
-            pushRawLine(`${' '.repeat(Math.max(0, col - 1))},${parts[p]}`)
+            pushRawLine(`${' '.repeat(Math.max(0, col - 1))},${cleanInline(parts[p])}`)
           }
         }
       }
@@ -1557,13 +1591,13 @@ function splitExecParts(tokens: Token[], up: (t: Token) => string): string[] {
       else if (t.text === ')') par = Math.max(0, par - 1)
     }
     if (t.type === 'punct' && t.text === ',' && par === 0 && cur.length > 0) {
-      parts.push(cur.join(' '))
+      parts.push(cleanInline(cur.join(' ')))
       cur = []
       continue
     }
     cur.push(up(t))
   }
-  if (cur.length > 0) parts.push(cur.join(' '))
+  if (cur.length > 0) parts.push(cleanInline(cur.join(' ')))
   return parts
 }
 

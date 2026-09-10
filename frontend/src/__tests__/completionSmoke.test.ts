@@ -19,6 +19,12 @@ function summaryWith(): DatabaseSummary {
     ]),
     mkTbl('dbo', 'RUN_ESEGUI', [mkCol('ESE_UDC', 'int'), mkCol('ESE_QTAR', 'decimal'), mkCol('ESE_RIGA', 'int')]),
   )
+  // funzioni come le manda il BACKEND (type_desc): una tabellare e una scalare
+  s.functions.push(
+    { schema: 'dbo', name: 'fn_GetMissioni', type: 'SQL_INLINE_TABLE_VALUED_FUNCTION' },
+    { schema: 'dbo', name: 'fn_Celle', type: 'SQL_TABLE_VALUED_FUNCTION' },
+    { schema: 'dbo', name: 'fn_td', type: 'SQL_SCALAR_FUNCTION' },
+  )
   return s
 }
 
@@ -154,6 +160,26 @@ describe('intellisense: il provider NON si spacca (smoke test)', () => {
     const sql = 'EXEC dbo.'
     const res = suggest(sql, sql.length)
     expect(res.suggestions.length).toBeGreaterThan(0)
+  })
+
+  it('dopo "inner join " propone anche le FUNZIONI TABELLARI (e non quelle scalari)', () => {
+    // caso utente: SELECT … FROM dbo.RUN_MISSIONI inner join ▮
+    const sql = 'SELECT MIS_UDC, MIS_OPERATORE FROM dbo.RUN_MISSIONI inner join '
+    const res = suggest(sql, sql.length)
+    const labels = res.suggestions.map(s => String(s.label))
+    expect(labels).toContain('dbo.fn_GetMissioni')
+    expect(labels).toContain('dbo.fn_Celle')
+    // la funzione SCALARE non è una sorgente → non va proposta dopo JOIN
+    expect(labels).not.toContain('dbo.fn_td')
+    // e restano proposte le tabelle
+    expect(labels.some(l => l.includes('RUN_MISSIONI'))).toBe(true)
+  })
+
+  it('dopo "FROM " propone le funzioni tabellari come sorgenti', () => {
+    const sql = 'SELECT * FROM '
+    const labels = suggest(sql, sql.length).suggestions.map(s => String(s.label))
+    expect(labels).toContain('dbo.fn_GetMissioni')
+    expect(labels).not.toContain('dbo.fn_td')
   })
 
   it('con il testo della procedura utente (CASE + temporanee + JOIN) propone le colonne', () => {

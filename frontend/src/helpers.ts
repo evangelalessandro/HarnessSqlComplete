@@ -1917,15 +1917,30 @@ function msDescription(props: { name: string; value: string }[] | null | undefin
 }
 
 /**
+ * True se il tipo di una funzione è TABELLARE (usabile come sorgente in FROM/JOIN/APPLY).
+ * Accetta sia i codici brevi di sys.objects.type ('IF' inline, 'TF' table-valued)
+ * sia i type_desc del backend ('SQL_INLINE_TABLE_VALUED_FUNCTION',
+ * 'SQL_TABLE_VALUED_FUNCTION', 'CLR_TABLE_VALUED_FUNCTION'…): il backend manda i
+ * type_desc, quindi confrontare solo 'IF'/'TF' faceva trattare TUTTE le funzioni come
+ * scalari → le funzioni tabellari non comparivano dopo FROM/JOIN (bug utente).
+ */
+export function isTableValuedFunctionType(type: string | null | undefined): boolean {
+  const t = (type ?? '').trim().toUpperCase()
+  if (t === '') return false
+  if (t === 'IF' || t === 'TF') return true
+  return t.includes('TABLE_VALUED') || t.includes('TABLE VALUED')
+}
+
+/**
  * Separa le funzioni utente del database per tipo d'uso:
- * - `scalars` (FN e tipi sconosciuti): utilizzabili nelle ESPRESSIONI (SELECT/WHERE/GROUP BY/…);
- * - `tableValued` (IF inline / TF): utilizzabili SOLO come sorgente (FROM/JOIN/APPLY), come le tabelle.
+ * - `scalars` (FN/SQL_SCALAR_FUNCTION e tipi sconosciuti): usabili nelle ESPRESSIONI;
+ * - `tableValued` (IF/TF e varianti SQL_/CLR_): usabili SOLO come sorgente (FROM/JOIN/APPLY).
  */
 export function splitUserFunctions(functions: FunctionInfo[]): { scalars: FunctionInfo[]; tableValued: FunctionInfo[] } {
   const scalars: FunctionInfo[] = []
   const tableValued: FunctionInfo[] = []
   for (const f of functions) {
-    if (f.type === 'IF' || f.type === 'TF') tableValued.push(f)
+    if (isTableValuedFunctionType(f.type)) tableValued.push(f)
     else scalars.push(f)
   }
   return { scalars, tableValued }
@@ -2311,7 +2326,7 @@ export function colorizeSqlTokens(text: string, summary: DatabaseSummary): Color
   // funzioni TABELLARI (IF = inline, TF = table-valued): colorate come le tabelle
   const tvfByLower = new Map<string, FunctionInfo>()
   for (const f of summary.functions) {
-    if (f.type === 'IF' || f.type === 'TF') tvfByLower.set(f.name.toLowerCase(), f)
+    if (isTableValuedFunctionType(f.type)) tvfByLower.set(f.name.toLowerCase(), f)
   }
   const columnOwners = new Map<string, string[]>()
   for (const t of summary.tables) {

@@ -67,7 +67,7 @@ describe('tsqlFormatter: formatta secondo il profilo', () => {
 
   it('query corta: le opzioni del profilo VINCONO (FROM/WHERE a capo anche se corta)', () => {
     const out = formatSqlWithProfile('select id, nome from clienti where id = 1', profile)
-    expect(out).toBe('SELECT id\n   nome\nFROM clienti\nWHERE id = 1\n')
+    expect(out).toBe('SELECT id\n   ,nome\nFROM clienti\nWHERE id = 1\n')
   })
 
   it('con l\'opzione a capo DISATTIVATA la query corta resta su una riga', () => {
@@ -86,8 +86,8 @@ describe('tsqlFormatter: formatta secondo il profilo', () => {
       profile,
     )
     expect(out).toMatch(/SELECT a\.id/)
-    // colonne impilate con indentazione
-    expect(out).toMatch(/\n\s+a\.nome, b\.totale/)
+    // colonne impilate con indentazione e VIRGOLA IN TESTA (idempotente: ",a.nome")
+    expect(out).toMatch(/\n\s+,a\.nome\n\s+,b\.totale/)
     expect(out).toMatch(/\nFROM clienti a/)
     expect(out).toMatch(/\n\s+INNER JOIN ordini b/)
     expect(out).toMatch(/\nWHERE a\.nome LIKE/)

@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import { Eraser, FolderOpen, IndentDecrease, IndentIncrease, MessageSquare, Moon, Play, Save, Settings2, Sun, Table2, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
 import monaco from '../monacoSetup'
@@ -14,6 +14,7 @@ import { computeBlockGuides } from '../sqlBlockGuides'
 import { computeFoldingRanges } from '../sqlFolding'
 import { pickFormatTarget, pickSqlToExecute } from '../executeSelection'
 import { registerTableColorizer } from '../sqlTableColors'
+import { resolveCallableAt } from '../callables'
 import { provideSqlCompletions } from '../sqlCompletions'
 
 import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../history'
@@ -55,6 +56,8 @@ interface Props {
   dragonLevel?: number
   /** Contatore incrementato a ogni query eseguita: innesca il colpo di fuoco. */
   fireTick?: number
+  /** Apre la definizione di una procedura/funzione in una nuova tab ('alter' = CREATE OR ALTER). */
+  onOpenObject?: (kind: 'procedure' | 'function' | 'view' | 'trigger', schema: string, name: string, mode: 'alter' | 'open') => void
   registerEditor: (editor: monaco.editor.IStandaloneCodeEditor) => void
 }
 
@@ -87,11 +90,12 @@ export default function SqlEditor({
   dragonLevel = 0,
   fireTick = 0,
   registerEditor,
+  onOpenObject,
 }: Props) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const disposablesRef = useRef<monaco.IDisposable[]>([])
-  const stateRef = useRef({ connectionId, summary, aiEnabled, onExecute })
-  stateRef.current = { connectionId, summary, aiEnabled, onExecute }
+  const stateRef = useRef({ connectionId, summary, aiEnabled, onExecute, onOpenObject })
+  stateRef.current = { connectionId, summary, aiEnabled, onExecute, onOpenObject }
   const onSaveRef = useRef(onSave)
   onSaveRef.current = onSave
   const onSaveAsRef = useRef(onSaveAs)
@@ -282,6 +286,37 @@ export default function SqlEditor({
       }
     }
     editor.addCommand(monaco.KeyCode.F4, openPreviewUnderCursor)
+
+    /**
+     * TASTO DESTRO su una chiamata a stored procedure/funzione: apre la definizione
+     * in un'altra tab ("Modifica" = CREATE OR ALTER, oppure definizione originale).
+     * Riconosce il nome (anche qualificato o tra parentesi quadre) sotto il cursore.
+     */
+    const openCallableUnderCursor = (mode: 'alter' | 'open'): void => {
+      const model = editor.getModel()
+      const pos = editor.getPosition()
+      const sm = stateRef.current.summary
+      if (!model || !pos || !sm) return
+      const ref = resolveCallableAt(model.getValue(), model.getOffsetAt(pos), sm)
+      if (!ref) return
+      stateRef.current.onOpenObject?.(ref.kind, ref.schema, ref.name, mode)
+    }
+    editor.addAction({
+      id: 'sql-intelli-callable-open-definition',
+      label: 'Apri definizione (nuova tab)',
+      contextMenuGroupId: '1_modification',
+      contextMenuOrder: 1,
+      precondition: 'editorTextFocus',
+      run: () => openCallableUnderCursor('open'),
+    })
+    editor.addAction({
+      id: 'sql-intelli-callable-modify',
+      label: 'Modifica (CREATE OR ALTER in una nuova tab)',
+      contextMenuGroupId: '1_modification',
+      contextMenuOrder: 0,
+      precondition: 'editorTextFocus',
+      run: () => openCallableUnderCursor('alter'),
+    })
 
     registerSchemaCompletions()
     registerInlineCompletions()
