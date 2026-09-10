@@ -653,6 +653,48 @@ export default function App() {
     setEditor(null)
   }, [connection])
 
+  /**
+   * Auto-riparazione dello schema: se i metadati non sono disponibili (es. backend
+   * riavviato → sessione scaduta) l'intellisense resta senza tabelle/colonne.
+   * Si riprova a caricarli; se la connessione è davvero morta si torna al login.
+   */
+  const summaryRetries = useRef(0)
+  useEffect(() => {
+    if (!connection || summary || loadingSummary) return
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      if (cancelled) return
+      setLoadingSummary(true)
+      try {
+        const s = await api.getSummary(connection.connectionId)
+        if (!cancelled) {
+          setSummary(s)
+          summaryRetries.current = 0
+        }
+      } catch (e) {
+        if (cancelled) return
+        summaryRetries.current += 1
+        // 3 tentativi falliti: la sessione non è più valida → torna alla schermata di login
+        if (summaryRetries.current >= 3) {
+          summaryRetries.current = 0
+          await handleDisconnect()
+        } else {
+          setBanner(
+            e instanceof Error
+              ? `Schema non caricato (${e.message}). Nuovo tentativo…`
+              : 'Schema non caricato. Nuovo tentativo…',
+          )
+        }
+      } finally {
+        if (!cancelled) setLoadingSummary(false)
+      }
+    }, 2500)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [connection, summary, loadingSummary, handleDisconnect])
+
   const handleInsertText = useCallback(
     (text: string) => {
       if (!editor) return

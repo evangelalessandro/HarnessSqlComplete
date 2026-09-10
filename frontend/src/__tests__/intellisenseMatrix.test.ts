@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildColumnContextSuggestions,
+  buildJoinSuggestions,
   buildSelectListSuggestions,
   extractStatementTableRefs,
   findTableRefs,
@@ -40,6 +41,54 @@ const QUERIES: string[] = [
   'CREATE TABLE #t (X_SSCC NVARCHAR(50), X_SKU NVARCHAR(50))\nINSERT INTO #t (X_SSCC) VALUES (1)\nSELECT X_SSCC FROM #t WHERE X_SKU = 1 ORDER BY X_SSCC',
   'DECLARE @a INT = 0\nSELECT @a = MIS_MISSIONE FROM dbo.RUN_MISSIONI WHERE MIS_UDC = 1\nIF @a > 0\nBEGIN\n  UPDATE dbo.RUN_MISSIONI SET MIS_OPERATORE = 1 WHERE MIS_UDC = 2\nEND',
   'SELECT CASE WHEN MIS_UDC IS NULL THEN 1 ELSE 2 END AS X, MIS_MISSIONE FROM dbo.RUN_MISSIONI',
+  // procedura utente: SET/DECLARE/IF/BEGIN TRANSACTION + commento a blocco con apostrofi
+  // + "SELECT * FROM run" (bug segnalato: dopo "FROM run" non proponeva nulla)
+  `CREATE PROCEDURE [dbo].[ws_CUSTOM_StoredProcedureName]
+(
+        @pPar1 NVARCHAR(max)
+        ,@pPar2 INT
+)
+AS
+  SET NOCOUNT ON
+  SET XACT_ABORT ON
+  DECLARE @retVal   INT
+         ,@txtError NVARCHAR(max)
+
+  /* Transaction */
+  DECLARE @trancount INT = @@trancount
+  IF @trancount < 1
+  BEGIN TRANSACTION
+
+  /* Whenever a SP a called always checks the result value:
+      A negative return value usually stands for a critical error
+   If the called SP raises an error through the 'raiserror' statement is not necessary invoke the raiserror is this contest (thus, this kind of behavior is highly discouraged) 
+   */
+
+  SELECT *
+  FROM run
+  WHERE MIS_UDC > 0
+
+
+  IF @retVal < 0
+    GOTO lblExit
+
+lblExit:
+  IF @trancount = 0 AND @@trancount > 0
+  BEGIN
+    IF @txtError > '' OR xact_state () = - 1 OR @retVal < 0
+      ROLLBACK TRANSACTION
+    ELSE
+      COMMIT TRANSACTION
+  END
+  IF @txtError > ''
+    RAISERROR (@txtError, 16, 1)
+  RETURN
+    CASE
+      WHEN @txtError > '' OR xact_state () = - 1 OR @retVal < 0
+        THEN - 1
+      ELSE 0
+    END
+GO`,
 ]
 
 /** Categorie che NON devono comparire in un certo contesto (coerenza). */
@@ -231,6 +280,28 @@ describe('intellisense: coerenza in OGNI punto della query (a capo e non)', () =
 
 describe('intellisense: nessuna categoria incoerente nei contesti chiave', () => {
   const ctxFor = (prefix: string) => classifyContext({ prefix, stmtBefore: prefix })
+
+  it('dopo "FROM run" (bug utente nella procedura) il contesto è di tabelle e RUN_MISSIONI è proposto', () => {
+    const summary = wsbritvicLikeSummary()
+    const proc = QUERIES[QUERIES.length - 1]
+    const base = proc.indexOf('FROM run')
+    expect(base).toBeGreaterThan(0)
+    const offset = base + 'FROM run'.length
+    const textBefore = proc.slice(0, offset)
+    const word = 'run'
+    const prefix = textBefore.slice(0, textBefore.length - word.length)
+    const r = statementRangeAt(proc, offset)
+    const stmtText = proc.slice(r.start, r.end)
+    const stmtBefore = stmtText.slice(0, offset - r.start)
+    const ctx = classifyContext({ prefix, stmtBefore })
+    expect(ctx.isTablePosition).toBe(true)
+    expect(ctx.kind).toBe('tablePosition')
+    expect(allows(ctx, 'tables')).toBe(true)
+    expect(allows(ctx, 'columns')).toBe(false)
+    const ranked = rankTablesForPosition(summary.tables, summary.foreignKeys, findTableRefs(stmtBefore), true)
+    const items = ranked.flatMap(rk => buildJoinSuggestions(rk, [], false, false, new Set()))
+    expect(items.some(i => i.filterText.toLowerCase().startsWith('run'))).toBe(true)
+  })
 
   it('ORDER BY: solo colonne + ASC/DESC (mai tabelle/procedure/funzioni)', () => {
     for (const prefix of [

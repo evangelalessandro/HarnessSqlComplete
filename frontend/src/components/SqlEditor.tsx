@@ -440,7 +440,13 @@ export default function SqlEditor({
           if (isTextOffsetInComment(fullText, cursorOffset)) return { suggestions: [] }
           // Tabelle TEMPORANEE definite nel testo (#t): senza aggiungerle al sommario
           // le loro colonne non sarebbero proponibili ("... LEFT JOIN #t ON 1 = 1 WHERE ")
-          const localTables = extractLocalTables(fullText, baseSt.summary?.tables ?? [])
+          // (qualsiasi errore del parser locale non deve mai svuotare il popup)
+          let localTables: TableInfo[] = []
+          try {
+            localTables = extractLocalTables(fullText, baseSt.summary?.tables ?? [])
+          } catch {
+            localTables = []
+          }
           const st =
             baseSt.summary && localTables.length > 0
               ? { ...baseSt, summary: { ...baseSt.summary, tables: [...baseSt.summary.tables, ...localTables] } }
@@ -484,7 +490,6 @@ export default function SqlEditor({
           }
 
           if (st.summary) {
-            // DECLARE @var → tipi di dato T-SQL (non tabelle!)
             if (detectDeclareTypeContext(textBefore)) {
               for (const t of TSQL_TYPES) {
                 push({
@@ -1307,6 +1312,39 @@ export default function SqlEditor({
                   })
                 }
               }
+            }
+          } else {
+            // SOMMARIO NON DISPONIBILE (connessione scaduta, backend riavviato…): prima
+            // il provider non proponeva NULLA (bug utente: "l'intellisense si è rotto in
+            // FROM run"). In modalità ridotta proponiamo snippet, funzioni e keyword,
+            // più un avviso che spiega come riottenere tabelle e colonne.
+            push({
+              label: '⚠ Schema non disponibile: ricollegati',
+              detail: 'i suggerimenti su tabelle e colonne richiedono i metadati del database',
+              kind: monaco.languages.CompletionItemKind.Text,
+              insertText: '',
+              range,
+              filterText: 'schema',
+            })
+            for (const sn of buildStatementSnippets(word.word)) {
+              push({
+                label: sn.label,
+                detail: sn.detail,
+                kind: monaco.languages.CompletionItemKind.Snippet,
+                insertText: sn.insertText,
+                insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                range,
+                filterText: sn.label,
+              })
+            }
+            pushSqlFunctions()
+            for (const k of SQL_KEYWORDS) {
+              push({
+                label: k,
+                kind: monaco.languages.CompletionItemKind.Keyword,
+                insertText: k,
+                range,
+              })
             }
           }
           return { suggestions }
