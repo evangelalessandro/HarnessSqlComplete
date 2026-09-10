@@ -1370,6 +1370,7 @@ export default function SqlEditor({
           }
           return { suggestions: fallback }
         }
+        },
       }),
     )
   }
