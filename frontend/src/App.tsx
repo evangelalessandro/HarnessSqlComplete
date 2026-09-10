@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { BookOpen, Database as DbIcon, FilePlus2, Pin, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { BookOpen, Database as DbIcon, FilePlus2, Pin, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
@@ -665,6 +665,24 @@ export default function App() {
    */
   const summaryRetries = useRef(0)
   const [summaryRetryTick, setSummaryRetryTick] = useState(0)
+  const [summaryReloading, setSummaryReloading] = useState(false)
+
+  /** Ricarica manuale dei metadati (pulsante nell'header quando lo schema manca). */
+  const reloadSummary = useCallback(async () => {
+    if (!connection) return
+    setSummaryReloading(true)
+    setBanner(null)
+    try {
+      const s = await api.getSummary(connection.connectionId)
+      setSummary(s)
+      summaryRetries.current = 0
+    } catch (e) {
+      setBanner(`Schema non caricato: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setSummaryReloading(false)
+    }
+  }, [connection])
+
   useEffect(() => {
     if (!connection || summary) return
     let cancelled = false
@@ -866,6 +884,21 @@ export default function App() {
           {connection.server} · {connection.database}
         </Badge>
         <Badge tone={aiConfigured ? 'emerald' : 'amber'}>{aiStatusText}</Badge>
+        {summary ? (
+          <Badge tone="emerald">Schema: {summary.tables.length} tabelle</Badge>
+        ) : (
+          <span className="flex items-center gap-1">
+            <Badge tone="rose">Schema non caricato</Badge>
+            <button
+              onClick={() => void reloadSummary()}
+              disabled={summaryReloading}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-rose-200 transition-colors hover:bg-rose-950/60 disabled:opacity-50"
+              title="Ricarica i metadati (tabelle, colonne, viste…) dal database"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${summaryReloading ? 'animate-spin' : ''}`} /> Ricarica schema
+            </button>
+          </span>
+        )}
         <button
           onClick={() => setHelpOpen(true)}
           className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
