@@ -265,7 +265,43 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
 
   const words = tokens.filter(t => t.type === 'word').length
   const chars = tokens.reduce((acc, t) => acc + t.text.length, 0)
-  if (profile.singleLineShort && chars <= profile.singleLineMaxChars && words <= profile.singleLineMaxWords) {
+  // La regola "query corta su una riga" NON deve scavalcare le opzioni del profilo:
+  // se il profilo chiede l'a capo prima di una clausola presente (FROM/WHERE/JOIN/SET…)
+  // la query va su più righe anche se è corta (es. "select * from T where id = 1").
+  const breaksRequested = (() => {
+    let d = 0
+    const firstWord = tokens.find(t => t.type === 'word')?.text.toUpperCase() ?? ''
+    for (const t of tokens) {
+      if (t.type === 'punct') {
+        if (t.text === '(') d++
+        else if (t.text === ')') d = Math.max(0, d - 1)
+        continue
+      }
+      if (t.type !== 'word' || d !== 0) continue
+      const u = t.text.toUpperCase()
+      // FROM è una clausola da mandare a capo solo in SELECT e UPDATE (…FROM …):
+      // in "DELETE FROM t" o "RESTORE … FROM DISK" resta attaccata allo statement
+      if (u === 'FROM' && profile.breakBeforeFrom && (firstWord === 'SELECT' || firstWord === 'UPDATE')) return true
+      if ((u === 'JOIN' || u === 'APPLY') && profile.breakBeforeJoin) return true
+      if (['INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS'].includes(u) && profile.breakBeforeJoin) return true
+      if (u === 'ON' && profile.breakBeforeOn) return true
+      if (u === 'WHERE' && profile.breakBeforeWhere) return true
+      if (u === 'GROUP' && profile.breakBeforeGroupBy) return true
+      if (u === 'HAVING' && profile.breakBeforeHaving) return true
+      if (u === 'ORDER' && profile.breakBeforeOrderBy) return true
+      if (u === 'UNION' && profile.breakBeforeUnion) return true
+      if (u === 'SET' && profile.breakBeforeSet && firstWord === 'UPDATE') return true
+      // INTO spezza solo in "SELECT … INTO" (in INSERT INTO resta in testa allo statement)
+      if (u === 'INTO' && profile.breakBeforeInto && firstWord === 'SELECT') return true
+    }
+    return false
+  })()
+  if (
+    profile.singleLineShort &&
+    !breaksRequested &&
+    chars <= profile.singleLineMaxChars &&
+    words <= profile.singleLineMaxWords
+  ) {
     return joinTokensInline(tokens, up, profile)
   }
 
@@ -289,6 +325,10 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
   const lines: Row[] = []
   let current: string[] = []
   let currentIndent = 0
+  /** Clausola iniziata per ultima: serve per spezzare i campi della SET di un UPDATE. */
+  let activeClause: string | null = null
+  /** True dopo un a-capo di campo SET: la virgola iniziale va attaccata al campo (",col = …"). */
+  let setCommaPending = false
 
   const flush = () => {
     if (current.length > 0) {
@@ -336,6 +376,7 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
           flush()
           currentIndent = profile.joinIndent
           current = [`${up(t)} ${up(joinToken)}`]
+          activeClause = 'JOIN'
           i++
           continue
         }
@@ -374,8 +415,24 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
         else if (clause === 'SET') indent = profile.setIndent
         else if (clause === 'WHEN') indent = 0
         startLine(indent, up(t))
+        activeClause = clause
         continue
       }
+    }
+
+    // UPDATE … SET: OGNI campo della SET va a capo (virgola allineata sotto il primo campo)
+    if (
+      t.type === 'punct' &&
+      t.text === ',' &&
+      depth === 0 &&
+      activeClause === 'SET' &&
+      current.length > 0
+    ) {
+      flush()
+      currentIndent = profile.setIndent + 'SET '.length
+      current = []
+      setCommaPending = true
+      continue
     }
 
     // AND/OR nelle condizioni (WHERE/HAVING/ON): vanno a capo sullo stesso livello
@@ -413,7 +470,8 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
     }
 
     if (current.length === 0) {
-      current.push(up(t))
+      current.push((setCommaPending ? ',' : '') + up(t))
+      setCommaPending = false
     } else {
       const prev = current[current.length - 1]
       if (t.type === 'punct' && (t.text === ',' || t.text === ')')) {
@@ -703,6 +761,10 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     const upper = t.type === 'word' ? t.text.toUpperCase() : ''
     const isCaseOpen = segDepth === 0 && upper === 'CASE'
     const isCaseEnd = segDepth === 0 && upper === 'END' && caseDepth > 0
+    // "SET" continua lo statement quando il segmento corrente è un UPDATE
+    // ("update t\n set a = 1\n where …" è UN solo statement, non due)
+    const continuesUpdate =
+      upper === 'SET' && seg.length > 0 && seg[0].type === 'word' && seg[0].text.toUpperCase() === 'UPDATE'
     // valuta gli starter con il caseDepth ATTUALE (prima di aggiornarlo): l'END del CASE
     // non deve spezzare come fine blocco
     const isStarter =
@@ -710,6 +772,7 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       caseDepth === 0 &&
       t.type === 'word' &&
       (ROUTINE_STARTERS.has(upper) || upper === 'END') &&
+      !continuesUpdate &&
       !(seg.length > 0 && insideContainer(seg, upper))
     const isElse = segDepth === 0 && caseDepth === 0 && t.type === 'word' && upper === 'ELSE'
     const isSemi = t.type === 'punct' && t.text === ';' && segDepth === 0
@@ -991,7 +1054,7 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     {
       const unit = profile.tabSize || 2
       const basePad = ' '.repeat(lineIndent * unit)
-      const detailedRows = detailedSelectRows(segment, up, unit, basePad)
+      const detailedRows = detailedSelectRows(segment, up, unit, basePad, profile.setIndent)
       if (detailedRows) {
         flushLine()
         for (const row of detailedRows) pushRawLine(row)
@@ -1112,6 +1175,7 @@ function detailedSelectRows(
   up: (t: Token) => string,
   unit: number,
   basePad: string,
+  setIndent: number = unit,
 ): string[] | null {
   const groups = splitStatementClauses(segment, up)
   if (groups.length < 2) return null
@@ -1184,11 +1248,62 @@ function detailedSelectRows(
       if (r) out.push(`${basePad}${' '.repeat(unit)}${cleanInline(r)}`)
     } else if (kw === 'WHERE' || kw === 'HAVING') {
       out.push(...conditionRows(basePad, tokens, up, unit))
+    } else if (kw === 'SET') {
+      out.push(...setClauseRows(basePad, tokens, up, setIndent))
     } else if (kw === 'ORDER' || kw === 'GROUP') {
       out.push(...listRows(basePad, tokens, up, `${kw} BY `))
     }
   }
   return out.filter(Boolean)
+}
+
+/**
+ * UPDATE … SET: OGNI campo della SET su riga propria, con la virgola allineata sotto
+ * il primo campo (stile del resto del formattatore):
+ *   UPDATE t
+ *     SET COL1 = 1
+ *        ,COL2 = 2
+ *   WHERE …
+ */
+function setClauseRows(basePad: string, tokens: Token[], up: (t: Token) => string, setIndent: number): string[] {
+  const isSet = (t: Token) => t.type === 'word' && t.text.toUpperCase() === 'SET'
+  const body = tokens.length > 0 && isSet(tokens[0]) ? tokens.slice(1) : tokens
+  const out: string[] = []
+  let open = 0
+  let cur: Token[] = []
+  let firstItem = true
+  const flushItem = () => {
+    if (cur.length === 0) return
+    const text = cleanInline(cur.map(up).join(' '))
+    if (firstItem) {
+      out.push(`${basePad}${' '.repeat(setIndent)}SET ${text}`)
+      firstItem = false
+    } else {
+      // virgola allineata sotto il primo campo ("SET " è lungo 4)
+      out.push(`${basePad}${' '.repeat(setIndent + 'SET '.length)},${text}`)
+    }
+    cur = []
+  }
+  for (const t of body) {
+    if (t.type === 'punct') {
+      if (t.text === '(') open++
+      else if (t.text === ')') open = Math.max(0, open - 1)
+      if (t.text === ',' && open === 0) {
+        flushItem()
+        continue
+      }
+      cur.push(t)
+      continue
+    }
+    if (t.type === 'comment' && (t.ownLine || t.text.startsWith('--'))) {
+      flushItem()
+      out.push(`${basePad}${' '.repeat(setIndent + 'SET '.length)}${up(t)}`)
+      continue
+    }
+    cur.push(t)
+  }
+  flushItem()
+  return out
 }
 
 /** Righe delle condizioni WHERE/HAVING: AND/OR su riga propria, parentesi indentate,
@@ -1444,16 +1559,25 @@ function splitStatementClauses(segment: Token[], _up: (t: Token) => string): { t
   const firstUpper = first.type === 'word' ? first.text.toUpperCase() : ''
   if (!['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE'].includes(firstUpper)) return [{ tokens: segment }]
 
-  // attiva il layout a clausole solo se c'è almeno FROM/JOIN/APPLY a livello top
+  // attiva il layout a clausole se c'è almeno FROM/JOIN/APPLY a livello top, oppure
+  // (per l'UPDATE) una SET o una WHERE: "update t set a = 1 where id = 1" deve andare
+  // su più righe (SET e WHERE a capo) come nel motore delle query
   let depth = 0
   let hasClause = false
+  const isUpdate = firstUpper === 'UPDATE'
   for (const t of segment) {
     if (t.type === 'punct') {
       if (t.text === '(') depth++
       else if (t.text === ')') depth = Math.max(0, depth - 1)
       continue
     }
-    if (depth === 0 && t.type === 'word' && (t.text.toUpperCase() === 'FROM' || t.text.toUpperCase() === 'JOIN' || t.text.toUpperCase() === 'APPLY')) {
+    if (depth !== 0 || t.type !== 'word') continue
+    const u = t.text.toUpperCase()
+    if (u === 'FROM' || u === 'JOIN' || u === 'APPLY') {
+      hasClause = true
+      break
+    }
+    if (isUpdate && (u === 'SET' || u === 'WHERE')) {
       hasClause = true
       break
     }
@@ -1482,7 +1606,9 @@ function splitStatementClauses(segment: Token[], _up: (t: Token) => string): { t
         cur.length > 0 &&
         cur[cur.length - 1].type === 'word' &&
         JOIN_MODIFIERS.has(cur[cur.length - 1].text.toUpperCase())
-      if (isSelect || CLAUSE_STARTERS.has(upper)) {
+      // SET apre un gruppo proprio solo nell'UPDATE (altrove "SET x = …" è un'assegnazione)
+      const isSetBoundary = isUpdate && upper === 'SET' && i > 0
+      if (isSelect || isSetBoundary || CLAUSE_STARTERS.has(upper)) {
         if (!isJoinTail) {
           flush()
           cur = [t]

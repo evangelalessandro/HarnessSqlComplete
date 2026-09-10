@@ -65,11 +65,19 @@ describe('tsqlFormatter: formatta secondo il profilo', () => {
     expect(toks.some(t => t.type === 'comment' && t.text.startsWith('--'))).toBe(true)
   })
 
-  it('query corta resta su una riga', () => {
+  it('query corta: le opzioni del profilo VINCONO (FROM/WHERE a capo anche se corta)', () => {
     const out = formatSqlWithProfile('select id, nome from clienti where id = 1', profile)
+    expect(out).toBe('SELECT id\n   nome\nFROM clienti\nWHERE id = 1\n')
+  })
+
+  it('con l\'opzione a capo DISATTIVATA la query corta resta su una riga', () => {
+    const nodes = parseFormatProfileXml(DEFAULT_FORMAT_PROFILE_XML)
+    setFormatOption(nodes, 'Select_From_LineBreakBeforeFrom', 'false')
+    setFormatOption(nodes, 'Select_Where_LineBreakBeforeWhere', 'false')
+    const p = buildFormatProfile(serializeFormatProfile(nodes))
+    const out = formatSqlWithProfile('select id, nome from clienti where id = 1', p)
     expect(out.includes('\n')).toBe(false)
-    expect(out).toContain('SELECT')
-    expect(out).toContain('FROM')
+    expect(out).toBe('SELECT id, nome FROM clienti WHERE id = 1')
   })
 
   it('query lunga: FROM, JOIN, WHERE e colonne su righe separate', () => {
@@ -105,18 +113,26 @@ describe('tsqlFormatter: formatta secondo il profilo', () => {
     expect(out).toMatch(/INSERT INTO ordini \(id, cliente_id, codice, descrizione, data\)\nVALUES \(1, 2/)
   })
 
-  it('UPDATE breve resta su una riga', () => {
+  it('UPDATE: SET e WHERE a capo (anche se l\'UPDATE è corto)', () => {
     const out = formatSqlWithProfile('update ordini set totale = 10 where id = 1', profile)
-    expect(out).toBe('UPDATE ordini SET totale = 10 WHERE id = 1')
+    expect(out).toBe('UPDATE ordini\n  SET totale = 10\nWHERE id = 1\n')
   })
 
-  it('UPDATE lungo: SET su riga propria', () => {
+  it('UPDATE: OGNI campo della SET va a capo (virgola allineata sotto il primo campo)', () => {
     const out = formatSqlWithProfile(
       'update ordini set totale = 10, note = \'aggiornamento manuale del totale della riga selezionata con valori lunghi\' where id = 1',
       profile,
     )
-    expect(out).toMatch(/UPDATE ordini\n\s+SET totale = 10, note =/)
-    expect(out).toMatch(/\nWHERE id = 1/)
+    expect(out).toMatch(/UPDATE ordini\n {2}SET totale = 10\n {6},note = 'aggiornamento/)
+    expect(out).toMatch(/\nWHERE id = 1\n$/)
+  })
+
+  it('UPDATE: lo stesso vale dentro una stored procedure (SET/WHERE a capo)', () => {
+    const out = formatSqlWithProfile(
+      'alter procedure [dbo].[x]\nas\nbegin\n    update t\n        set a = 1\n        , b = 2\n    where id = 1\nend',
+      profile,
+    )
+    expect(out).toContain('UPDATE t\n      SET a = 1\n          ,b = 2\n    WHERE id = 1')
   })
 
   it('commenti preservati', () => {
