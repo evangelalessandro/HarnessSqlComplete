@@ -18,8 +18,8 @@ export function qualified(schema: string, name: string): string {
 
 /** Estrae i riferimenti a tabelle (FROM/JOIN/UPDATE/INTO) dal testo SQL prima del cursore (nomi in minuscolo). */
 export function findTableRefs(text: string): string[] {
-  // '#' ammesso: tabelle temporanee (#temp, ##globale)
-  const re = /\b(?:from|join|update|into|table)\s+((?:#[A-Za-z0-9_#]+|\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)/gi
+  // '#'/'@' ammessi: tabelle temporanee (#temp, ##globale) e variabili tabella (@t)
+  const re = /\b(?:from|join|update|into|table)\s+((?:[@#][A-Za-z0-9_#]+|\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)/gi
   const refs = new Set<string>()
   for (const m of text.matchAll(re)) {
     const token = m[1].replace(/[\[\]\s]/g, '')
@@ -549,6 +549,16 @@ export function insertTupleAt(ctx: InsertContext, offset: number): InsertTuple |
     }
   }
   return null
+}
+
+/**
+ * True se il cursore è dentro una tupla VALUES VERA ("… VALUES (…)"): esclude
+ * INSERT … SELECT (dove le "tuple" non hanno parentesi) e le posizioni fuori dalla
+ * tupla. Serve a non dirottare sulla logica dei valori il SELECT di un INSERT…SELECT.
+ */
+export function isInsideValuesTuple(ctx: InsertContext, offset: number): boolean {
+  const tuple = insertTupleAt(ctx, offset)
+  return tuple !== null && tuple.open >= 0
 }
 
 /** Range interno della tupla (dentro le parentesi) da sostituire con i valori di default. */
@@ -2241,8 +2251,8 @@ const TABLE_ALIAS_BLOCK =
  */
 const TABLE_REF_RE = new RegExp(
   '\\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\\s+' +
-    // '#' ammesso: tabelle temporanee (#temp, ##globale)
-    '((?:#[A-Za-z0-9_#]+|\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*(?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*))?)' +
+    // '#'/'@' ammessi: tabelle temporanee (#temp, ##globale) e variabili tabella (@t)
+    '((?:[@#][A-Za-z0-9_#]+|\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*(?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*))?)' +
     '(?:\\s+(?:AS\\s+)?(?!(?:' + TABLE_ALIAS_BLOCK + ')\\b)([A-Za-z_][A-Za-z0-9_]*))?',
   'gi',
 )

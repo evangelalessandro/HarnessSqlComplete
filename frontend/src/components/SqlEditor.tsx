@@ -21,7 +21,7 @@ import { api } from '../api'
 import { syntaxIssuesFromCheck } from '../syntaxCheck'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from '../types'
 import { isTextOffsetInComment } from '../helpers'
-import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, resolveTokenAt, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
+import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, resolveTokenAt, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from '../helpers'
 import DataPreviewModal from './DataPreviewModal'
 import { shouldSuggestSystemObjects, systemObjectsFor } from '../systemObjects'
 import { registerInsertHighlight } from '../sqlInsertHighlight'
@@ -65,6 +65,12 @@ import { buildFormatProfile, loadFormatProfileXml } from '../formatProfile'
 import { formatSqlWithProfile } from '../tsqlFormatter'
 import FormatProfilePanel from './FormatProfilePanel'
 import { Badge, Button, Spinner, Toggle } from './ui'
+
+/** Testo del tipo per il dettaglio di una colonna ("INT NULL"), o '' se il tipo
+ *  non è noto (colonne di temporanee dedotte da "SELECT … INTO", variabili tabella…). */
+function columnTypeText(dataType: string, isNullable: boolean, isIdentity = false): string {
+  return [dataType, isNullable ? 'NULL' : '', isIdentity ? 'IDENTITY' : ''].filter(Boolean).join(' ')
+}
 
 interface Props {
   connectionId: string
@@ -434,7 +440,7 @@ export default function SqlEditor({
           if (isTextOffsetInComment(fullText, cursorOffset)) return { suggestions: [] }
           // Tabelle TEMPORANEE definite nel testo (#t): senza aggiungerle al sommario
           // le loro colonne non sarebbero proponibili ("... LEFT JOIN #t ON 1 = 1 WHERE ")
-          const localTables = extractLocalTables(fullText)
+          const localTables = extractLocalTables(fullText, baseSt.summary?.tables ?? [])
           const st =
             baseSt.summary && localTables.length > 0
               ? { ...baseSt, summary: { ...baseSt.summary, tables: [...baseSt.summary.tables, ...localTables] } }
@@ -792,13 +798,19 @@ export default function SqlEditor({
               }
             }
 
-            // Aiuto VALUES: dentro VALUES (...)/INSERT...SELECT → valori di default per la colonna corrente
-            if (insertCtx && insertCtx.valueTuples.length > 0) {
+            // Aiuto VALUES: SOLO dentro una tupla "VALUES (…)" → valori di default per la
+            // colonna corrente. NON per INSERT … SELECT: lì il SELECT deve seguire i rami
+            // normali (colonne/tabelle), altrimenti il popup resta vuoto quando la tabella
+            // target è una variabile tabella o una temporanea non note allo schema.
+            if (insertCtx && isInsideValuesTuple(insertCtx, model.getOffsetAt(position))) {
               const cursorOffset = model.getOffsetAt(position)
               const tuple = insertTupleAt(insertCtx, cursorOffset)
               if (tuple) {
                 const slotIdx = Math.max(0, insertSlotIndexAt(tuple.slots, cursorOffset))
                 const column = columnForInsertSlot(insertCtx, insTable ?? null, slotIdx)
+                // true se abbiamo davvero qualcosa da proporre: altrimenti si prosegue
+                // con i rami normali invece di restituire un popup vuoto
+                let pushed = false
 
                 // snippet "tutti i valori" (un default per colonna, in ordine)
                 let valueColumns: ColumnInfo[] = []
@@ -827,6 +839,7 @@ export default function SqlEditor({
                       insertText: buildInsertValues(valueColumns),
                       range: tupleRange,
                     })
+                    pushed = true
                   }
                 }
 
@@ -856,8 +869,10 @@ export default function SqlEditor({
                       filterText: v,
                     })
                   }
+                  pushed = true
                 }
-                return { suggestions }
+                // solo se c'era qualcosa di utile: altrimenti i rami normali (colonne/tabelle)
+                if (pushed) return { suggestions }
               }
             }
 
@@ -944,7 +959,7 @@ export default function SqlEditor({
               for (const col of orderCols) {
                 push({
                   label: col.name,
-                  detail: `${col.dataType}${col.isNullable ? ' NULL' : ''} · ${col.ownerLabel}`,
+                  detail: [columnTypeText(col.dataType, col.isNullable), col.ownerLabel].filter(Boolean).join(' · '),
                   documentation: col.documentation,
                   kind: monaco.languages.CompletionItemKind.Field,
                   insertText: col.insertText,
@@ -971,7 +986,13 @@ export default function SqlEditor({
                 for (const { col, score } of rankedCols) {
                   push({
                     label: col.name,
-                    detail: `${col.dataType}${col.isNullable ? ' NULL' : ''} · ${col.ownerLabel}${col.shared ? ' (condivisa)' : ''} · affinità ${score}`,
+                    detail: [
+                      columnTypeText(col.dataType, col.isNullable),
+                      `${col.ownerLabel}${col.shared ? ' (condivisa)' : ''}`,
+                      `affinità ${score}`,
+                    ]
+                      .filter(Boolean)
+                      .join(' · '),
                     documentation: col.documentation,
                     kind: monaco.languages.CompletionItemKind.Field,
                     insertText: col.insertText,
@@ -1012,7 +1033,12 @@ export default function SqlEditor({
               for (const col of sel.columns) {
                 push({
                   label: col.name,
-                  detail: `${col.dataType}${col.isNullable ? ' NULL' : ''}${col.isIdentity ? ' IDENTITY' : ''} · ${col.ownerLabel}${col.shared ? ' (condivisa)' : ''}`,
+                  detail: [
+                    columnTypeText(col.dataType, col.isNullable, col.isIdentity),
+                    `${col.ownerLabel}${col.shared ? ' (condivisa)' : ''}`,
+                  ]
+                    .filter(Boolean)
+                    .join(' · '),
                   documentation: col.documentation,
                   kind: monaco.languages.CompletionItemKind.Field,
                   insertText: col.insertText,
@@ -1071,7 +1097,7 @@ export default function SqlEditor({
                 for (const col of qualified) {
                   push({
                     label: col.name,
-                    detail: `${col.dataType}${col.isNullable ? ' NULL' : ''} · colonna qualificata`,
+                    detail: [columnTypeText(col.dataType, col.isNullable), 'colonna qualificata'].filter(Boolean).join(' · '),
                     documentation: col.documentation,
                     kind: monaco.languages.CompletionItemKind.Field,
                     insertText: col.insertText,
@@ -1120,7 +1146,12 @@ export default function SqlEditor({
               for (const col of ctxCols) {
                 push({
                   label: col.name,
-                  detail: `${col.dataType}${col.isNullable ? ' NULL' : ''} · ${col.ownerLabel}${col.shared ? ' (condivisa)' : ''}${col.counterpart ? ' · ⇄' : ''}`,
+                  detail: [
+                    columnTypeText(col.dataType, col.isNullable),
+                    `${col.ownerLabel}${col.shared ? ' (condivisa)' : ''}${col.counterpart ? ' · ⇄' : ''}`,
+                  ]
+                    .filter(Boolean)
+                    .join(' · '),
                   documentation: col.documentation,
                   kind: monaco.languages.CompletionItemKind.Field,
                   insertText: col.insertText,
