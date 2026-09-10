@@ -656,44 +656,46 @@ export default function App() {
   /**
    * Auto-riparazione dello schema: se i metadati non sono disponibili (es. backend
    * riavviato → sessione scaduta) l'intellisense resta senza tabelle/colonne.
-   * Si riprova a caricarli; se la connessione è davvero morta si torna al login.
+   * Si riprova a caricarli alcune volte; poi si mostra l'errore e si smette.
+   *
+   * NOTA: l'effetto NON deve dipendere da `loadingSummary` (che lui stesso cambia):
+   * altrimenti il cleanup annulla la richiesta in corso e lo stato resta "in
+   * caricamento" per sempre, lasciando l'editor senza schema (bug introdotto e
+   * corretto). Il ri-tentativo è pilotato da `summaryRetryTick`.
    */
   const summaryRetries = useRef(0)
+  const [summaryRetryTick, setSummaryRetryTick] = useState(0)
   useEffect(() => {
-    if (!connection || summary || loadingSummary) return
+    if (!connection || summary) return
     let cancelled = false
     const timer = window.setTimeout(async () => {
       if (cancelled) return
       setLoadingSummary(true)
       try {
         const s = await api.getSummary(connection.connectionId)
-        if (!cancelled) {
-          setSummary(s)
-          summaryRetries.current = 0
-        }
+        if (cancelled) return
+        setSummary(s)
+        summaryRetries.current = 0
       } catch (e) {
         if (cancelled) return
         summaryRetries.current += 1
-        // 3 tentativi falliti: la sessione non è più valida → torna alla schermata di login
-        if (summaryRetries.current >= 3) {
-          summaryRetries.current = 0
-          await handleDisconnect()
+        const msg = e instanceof Error ? e.message : String(e)
+        if (summaryRetries.current < 3) {
+          setBanner(`Schema non caricato (${msg}). Nuovo tentativo…`)
+          setSummaryRetryTick(t => t + 1) // pianifica il prossimo tentativo
         } else {
-          setBanner(
-            e instanceof Error
-              ? `Schema non caricato (${e.message}). Nuovo tentativo…`
-              : 'Schema non caricato. Nuovo tentativo…',
-          )
+          summaryRetries.current = 0
+          setBanner(`Schema non caricato: ${msg}. Riconnettiti per i suggerimenti su tabelle e colonne.`)
         }
       } finally {
-        if (!cancelled) setLoadingSummary(false)
+        setLoadingSummary(false)
       }
     }, 2500)
     return () => {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [connection, summary, loadingSummary, handleDisconnect])
+  }, [connection, summary, summaryRetryTick])
 
   const handleInsertText = useCallback(
     (text: string) => {

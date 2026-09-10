@@ -1316,16 +1316,9 @@ export default function SqlEditor({
           } else {
             // SOMMARIO NON DISPONIBILE (connessione scaduta, backend riavviato…): prima
             // il provider non proponeva NULLA (bug utente: "l'intellisense si è rotto in
-            // FROM run"). In modalità ridotta proponiamo snippet, funzioni e keyword,
-            // più un avviso che spiega come riottenere tabelle e colonne.
-            push({
-              label: '⚠ Schema non disponibile: ricollegati',
-              detail: 'i suggerimenti su tabelle e colonne richiedono i metadati del database',
-              kind: monaco.languages.CompletionItemKind.Text,
-              insertText: '',
-              range,
-              filterText: 'schema',
-            })
+            // FROM run"). In modalità ridotta proponiamo snippet, funzioni e keyword;
+            // l'avviso "schema non caricato" lo mostra il banner dell'app (App.tsx),
+            // che ricarica i metadati da solo.
             for (const sn of buildStatementSnippets(word.word)) {
               push({
                 label: sn.label,
