@@ -139,4 +139,23 @@ describe('tsqlFormatter: formatta secondo il profilo', () => {
     const out = formatSqlWithProfile('select * -- commento\nfrom t', profile)
     expect(out).toContain('-- commento')
   })
+
+  it('CREATE TABLE: OGNI colonna (col tipo di dato) su riga propria indentata', () => {
+    const out = formatSqlWithProfile('CREATE TABLE #tbl (A INT, B NVARCHAR(50))', profile)
+    expect(out).toBe('CREATE TABLE #tbl (\n  A INT\n  ,B NVARCHAR(50)\n)\n')
+  })
+
+  it('CREATE TABLE dentro una routine: colonne indentate nel blocco', () => {
+    const out = formatSqlWithProfile(
+      'alter procedure [dbo].[x]\nas\nbegin\n  CREATE TABLE #tbl (A INT, B NVARCHAR(50))\nend',
+      profile,
+    )
+    expect(out).toContain('    CREATE TABLE #tbl (\n      A INT\n      ,B NVARCHAR(50)\n    )')
+  })
+
+  it('tabella temporanea "#nome" resta attaccata (niente "# tbl")', () => {
+    const out = formatSqlWithProfile('select X from #tbl_InventoryKitting_St1', profile)
+    expect(out).toContain('#tbl_InventoryKitting_St1')
+    expect(out).not.toContain('# tbl')
+  })
 })

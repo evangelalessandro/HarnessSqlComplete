@@ -79,6 +79,16 @@ export function tokenizeSqlText(text: string): Token[] {
       i += slice.length
       continue
     }
+    // tabella temporanea: "#nome" / "##nome" restano UN token (niente spazio dopo #)
+    if (ch === '#' && /[A-Za-z0-9_]/.test(text[i + 1] ?? '')) {
+      const m = /^#+[A-Za-z0-9_]*/.exec(text.slice(i))
+      if (m) {
+        pushToken({ type: 'word', text: m[0] })
+        atLineStart = false
+        i += m[0].length
+        continue
+      }
+    }
     // parola/identificatore (con @ per variabili, e numeri)
     if (/[A-Za-z_@]/.test(ch) || (ch >= '0' && ch <= '9')) {
       const m = /^[A-Za-z_@][A-Za-z0-9_@]*|\d+(?:\.\d+)?/.exec(text.slice(i))
@@ -263,6 +273,16 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
     return t.text
   }
 
+  // CREATE TABLE: colonne una per riga (con il tipo di dato), indentate
+  {
+    const head = tokens.find(t => t.type !== 'comment')
+    if (head?.type === 'word' && head.text.toUpperCase() === 'CREATE') {
+      const unitC = profile.tabSize || 2
+      const tableRows = createTableRows(tokens, up, unitC, '')
+      if (tableRows) return tableRows.join('\n').trimEnd() + '\n'
+    }
+  }
+
   const words = tokens.filter(t => t.type === 'word').length
   const chars = tokens.reduce((acc, t) => acc + t.text.length, 0)
   // La regola "query corta su una riga" NON deve scavalcare le opzioni del profilo:
@@ -303,6 +323,26 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
     words <= profile.singleLineMaxWords
   ) {
     return joinTokensInline(tokens, up, profile)
+  }
+
+  // CREATE TABLE: colonne una per riga (con il tipo di dato), indentate
+  {
+    const firstWord = tokens.find(t => t.type !== 'comment')
+    if (firstWord?.type === 'word' && firstWord.text.toUpperCase() === 'CREATE') {
+      const unitC = profile.tabSize || 2
+      const tableRows = createTableRows(tokens, up, unitC, '')
+      if (tableRows) return tableRows.join('\n').trimEnd() + '\n'
+    }
+  }
+
+  // CREATE TABLE: colonne una per riga (con il tipo di dato), indentate
+  {
+    const firstWord = tokens.find(t => t.type !== 'comment')
+    if (firstWord?.type === 'word' && firstWord.text.toUpperCase() === 'CREATE') {
+      const unitC = profile.tabSize || 2
+      const tableRows = createTableRows(tokens, up, unitC, '')
+      if (tableRows) return tableRows.join('\n').trimEnd() + '\n'
+    }
   }
 
   const clauseAt = new Map<number, string>()
@@ -1049,6 +1089,17 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       continue
     }
 
+    // CREATE TABLE: ogni colonna (col tipo di dato) su riga propria, indentata
+    if (firstUpper === 'CREATE') {
+      const unitC = profile.tabSize || 2
+      const tableRows = createTableRows(segment, up, unitC, ' '.repeat(lineIndent * unitC))
+      if (tableRows) {
+        flushLine()
+        for (const row of tableRows) pushRawLine(row)
+        continue
+      }
+    }
+
     // SELECT / INSERT / UPDATE / DELETE / SET: statement con clausole, con eventuale CASE inline.
     // Prima il layout "a colonna" (SELECT TOP n @a = …, @b = …), poi CASE, poi clausole semplici.
     {
@@ -1255,6 +1306,102 @@ function detailedSelectRows(
     }
   }
   return out.filter(Boolean)
+}
+
+/**
+ * CREATE TABLE: intestazione con la parentesi aperta sulla prima riga, OGNI COLONNA
+ * (con il suo tipo di dato) su una riga propria indentata, virgola in testa, e la
+ * parentesi di chiusura su riga propria:
+ *   CREATE TABLE #t (
+ *     X_SSCC NVARCHAR(50)
+ *     ,X_SKU NVARCHAR(50)
+ *   )
+ * Restituisce null se il segmento non è un CREATE TABLE con la lista colonne.
+ */
+function createTableRows(
+  segment: Token[],
+  up: (t: Token) => string,
+  unit: number,
+  basePad: string,
+): string[] | null {
+  const first = segment[0]
+  if (!(first?.type === 'word' && first.text.toUpperCase() === 'CREATE')) return null
+  // CREATE TABLE / CREATE TABLE #t / CREATE GLOBAL TEMPORARY… (basta la parola TABLE a livello 0)
+  let depth = 0
+  let tableAt = -1
+  for (let i = 1; i < segment.length; i++) {
+    const t = segment[i]
+    if (t.type === 'punct') {
+      if (t.text === '(') depth++
+      else if (t.text === ')') depth = Math.max(0, depth - 1)
+      continue
+    }
+    if (depth === 0 && t.type === 'word' && t.text.toUpperCase() === 'TABLE') {
+      tableAt = i
+      break
+    }
+  }
+  if (tableAt === -1) return null
+
+  // parentesi aperta della lista colonne
+  let openIdx = -1
+  depth = 0
+  for (let i = tableAt + 1; i < segment.length; i++) {
+    const t = segment[i]
+    if (t.type === 'punct' && t.text === '(' && depth === 0) {
+      openIdx = i
+      break
+    }
+  }
+  if (openIdx === -1) return null
+
+  // parentesi chiusa bilanciata
+  let par = 0
+  let closeIdx = -1
+  for (let i = openIdx; i < segment.length; i++) {
+    const t = segment[i]
+    if (t.type === 'punct' && t.text === '(') par++
+    else if (t.type === 'punct' && t.text === ')') {
+      par--
+      if (par === 0) {
+        closeIdx = i
+        break
+      }
+    }
+  }
+  const innerEnd = closeIdx === -1 ? segment.length : closeIdx
+  const inner = segment.slice(openIdx + 1, innerEnd)
+  if (inner.length === 0) return null
+
+  // colonne: split sulle virgole a livello 0 (i tipi hanno parentesi: NVARCHAR(50))
+  const items: Token[][] = []
+  let cur: Token[] = []
+  let d = 0
+  for (const t of inner) {
+    if (t.type === 'punct') {
+      if (t.text === '(') d++
+      else if (t.text === ')') d = Math.max(0, d - 1)
+      if (t.text === ',' && d === 0) {
+        if (cur.length > 0) items.push(cur)
+        cur = []
+        continue
+      }
+    }
+    cur.push(t)
+  }
+  if (cur.length > 0) items.push(cur)
+  if (items.length === 0) return null
+
+  const out: string[] = []
+  const header = cleanInline(segment.slice(0, openIdx + 1).map(up).join(' '))
+  out.push(`${basePad}${header}`)
+  items.forEach((it, idx) => {
+    const text = cleanInline(it.map(up).join(' '))
+    out.push(`${basePad}${' '.repeat(unit)}${idx === 0 ? '' : ','}${text}`)
+  })
+  const tail = closeIdx === -1 ? '' : cleanInline(segment.slice(closeIdx).map(up).join(' '))
+  out.push(`${basePad}${tail || ')'}`)
+  return out
 }
 
 /**
