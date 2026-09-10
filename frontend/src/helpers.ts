@@ -2218,27 +2218,32 @@ export const TAB_ICON_PRESETS = [
  * Prima dell'intestazione salta BOM, spazi e commenti iniziali (riga o a blocco), così
  * "Modifica" apre SEMPRE in CREATE OR ALTER anche se la definizione non parte
  * letteralmente con CREATE/ALTER.
+ *
+ * I commenti iniziali si conservano COSÌ COME SONO, spazi e righe vuote comprese
+ * (nel DB reale gli header sono fatti di più commenti a blocco separati da righe vuote),
+ * e l'istruzione viene sempre portata su una RIGA NUOVA: senza questo, un header
+ * "/* note *\/" finiva attaccato all'istruzione ("/* note *\/CREATE OR ALTER ...").
  */
 export function toCreateOrAlterStatement(definition: string): string {
-  let i = definition.charCodeAt(0) === 0xfeff ? 1 : 0
+  const start = definition.charCodeAt(0) === 0xfeff ? 1 : 0
   const n = definition.length
-  let prefix = ''
+  let i = start
+  // fine dell'ultimo commento iniziale trovato (-1 = nessun commento)
+  let lastCommentEnd = -1
   for (;;) {
-    // spazi e righe vuote: non fanno parte del prefisso conservato
+    // spazi e righe vuote: non si perdono, restano nel prefisso (slice più sotto)
     while (i < n && (definition[i] === ' ' || definition[i] === '\t' || definition[i] === '\n' || definition[i] === '\r')) i += 1
     const ch = definition[i]
     if (ch === '-' && definition[i + 1] === '-') {
       const eol = definition.indexOf('\n', i + 2)
-      const end = eol === -1 ? n : eol + 1
-      prefix += definition.slice(i, end)
-      i = end
+      i = eol === -1 ? n : eol + 1
+      lastCommentEnd = i
       continue
     }
     if (ch === '/' && definition[i + 1] === '*') {
       const close = definition.indexOf('*/', i + 2)
-      const end = close === -1 ? n : close + 2
-      prefix += definition.slice(i, end)
-      i = end
+      i = close === -1 ? n : close + 2
+      lastCommentEnd = i
       continue
     }
     break
@@ -2246,7 +2251,14 @@ export function toCreateOrAlterStatement(definition: string): string {
   const head = definition.slice(i)
   const m = /^(?:CREATE|ALTER)\s+(?:OR\s+ALTER\s+)?/i.exec(head)
   if (!m) return definition
-  return prefix + 'CREATE OR ALTER ' + head.slice(m[0].length)
+  // prefisso = commenti iniziali (e le righe vuote fra loro) copiati IDENTICI dal testo
+  // originale; `between` è lo spazio rimasto fra l'ultimo commento e l'istruzione:
+  // se contiene già un a capo si tiene così com'è, altrimenti se ne aggiunge uno, così
+  // CREATE OR ALTER non finisce mai attaccato al commento.
+  const prefix = lastCommentEnd === -1 ? '' : definition.slice(start, lastCommentEnd)
+  const between = lastCommentEnd === -1 ? '' : definition.slice(lastCommentEnd, i)
+  const sep = prefix.length === 0 ? '' : /[\r\n]/.test(between) ? between : '\n'
+  return prefix + sep + 'CREATE OR ALTER ' + head.slice(m[0].length)
 }
 
 /** Parole chiave che non possono essere alias di tabella: se seguono il nome, la tabella non ha alias. */

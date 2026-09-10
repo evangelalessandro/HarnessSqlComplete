@@ -288,34 +288,28 @@ export default function SqlEditor({
     editor.addCommand(monaco.KeyCode.F4, openPreviewUnderCursor)
 
     /**
-     * TASTO DESTRO su una chiamata a stored procedure/funzione: apre la definizione
-     * in un'altra tab ("Modifica" = CREATE OR ALTER, oppure definizione originale).
-     * Riconosce il nome (anche qualificato o tra parentesi quadre) sotto il cursore.
+     * TASTO DESTRO su una chiamata a stored procedure/funzione: apre la routine in
+     * un'altra tab già pronta per la modifica (CREATE OR ALTER). Riconosce il nome
+     * (anche qualificato o tra parentesi quadre) sotto il cursore.
+     * Voce UNICA: la definizione originale (CREATE) si apre dall'albero laterale
+     * ("Script stored procedure" → CREATE), così il menu non ha due voci che fanno lo stesso.
      */
-    const openCallableUnderCursor = (mode: 'alter' | 'open'): void => {
+    const openCallableUnderCursor = (): void => {
       const model = editor.getModel()
       const pos = editor.getPosition()
       const sm = stateRef.current.summary
       if (!model || !pos || !sm) return
       const ref = resolveCallableAt(model.getValue(), model.getOffsetAt(pos), sm)
       if (!ref) return
-      stateRef.current.onOpenObject?.(ref.kind, ref.schema, ref.name, mode)
+      stateRef.current.onOpenObject?.(ref.kind, ref.schema, ref.name, 'alter')
     }
-    editor.addAction({
-      id: 'sql-intelli-callable-open-definition',
-      label: 'Apri definizione (nuova tab)',
-      contextMenuGroupId: '1_modification',
-      contextMenuOrder: 1,
-      precondition: 'editorTextFocus',
-      run: () => openCallableUnderCursor('open'),
-    })
     editor.addAction({
       id: 'sql-intelli-callable-modify',
       label: 'Modifica (CREATE OR ALTER in una nuova tab)',
       contextMenuGroupId: '1_modification',
       contextMenuOrder: 0,
       precondition: 'editorTextFocus',
-      run: () => openCallableUnderCursor('alter'),
+      run: () => openCallableUnderCursor(),
     })
 
     registerSchemaCompletions()
