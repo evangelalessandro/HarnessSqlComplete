@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { buildTabClosePlan, countClosableTabs } from '../tabOps'
+import { buildTabClosePlan, countClosableTabs, insertTabAfterActive, newTabIndex } from '../tabOps'
 import type { EditorTab } from '../types'
+import appSource from '../App.tsx?raw'
 
 const tab = (id: string, pinned = false): EditorTab => ({ id, title: id, sql: '', pinned })
 
@@ -68,5 +69,43 @@ describe('TAB: chiusure multiple in stile SSMS (tasto destro)', () => {
     expect(countClosableTabs(allPinned, 'A', 'others')).toBe(0)
     expect(countClosableTabs(allPinned, 'A', 'right')).toBe(0)
     expect(countClosableTabs(allPinned, 'A', 'unpinned')).toBe(0)
+  })
+})
+
+describe('TAB: dove finisce una tab nuova', () => {
+  const tabs = [tab('A'), tab('B'), tab('C'), tab('D')]
+
+  it('subito dopo la tab attiva, non in fondo a destra', () => {
+    // attiva B → la nuova tab va fra B e C
+    expect(insertTabAfterActive(tabs, tab('N'), 'B').map(t => t.id)).toEqual(['A', 'B', 'N', 'C', 'D'])
+    expect(newTabIndex(tabs, 'B')).toBe(2)
+  })
+
+  it('se l attiva è l ultima resta in fondo (come prima)', () => {
+    expect(insertTabAfterActive(tabs, tab('N'), 'D').map(t => t.id)).toEqual(['A', 'B', 'C', 'D', 'N'])
+  })
+
+  it('se l attiva è la prima, la nuova tab va subito dopo di lei', () => {
+    expect(insertTabAfterActive(tabs, tab('N'), 'A').map(t => t.id)).toEqual(['A', 'N', 'B', 'C', 'D'])
+  })
+
+  it('senza tab attiva (o attiva inesistente) si accoda', () => {
+    expect(insertTabAfterActive(tabs, tab('N'), '').map(t => t.id)).toEqual(['A', 'B', 'C', 'D', 'N'])
+    expect(insertTabAfterActive(tabs, tab('N'), 'Z').map(t => t.id)).toEqual(['A', 'B', 'C', 'D', 'N'])
+    expect(insertTabAfterActive([], tab('N'), '').map(t => t.id)).toEqual(['N'])
+  })
+
+  it('le altre tab restano nell ordine originale (anche con tab appuntate)', () => {
+    const mixed = [tab('P1', true), tab('B'), tab('P2', true), tab('D')]
+    const out = insertTabAfterActive(mixed, tab('N'), 'B')
+    expect(out.map(t => t.id)).toEqual(['P1', 'B', 'N', 'P2', 'D'])
+    // nessuna delle tab esistenti viene duplicata o persa
+    for (const t of mixed) expect(out.filter(x => x.id === t.id).length).toBe(1)
+  })
+
+  it('l apertura di una tab nell app usa questa regola', () => {
+    expect(appSource).toContain('insertTabAfterActive(prev, tab, activeEditorTab)')
+    // e non deve essere tornata l aggiunta in fondo
+    expect(appSource).not.toContain('setEditorTabs(prev => [...prev, tab])')
   })
 })

@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { BookOpen, Database as DbIcon, FilePlus2, Pin, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
@@ -9,7 +9,7 @@ import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
-import { buildTabClosePlan, countClosableTabs } from './tabOps'
+import { buildTabClosePlan, countClosableTabs, insertTabAfterActive } from './tabOps'
 import type { TabCloseMode } from './tabOps'
 import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryResult } from './types'
 import { chooseResultTab } from './queryTabs'
@@ -429,10 +429,10 @@ export default function App() {
         fileHandle,
         fileName: fileName ?? (fromFile ? title : undefined),
       }
-      setEditorTabs(prev => [...prev, tab])
+      setEditorTabs(prev => insertTabAfterActive(prev, tab, activeEditorTab))
       setActiveEditorTab(tab.id)
     },
-    [editorTabs.length, connection],
+    [editorTabs.length, activeEditorTab, connection],
   )
 
   const closeEditorTab = useCallback(

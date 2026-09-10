@@ -21,6 +21,7 @@ import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../h
 import { registerSqlHover } from '../sqlHover'
 import { buildFormatProfile, loadFormatProfileXml } from '../formatProfile'
 import { formatSqlWithProfile } from '../tsqlFormatter'
+import { SQL_WORD_SEPARATORS } from '../editorOptions'
 import FormatProfilePanel from './FormatProfilePanel'
 import { Badge, Button, Spinner, Toggle } from './ui'
 
@@ -684,6 +685,8 @@ export default function SqlEditor({
             minimap: { enabled: false },
             scrollBeyondLastLine: false,
             tabSize: 2,
+            // doppio click: seleziona anche '@' e '#' iniziali (@var, @@ROWCOUNT, #tmp)
+            wordSeparators: SQL_WORD_SEPARATORS,
             padding: { top: 10 },
             renderLineHighlight: 'all',
             // guide di indentazione verticali (visibili nei blocchi BEGIN/END dopo la formattazione)

@@ -64,3 +64,19 @@ export function countClosableTabs(tabs: EditorTab[], anchorId: string, mode: Tab
     }
   }, 0)
 }
+
+/**
+ * Posizione in cui inserire una nuova tab: SUBITO DOPO quella attiva (l'ultima aperta),
+ * non in fondo a destra. Esempio: tab A B C D con attiva B → la nuova tab va fra B e C.
+ * Se non c'è una tab attiva (o non esiste più) si accoda in fondo.
+ */
+export function newTabIndex(tabs: EditorTab[], activeId: string): number {
+  const active = tabs.findIndex(t => t.id === activeId)
+  return active === -1 ? tabs.length : active + 1
+}
+
+/** Inserisce la nuova tab dopo quella attiva, senza modificare l'ordine delle altre. */
+export function insertTabAfterActive(tabs: EditorTab[], tab: EditorTab, activeId: string): EditorTab[] {
+  const at = newTabIndex(tabs, activeId)
+  return [...tabs.slice(0, at), tab, ...tabs.slice(at)]
+}
