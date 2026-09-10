@@ -403,7 +403,11 @@ public class MetadataService
 
         // Co-occorrenza: coppie di tabelle che compaiono negli stessi JOIN delle definizioni
         // (procedure + viste + funzioni). Base per i suggerimenti "quali tabelle si uniscono insieme".
+        // Il testo SQL contiene anche funzioni tabellari (FROM dbo.fn_X), viste di sistema
+        // (FROM sys.databases) e alias: si tengono SOLO i nomi di tabelle reali, altrimenti
+        // si accumulano coppie fasulle che non corrispondono ad alcun suggerimento possibile.
         var cooccurrencePairs = new Dictionary<string, int>();
+        var realTableNames = new HashSet<string>(tables.Select(t => t.Name), StringComparer.OrdinalIgnoreCase);
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = """
@@ -419,6 +423,8 @@ public class MetadataService
                 var definition = r.GetString(0);
                 foreach (var pair in ExtractCooccurrencePairs(definition))
                 {
+                    // scarta funzioni/viste di sistema/alias: solo coppie tra tabelle esistenti
+                    if (!realTableNames.Contains(pair.Item1) || !realTableNames.Contains(pair.Item2)) continue;
                     var key = pair.Item1 + "|" + pair.Item2;
                     cooccurrencePairs[key] = cooccurrencePairs.GetValueOrDefault(key) + 1;
                 }
