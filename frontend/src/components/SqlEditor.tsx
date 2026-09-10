@@ -933,7 +933,7 @@ export default function SqlEditor({
 
             // ORDER BY: SOLO colonne delle tabelle dello statement + ASC/DESC.
             // Niente tabelle, viste, procedure o funzioni: nella ORDER BY non si possono usare.
-            if (isOrderBy) {
+            if (inOrderBy) {
               // dopo "ORDER " serve "BY" per completare la clausola
               if (isAfterOrderKeyword(prefix)) {
                 push({

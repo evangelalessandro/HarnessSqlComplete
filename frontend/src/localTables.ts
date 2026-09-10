@@ -147,7 +147,8 @@ function makeColumn(name: string, dataType: string): ColumnInfo {
     isIdentity: false,
     isComputed: false,
     maxLength: null,
-    description: undefined,
+    description: null,
+    extendedProperties: null,
   }
 }
 
