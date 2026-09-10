@@ -18,7 +18,8 @@ export function qualified(schema: string, name: string): string {
 
 /** Estrae i riferimenti a tabelle (FROM/JOIN/UPDATE/INTO) dal testo SQL prima del cursore (nomi in minuscolo). */
 export function findTableRefs(text: string): string[] {
-  const re = /\b(?:from|join|update|into|table)\s+((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)/gi
+  // '#' ammesso: tabelle temporanee (#temp, ##globale)
+  const re = /\b(?:from|join|update|into|table)\s+((?:#[A-Za-z0-9_#]+|\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)/gi
   const refs = new Set<string>()
   for (const m of text.matchAll(re)) {
     const token = m[1].replace(/[\[\]\s]/g, '')
@@ -2210,7 +2211,8 @@ const TABLE_ALIAS_BLOCK =
  */
 const TABLE_REF_RE = new RegExp(
   '\\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\\s+' +
-    '((?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*(?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*))?)' +
+    // '#' ammesso: tabelle temporanee (#temp, ##globale)
+    '((?:#[A-Za-z0-9_#]+|\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*(?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*))?)' +
     '(?:\\s+(?:AS\\s+)?(?!(?:' + TABLE_ALIAS_BLOCK + ')\\b)([A-Za-z_][A-Za-z0-9_]*))?',
   'gi',
 )

@@ -56,6 +56,7 @@ import {
   variablePrefixLen,
 } from '../tsqlSnippets'
 import { registerTableColorizer } from '../sqlTableColors'
+import { extractLocalTables } from '../localTables'
 import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../history'
 import { registerSqlHover } from '../sqlHover'
 import { classifyContext, filterKeywordsForContext, isAfterOrderKeyword, isOrderWordTyped, shouldSuggestJoinConditions } from '../intellisenseContext'
@@ -417,7 +418,7 @@ export default function SqlEditor({
         provideCompletionItems: (model, position) => {
           // la preview dati ha il SUO provider filtrato sulla tabella
           if (model.uri.toString().startsWith('sql-intelli://preview')) return { suggestions: [] }
-          const st = stateRef.current
+          const baseSt = stateRef.current
           const word = model.getWordUntilPosition(position)
           const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn)
           const textBefore = model.getValueInRange(
@@ -430,6 +431,13 @@ export default function SqlEditor({
           const cursorOffset = model.getOffsetAt(position)
           // dentro un commento non si propone alcun suggerimento
           if (isTextOffsetInComment(fullText, cursorOffset)) return { suggestions: [] }
+          // Tabelle TEMPORANEE definite nel testo (#t): senza aggiungerle al sommario
+          // le loro colonne non sarebbero proponibili ("... LEFT JOIN #t ON 1 = 1 WHERE ")
+          const localTables = extractLocalTables(fullText)
+          const st =
+            baseSt.summary && localTables.length > 0
+              ? { ...baseSt, summary: { ...baseSt.summary, tables: [...baseSt.summary.tables, ...localTables] } }
+              : baseSt
           const stmtRange = statementRangeAt(fullText, cursorOffset)
           const stmtText = fullText.slice(stmtRange.start, stmtRange.end)
           const stmtBefore = stmtText.slice(0, cursorOffset - stmtRange.start)
