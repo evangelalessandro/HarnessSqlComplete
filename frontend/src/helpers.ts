@@ -2148,6 +2148,36 @@ export function buildExecParamSnippet(parameters: ProcParamInfo[]): string {
 // ---------- Definizioni oggetti (Create or Alter) ----------
 
 /**
+ * Normalizza l'icona/simbolo/emoji di una tab: spazi compattati, trim, massimo 4
+ * code point (un'emoji composta come "⚠️" resta integra); vuota → undefined.
+ */
+export function normalizeTabIcon(value: string | null | undefined): string | undefined {
+  const t = (value ?? '').replace(/\s+/g, ' ').trim()
+  if (!t) return undefined
+  return Array.from(t).slice(0, 4).join('')
+}
+
+/** Icone proposte nel selettore della tab (l'utente può comunque scriverne una sua). */
+export const TAB_ICON_PRESETS = [
+  '⭐',
+  '🔥',
+  '✅',
+  '⚠️',
+  '🐞',
+  '🐉',
+  '🚀',
+  '📝',
+  '📊',
+  '🔎',
+  '💡',
+  '🧪',
+  '🧩',
+  '🛠️',
+  '📌',
+  '🐢',
+] as const
+
+/**
  * Prepara una definizione per la modifica: "CREATE PROCEDURE ..." o "ALTER PROCEDURE ..."
  * → "CREATE OR ALTER PROCEDURE ..." (eseguibile anche su un oggetto esistente).
  * "CREATE OR ALTER ..." resta invariato; se non inizia con CREATE/ALTER, testo invariato.

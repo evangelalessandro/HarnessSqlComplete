@@ -232,6 +232,8 @@ export interface EditorTab {
   sql: string
   /** Descrizione libera della tab (nota dell'utente). */
   description?: string
+  /** Icona/simbolo/emoji della tab scelto dall'utente (mostrato nella barra). */
+  icon?: string
   /** Tab appuntata: resta in testa e non è chiudibile. */
   pinned?: boolean
   /** Database associato alla tab (per il colore). */

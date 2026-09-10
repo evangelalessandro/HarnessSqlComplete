@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import { normalizeTabIcon, TAB_ICON_PRESETS } from '../helpers'
 import { instanceKey, loadPersistedTabs, persistTabs } from '../tabStorage'
 
 // mock minimale di localStorage (ambiente node)
@@ -66,5 +67,45 @@ describe('tabStorage: persistenza delle query per istanza SQL', () => {
   it('instanceKey normalizza maiuscole e caratteri speciali', () => {
     expect(instanceKey('LOCALHOST\\SQL2022')).toBe('localhost_sql2022')
     expect(instanceKey('192.168.1.10,1433')).toBe('192.168.1.10_1433')
+  })
+})
+
+describe('tab: icona/simbolo/emoji', () => {
+  it('normalizeTabIcon: trim, spazi compattati, vuota → undefined', () => {
+    expect(normalizeTabIcon('  ⭐  ')).toBe('⭐')
+    expect(normalizeTabIcon('★  ◆')).toBe('★ ◆')
+    expect(normalizeTabIcon('   ')).toBeUndefined()
+    expect(normalizeTabIcon('')).toBeUndefined()
+    expect(normalizeTabIcon(undefined)).toBeUndefined()
+    expect(normalizeTabIcon(null)).toBeUndefined()
+  })
+
+  it('normalizeTabIcon: emoji composta (⚠️) resta integra e si limita a 4 code point', () => {
+    expect(normalizeTabIcon('⚠️')).toBe('⚠️')
+    expect(normalizeTabIcon('★★★★★★')).toBe('★★★★')
+    expect(normalizeTabIcon('🔥🔥🔥🔥🔥')).toBe('🔥🔥🔥🔥')
+  })
+
+  it('le icone proposte nel selettore sono valide (non vuote, corte)', () => {
+    expect(TAB_ICON_PRESETS.length).toBeGreaterThan(8)
+    for (const ic of TAB_ICON_PRESETS) {
+      expect(ic.trim()).toBe(ic)
+      expect(Array.from(ic).length).toBeLessThanOrEqual(4)
+    }
+  })
+
+  it('l\'icona della tab viene salvata e ricaricata (persistenza)', () => {
+    persistTabs(
+      INST,
+      [
+        { id: 'tab-1', title: 'Report', sql: 'SELECT 1', icon: '⭐' },
+        { id: 'tab-2', title: 'Bug', sql: 'SELECT 2', icon: '🐞', description: 'da controllare' },
+      ],
+      'tab-1',
+    )
+    const loaded = loadPersistedTabs(INST)!
+    expect(loaded.tabs[0].icon).toBe('⭐')
+    expect(loaded.tabs[1].icon).toBe('🐞')
+    expect(loaded.tabs[1].description).toBe('da controllare')
   })
 })

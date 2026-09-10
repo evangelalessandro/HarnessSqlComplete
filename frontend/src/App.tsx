@@ -3,7 +3,7 @@ import { BookOpen, Database as DbIcon, FilePlus2, Pin, StickyNote, Table2, Termi
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
-import { dbTabColor, detectPrintMagic, nextDragonLevel, toCreateOrAlterStatement } from './helpers'
+import { dbTabColor, detectPrintMagic, nextDragonLevel, normalizeTabIcon, TAB_ICON_PRESETS, toCreateOrAlterStatement } from './helpers'
 import { openSqlFiles, saveSqlFile } from './fileSave'
 import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
@@ -41,6 +41,8 @@ export default function App() {
   const [descEditingTab, setDescEditingTab] = useState<string | null>(null)
   const [descDraft, setDescDraft] = useState('')
   const [titleDraft, setTitleDraft] = useState('')
+  // icona/emoji della tab in modifica (nel popover titolo & descrizione)
+  const [iconDraft, setIconDraft] = useState('')
   // Menu contestuale della tab (tasto destro): chiusure multiple in stile SSMS
   const [tabMenu, setTabMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   // Overflow delle tab: a capo su 2 righe; oltre compare il pulsante "»" con l'elenco
@@ -507,11 +509,12 @@ export default function App() {
     return () => ro.disconnect()
   }, [measureTabOverflow])
 
-  /** Salva titolo e descrizione libera della tab in modifica. */
+  /** Salva titolo, descrizione e icona della tab in modifica. */
   const saveTabDescription = useCallback(() => {
     if (!descEditingTab) return
     const clean = descDraft.trim()
     const newTitle = titleDraft.trim()
+    const icon = normalizeTabIcon(iconDraft)
     setEditorTabs(prev =>
       prev.map(t =>
         t.id === descEditingTab
@@ -521,12 +524,13 @@ export default function App() {
               title: newTitle || t.title,
               titleCustom: newTitle && newTitle !== t.title ? true : t.titleCustom,
               description: clean || undefined,
+              icon,
             }
           : t,
       ),
     )
     setDescEditingTab(null)
-  }, [descEditingTab, descDraft, titleDraft])
+  }, [descEditingTab, descDraft, titleDraft, iconDraft])
 
   const togglePin = useCallback((id: string) => {
     setEditorTabs(prev => {
@@ -927,6 +931,11 @@ export default function App() {
                   />
                 )}
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: dbTabColor(t.database ?? connection.database, dbColors) }} />
+                {t.icon && (
+                  <span className="shrink-0 text-[13px] leading-none" title="Icona della tab">
+                    {t.icon}
+                  </span>
+                )}
                 <button
                   onClick={() => switchEditorTab(t.id)}
                   className={`max-w-40 truncate ${t.id === activeEditorTab ? 'font-bold' : 'font-medium'}`}
@@ -938,6 +947,7 @@ export default function App() {
                   onClick={() => {
                     setTitleDraft(t.title)
                     setDescDraft(t.description ?? '')
+                    setIconDraft(t.icon ?? '')
                     setDescEditingTab(t.id)
                   }}
                   className={`rounded p-0.5 opacity-0 transition-opacity hover:bg-zinc-700 group-hover:opacity-100 ${
@@ -1002,7 +1012,10 @@ export default function App() {
                             className="h-2 w-2 shrink-0 rounded-full"
                             style={{ backgroundColor: dbTabColor(t.database ?? connection.database, dbColors) }}
                           />
-                          <span className="min-w-0 flex-1 truncate">{t.title}</span>
+                          <span className="min-w-0 flex-1 truncate">
+                            {t.icon ? `${t.icon} ` : ''}
+                            {t.title}
+                          </span>
                           {t.pinned && <Pin className="h-3 w-3 shrink-0 text-amber-400" />}
                           {t.id === activeEditorTab && <span className="shrink-0 text-sky-400">●</span>}
                         </button>
@@ -1151,9 +1164,42 @@ export default function App() {
             onClick={e => e.stopPropagation()}
           >
             <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-zinc-100">
-              <StickyNote className="h-4 w-4 text-amber-400" /> Titolo e descrizione della tab
+              <StickyNote className="h-4 w-4 text-amber-400" /> Titolo, icona e descrizione della tab
             </h3>
-            <label className="mb-1 block text-xs font-medium text-zinc-400">Titolo</label>
+            <label className="mb-1 block text-xs font-medium text-zinc-400">
+              Icona / simbolo / emoji (facoltativa)
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                value={iconDraft}
+                onChange={e => setIconDraft(e.target.value)}
+                placeholder="es. ⭐  ✅  🐞  ⚠️  (anche un simbolo come ★  ◆  →)"
+                maxLength={8}
+                className="w-24 rounded-md border border-zinc-700 bg-zinc-950 px-2.5 py-2 text-center text-lg text-zinc-100 placeholder:text-xs placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none"
+              />
+              <div className="flex flex-1 flex-wrap gap-1">
+                {TAB_ICON_PRESETS.map(ic => (
+                  <button
+                    key={ic}
+                    onClick={() => setIconDraft(ic)}
+                    title={`Usa ${ic}`}
+                    className={`rounded px-1.5 py-0.5 text-base transition-colors hover:bg-zinc-700 ${
+                      iconDraft === ic ? 'bg-zinc-700 ring-1 ring-sky-500' : 'bg-zinc-800/60'
+                    }`}
+                  >
+                    {ic}
+                  </button>
+                ))}
+                <button
+                  onClick={() => setIconDraft('')}
+                  title="Nessuna icona"
+                  className="rounded bg-zinc-800/60 px-1.5 py-0.5 text-[11px] text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-200"
+                >
+                  nessuna
+                </button>
+              </div>
+            </div>
+            <label className="mb-1 mt-3 block text-xs font-medium text-zinc-400">Titolo</label>
             <input
               autoFocus
               value={titleDraft}
@@ -1248,6 +1294,23 @@ export default function App() {
                   title={pinned ? 'Le tab appuntate non si chiudono: togli prima il pin' : undefined}
                 >
                   Chiudi
+                </button>
+                <button
+                  className={itemCls}
+                  onClick={() => {
+                    const tab = editorTabs.find(t => t.id === tabMenu.id)
+                    if (!tab) {
+                      setTabMenu(null)
+                      return
+                    }
+                    setTitleDraft(tab.title)
+                    setDescDraft(tab.description ?? '')
+                    setIconDraft(tab.icon ?? '')
+                    setDescEditingTab(tab.id)
+                    setTabMenu(null)
+                  }}
+                >
+                  Icona / titolo / descrizione…
                 </button>
                 <div className="my-1 h-px bg-zinc-800" />
                 {item('Chiudi tutte le altre', n('others'), 'others')}
