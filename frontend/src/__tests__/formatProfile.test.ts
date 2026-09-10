@@ -182,4 +182,28 @@ describe('tsqlFormatter: formatta secondo il profilo', () => {
     const out = formatSqlWithProfile('EXEC ws_p @udc = @pUDC', profile)
     expect(out).toBe('EXEC ws_p @udc = @pUDC\n')
   })
+
+  it('SELECT con CASE nella testata: dopo END la FROM va a capo (bug utente)', () => {
+    const out = formatSqlWithProfile(
+      "SELECT @txtError = CASE WHEN ISNULL(@ssccLu, '') = '' THEN dbo.fn_td('SSCC not set !') ELSE '' END, @modulo = X_MODULO FROM (SELECT 1 TT) a LEFT JOIN #tbl_InventoryKitting_St1 ON 1 = 1",
+      profile,
+    )
+    // il CASE è espanso
+    expect(out).toMatch(/SELECT @txtError =\n\s+CASE\n\s+WHEN/)
+    expect(out).toContain('END')
+    // la coda non resta attaccata a END: campo residuo, FROM a margine, JOIN indentato
+    expect(out).toMatch(/\n\s+,@modulo = X_MODULO\n/)
+    expect(out).toMatch(/\nFROM \(SELECT 1 TT\) a\n/)
+    expect(out).toMatch(/\n\s+LEFT JOIN #tbl_InventoryKitting_St1 ON 1 = 1/)
+    expect(out).not.toContain('END, @modulo')
+    expect(out).not.toContain('# tbl')
+  })
+
+  it('SELECT con CASE nella testata dentro una routine: coda con FROM/JOIN a capo', () => {
+    const out = formatSqlWithProfile(
+      "alter procedure [dbo].[x]\nas\nbegin\n  SELECT @e = CASE WHEN a = 1 THEN 'x' ELSE 'y' END, @m = B FROM dbo.T t LEFT JOIN #tmp z ON 1 = 1\nend",
+      profile,
+    )
+    expect(out).toMatch(/\n {6},@m = B\n {4}FROM dbo\.T t\n {6}LEFT JOIN #tmp z ON 1 = 1/)
+  })
 })

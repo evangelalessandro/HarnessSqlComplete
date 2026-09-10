@@ -277,6 +277,24 @@ function needsStatementLayout(sql: string): boolean {
       if (next.type === 'punct' && next.text === '=') assigns++
     }
   }
+  // SELECT con CASE nella TESTATA (prima di FROM/WHERE…): lo sa impaginare il motore
+  // routine (CASE espanso e clausole successive su righe proprie). Un CASE dentro
+  // FROM/WHERE resta invece al motore query.
+  {
+    let d = 0
+    for (const t of meaningful) {
+      if (t.type === 'punct') {
+        if (t.text === '(') d++
+        else if (t.text === ')') d = Math.max(0, d - 1)
+        continue
+      }
+      if (d !== 0 || t.type !== 'word') continue
+      const u = t.text.toUpperCase()
+      if (u === 'CASE') return true
+      if (['FROM', 'WHERE', 'GROUP', 'HAVING', 'ORDER', 'UNION', 'INTO'].includes(u)) break
+    }
+  }
+
   return assigns >= 2
 }
 
@@ -1135,10 +1153,35 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
         for (const row of detailedRows) pushRawLine(row)
         continue
       }
-      const caseLines = splitCaseLines(segment, up)
-      if (caseLines.length > 1) {
-        // il CASE inline viene spezzato su righe proprie indentate
-        caseLines.forEach(cl => pushLine(cl.text, lineIndent + cl.delta))
+      const caseParts = splitHeadCase(segment)
+      const caseLines = caseParts ? splitCaseLines(caseParts.casePart, up) : splitCaseLines(segment, up)
+      if (caseLines.length > 1 || (caseParts && caseParts.tail.length > 0)) {
+        // SELECT con CASE nella testata: testa, blocco CASE, poi coda con le clausole
+        // (FROM/JOIN/WHERE) su righe proprie — la coda non resta attaccata a "END"
+        if (caseParts) {
+          rowsNoDashEat(caseParts.head, up).forEach(r => pushLine(r, lineIndent))
+          splitCaseLines(caseParts.casePart, up).forEach(cl => pushLine(cl.text, lineIndent + cl.delta))
+          const groups = splitClauseGroups(caseParts.tail)
+          groups.forEach((g, gi) => {
+            const kw = g[0]?.type === 'word' ? g[0].text.toUpperCase() : ''
+            const isJoin = ['JOIN', 'APPLY', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS'].includes(kw)
+            if (kw === 'WHERE' || kw === 'HAVING') {
+              conditionRows(basePad, g, up, unit).forEach(r => pushRawLine(r))
+            } else if (kw === 'ORDER' || kw === 'GROUP') {
+              listRows(basePad, g, up, `${kw} BY `).forEach(r => pushRawLine(r))
+            } else {
+              // primo gruppo = resto della select-list (indentato), FROM a margine,
+              // JOIN/altre clausole un livello più in dentro; virgola in testa attaccata
+              const ind = gi === 0 || isJoin ? lineIndent + 1 : lineIndent
+              rowsNoDashEat(g, up)
+                .map(r => r.replace(/^,\s+/, ','))
+                .forEach(r => pushLine(r, ind))
+            }
+          })
+        } else {
+          // il CASE non è nella testata: comportamento precedente
+          caseLines.forEach(cl => pushLine(cl.text, lineIndent + cl.delta))
+        }
       } else {
         // statement con clausole FROM/JOIN/WHERE…: spezza le clausole su righe proprie
         // (come il motore delle query semplici) invece di compattare tutto su una riga
@@ -1476,6 +1519,90 @@ function execParamRows(parts: string[], basePad: string): string[] | null {
     if (idx === 0) return `${basePad}${p.prefix}${namePad} = ${p.value}`
     return `${' '.repeat(Math.max(0, firstCol - 1))},${namePad} = ${p.value}`
   })
+}
+
+/**
+ * Divide i token nelle clausole di uno statement (FROM/JOIN/WHERE/GROUP…/UNION)
+ * a profondità 0. Usato per la CODA di un SELECT con CASE: dopo "END" restano i
+ * campi residui della select-list e poi FROM/JOIN/WHERE, che vanno su righe proprie.
+ */
+function splitClauseGroups(tokens: Token[]): Token[][] {
+  const groups: Token[][] = []
+  let cur: Token[] = []
+  let par = 0
+  for (const t of tokens) {
+    const upper = t.type === 'word' ? t.text.toUpperCase() : ''
+    if (t.type === 'punct') {
+      if (t.text === '(') par++
+      else if (t.text === ')') par = Math.max(0, par - 1)
+    }
+    if (par === 0 && t.type === 'word') {
+      const isJoinTail =
+        (upper === 'JOIN' || upper === 'APPLY') &&
+        cur.length > 0 &&
+        cur[cur.length - 1].type === 'word' &&
+        JOIN_MODIFIERS.has(cur[cur.length - 1].text.toUpperCase())
+      if (!isJoinTail && CLAUSE_STARTERS.has(upper)) {
+        if (cur.length > 0) groups.push(cur)
+        cur = [t]
+        continue
+      }
+    }
+    cur.push(t)
+  }
+  if (cur.length > 0) groups.push(cur)
+  return groups
+}
+
+/**
+ * Individua il CASE di testa del segmento e lo separa in tre parti:
+ * testa (SELECT @x =), CASE … END, coda (',@y = … FROM … JOIN …').
+ * Restituisce null se il CASE non è nella testata (es. dentro la WHERE):
+ * in quel caso si usa il layout CASE precedente.
+ */
+function splitHeadCase(segment: Token[]): { head: Token[]; casePart: Token[]; tail: Token[] } | null {
+  let depth = 0
+  let caseIdx = -1
+  for (let i = 0; i < segment.length; i++) {
+    const t = segment[i]
+    if (t.type === 'punct') {
+      if (t.text === '(') depth++
+      else if (t.text === ')') depth = Math.max(0, depth - 1)
+      continue
+    }
+    if (depth !== 0 || t.type !== 'word') continue
+    const upper = t.text.toUpperCase()
+    if (upper === 'CASE') {
+      caseIdx = i
+      break
+    }
+    // una clausola prima del CASE → il CASE non è nella testata
+    if (CLAUSE_STARTERS.has(upper)) return null
+  }
+  if (caseIdx === -1) return null
+
+  // fine del CASE: END che chiude il primo CASE (conteggio CASE/END annidati)
+  let level = 0
+  let endIdx = -1
+  for (let i = caseIdx; i < segment.length; i++) {
+    const t = segment[i]
+    if (t.type !== 'word') continue
+    const upper = t.text.toUpperCase()
+    if (upper === 'CASE') level++
+    else if (upper === 'END') {
+      level--
+      if (level === 0) {
+        endIdx = i
+        break
+      }
+    }
+  }
+  if (endIdx === -1) return null
+  return {
+    head: segment.slice(0, caseIdx),
+    casePart: segment.slice(caseIdx, endIdx + 1),
+    tail: segment.slice(endIdx + 1),
+  }
 }
 
 /**
