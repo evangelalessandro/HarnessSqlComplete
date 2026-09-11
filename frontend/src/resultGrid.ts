@@ -6,8 +6,10 @@
  * Classi di sfondo delle righe alternate: TRE colori che si ripetono (riga 1, 2, 3, 1, 2, 3…).
  * Sono volutamente OPACHE: le prime celle della riga (numero e casella di selezione)
  * restano fisse mentre si scorre in orizzontale, quindi devono coprire ciò che passa sotto.
+ * La differenza fra i tre toni deve RESTARE VISIBILE: con due soli toni molto vicini
+ * (zinc-950 e zinc-900 al 50%) le fasce non si distinguevano.
  */
-export const ZEBRA_CLASSES = ['bg-zinc-950', 'bg-[#151519]', 'bg-[#1e1e23]'] as const
+export const ZEBRA_CLASSES = ['bg-[#0b0b0e]', 'bg-[#17171b]', 'bg-[#23232a]'] as const
 
 /** Sfondo della riga selezionata (opaco, come le fasce alternate). */
 export const SELECTED_ROW_CLASS = 'bg-sky-950'

@@ -121,3 +121,13 @@ describe('griglia risultati: struttura', () => {
     expect(html).not.toContain('NULL')
   })
 })
+
+describe('numerazione con la paginazione', () => {
+  it('la prima riga mostrata può partire da un numero diverso da 1 (pagina 2)', () => {
+    const html = renderToStaticMarkup(
+      <SelectableResultGrid columns={columns} rows={rows.slice(0, 2)} firstRowNumber={51} />,
+    )
+    const numbers = [...html.matchAll(/sticky left-0[^>]*>\s*(\d+)\s*</g)].map(m => m[1])
+    expect(numbers).toEqual(['51', '52'])
+  })
+})

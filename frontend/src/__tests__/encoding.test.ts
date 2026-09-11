@@ -1,10 +1,11 @@
 // @vitest-environment node
 // GUARDIA SULLA CODIFICA DEI SORGENTI.
 //
-// Bug segnalato: nell'intellisense e nei commenti si leggeva la sequenza rotta (a-circumflex
-// + euro + virgoletta tipografica) al posto del trattino lungo "—", e "Ã¨" al posto di "è".
-// Causa: testo convertito due volte (byte UTF-8 riletti come Windows-1252). Era diffuso in
-// 3 file (App.tsx, SqlEditor.tsx, sqlCompletions.ts): 148 punti.
+// Bug segnalato: nell'intellisense e nei commenti si leggeva la sequenza rotta (lettera
+// latina + euro + virgoletta tipografica) al posto del trattino lungo, e una lettera
+// spezzata al posto della vocale accentata. Causa: testo convertito due volte (byte UTF-8
+// riletti come Windows-1252). Era diffuso in 3 file
+// (App.tsx, SqlEditor.tsx, sqlCompletions.ts): 148 punti.
 //
 // Questo test rilegge TUTTI i sorgenti e fallisce se ricompare una sequenza doppiamente
 // codificata. I caratteri spia (Â Ã â ð) non sono mai legittimi in italiano, quindi il
