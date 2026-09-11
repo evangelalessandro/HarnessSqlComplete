@@ -171,7 +171,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Griglia risultati',
         detail:
-          'Ogni result set appare in una tabella con le colonne tipizzate. Le celle si possono selezionare e copiare; in alto il conteggio righe e il tempo di esecuzione.',
+          'Ogni result set appare in una tabella con le colonne tipizzate. Le celle si possono selezionare e copiare; in alto il conteggio righe e il tempo di esecuzione. Il numero di riga sta nella prima colonna (insieme alla casella di selezione resta fisso a sinistra mentre si scorre), le colonne sono separate da una linea verticale e le righe hanno tre colori alternati. Trascinando l\'intestazione di una colonna la si può spostare: cambia solo la vista, mentre selezione e SQL generato seguono l\'ordine originale.',
       },
       {
         title: 'Stampa',
