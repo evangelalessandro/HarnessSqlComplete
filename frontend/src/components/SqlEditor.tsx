@@ -14,7 +14,7 @@ import { computeBlockGuides } from '../sqlBlockGuides'
 import { computeFoldingRanges } from '../sqlFolding'
 import { pickFormatTarget, pickSqlToExecute } from '../executeSelection'
 import { registerTableColorizer } from '../sqlTableColors'
-import { resolveCallableAt } from '../callables'
+import { isCallableAt, resolveCallableAt } from '../callables'
 import { provideSqlCompletions } from '../sqlCompletions'
 
 import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../history'
@@ -103,6 +103,9 @@ export default function SqlEditor({
   onSaveAsRef.current = onSaveAs
   const onZoomFontRef = useRef(onZoomFont)
   onZoomFontRef.current = onZoomFont
+  // Aggiorna la context key che abilita la voce "Modifica (CREATE OR ALTER)": la imposta
+  // handleMount e la richiama l'effect qui sotto quando arriva/cambia lo schema.
+  const syncCallableContextRef = useRef<() => void>(() => {})
   // L'istanza editor in stato React: l'effect del colorizer si (ri)registra
   // automaticamente quando editor o schema cambiano (pulizia inclusa)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
@@ -114,6 +117,12 @@ export default function SqlEditor({
     const t = window.setTimeout(() => setFireVisible(false), 1900)
     return () => window.clearTimeout(t)
   }, [fireTick])
+  // La voce "Modifica (CREATE OR ALTER)" dipende dallo schema (serve per riconoscere il
+  // nome della routine): quando lo schema arriva o cambia si aggiorna subito, senza
+  // aspettare che il cursore si muova.
+  useEffect(() => {
+    syncCallableContextRef.current()
+  }, [summary, connectionId])
   // Pannello impostazioni di formattazione
   const [profileOpen, setProfileOpen] = useState(false)
   // Verifica di sintassi opzionale (errori reali di SQL Server con "Riga N:")
@@ -304,12 +313,30 @@ export default function SqlEditor({
       if (!ref) return
       stateRef.current.onOpenObject?.(ref.kind, ref.schema, ref.name, 'alter')
     }
+    // La voce compare SOLO se sotto il cursore c'è davvero una stored procedure o una
+    // funzione: su tabelle, campi e su testo qualsiasi non deve esserci.
+    const onCallable = editor.createContextKey<boolean>('sqlIntelliOnCallable', false)
+    const syncCallableContext = () => {
+      const model = editor.getModel()
+      const pos = editor.getPosition()
+      const sm = stateRef.current.summary
+      const onRoutine = !!model && !!pos && isCallableAt(model.getValue(), model.getOffsetAt(pos), sm)
+      onCallable.set(onRoutine)
+    }
+    syncCallableContextRef.current = syncCallableContext
+    disposablesRef.current.push(
+      editor.onDidChangeCursorPosition(syncCallableContext),
+      editor.onDidChangeModelContent(syncCallableContext),
+      // IContextKey non è IDisposable: allo smontaggio si riporta a false
+      { dispose: () => onCallable.reset() },
+    )
+    syncCallableContext()
     editor.addAction({
       id: 'sql-intelli-callable-modify',
       label: 'Modifica (CREATE OR ALTER in una nuova tab)',
       contextMenuGroupId: '1_modification',
       contextMenuOrder: 0,
-      precondition: 'editorTextFocus',
+      precondition: 'editorTextFocus && sqlIntelliOnCallable',
       run: () => openCallableUnderCursor(),
     })
 

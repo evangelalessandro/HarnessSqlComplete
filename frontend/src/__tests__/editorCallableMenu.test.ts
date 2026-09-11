@@ -21,4 +21,16 @@ describe('menu contestuale editor: una sola voce per le routine', () => {
     // l'helper non deve più accettare la modalità: apre solo in modifica
     expect(source).not.toMatch(/openCallableUnderCursor\(\s*['"]open['"]/)
   })
+
+  it('la voce compare SOLO su stored procedure e funzioni (mai su tabelle o campi)', () => {
+    // la visibilità è legata alla context key, non solo al controllo dentro run()
+    expect(source).toContain("precondition: 'editorTextFocus && sqlIntelliOnCallable'")
+    expect(source).toContain("createContextKey<boolean>('sqlIntelliOnCallable'")
+    // la chiave si aggiorna spostando il cursore, digitando e quando arriva lo schema
+    expect(source).toContain('editor.onDidChangeCursorPosition(syncCallableContext)')
+    expect(source).toContain('editor.onDidChangeModelContent(syncCallableContext)')
+    expect(source).toContain('syncCallableContextRef.current()')
+    // e la decisione passa dalla funzione che esclude tabelle e campi
+    expect(source).toContain('isCallableAt(')
+  })
 })

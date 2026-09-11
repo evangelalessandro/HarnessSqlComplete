@@ -59,3 +59,17 @@ export function resolveCallableAt(
   if (fn) return { kind: 'function', schema: fn.schema, name: fn.name }
   return null
 }
+
+/**
+ * True se sotto il cursore c'è una stored procedure o una funzione: è la condizione con cui
+ * il tasto destro fa COMPARIRE la voce "Modifica (CREATE OR ALTER in una nuova tab)".
+ * Su tabelle, campi (colonne) e su testo qualsiasi deve essere false, così la voce non
+ * compare nemmeno nel menu.
+ */
+export function isCallableAt(
+  text: string,
+  offset: number,
+  summary: DatabaseSummary | null | undefined,
+): boolean {
+  return resolveCallableAt(text, offset, summary) !== null
+}
