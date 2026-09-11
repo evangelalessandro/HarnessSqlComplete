@@ -1245,6 +1245,7 @@ export default function App() {
                 onToggleTheme={toggleTheme}
                 registerEditor={setEditor}
                 onOpenObject={handleOpenObject}
+                onShowCallGraph={(kind, schema, name) => openCallGraph(schema, name, kind)}
               />
             ) : (
               <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-zinc-600">

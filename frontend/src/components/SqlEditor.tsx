@@ -15,6 +15,7 @@ import { computeFoldingRanges } from '../sqlFolding'
 import { pickFormatTarget, pickSqlToExecute } from '../executeSelection'
 import { registerTableColorizer } from '../sqlTableColors'
 import { isCallableAt, resolveCallableAt } from '../callables'
+import type { CallableRef } from '../callables'
 import { provideSqlCompletions } from '../sqlCompletions'
 
 import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../history'
@@ -59,6 +60,8 @@ interface Props {
   fireTick?: number
   /** Apre la definizione di una procedura/funzione in una nuova tab ('alter' = CREATE OR ALTER). */
   onOpenObject?: (kind: 'procedure' | 'function' | 'view' | 'trigger', schema: string, name: string, mode: 'alter' | 'open') => void
+  /** Apre il diagramma delle chiamate della routine sotto il cursore (chi la chiama). */
+  onShowCallGraph?: (kind: 'procedure' | 'function', schema: string, name: string) => void
   registerEditor: (editor: monaco.editor.IStandaloneCodeEditor) => void
 }
 
@@ -92,11 +95,12 @@ export default function SqlEditor({
   fireTick = 0,
   registerEditor,
   onOpenObject,
+  onShowCallGraph,
 }: Props) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const disposablesRef = useRef<monaco.IDisposable[]>([])
-  const stateRef = useRef({ connectionId, summary, aiEnabled, onExecute, onOpenObject })
-  stateRef.current = { connectionId, summary, aiEnabled, onExecute, onOpenObject }
+  const stateRef = useRef({ connectionId, summary, aiEnabled, onExecute, onOpenObject, onShowCallGraph })
+  stateRef.current = { connectionId, summary, aiEnabled, onExecute, onOpenObject, onShowCallGraph }
   const onSaveRef = useRef(onSave)
   onSaveRef.current = onSave
   const onSaveAsRef = useRef(onSaveAs)
@@ -298,23 +302,30 @@ export default function SqlEditor({
     editor.addCommand(monaco.KeyCode.F4, openPreviewUnderCursor)
 
     /**
-     * TASTO DESTRO su una chiamata a stored procedure/funzione: apre la routine in
-     * un'altra tab già pronta per la modifica (CREATE OR ALTER). Riconosce il nome
-     * (anche qualificato o tra parentesi quadre) sotto il cursore.
-     * Voce UNICA: la definizione originale (CREATE) si apre dall'albero laterale
-     * ("Script stored procedure" → CREATE), così il menu non ha due voci che fanno lo stesso.
+     * TASTO DESTRO su una chiamata a stored procedure/funzione: riconosce il nome (anche
+     * qualificato o tra parentesi quadre) sotto il cursore e restituisce la routine.
+     * Da qui partono le due voci del menu: "Modifica" (CREATE OR ALTER in una nuova tab)
+     * e "Diagramma chiamate" (chi la chiama, fino al chiamante più lontano).
      */
-    const openCallableUnderCursor = (): void => {
+    const callableUnderCursor = (): CallableRef | null => {
       const model = editor.getModel()
       const pos = editor.getPosition()
       const sm = stateRef.current.summary
-      if (!model || !pos || !sm) return
-      const ref = resolveCallableAt(model.getValue(), model.getOffsetAt(pos), sm)
+      if (!model || !pos || !sm) return null
+      return resolveCallableAt(model.getValue(), model.getOffsetAt(pos), sm)
+    }
+    const openCallableUnderCursor = (): void => {
+      const ref = callableUnderCursor()
       if (!ref) return
       stateRef.current.onOpenObject?.(ref.kind, ref.schema, ref.name, 'alter')
     }
-    // La voce compare SOLO se sotto il cursore c'è davvero una stored procedure o una
-    // funzione: su tabelle, campi e su testo qualsiasi non deve esserci.
+    const showCallGraphUnderCursor = (): void => {
+      const ref = callableUnderCursor()
+      if (!ref) return
+      stateRef.current.onShowCallGraph?.(ref.kind, ref.schema, ref.name)
+    }
+    // Le voci compaiono SOLO se sotto il cursore c'è davvero una stored procedure o una
+    // funzione: su tabelle, campi e su testo qualsiasi non devono esserci.
     const onCallable = editor.createContextKey<boolean>('sqlIntelliOnCallable', false)
     const syncCallableContext = () => {
       const model = editor.getModel()
@@ -338,6 +349,14 @@ export default function SqlEditor({
       contextMenuOrder: 0,
       precondition: 'editorTextFocus && sqlIntelliOnCallable',
       run: () => openCallableUnderCursor(),
+    })
+    editor.addAction({
+      id: 'sql-intelli-callable-callgraph',
+      label: 'Diagramma chiamate (chi la chiama)',
+      contextMenuGroupId: '1_modification',
+      contextMenuOrder: 1,
+      precondition: 'editorTextFocus && sqlIntelliOnCallable',
+      run: () => showCallGraphUnderCursor(),
     })
 
     registerSchemaCompletions()
