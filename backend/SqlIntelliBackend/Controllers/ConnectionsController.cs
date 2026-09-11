@@ -57,17 +57,32 @@ public class ConnectionsController(AppDbContext db, ConnectionHub hub, MetadataS
         if (req.Save)
         {
             var name = string.IsNullOrWhiteSpace(req.Name) ? DefaultName(req) : req.Name.Trim();
-            var existing = await db.SavedConnections.FirstOrDefaultAsync(c => c.Name == name, ct);
+            var port = req.Port is > 0 ? req.Port : 1433;
+            var dbName = req.Database?.Trim() ?? "";
+            var user = req.Username?.Trim() ?? "";
+            // Una login è identificata dalla CONNESSIONE (server, porta, database, autenticazione,
+            // utente), NON dal nome: salvare una connessione diversa con lo stesso nome NON deve
+            // sovrascrivere quella esistente (bug: restava salvata solo l'ultima).
+            var existing = await db.SavedConnections.FirstOrDefaultAsync(c =>
+                c.Server == req.Server
+                && c.Port == port
+                && (c.Database ?? "") == dbName
+                && c.UseWindowsAuth == req.UseWindowsAuth
+                && (c.Username ?? "") == user, ct);
             if (existing is null)
             {
                 existing = new SavedConnection { Name = name, CreatedAt = DateTime.UtcNow };
                 db.SavedConnections.Add(existing);
             }
+            else
+            {
+                existing.Name = name; // eventuale rinomina dello stesso accesso
+            }
             existing.Server = req.Server;
-            existing.Port = req.Port is > 0 ? req.Port : 1433;
-            existing.Database = req.Database;
+            existing.Port = port;
+            existing.Database = string.IsNullOrEmpty(dbName) ? null : dbName;
             existing.UseWindowsAuth = req.UseWindowsAuth;
-            existing.Username = req.Username;
+            existing.Username = req.UseWindowsAuth ? null : req.Username;
             if (!req.UseWindowsAuth && !string.IsNullOrEmpty(req.Password))
                 existing.EncryptedPassword = ConnectionCrypto.Encrypt(req.Password);
             existing.UpdatedAt = DateTime.UtcNow;

@@ -14,7 +14,13 @@ import {
 } from 'lucide-react'
 import { api } from '../api'
 import type { ConnectResponse, ConnectionTestResult, SavedConnectionDto } from '../types'
+import { remainingMinDelay } from '../helpers'
 import { Badge, Button, Spinner, inputClass } from './ui'
+import MatrixRain from './MatrixRain'
+import ConnectAnimation from './ConnectAnimation'
+
+/** Durata minima dell'animazione scenica di connessione (millisecondi). */
+const MIN_CONNECT_ANIMATION_MS = 2000
 
 interface Props {
   onConnected: (res: ConnectResponse) => void
@@ -49,6 +55,8 @@ export default function LoginScreen({ onConnected }: Props) {
   const [testing, setTesting] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [connectingId, setConnectingId] = useState<number | null>(null)
+  // Destinazione della connessione in corso: mostrata nell'animazione scenica
+  const [connectTarget, setConnectTarget] = useState<{ server: string; database?: string } | null>(null)
   const [showPwd, setShowPwd] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -97,12 +105,17 @@ export default function LoginScreen({ onConnected }: Props) {
   }
 
   const handleConnect = async (req: ReturnType<typeof toRequest>) => {
+    const startedAt = Date.now()
+    setConnectTarget({ server: req.server, database: req.database || undefined })
     setConnecting(true)
     setError(null)
     try {
       const res = await api.connect(req)
       if (res.connectionId) {
         await loadSaved()
+        // l'animazione scenica resta visibile almeno MIN_CONNECT_ANIMATION_MS
+        const wait = remainingMinDelay(startedAt, MIN_CONNECT_ANIMATION_MS)
+        if (wait > 0) await new Promise(r => setTimeout(r, wait))
         onConnected(res)
       } else {
         setError(res.message)
@@ -111,16 +124,22 @@ export default function LoginScreen({ onConnected }: Props) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setConnecting(false)
+      setConnectTarget(null)
     }
   }
 
-  const handleConnectSaved = async (id: number) => {
+  const handleConnectSaved = async (id: number, target?: { server: string; database?: string }) => {
+    const startedAt = Date.now()
+    setConnectTarget(target ?? null)
     setConnectingId(id)
     setError(null)
     try {
       const res = await api.connectSaved(id)
       if (res.connectionId) {
         await loadSaved()
+        // l'animazione scenica resta visibile almeno MIN_CONNECT_ANIMATION_MS
+        const wait = remainingMinDelay(startedAt, MIN_CONNECT_ANIMATION_MS)
+        if (wait > 0) await new Promise(r => setTimeout(r, wait))
         onConnected(res)
       } else {
         setError(res.message)
@@ -129,6 +148,7 @@ export default function LoginScreen({ onConnected }: Props) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setConnectingId(null)
+      setConnectTarget(null)
     }
   }
 
@@ -142,8 +162,9 @@ export default function LoginScreen({ onConnected }: Props) {
   }
 
   return (
-    <div className="flex min-h-full items-center justify-center bg-zinc-950 p-6">
-      <div className="grid w-full max-w-5xl gap-6 lg:grid-cols-[1fr_380px]">
+    <div className="relative flex min-h-full items-center justify-center overflow-hidden bg-zinc-950 p-6">
+      <MatrixRain />
+      <div className="relative z-10 grid w-full max-w-5xl gap-6 lg:grid-cols-[1fr_380px]">
         {/* Form di connessione */}
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-6 shadow-xl">
           <div className="mb-6 flex items-center gap-3">
@@ -342,11 +363,11 @@ export default function LoginScreen({ onConnected }: Props) {
                 key={c.id}
                 role="button"
                 tabIndex={0}
-                onClick={() => void handleConnectSaved(c.id)}
+                onClick={() => void handleConnectSaved(c.id, { server: c.server, database: c.database || undefined })}
                 onKeyDown={e => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault()
-                    void handleConnectSaved(c.id)
+                    void handleConnectSaved(c.id, { server: c.server, database: c.database || undefined })
                   }
                 }}
                 className="group flex cursor-pointer items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-950/60 p-4 transition-colors hover:border-sky-600 hover:bg-sky-950/20"
@@ -372,7 +393,7 @@ export default function LoginScreen({ onConnected }: Props) {
                   type="button"
                   onClick={e => {
                     e.stopPropagation()
-                    void handleConnectSaved(c.id)
+                    void handleConnectSaved(c.id, { server: c.server, database: c.database || undefined })
                   }}
                   className="flex shrink-0 items-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-medium text-white shadow-md transition-colors hover:bg-sky-500"
                   title="Connetti con questa login"
@@ -401,6 +422,7 @@ export default function LoginScreen({ onConnected }: Props) {
           </div>
         </div>
       </div>
+      {connectTarget && <ConnectAnimation server={connectTarget.server} database={connectTarget.database} />}
     </div>
   )
 }

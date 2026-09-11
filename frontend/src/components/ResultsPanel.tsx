@@ -1,20 +1,28 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ChevronLeft, ChevronRight, Code2, Table2 } from 'lucide-react'
 import type { CellValue, QueryResult } from '../types'
+import { suggestTargetTables } from '../sqlGen'
 import { Badge, Button, Spinner } from './ui'
 import SelectableResultGrid from './SelectableResultGrid'
+import ResultDataTable from './ResultDataTable'
 
 interface Props {
   result: QueryResult | null
   executing: boolean
+  /** SQL eseguito che ha prodotto `result`: serve a proporre la tabella target del generatore. */
+  sourceSql?: string
 }
 
-export default function ResultsPanel({ result, executing }: Props) {
+export default function ResultsPanel({ result, executing, sourceSql }: Props) {
   const [setIndex, setSetIndex] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   // modalità generatore: seleziona righe/colonne e genera INSERT/UPDATE/MERGE/DELETE/#tmp
   const [genMode, setGenMode] = useState(false)
+
+  // Tabella target PROPOSTA (modificabile) per ogni result set: ricavata dal SQL
+  // eseguito ("data un recordset non serve digitare il nome tabella: lo proponiamo").
+  const suggestedTargets = useMemo(() => (sourceSql ? suggestTargetTables(sourceSql) : []), [sourceSql])
 
   useEffect(() => {
     setSetIndex(0)
@@ -101,41 +109,20 @@ export default function ResultsPanel({ result, executing }: Props) {
 
       {genMode ? (
         <div className="min-h-0 flex-1">
-          <SelectableResultGrid columns={activeSet.columns} rows={pageRows as CellValue[][]} />
+          <SelectableResultGrid
+            key={setIndex}
+            columns={activeSet.columns}
+            rows={pageRows as CellValue[][]}
+            initialTarget={suggestedTargets[setIndex] || suggestedTargets.find(t => t !== '') || ''}
+            firstRowNumber={start}
+          />
         </div>
       ) : (
         <>
+      {/* Vista normale: stessa tabella del generatore (numero di riga, linee delle colonne,
+          tre colori alternati, colonne spostabili trascinando l'intestazione) */}
       <div className="min-h-0 flex-1 overflow-auto">
-        <table className="w-full border-collapse text-left text-[13px]">
-          <thead className="sticky top-0 z-10">
-            <tr>
-              <th className="w-12 border-b border-zinc-700 bg-zinc-800 px-2 py-1.5 text-right font-medium text-zinc-500">
-                #
-              </th>
-              {activeSet.columns.map((c, i) => (
-                <th
-                  key={`${c.name}-${i}`}
-                  className="border-b border-zinc-700 bg-zinc-800 px-3 py-1.5 font-semibold text-zinc-100"
-                >
-                  {c.name}
-                  <span className="ml-1.5 font-normal text-zinc-500">{c.dataType}</span>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {pageRows.map((row, ri) => (
-              <tr key={ri} className={ri % 2 ? 'bg-zinc-900/50' : 'bg-zinc-950'}>
-                <td className="border-b border-zinc-800/60 px-2 py-1 text-right font-mono text-xs text-zinc-600">
-                  {start + ri}
-                </td>
-                {row.map((cell, ci) => (
-                  <Cell key={ci} value={cell} />
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <ResultDataTable columns={activeSet.columns} rows={pageRows as CellValue[][]} firstRowNumber={start} />
       </div>
 
       <div className="flex items-center justify-between border-t border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-400">
@@ -179,23 +166,5 @@ export default function ResultsPanel({ result, executing }: Props) {
         </>
       )}
     </div>
-  )
-}
-
-function Cell({ value }: { value: CellValue }) {
-  if (value === null || value === undefined) {
-    return <td className="border-b border-zinc-800/60 px-3 py-1 italic text-zinc-600">NULL</td>
-  }
-  let text: string
-  if (typeof value === 'boolean') text = String(value)
-  else if (typeof value === 'object') text = JSON.stringify(value)
-  else text = String(value)
-  return (
-    <td
-      className="max-w-[440px] truncate border-b border-zinc-800/60 px-3 py-1 font-mono text-zinc-200"
-      title={text}
-    >
-      {text}
-    </td>
   )
 }

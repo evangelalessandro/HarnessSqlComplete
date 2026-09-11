@@ -72,9 +72,104 @@ describe('toCreateOrAlterStatement: CREATE → CREATE OR ALTER', () => {
     )
   })
 
+  it('CREATE TRIGGER → CREATE OR ALTER TRIGGER (forma reale OBJECT_DEFINITION)', () => {
+    const def =
+      'CREATE TRIGGER [dbo].[tr_CFG_BARCODE] ON [dbo].[CFG_BARCODE]\n' +
+      'FOR UPDATE, INSERT, DELETE\nAS\nSET NOCOUNT ON\n\nBEGIN\n  SELECT 1\nEND'
+    expect(toCreateOrAlterStatement(def)).toBe(
+      'CREATE OR ALTER TRIGGER [dbo].[tr_CFG_BARCODE] ON [dbo].[CFG_BARCODE]\n' +
+        'FOR UPDATE, INSERT, DELETE\nAS\nSET NOCOUNT ON\n\nBEGIN\n  SELECT 1\nEND',
+    )
+  })
+
+  it('CREATE VIEW → CREATE OR ALTER VIEW', () => {
+    expect(toCreateOrAlterStatement('CREATE VIEW dbo.V AS SELECT 1 AS x')).toBe(
+      'CREATE OR ALTER VIEW dbo.V AS SELECT 1 AS x',
+    )
+  })
+
   it('con indentazione iniziale', () => {
     expect(toCreateOrAlterStatement('\n  CREATE PROCEDURE dbo.X AS SELECT 1')).toBe(
       'CREATE OR ALTER PROCEDURE dbo.X AS SELECT 1',
+    )
+  })
+
+  it('ALTER PROCEDURE (definizione modificata in passato) → CREATE OR ALTER PROCEDURE', () => {
+    expect(toCreateOrAlterStatement('ALTER PROCEDURE dbo.X AS SELECT 1')).toBe(
+      'CREATE OR ALTER PROCEDURE dbo.X AS SELECT 1',
+    )
+  })
+
+  it('commento iniziale prima di CREATE → CREATE OR ALTER (commento conservato)', () => {
+    const def = '-- =============================================\n-- Author: pippo\n-- =============================================\nCREATE PROCEDURE dbo.X AS SELECT 1'
+    const out = toCreateOrAlterStatement(def)
+    expect(out).toContain('-- Author: pippo')
+    expect(out).toMatch(/CREATE OR ALTER PROCEDURE dbo\.X/)
+  })
+
+  it('commento a blocco iniziale → CREATE OR ALTER su una RIGA NUOVA', () => {
+    const def = '/* script ri-creato con header */\nALTER PROCEDURE dbo.X AS SELECT 1'
+    const out = toCreateOrAlterStatement(def)
+    expect(out).toContain('/* script ri-creato con header */')
+    expect(out).toContain('CREATE OR ALTER PROCEDURE dbo.X')
+    // il commento NON deve restare attaccato all'istruzione
+    expect(out).not.toMatch(/\*\/CREATE OR ALTER/)
+    expect(out).toMatch(/\*\/\nCREATE OR ALTER PROCEDURE/)
+  })
+
+  it('header reale del DB (commento a blocco + CRLF) → istruzione a capo, header intatto', () => {
+    // inizio reale di dbo.ws_CUSTOM_L2_AbiDisabHydraroll
+    const def =
+      '/* Able/Disable Hydraroll Bay also for CarWash */\r\n' +
+      'CREATE PROCEDURE [dbo].[ws_CUSTOM_L2_AbiDisabHydraroll] (\r\n  @pAbleDisable bit\r\n)\r\nAS\r\nSELECT 1'
+    const out = toCreateOrAlterStatement(def)
+    expect(out.startsWith('/* Able/Disable Hydraroll Bay also for CarWash */\r\n')).toBe(true)
+    expect(out).not.toMatch(/\*\/CREATE OR ALTER/)
+    expect(out).toContain('CREATE OR ALTER PROCEDURE [dbo].[ws_CUSTOM_L2_AbiDisabHydraroll]')
+  })
+
+  it('header reale con più commenti a blocco: righe vuote e commenti conservati identici', () => {
+    // forma reale di dbo.ws_AlgoritmoNAVETTE_Picking_Stalli
+    const def =
+      '/* Algoritmo navette per impianti picking */\r\n\r\n\r\n/*\r\n Ritorna : -1 - Errore\r\n*/\r\nALTER PROCEDURE dbo.X AS SELECT 1'
+    const out = toCreateOrAlterStatement(def)
+    expect(out.startsWith('/* Algoritmo navette per impianti picking */\r\n\r\n\r\n/*\r\n Ritorna : -1 - Errore\r\n*/\r\n')).toBe(true)
+    expect(out).toContain('CREATE OR ALTER PROCEDURE dbo.X')
+    expect(out).not.toMatch(/\*\/CREATE OR ALTER/)
+  })
+
+  it('commento già attaccato al CREATE nel testo originale: viene comunque mandato a capo', () => {
+    const def = '/* note */CREATE PROCEDURE dbo.X AS SELECT 1'
+    expect(toCreateOrAlterStatement(def)).toBe('/* note */\nCREATE OR ALTER PROCEDURE dbo.X AS SELECT 1')
+  })
+
+  it('commento di riga + commento a blocco: prefisso conservato e istruzione a capo', () => {
+    const def = '-- nota 1\r\n/* nota 2 */\r\nALTER PROCEDURE dbo.X AS SELECT 1'
+    const out = toCreateOrAlterStatement(def)
+    expect(out.startsWith('-- nota 1\r\n/* nota 2 */\r\n')).toBe(true)
+    expect(out).toContain('CREATE OR ALTER PROCEDURE dbo.X')
+  })
+
+  it('trattini e asterischi dentro il commento non fanno perdere il prefisso', () => {
+    const def = '/***\r\n * header con * e -- dentro\r\n ***/\r\nCREATE PROCEDURE dbo.X AS SELECT 1'
+    const out = toCreateOrAlterStatement(def)
+    expect(out.startsWith('/***\r\n * header con * e -- dentro\r\n ***/\r\n')).toBe(true)
+    expect(out).toContain('CREATE OR ALTER PROCEDURE dbo.X')
+  })
+
+  it('BOM iniziale → CREATE OR ALTER', () => {
+    const def = '\uFEFFCREATE PROCEDURE dbo.X AS SELECT 1'
+    expect(toCreateOrAlterStatement(def)).toBe('CREATE OR ALTER PROCEDURE dbo.X AS SELECT 1')
+  })
+
+  it('solo commenti senza CREATE/ALTER → invariato', () => {
+    const def = '-- niente header qui\nSELECT 1'
+    expect(toCreateOrAlterStatement(def)).toBe(def)
+  })
+
+  it('ALTER FUNCTION → CREATE OR ALTER FUNCTION', () => {
+    expect(toCreateOrAlterStatement('ALTER FUNCTION dbo.F(@a INT) RETURNS INT AS BEGIN RETURN 1 END')).toBe(
+      'CREATE OR ALTER FUNCTION dbo.F(@a INT) RETURNS INT AS BEGIN RETURN 1 END',
     )
   })
 

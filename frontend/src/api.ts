@@ -6,8 +6,10 @@ import type {
   ConnectionTestResult,
   DatabaseSummary,
   QueryResult,
+  RoutineCallGraph,
   SavedConnectionDto,
   SearchResult,
+  TableReportRow,
 } from './types'
 
 const API_BASE = '/api'
@@ -84,11 +86,19 @@ export const api = {
       `/metadata/${connectionId}/objects/${encodeURIComponent(schema)}/${encodeURIComponent(name)}/definition`,
     ),
 
+  /** Grafo delle chiamate fra routine: legami diretti "chi chiama chi" (per il diagramma). */
+  getRoutineCallGraph: (connectionId: string) =>
+    http<RoutineCallGraph>(`/metadata/${connectionId}/routine-call-graph`),
+
   execute: (connectionId: string, sql: string, timeoutSeconds?: number) =>
     http<QueryResult>(`/query/${connectionId}/execute`, {
       method: 'POST',
       body: JSON.stringify({ sql, timeoutSeconds }),
     }),
+
+  /** Report utilizzo tabelle: spazio riservato/usato/dati/indici, righe, indici e accessi. */
+  tableReport: (connectionId: string) =>
+    http<TableReportRow[]>(`/metadata/${connectionId}/report/tables`),
 
   autocomplete: (connectionId: string, sql: string, apiKey?: string) =>
     http<AutocompleteResponse>(`/autocomplete/${connectionId}`, {

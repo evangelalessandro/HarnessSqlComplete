@@ -2,7 +2,7 @@
 // ogni tabella ha un colore stabile, condiviso dalle sue colonne (i nomi di tabella sono enfatizzati).
 // Nota: import diretto di monaco-editor (stessa istanza usata da monacoSetup) per essere testabile.
 import * as monaco from 'monaco-editor'
-import { colorClassFor, colorizeSqlTokens, tokenizeSql } from './helpers'
+import { colorClassMapForKeys, colorizeSqlTokens, tokenizeSql } from './helpers'
 import type { DatabaseSummary } from './types'
 
 export interface ColorDecorationSpec {
@@ -16,12 +16,15 @@ export interface ColorDecorationSpec {
 /** Calcola le decorazioni colore per il testo (pura e testabile). */
 export function buildColorDecorations(text: string, summary: DatabaseSummary): ColorDecorationSpec[] {
   const tokens = tokenizeSql(text)
-  return colorizeSqlTokens(text, summary).map(c => {
+  const colored = colorizeSqlTokens(text, summary)
+  // Ogni tabella DISTINTA del documento riceve un colore suo (niente collisioni di hash)
+  const colorByKey = colorClassMapForKeys(new Set(colored.map(c => c.tableKey)))
+  return colored.map(c => {
     const tok = tokens[c.index]
     return {
       start: tok.start,
       end: tok.end,
-      className: colorClassFor(c.tableKey),
+      className: colorByKey.get(c.tableKey) ?? 'sql-tbl-0',
       fontWeight: c.isTableName ? '600' : undefined,
     }
   })

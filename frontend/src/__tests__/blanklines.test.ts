@@ -24,14 +24,14 @@ describe('righe vuote tra le istruzioni', () => {
     const sql = `alter procedure [dbo].[x]\nas\nbegin\n    update t\n        set a = 1\n\n        , b = 2\n    where id = 1\nend`
     const out = fmt(sql)
     expect(out).not.toContain('\n\n')
-    expect(out).toContain('UPDATE t\n    SET a = 1, b = 2 WHERE id = 1')
+    expect(out).toContain('UPDATE t\n      SET a = 1\n          ,b = 2\n    WHERE id = 1')
   })
 
   it('righe vuote dentro un UPDATE standalone (query) vengono tolte', () => {
     const sql = `update t\n    set a = 1\n\n        , b = 2\nwhere id = 1`
     const out = fmtQ(sql)
     expect(out).not.toContain('\n\n')
-    expect(out).toContain('UPDATE t SET a = 1, b = 2 WHERE id = 1')
+    expect(out).toContain('UPDATE t\n  SET a = 1\n      ,b = 2\nWHERE id = 1')
   })
 
   it('righe vuote iniziali del documento non vengono riprodotte', () => {

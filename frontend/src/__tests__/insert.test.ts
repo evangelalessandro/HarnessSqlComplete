@@ -63,6 +63,19 @@ describe('INSERT: parsing e corrispondenza colonna↔valore', () => {
     expect(ctx?.columnSlots.map(s => s.text)).toEqual(['id', 'nom'])
   })
 
+  it('batch con INSERT precedente: il suo VALUES non nasconde la lista colonne del secondo INSERT', () => {
+    // scenario utente: un batch ("BEGIN TRAN … INSERT INTO LOG (… ) VALUES (…)"
+    // seguito da "INSERT INTO TIPI_EVENTI (TI…") — il VALUES del primo INSERT non
+    // deve far scambiare la '(' del secondo per una subquery (niente colonne).
+    const sql =
+      "BEGIN TRAN\nDECLARE @caus INT\nINSERT INTO LOG (causa) VALUES (@caus)\nINSERT INTO TIPI_EVENTI (TI"
+    const ctx = parseInsertContext(sql)
+    expect(ctx?.table).toBe('TIPI_EVENTI')
+    expect(ctx?.schema).toBeNull()
+    expect(ctx?.colOpen).not.toBe(-1)
+    expect(ctx?.columnSlots.map(s => s.text)).toEqual(['TI'])
+  })
+
   it('slot vuoto tra virgole: mappa sulla colonna successiva', () => {
     const sql = 'INSERT INTO t (a, b) VALUES (1, , 3);'
     const t = insertCorrespondingTarget(sql, sql.indexOf(', ,') + 1)

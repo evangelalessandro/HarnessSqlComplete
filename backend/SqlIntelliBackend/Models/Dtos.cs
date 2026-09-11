@@ -65,6 +65,9 @@ public record ColumnInfo(
     string? Description,
     List<ExtendedProperty>? ExtendedProperties = null);
 
+/// <summary>Indice di una tabella (nome, PK/UNIQUE e colonne chiave in ordine).</summary>
+public record IndexInfo(string Name, bool IsPrimaryKey, bool IsUnique, List<string>? Columns = null);
+
 public record TableInfo(
     string Schema,
     string Name,
@@ -72,7 +75,8 @@ public record TableInfo(
     DateTime? CreateDate,
     List<ColumnInfo>? Columns = null,
     TableUsage? Usage = null,
-    List<ExtendedProperty>? ExtendedProperties = null);
+    List<ExtendedProperty>? ExtendedProperties = null,
+    List<IndexInfo>? Indexes = null);
 
 public record ViewInfo(string Schema, string Name, DateTime? CreateDate);
 
@@ -86,6 +90,14 @@ public record ProcedureInfo(
 
 public record TriggerInfo(string Schema, string TableName, string Name);
 
+/// <summary>Vincolo CHECK di una tabella: nome, tabella di appartenenza e testo della condizione.</summary>
+public record CheckConstraintInfo(
+    string Schema,
+    string TableName,
+    string Name,
+    string Definition,
+    bool IsDisabled);
+
 public record FunctionInfo(string Schema, string Name, string Type);
 
 public record SearchResult(string Schema, string Name, string ObjectType);
@@ -98,6 +110,7 @@ public record DatabaseSummary(
     List<ViewInfo> Views,
     List<ProcedureInfo> Procedures,
     List<TriggerInfo> Triggers,
+    List<CheckConstraintInfo> CheckConstraints,
     List<FunctionInfo> Functions,
     List<ForeignKeyInfo> ForeignKeys,
     List<DatabaseInfo> Databases,
@@ -105,6 +118,24 @@ public record DatabaseSummary(
 
 /// <summary>Coppia di tabelle che compaiono insieme nei JOIN reali delle stored procedure (per ranking).</summary>
 public record TableCooccurrence(string TableA, string TableB, int Count);
+
+/// <summary>
+/// Legame di chiamata fra due routine (chi chiama → chi è chiamato), ricavato dalle
+/// dipendenze reali registrate da SQL Server (sys.sql_expression_dependencies).
+/// </summary>
+public record RoutineCallEdge(
+    string CallerSchema,
+    string CallerName,
+    string CallerType,
+    string CalleeSchema,
+    string CalleeName,
+    string CalleeType);
+
+/// <summary>
+/// Grafo delle chiamate fra routine: solo i legami DIRETTI. Il percorso fino al chiamante
+/// più lontano si calcola lato client, che è anche il posto dove si gestiscono i cicli.
+/// </summary>
+public record RoutineCallGraph(List<RoutineCallEdge> Edges, bool Truncated);
 
 // ---------- Query ----------
 
@@ -135,3 +166,22 @@ public record SuggestionItem(string Text, string? Reason);
 public record AutocompleteResponse(List<SuggestionItem>? Suggestions, string? Error);
 
 public record AutocompleteStatus(bool Configured, string Model, string BaseUrl, bool HasApiKeyOverride);
+
+// ---------- Report utilizzo tabelle ----------
+
+/// <summary>Riga del report: spazio riservato/usato (KB), righe, indici e utilizzo.</summary>
+public record TableReportRow(
+    string Schema,
+    string Name,
+    string? CreateDate,
+    long RowCount,
+    long ReservedKb,
+    long UsedKb,
+    long DataKb,
+    long IndexKb,
+    long UnusedKb,
+    int IndexCount,
+    long Reads,
+    long Writes,
+    string? LastRead,
+    string? LastWrite);

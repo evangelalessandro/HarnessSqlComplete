@@ -117,11 +117,30 @@ export function detectDeclareTypeContext(textBefore: string): boolean {
 
 export type SetContext = { kind: 'options' } | { kind: 'values'; option: string }
 
-/** Contesto SET a inizio statement: dopo "SET " → nomi opzioni; dopo "SET <opzione> " → valori (ON/OFF…). */
+/**
+ * Contesto SET a inizio statement: dopo "SET " → nomi opzioni; dopo "SET <opzione> " → valori (ON/OFF…).
+ * Il SET è "a inizio statement" anche quando è su una riga NUOVA solo se la riga precedente
+ * chiude uno statement (vuota, ';', GO/BEGIN/END/AS/ELSE…): NON se continua un UPDATE
+ * ("UPDATE dbo.T\nSET " deve proporre le colonne della tabella, non le opzioni SET).
+ */
 export function detectSetContext(textBefore: string): SetContext | null {
+  const lastNl = textBefore.lastIndexOf('\n')
+  let eff = textBefore
+  if (lastNl !== -1) {
+    const before = textBefore.slice(0, lastNl)
+    const prevLine = before.slice(before.lastIndexOf('\n') + 1).trimEnd()
+    const closesStatement =
+      prevLine === '' ||
+      /;$/.test(prevLine) ||
+      /^(?:GO|BEGIN|END|ELSE|AS|THEN|DO|TRY|CATCH)\b/i.test(prevLine)
+    if (!closesStatement) {
+      // la riga precedente continua lo statement: il SET non è un'opzione
+      eff = before + ' ' + textBefore.slice(lastNl + 1)
+    }
+  }
   const boundary = '(?:^|;|\\bGO\\b|\\n)[ \\t]*'
-  if (new RegExp(boundary + 'SET\\s*$', 'i').test(textBefore)) return { kind: 'options' }
-  const m = new RegExp(boundary + 'SET\\s+([A-Za-z_@][\\w]*)\\s*$', 'i').exec(textBefore)
+  if (new RegExp(boundary + 'SET\\s*$', 'i').test(eff)) return { kind: 'options' }
+  const m = new RegExp(boundary + 'SET\\s+([A-Za-z_@][\\w]*)\\s*$', 'i').exec(eff)
   if (m) return { kind: 'values', option: m[1].toUpperCase() }
   return null
 }
@@ -360,19 +379,38 @@ export interface DeclaredVariable {
 }
 
 /**
- * Estrae le variabili dichiarate con DECLARE, incluse le continuazioni su più righe
- * con virgola iniziale: "DECLARE @t NVARCHAR(max)\n,@prova INT" → [@t, @prova].
- * Lo statement DECLARE finisce a ';', a una riga vuota o a una riga che non inizia con ','.
+ * Estrae le variabili dichiarate con DECLARE, incluse le continuazioni su più righe:
+ * sia con virgola iniziale (",@prova INT") sia allineate senza virgola (" @prova INT").
+ * Lo statement DECLARE finisce a ';' oppure alla prima riga che non inizia con '@' o ','.
  */
 export function extractDeclaredVariables(text: string): DeclaredVariable[] {
   const out: DeclaredVariable[] = []
-  const re = /\bDECLARE\b([\s\S]*?)(?=;|\r?\n[ \t]*\r?\n|\r?\n[ \t]*(?=[A-Za-z_@])|$)/gi
+  const declRe = /\bDECLARE\b/gi
   let m: RegExpExecArray | null
-  while ((m = re.exec(text)) !== null) {
-    const span = m[1]
-    const vr = /@([A-Za-z_][\w]*)\s+([A-Za-z_][\w]*)/g
+  while ((m = declRe.exec(text)) !== null) {
+    let i = m.index + m[0].length
+    const n = text.length
+    const span: string[] = []
+    while (i < n) {
+      const eol = text.indexOf('\n', i)
+      const line = text.slice(i, eol === -1 ? n : eol)
+      const t = line.trimStart()
+      if (t === '') {
+        i = eol === -1 ? n : eol + 1
+        continue
+      }
+      if (span.length === 0 || t[0] === '@' || t[0] === ',') {
+        const semi = t.indexOf(';')
+        span.push(semi === -1 ? t : t.slice(0, semi))
+        if (semi !== -1) break
+        i = eol === -1 ? n : eol + 1
+        continue
+      }
+      break
+    }
+    const vr = /@([A-Za-z_][\w]*)\s+(?:as\s+)?([A-Za-z_][\w]*)/gi
     let v: RegExpExecArray | null
-    while ((v = vr.exec(span)) !== null) {
+    while ((v = vr.exec(span.join('\n'))) !== null) {
       out.push({ name: `@${v[1]}`, dataType: v[2] })
     }
   }
@@ -392,4 +430,33 @@ export function variablePrefixLen(textBefore: string): number {
   if (/@@[A-Za-z_]*$/i.test(t)) return 0
   const m = /@[A-Za-z_]*$/i.exec(t)
   return m ? m[0].length : 0
+}
+
+// ---------- Parametri della routine aperta in modifica ----------
+
+/**
+ * Parametri della stored procedure/funzione che contiene il cursore: quando si
+ * modifica una routine ("CREATE OR ALTER PROCEDURE …") l'intellisense deve
+ * proporre anche i PARAMETRI (@… della firma), non solo le variabili DECLARATE
+ * dentro il corpo. Restituisce quelli dell'ULTIMO header (CREATE/ALTER …
+ * PROC/FUNCTION) presente nel testo prima del cursore; per un trigger → vuoto.
+ */
+export function extractRoutineParameters(text: string): DeclaredVariable[] {
+  const headerRe =
+    /(?:^|;|\bGO\b|(?:\r?\n)\s*)(?:ALTER|CREATE)\s+(?:OR\s+ALTER\s+)?(?:PROC(?:EDURE)?|PROCEDURE|FUNCTION|FUN)\s+(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?([\s\S]*?)\bAS\b/gi
+  let last: RegExpExecArray | null = null
+  let m: RegExpExecArray | null
+  while ((m = headerRe.exec(text)) !== null) last = m
+  if (!last) return []
+
+  const out: DeclaredVariable[] = []
+  const signature = last[1]
+  // nome@(eventuale AS) tipo(con lunghezza opzionale tipo "nvarchar(50)")
+  const paramRe =
+    /@([A-Za-z_][A-Za-z0-9_]*)\s+(?:(?:AS\s+)?)((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\(\s*\d+(?:\s*,\s*\d+)?\s*\))?)/gi
+  let p: RegExpExecArray | null
+  while ((p = paramRe.exec(signature)) !== null) {
+    out.push({ name: `@${p[1]}`, dataType: p[2].replace(/\[|\]/g, '') })
+  }
+  return out
 }

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="SQL Intelligence Assistant">
+  <rect width="64" height="64" rx="14" fill="#0b1220" />
+  <!-- cilindro database -->
+  <ellipse cx="30" cy="20" rx="16" ry="6.5" fill="none" stroke="#38bdf8" stroke-width="4" />
+  <path d="M14 20v22c0 3.6 7.2 6.5 16 6.5s16-2.9 16-6.5V20" fill="none" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" />
+  <path d="M14 31c0 3.6 7.2 6.5 16 6.5s16-2.9 16-6.5" fill="none" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" />
+  <!-- scintilla "intelligenza" -->
+  <path d="M50 26l3.2 7.4 7.4 3.2-7.4 3.2-3.2 7.4-3.2-7.4-7.4-3.2 7.4-3.2z" fill="#f59e0b" />
+</svg>

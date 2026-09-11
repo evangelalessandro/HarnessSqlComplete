@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { MouseEvent, ReactNode } from 'react'
+import type { DragEvent, MouseEvent, ReactNode } from 'react'
 import {
+  BadgeCheck,
   Braces,
   Boxes,
   ChevronDown,
@@ -12,16 +13,27 @@ import {
   Flame,
   FolderOpen,
   GitMerge,
+  KeyRound,
   Play,
   Plus,
   Rows3,
   Search,
+  Share2,
   SquarePen,
   Table2,
   Trash2,
+  X,
   Zap,
 } from 'lucide-react'
-import type { ColumnInfo, DatabaseSummary, ProcedureInfo, TableInfo, TriggerInfo, ViewInfo } from '../types'
+import type {
+  CheckConstraintInfo,
+  ColumnInfo,
+  DatabaseSummary,
+  ProcedureInfo,
+  TableInfo,
+  TriggerInfo,
+  ViewInfo,
+} from '../types'
 import {
   dbColorPalette,
   dbTabColor,
@@ -30,6 +42,7 @@ import {
   scriptCreateTable,
   scriptDeleteTable,
   scriptDropObject,
+  scriptCheckConstraint,
   scriptExecProcedure,
   scriptInsertTable,
   scriptMergeTable,
@@ -47,11 +60,14 @@ import { DEFAULT_PANEL_STATE, dockSideFromDrop, normalizePanelState, resolveRigh
 import type { PanelSize, PanelState } from '../panelLayout'
 import { ColumnHoverCard, TableHoverCard } from './HoverCards'
 import type { HoverRect, HoverTarget } from './HoverCards'
+import TableReportModal from './TableReportModal'
 
 interface Props {
   summary: DatabaseSummary | null
   loading: boolean
   activeDatabase: string
+  /** Id della connessione attiva (per backup/ripristino del database). */
+  connectionId?: string
   onInsertText: (text: string) => void
   /** Apre la preview (SELECT TOP 100 *) in una nuova tab dell'editor. */
   onPreviewInEditor?: (sql: string) => void
@@ -74,9 +90,11 @@ interface Props {
     name: string,
     mode: 'alter' | 'open',
   ) => void
+  /** Apre il DIAGRAMMA delle chiamate di una routine (chi la chiama / cosa chiama). */
+  onShowCallGraph?: (schema: string, name: string, kind: 'procedure' | 'function') => void
 }
 
-type HitKind = 'tabella' | 'vista' | 'procedura' | 'funzione' | 'trigger'
+type HitKind = 'tabella' | 'vista' | 'procedura' | 'funzione' | 'trigger' | 'check'
 
 interface SearchHit {
   kind: HitKind
@@ -88,6 +106,7 @@ interface SearchHit {
   proc?: ProcedureInfo
   view?: ViewInfo
   trigger?: TriggerInfo
+  check?: CheckConstraintInfo
 }
 
 /** Voce del menu contestuale (SSMS): azione foglia oppure sottomenu "Script ...". */
@@ -105,10 +124,12 @@ export default function Sidebar({
   summary,
   loading,
   activeDatabase,
+  connectionId,
   onInsertText,
   onPreviewInEditor,
   onOpenScript,
   onOpenObject,
+  onShowCallGraph,
   onSwitchDatabase,
   dbColors,
   onSetDbColor,
@@ -116,6 +137,8 @@ export default function Sidebar({
   onRightDockChange,
 }: Props) {
   const [query, setQuery] = useState('')
+  // Filtro per nome nella lista dei database
+  const [dbFilter, setDbFilter] = useState('')
   // Pannelli (stile Visual Studio): database in alto, oggetti+ricerca sotto.
   // Ogni pannello è chiudibile, staccabile (floating), ridimensionabile e agganciabile
   // a sinistra (sidebar) o a destra (colonna laterale); il divider tra i due è spostabile.
@@ -240,6 +263,9 @@ export default function Sidebar({
   // Nodo del database attivo: true = oggetti nascosti (nodo chiuso)
   const [collapsedDb, setCollapsedDb] = useState(false)
 
+  // Report utilizzo tabelle (modale)
+  const [reportOpen, setReportOpen] = useState(false)
+
   const toggleDbNode = (name: string) => {
     if (name === activeDatabase) {
       setCollapsedDb(v => !v)
@@ -275,6 +301,22 @@ export default function Sidebar({
       }
     }
     return { map, orphans }
+  }, [summary])
+
+  // Vincoli CHECK annidati sotto la loro tabella (stile SSMS), con testo per la modifica
+  const checksByTable = useMemo(() => {
+    const map = new Map<string, CheckConstraintInfo[]>()
+    if (!summary) return map
+    const tableByKey = new Map(summary.tables.map(t => [`${t.schema}.${t.name}`.toLowerCase(), t]))
+    for (const cc of summary.checkConstraints ?? []) {
+      const t = tableByKey.get(`${cc.schema}.${cc.tableName}`.toLowerCase())
+      if (!t) continue
+      const key = `${t.schema}.${t.name}`
+      const arr = map.get(key) ?? []
+      arr.push(cc)
+      map.set(key, arr)
+    }
+    return map
   }, [summary])
 
   const toggleTable = (key: string) =>
@@ -407,6 +449,13 @@ export default function Sidebar({
             run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'alter'),
           },
           {
+            id: 'callgraph',
+            label: 'Diagramma chiamate',
+            icon: <Share2 className="h-3.5 w-3.5" />,
+            hint: 'Chi la chiama, fino al chiamante più lontano (cicli segnalati)',
+            run: () => onShowCallGraph?.(hit.schema, hit.name, 'procedure'),
+          },
+          {
             id: 'script',
             label: 'Script stored procedure',
             icon: <FileCode2 className="h-3.5 w-3.5" />,
@@ -428,6 +477,13 @@ export default function Sidebar({
             icon: <SquarePen className="h-3.5 w-3.5" />,
             hint: 'Genera CREATE OR ALTER FUNCTION in una nuova tab',
             run: () => onOpenObject?.('function', hit.schema, hit.name, 'alter'),
+          },
+          {
+            id: 'callgraph',
+            label: 'Diagramma chiamate',
+            icon: <Share2 className="h-3.5 w-3.5" />,
+            hint: 'Chi la chiama, fino al chiamante più lontano (cicli segnalati)',
+            run: () => onShowCallGraph?.(hit.schema, hit.name, 'function'),
           },
           {
             id: 'script',
@@ -462,6 +518,23 @@ export default function Sidebar({
             ],
           },
         ]
+      case 'check': {
+        const cc = hit.check!
+        const label = `Vincolo CHECK ${cc.name}`
+        return [
+          {
+            id: 'modify',
+            label: 'Modifica (ALTER TABLE …)',
+            icon: <SquarePen className="h-3.5 w-3.5" />,
+            hint: 'Apre ALTER TABLE … ADD CONSTRAINT CHECK in una nuova tab per vedere/modificare il vincolo',
+            run: () =>
+              onOpenScript?.(
+                label,
+                scriptCheckConstraint(cc.schema, cc.tableName, cc.name, cc.definition, cc.isDisabled),
+              ),
+          },
+        ]
+      }
     }
   }
 
@@ -505,9 +578,41 @@ export default function Sidebar({
 
   // Contenuti dei pannelli: riutilizzati in ogni posizione (ancorato a sinistra,
   // flottante o ancorato a destra via portal)
-  const dbListContent = () => (
-    <div className="space-y-0.5 p-2">
-      {summary.databases.map(d => {
+  const dbListContent = () => {
+    const q = dbFilter.trim().toLowerCase()
+    // il database attivo resta sempre visibile (anche se non corrisponde al filtro)
+    const dbs = q
+      ? summary.databases.filter(d => d.name.toLowerCase().includes(q) || d.name === activeDatabase)
+      : summary.databases
+    return (
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Filtro per nome database */}
+      <div className="shrink-0 border-b border-zinc-800 p-2">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
+          <input
+            value={dbFilter}
+            onChange={e => setDbFilter(e.target.value)}
+            placeholder="Filtra database…"
+            className="w-full rounded-md border border-zinc-700 bg-zinc-900 py-1 pl-8 pr-7 text-xs text-zinc-100 placeholder-zinc-600 focus:border-sky-500 focus:outline-none"
+            title="Filtra i database per nome"
+          />
+          {dbFilter && (
+            <button
+              onClick={() => setDbFilter('')}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+              title="Cancella il filtro"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
+      {dbs.length === 0 && q && (
+        <p className="p-2 text-xs text-zinc-600">Nessun database corrisponde a "{dbFilter}".</p>
+      )}
+      {dbs.map(d => {
         const isActive = d.name === activeDatabase
         const isOpen = isActive && !collapsedDb
         const objectCount =
@@ -551,8 +656,22 @@ export default function Sidebar({
           </div>
         )
       })}
+      </div>
+      {/* Report utilizzo tabelle del database attivo */}
+      {connectionId && (
+        <div className="shrink-0 border-t border-zinc-800 p-2">
+          <button
+            onClick={() => setReportOpen(true)}
+            className="flex w-full items-center justify-center gap-1.5 rounded border border-zinc-700 px-2 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-sky-700 hover:bg-sky-950/30 hover:text-sky-300"
+            title="Report utilizzo tabelle: spazio riservato/usato, dati, indici, righe e accessi — ordinabile per colonna"
+          >
+            <Rows3 className="h-3.5 w-3.5 text-sky-400" /> Report utilizzo tabelle
+          </button>
+        </div>
+      )}
     </div>
-  )
+    )
+  }
 
   const objectsContent = () => (
     <>
@@ -574,22 +693,40 @@ export default function Sidebar({
         {q ? (
           <div className="space-y-0.5 border-t border-zinc-800 pt-2">
             {hits.length === 0 && <p className="p-3 text-sm text-zinc-600">Nessun oggetto trovato.</p>}
-            {hits.map((h, i) => (
-              <button
-                key={`${h.kind}-${h.schema}-${h.name}-${i}`}
-                onClick={() => onInsertText(qualified(h.schema, h.name))}
-                onContextMenu={e => openObjectMenu(e, h)}
-                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800"
-                title="Clicca per inserire nel editor — tasto destro per le azioni"
-              >
-                <KindIcon kind={h.kind} />
-                <span className="min-w-0 break-all font-mono">{h.name}</span>
-                {h.schema !== 'dbo' && <span className="text-zinc-500">· {h.schema}</span>}
-                <span className="ml-auto">
-                  <Badge tone="zinc">{h.kind}</Badge>
-                </span>
-              </button>
-            ))}
+            {hits.map((h, i) => {
+              const isProc = h.kind === 'procedura'
+              return (
+                <button
+                  key={`${h.kind}-${h.schema}-${h.name}-${i}`}
+                  onClick={isProc ? undefined : () => onInsertText(qualified(h.schema, h.name))}
+                  onContextMenu={e => openObjectMenu(e, h)}
+                  draggable={isProc}
+                  onDragStart={
+                    isProc && h.proc
+                      ? e => {
+                          e.dataTransfer.setData('text/plain', scriptExecProcedure(h.proc!))
+                          e.dataTransfer.effectAllowed = 'copy'
+                        }
+                      : undefined
+                  }
+                  className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800 ${
+                    isProc ? 'cursor-grab active:cursor-grabbing' : ''
+                  }`}
+                  title={
+                    isProc
+                      ? 'Trascina nel editor per generare EXEC con i parametri — tasto destro per le azioni'
+                      : 'Clicca per inserire nel editor — tasto destro per le azioni'
+                  }
+                >
+                  <KindIcon kind={h.kind} />
+                  <span className="min-w-0 break-all font-mono">{h.name}</span>
+                  {h.schema !== 'dbo' && <span className="text-zinc-500">· {h.schema}</span>}
+                  <span className="ml-auto">
+                    <Badge tone="zinc">{h.kind}</Badge>
+                  </span>
+                </button>
+              )
+            })}
           </div>
         ) : !collapsedDb ? (
           <div className="space-y-1 border-t border-zinc-800 pt-2 pl-2">
@@ -625,6 +762,7 @@ export default function Sidebar({
                           const tKey = `${t.schema}.${t.name}`
                           const expanded = expandedTables.has(tKey)
                           const tableTriggers = triggersByTable.map.get(tKey) ?? []
+                          const tableChecks = checksByTable.get(tKey) ?? []
                           return (
                             <TableRow
                               key={tKey}
@@ -660,6 +798,31 @@ export default function Sidebar({
                                       <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">{c.dataType}</span>
                                     </button>
                                   ))}
+                                  {t.indexes && t.indexes.length > 0 && (
+                                    <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
+                                      Indici
+                                    </div>
+                                  )}
+                                  {t.indexes?.map(ix => (
+                                    <div
+                                      key={ix.name}
+                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-xs text-zinc-500"
+                                      title={`${ix.name}${ix.isPrimaryKey ? ' — PRIMARY KEY' : ix.isUnique ? ' — UNIQUE' : ''}${ix.columns && ix.columns.length > 0 ? `\nColonne: ${ix.columns.join(', ')}` : ''}`}
+                                    >
+                                      <KeyRound className="h-3 w-3 shrink-0 text-amber-400/70" />
+                                      <span className="min-w-0 break-all font-mono text-zinc-400">{ix.name}</span>
+                                      {ix.isPrimaryKey ? (
+                                        <span className="shrink-0 rounded bg-amber-950/70 px-1 text-[9px] font-bold uppercase text-amber-300">PK</span>
+                                      ) : ix.isUnique ? (
+                                        <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-zinc-400">UNIQUE</span>
+                                      ) : null}
+                                      {ix.columns && ix.columns.length > 0 && (
+                                        <span className="ml-auto min-w-0 break-all text-right font-mono text-[10px] text-zinc-600">
+                                          {ix.columns.join(', ')}
+                                        </span>
+                                      )}
+                                    </div>
+                                  ))}
                                   {tableTriggers.length > 0 && (
                                     <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
                                       Trigger
@@ -677,6 +840,33 @@ export default function Sidebar({
                                     >
                                       <Flame className="h-3 w-3 shrink-0 text-rose-400/70" />
                                       <span className="min-w-0 break-all font-mono">{trg.name}</span>
+                                    </button>
+                                  ))}
+                                  {tableChecks.length > 0 && (
+                                    <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
+                                      Vincoli CHECK
+                                    </div>
+                                  )}
+                                  {tableChecks.map(cc => (
+                                    <button
+                                      key={cc.name}
+                                      onClick={() =>
+                                        onOpenScript?.(
+                                          `Vincolo CHECK ${cc.name}`,
+                                          scriptCheckConstraint(cc.schema, cc.tableName, cc.name, cc.definition, cc.isDisabled),
+                                        )
+                                      }
+                                      onContextMenu={e =>
+                                        openObjectMenu(e, { kind: 'check', schema: cc.schema, name: cc.name, detail: cc.tableName, check: cc })
+                                      }
+                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                                      title={`Clicca per vedere/modificare il vincolo — tasto destro per le azioni`}
+                                    >
+                                      <BadgeCheck className="h-3 w-3 shrink-0 text-emerald-400/70" />
+                                      <span className="min-w-0 break-all font-mono">{cc.name}</span>
+                                      {cc.isDisabled && (
+                                        <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-amber-400">off</span>
+                                      )}
                                     </button>
                                   ))}
                                 </>
@@ -730,7 +920,11 @@ export default function Sidebar({
                     <ObjectRow
                       key={`${p.schema}.${p.name}`}
                       label={p.schema !== 'dbo' ? `${p.schema}.${p.name}` : p.name}
-                      onInsert={() => onInsertText(qualified(p.schema, p.name))}
+                      draggable
+                      onDragStart={e => {
+                        e.dataTransfer.setData('text/plain', scriptExecProcedure(p))
+                        e.dataTransfer.effectAllowed = 'copy'
+                      }}
                       onContextMenu={e =>
                         openObjectMenu(e, { kind: 'procedura', schema: p.schema, name: p.name, proc: p })
                       }
@@ -1018,6 +1212,18 @@ export default function Sidebar({
             >
               Ripristina default
             </button>
+            {colorMenu.db === activeDatabase && (
+              <button
+                onClick={() => {
+                  setReportOpen(true)
+                  setColorMenu(null)
+                }}
+                className="mt-2 flex w-full items-center gap-1.5 rounded border-t border-zinc-800 px-2 pt-1.5 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-sky-300"
+                title="Report utilizzo tabelle del database attivo"
+              >
+                <Rows3 className="h-3.5 w-3.5 text-sky-400" /> Report utilizzo tabelle…
+              </button>
+            )}
           </div>
         </>
       )}
@@ -1041,6 +1247,11 @@ export default function Sidebar({
             onClose={() => setObjectMenu(null)}
           />
         </>
+      )}
+
+      {/* Report utilizzo tabelle (ordinabile per colonna) */}
+      {reportOpen && connectionId && (
+        <TableReportModal connectionId={connectionId} onClose={() => setReportOpen(false)} />
       )}
     </div>
   )
@@ -1180,12 +1391,16 @@ function ObjectRow({
   detail,
   onInsert,
   onContextMenu,
+  draggable,
+  onDragStart,
   children,
 }: {
   label: string
   detail?: string
-  onInsert: () => void
+  onInsert?: () => void
   onContextMenu?: (e: MouseEvent<HTMLElement>) => void
+  draggable?: boolean
+  onDragStart?: (e: DragEvent<HTMLElement>) => void
   children?: ReactNode
 }) {
   return (
@@ -1193,8 +1408,18 @@ function ObjectRow({
       <button
         onClick={onInsert}
         onContextMenu={onContextMenu}
-        className="flex w-full items-center gap-2 rounded px-2 py-1 pl-7 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800"
-        title="Clicca per inserire nel editor — tasto destro per le azioni"
+        draggable={draggable}
+        onDragStart={onDragStart}
+        className={`flex w-full items-center gap-2 rounded px-2 py-1 pl-7 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800 ${
+          draggable ? 'cursor-grab active:cursor-grabbing' : ''
+        }`}
+        title={
+          onInsert
+            ? 'Clicca per inserire nel editor — tasto destro per le azioni'
+            : draggable
+              ? 'Trascina nel editor per generare EXEC con i parametri — tasto destro per le azioni'
+              : 'Tasto destro per le azioni'
+        }
       >
         <span className="min-w-0 break-all font-mono">{label}</span>
         {detail && <span className="min-w-0 break-all text-[11px] text-zinc-500">{detail}</span>}

@@ -30,6 +30,7 @@ public class MetadataService
         var procs = new List<ProcedureInfo>();
         var procParams = new Dictionary<(string, string), List<ProcParamInfo>>();
         var triggers = new List<TriggerInfo>();
+        var checkConstraints = new List<CheckConstraintInfo>();
         var functions = new List<FunctionInfo>();
         var foreignKeys = new List<ForeignKeyInfo>();
         var dependencyCounts = new Dictionary<(string, string), int>();
@@ -78,6 +79,38 @@ public class MetadataService
                     r.GetBoolean(9),
                     r.IsDBNull(4) ? null : (int)r.GetInt16(4),
                     Description: null));
+            }
+        }
+
+        // Indici per tabella (una riga per indice, colonne chiave in ordine)
+        var tableIndexes = new Dictionary<(string, string), List<IndexInfo>>();
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT s.name, t.name, i.name, i.is_primary_key, i.is_unique,
+                       ISNULL(STUFF((
+                         SELECT ', ' + c.name
+                         FROM sys.index_columns ic
+                         INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                         WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0
+                         ORDER BY ic.key_ordinal
+                         FOR XML PATH('')), 1, 2, ''), '') AS Cols
+                FROM sys.tables t
+                INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+                INNER JOIN sys.indexes i ON i.object_id = t.object_id
+                WHERE t.is_ms_shipped = 0 AND i.index_id > 0
+                ORDER BY s.name, t.name, i.index_id;
+                """;
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                var key = (r.GetString(0), r.GetString(1));
+                if (!tableIndexes.TryGetValue(key, out var list))
+                    tableIndexes[key] = list = [];
+                var cols = r.GetString(5)
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .ToList();
+                list.Add(new IndexInfo(r.GetString(2), r.GetBoolean(3), r.GetBoolean(4), cols));
             }
         }
 
@@ -144,6 +177,7 @@ public class MetadataService
             {
                 Columns = cols,
                 ExtendedProperties = tableProps.GetValueOrDefault((t.Schema, t.Name)),
+                Indexes = tableIndexes.GetValueOrDefault((t.Schema, t.Name)),
             };
         }
 
@@ -250,6 +284,27 @@ public class MetadataService
                 triggers.Add(new TriggerInfo(r.GetString(0), r.GetString(1), r.GetString(2)));
         }
 
+        // Vincoli CHECK (una riga per vincolo: nome, tabella e testo della condizione)
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT s.name, t.name, cc.name, cc.definition, cc.is_disabled
+                FROM sys.check_constraints cc
+                INNER JOIN sys.tables t ON cc.parent_object_id = t.object_id
+                INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+                WHERE cc.is_ms_shipped = 0 AND t.is_ms_shipped = 0
+                ORDER BY s.name, t.name, cc.name;
+                """;
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                checkConstraints.Add(new CheckConstraintInfo(
+                    r.GetString(0),
+                    r.GetString(1),
+                    r.GetString(2),
+                    r.GetString(3),
+                    r.GetBoolean(4)));
+        }
+
         // Funzioni utente
         await using (var cmd = conn.CreateCommand())
         {
@@ -348,7 +403,11 @@ public class MetadataService
 
         // Co-occorrenza: coppie di tabelle che compaiono negli stessi JOIN delle definizioni
         // (procedure + viste + funzioni). Base per i suggerimenti "quali tabelle si uniscono insieme".
+        // Il testo SQL contiene anche funzioni tabellari (FROM dbo.fn_X), viste di sistema
+        // (FROM sys.databases) e alias: si tengono SOLO i nomi di tabelle reali, altrimenti
+        // si accumulano coppie fasulle che non corrispondono ad alcun suggerimento possibile.
         var cooccurrencePairs = new Dictionary<string, int>();
+        var realTableNames = new HashSet<string>(tables.Select(t => t.Name), StringComparer.OrdinalIgnoreCase);
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = """
@@ -364,6 +423,8 @@ public class MetadataService
                 var definition = r.GetString(0);
                 foreach (var pair in ExtractCooccurrencePairs(definition))
                 {
+                    // scarta funzioni/viste di sistema/alias: solo coppie tra tabelle esistenti
+                    if (!realTableNames.Contains(pair.Item1) || !realTableNames.Contains(pair.Item2)) continue;
                     var key = pair.Item1 + "|" + pair.Item2;
                     cooccurrencePairs[key] = cooccurrencePairs.GetValueOrDefault(key) + 1;
                 }
@@ -381,7 +442,83 @@ public class MetadataService
             .ToList();
 
         var databases = (await ListDatabasesAsync(connectionString, ct)).Select(d => new DatabaseInfo(d)).ToList();
-        return new DatabaseSummary(tables, views, procs, triggers, functions, foreignKeys, databases, cooccurrences);
+        return new DatabaseSummary(tables, views, procs, triggers, checkConstraints, functions, foreignKeys, databases, cooccurrences);
+    }
+
+    /// <summary>Numero massimo di legami restituiti (protezione per database molto grandi).</summary>
+    private const int MaxCallEdges = 20000;
+
+    /// <summary>
+    /// Grafo delle chiamate fra routine: chi chiama chi, letto dalle dipendenze reali che
+    /// SQL Server registra per procedure, funzioni, trigger e viste.
+    /// Sono inclusi anche i legami di una routine verso SE STESSA (procedure/funzioni
+    /// ricorsive): il percorso si calcola lato client, che protegge dai cicli.
+    /// </summary>
+    public async Task<RoutineCallGraph> GetRoutineCallGraphAsync(string connectionString, CancellationToken ct = default)
+    {
+        await using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        // Un solo giro sul catalogo: si leggono i legami diretti, il resto si calcola dopo.
+        // - chi chiama: procedure, trigger, funzioni e viste (una vista che usa una funzione
+        //   è un punto di partenza reale della catena);
+        // - chi è chiamato: solo routine (procedure e funzioni), non tabelle o viste.
+        //
+        // CHIAMATE NON QUALIFICATE: quando il codice fa "EXEC nomeproc" senza lo schema,
+        // SQL Server non sa risolvere il nome in fase di compilazione e lascia
+        // referenced_id a NULL con is_caller_dependent = 1. Con un INNER JOIN su
+        // referenced_id quei legami sparivano dal diagramma (in WSGSDMALTA erano 671, e
+        // per questo non comparivano chiamanti come dbo.ws_L2_GestMissWaitCorr).
+        // Qui il nome viene risolto sul catalogo: si preferisce lo schema del chiamante
+        // (è la regola con cui SQL Server risolve a runtime), altrimenti il primo in
+        // ordine alfabetico — scelta deterministica, così il grafo è sempre lo stesso.
+        cmd.CommandText = """
+            SELECT DISTINCT
+                   s1.name AS CallerSchema, o1.name AS CallerName, RTRIM(o1.type) AS CallerType,
+                   COALESCE(s2.name, s3.name) AS CalleeSchema,
+                   COALESCE(o2.name, o3.name) AS CalleeName,
+                   RTRIM(COALESCE(o2.type, o3.type)) AS CalleeType
+            FROM sys.sql_expression_dependencies d
+            INNER JOIN sys.objects o1 ON o1.object_id = d.referencing_id
+            INNER JOIN sys.schemas s1 ON s1.schema_id = o1.schema_id
+            LEFT JOIN sys.objects o2 ON o2.object_id = d.referenced_id
+            LEFT JOIN sys.schemas s2 ON s2.schema_id = o2.schema_id
+            OUTER APPLY (
+                SELECT TOP (1) o3.name, o3.type, o3.schema_id
+                FROM sys.objects o3
+                INNER JOIN sys.schemas sc ON sc.schema_id = o3.schema_id
+                WHERE o2.object_id IS NULL
+                  AND o3.name = d.referenced_entity_name
+                  AND o3.type IN ('P', 'FN', 'IF', 'TF')
+                  AND o3.is_ms_shipped = 0
+                  AND (d.referenced_schema_name IS NULL
+                       OR d.referenced_schema_name = ''
+                       OR d.referenced_schema_name = sc.name)
+                ORDER BY CASE WHEN sc.name = s1.name THEN 0 ELSE 1 END, sc.name
+            ) o3
+            LEFT JOIN sys.schemas s3 ON s3.schema_id = o3.schema_id
+            WHERE o1.is_ms_shipped = 0
+              AND o1.type IN ('P', 'TR', 'FN', 'IF', 'TF', 'V')
+              AND ((d.referenced_id IS NOT NULL AND o2.type IN ('P', 'FN', 'IF', 'TF'))
+                   OR o3.name IS NOT NULL)
+            ORDER BY CallerSchema, CallerName, CalleeSchema, CalleeName;
+            """;
+
+        var edges = new List<RoutineCallEdge>();
+        var truncated = false;
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+        {
+            if (edges.Count >= MaxCallEdges)
+            {
+                truncated = true;
+                break;
+            }
+            edges.Add(new RoutineCallEdge(
+                r.GetString(0), r.GetString(1), r.GetString(2),
+                r.GetString(3), r.GetString(4), r.GetString(5)));
+        }
+        return new RoutineCallGraph(edges, truncated);
     }
 
     public async Task<List<ColumnInfo>> GetTableColumnsAsync(string connectionString, string schema, string table, CancellationToken ct = default)

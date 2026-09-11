@@ -1,16 +1,30 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, Database as DbIcon, FilePlus2, Pin, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { BookOpen, Database as DbIcon, FilePlus2, Pin, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
-import { dbTabColor, toCreateOrAlterStatement } from './helpers'
+import { dbTabColor, detectPrintMagic, nextDragonLevel, normalizeTabIcon, TAB_ICON_PRESETS, toCreateOrAlterStatement } from './helpers'
 import { openSqlFiles, saveSqlFile } from './fileSave'
 import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
-import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryResult } from './types'
+import { buildTabClosePlan, countClosableTabs, insertTabAfterActive } from './tabOps'
+import type { TabCloseMode } from './tabOps'
+import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryResult, RoutineCallGraph } from './types'
 import { chooseResultTab } from './queryTabs'
+import {
+  clearQueryStats,
+  emptyQueryStats,
+  loadQueryStats,
+  recordEdit,
+  recordExecution,
+  saveQueryStats,
+  type QueryStats,
+} from './gamification'
+import { QueryStatsBadge, QueryStatsModal } from './components/QueryStatsPanel'
+import CallGraphModal from './components/CallGraphModal'
+import type { CallGraphTarget } from './components/CallGraphModal'
 import LoginScreen from './components/LoginScreen'
 import Sidebar from './components/Sidebar'
 import SqlEditor, { DEFAULT_SQL } from './components/SqlEditor'
@@ -18,7 +32,8 @@ import ResultsPanel from './components/ResultsPanel'
 import PrintPanel from './components/PrintPanel'
 import HelpPage from './components/HelpPage'
 import { FileDropZone } from './components/FileDropZone'
-import { Badge } from './components/ui'
+import DragonBackground from './components/DragonBackground'
+import { Badge, Button } from './components/ui'
 
 type Tab = 'results' | 'print'
 
@@ -28,14 +43,59 @@ export default function App() {
   const [connection, setConnection] = useState<ConnectResponse | null>(null)
   const [summary, setSummary] = useState<DatabaseSummary | null>(null)
   const [loadingSummary, setLoadingSummary] = useState(false)
+  // DIAGRAMMA CHIAMATE: legami fra routine (chi chiama chi) di tutto il database,
+  // caricati alla prima apertura del diagramma e riusati; routine analizzata + stato.
+  const [callGraph, setCallGraph] = useState<RoutineCallGraph | null>(null)
+  const [callGraphTarget, setCallGraphTarget] = useState<CallGraphTarget | null>(null)
+  const [callGraphLoading, setCallGraphLoading] = useState(false)
+  const [callGraphError, setCallGraphError] = useState<string | null>(null)
   // Risultati LEGATI alla singola tab dell'editor (non condivisi tra le tab)
   const [tabResults, setTabResults] = useState<Record<string, QueryResult | null>>({})
   const [tabExecuting, setTabExecuting] = useState<Record<string, boolean>>({})
   const [tabResultTab, setTabResultTab] = useState<Record<string, Tab>>({})
+  // SQL eseguito per tab: propone la tabella target del generatore della griglia risultati
+  const [tabSql, setTabSql] = useState<Record<string, string>>({})
+  // GAMIFICATION: statistiche di lavoro per tab (tempo, esecuzioni ok/errore, XP)
+  const [tabStats, setTabStats] = useState<Record<string, QueryStats>>({})
+  const [statsOpen, setStatsOpen] = useState(false)
+  // descrizione libera della tab (nota utente): tab in modifica + bozza
+  const [descEditingTab, setDescEditingTab] = useState<string | null>(null)
+  const [descDraft, setDescDraft] = useState('')
+  const [titleDraft, setTitleDraft] = useState('')
+  // icona/emoji della tab in modifica (nel popover titolo & descrizione)
+  const [iconDraft, setIconDraft] = useState('')
+  // Menu contestuale della tab (tasto destro): chiusure multiple in stile SSMS
+  const [tabMenu, setTabMenu] = useState<{ id: string; x: number; y: number } | null>(null)
+  // Overflow delle tab: a capo su 2 righe; oltre compare il pulsante "»" con l'elenco
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  const [tabOverflow, setTabOverflow] = useState(false)
+  const [overflowOpen, setOverflowOpen] = useState(false)
   const [aiEnabled, setAiEnabled] = useState(true)
   const [aiStatus, setAiStatus] = useState<AutocompleteStatus | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
+
+  // Drago e fuoco: compaiono SOLO se la query eseguita contiene PRINT 'drago' / PRINT 'fuoco'.
+  // Il drago si "nutre" (livello 0-100 persistito) a ogni invocazione e resta visibile ~8s.
+  const [dragonLevel, setDragonLevel] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem('sql-intelli:dragon') ?? 0)
+      return Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0
+    } catch {
+      return 0
+    }
+  })
+  const [dragonShow, setDragonShow] = useState(false)
+  const dragonTimer = useRef<number | null>(null)
+  // Colpo di fuoco: incrementato SOLO quando la query contiene PRINT 'fuoco'
+  const [fireTick, setFireTick] = useState(0)
+
+  /** Evoca il drago per ~8 secondi. */
+  const summonDragon = () => {
+    setDragonShow(true)
+    if (dragonTimer.current !== null) window.clearTimeout(dragonTimer.current)
+    dragonTimer.current = window.setTimeout(() => setDragonShow(false), 8000)
+  }
 
   // Pagina di aiuto (apribile dal sito)
   const [helpOpen, setHelpOpen] = useState(false)
@@ -45,6 +105,75 @@ export default function App() {
 
   // Impostazioni editor (font e tema)
   const [settings, setSettings] = useState<EditorSettings>(() => loadSettings())
+
+  // --- Split editor/risultati: percentuale dell'editor (divider trascinabile) e visibilità risultati (Ctrl+R) ---
+  const [editorPct, setEditorPct] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem('sql-intelli:split-pct') ?? 52)
+      return Number.isFinite(v) ? Math.min(85, Math.max(15, v)) : 52
+    } catch {
+      return 52
+    }
+  })
+  const [resultsVisible, setResultsVisible] = useState<boolean>(() => {
+    try {
+      return (localStorage.getItem('sql-intelli:split-results') ?? '1') !== '0'
+    } catch {
+      return true
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('sql-intelli:split-pct', String(editorPct))
+    } catch {
+      /* ignora */
+    }
+  }, [editorPct])
+  useEffect(() => {
+    try {
+      localStorage.setItem('sql-intelli:split-results', resultsVisible ? '1' : '0')
+    } catch {
+      /* ignora */
+    }
+  }, [resultsVisible])
+
+  const editorPaneRef = useRef<HTMLDivElement | null>(null)
+  const resultsPaneRef = useRef<HTMLDivElement | null>(null)
+  const splitDrag = useRef<{ startY: number; startPct: number; totalH: number } | null>(null)
+
+  const startSplitDrag = (e: React.MouseEvent) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const totalH =
+      (editorPaneRef.current?.offsetHeight ?? 0) + (resultsPaneRef.current?.offsetHeight ?? 0)
+    if (totalH <= 0) return
+    splitDrag.current = { startY: e.clientY, startPct: editorPct, totalH }
+    const onMove = (ev: MouseEvent) => {
+      const d = splitDrag.current
+      if (!d) return
+      const next = Math.min(85, Math.max(15, d.startPct + ((ev.clientY - d.startY) / d.totalH) * 100))
+      setEditorPct(next)
+    }
+    const onUp = () => {
+      splitDrag.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  // Ctrl+R (o Cmd+R): nasconde/mostra il pannello dei risultati (evita il refresh del browser)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+        e.preventDefault()
+        setResultsVisible(v => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // Layout dei pannelli: larghezza della sidebar e pannello agganciato a destra (persistiti)
   const [layout, setLayout] = useState<{
@@ -169,47 +298,63 @@ export default function App() {
     })
   }, [])
 
-  // --- Tab dell'editor (multi-tab), ripristinate da localStorage all'apertura ---
-  const persisted = useMemo(() => loadPersistedTabs(), [])
-  const [editorTabs, setEditorTabs] = useState<EditorTab[]>(() => persisted?.tabs ?? [firstTab()])
-  const [activeEditorTab, setActiveEditorTab] = useState(
-    () => (persisted && persisted.tabs.some(t => t.id === persisted.active) ? persisted.active : 'tab-1'),
-  )
+  // --- Tab dell'editor (multi-tab): salvate in localStorage PER ISTANZA SQL ---
+  // All'avvio non c'è ancora una connessione: le tab dell'istanza vengono caricate
+  // in handleConnected quando ci si collega.
+  const [tabsInstance, setTabsInstance] = useState<string | null>(null)
+  const [editorTabs, setEditorTabs] = useState<EditorTab[]>(() => [firstTab()])
+  const [activeEditorTab, setActiveEditorTab] = useState('tab-1')
   const tabCounter = useRef(2)
   for (const t of editorTabs) {
     const n = Number(t.id.replace(/^tab-/, ''))
     if (!Number.isNaN(n) && n >= tabCounter.current) tabCounter.current = n + 1
   }
 
-  // Salva le tab (ultima query inclusa) a ogni modifica
+  // Salva le tab (ultima query inclusa) a ogni modifica, nella chiave dell'istanza connessa
   useEffect(() => {
-    persistTabs(editorTabs, activeEditorTab)
-  }, [editorTabs, activeEditorTab])
+    if (tabsInstance) persistTabs(tabsInstance, editorTabs, activeEditorTab)
+  }, [editorTabs, activeEditorTab, tabsInstance])
 
   // Alla chiusura/ricarica della pagina salva subito il contenuto corrente dell'editor
   useEffect(() => {
     const flush = () => {
+      if (!tabsInstance) return
       const current = editor?.getValue()
       const tabs =
         current !== undefined
           ? editorTabs.map(t => (t.id === activeEditorTab ? { ...t, sql: current } : t))
           : editorTabs
-      persistTabs(tabs, activeEditorTab)
+      persistTabs(tabsInstance, tabs, activeEditorTab)
     }
     window.addEventListener('beforeunload', flush)
     return () => window.removeEventListener('beforeunload', flush)
-  }, [editor, editorTabs, activeEditorTab])
+  }, [editor, editorTabs, activeEditorTab, tabsInstance])
+
+  /** GAMIFICATION: aggiorna le statistiche di lavoro della tab (e le persiste). */
+  const updateTabStats = useCallback(
+    (tabId: string, fn: (s: QueryStats) => QueryStats) => {
+      setTabStats(prev => {
+        const current = prev[tabId] ?? loadQueryStats(tabsInstance ?? '', tabId) ?? emptyQueryStats()
+        const next = fn(current)
+        if (tabsInstance) saveQueryStats(tabsInstance, tabId, next)
+        return { ...prev, [tabId]: next }
+      })
+    },
+    [tabsInstance],
+  )
 
   // Sincronizza il contenuto della tab attiva mentre si digita (debounce 600 ms)
   const contentSyncTimer = useRef<number | null>(null)
   const handleContentChange = useCallback(
     (sql: string) => {
+      // GAMIFICATION: una modifica = attività (fa crescere tempo e XP della tab)
+      updateTabStats(activeEditorTab, s => recordEdit(s, Date.now()))
       if (contentSyncTimer.current !== null) window.clearTimeout(contentSyncTimer.current)
       contentSyncTimer.current = window.setTimeout(() => {
         setEditorTabs(prev => prev.map(t => (t.id === activeEditorTab ? { ...t, sql } : t)))
       }, 600)
     },
-    [activeEditorTab],
+    [activeEditorTab, updateTabStats],
   )
   useEffect(() => {
     return () => {
@@ -243,6 +388,7 @@ export default function App() {
         setTabResults({})
         setTabExecuting({})
         setTabResultTab({})
+        setTabSql({})
         setSummary(await api.getSummary(res.connectionId))
         const targetTab = tabId ?? activeEditorTab
         setEditorTabs(prev => prev.map(t => (t.id === targetTab ? { ...t, database: res.database } : t)))
@@ -276,6 +422,7 @@ export default function App() {
       database?: string,
       fromFile = false,
       fileHandle: FileSystemFileHandle | null = null,
+      fileName?: string,
     ) => {
       // il progressivo si azzera quando non c'è nessuna tab
       if (editorTabs.length === 0) tabCounter.current = 1
@@ -288,11 +435,12 @@ export default function App() {
         database: database ?? connection?.database ?? '',
         fromFile,
         fileHandle,
+        fileName: fileName ?? (fromFile ? title : undefined),
       }
-      setEditorTabs(prev => [...prev, tab])
+      setEditorTabs(prev => insertTabAfterActive(prev, tab, activeEditorTab))
       setActiveEditorTab(tab.id)
     },
-    [editorTabs.length, connection],
+    [editorTabs.length, activeEditorTab, connection],
   )
 
   const closeEditorTab = useCallback(
@@ -317,6 +465,12 @@ export default function App() {
           delete c[id]
           return c
         })
+        setTabSql(r => {
+          const c = { ...r }
+          delete c[id]
+          return c
+        })
+        forgetTabStats([id])
         if (next.length === 0) {
           setActiveEditorTab('') // tutte chiuse: stato vuoto, il prossimo progressivo riparte da 1
           return []
@@ -330,6 +484,104 @@ export default function App() {
     },
     [activeEditorTab],
   )
+
+  /** GAMIFICATION: dimentica le statistiche delle tab chiuse. */
+  const forgetTabStats = useCallback(
+    (ids: string[]) => {
+      if (tabsInstance) for (const id of ids) clearQueryStats(tabsInstance, id)
+      setTabStats(prev => {
+        const c = { ...prev }
+        for (const id of ids) delete c[id]
+        return c
+      })
+    },
+    [tabsInstance],
+  )
+
+  /** Rimuove i dati laterali (risultati, esecuzione, sql…) delle tab chiuse in massa. */
+  const dropTabSideData = useCallback((ids: string[]) => {
+    const gone = new Set(ids)
+    const without = <T,>(m: Record<string, T>): Record<string, T> => {
+      const c = { ...m }
+      for (const id of gone) delete c[id]
+      return c
+    }
+    setTabResults(without)
+    setTabExecuting(without)
+    setTabResultTab(without)
+    setTabSql(without)
+  }, [])
+
+  /** Applica un'azione di chiusura multipla (menu tasto destro) della tab `anchorId`. */
+  const applyTabClosePlan = useCallback(
+    (anchorId: string, mode: TabCloseMode) => {
+      if (!editorTabs.some(t => t.id === anchorId)) {
+        setTabMenu(null)
+        return
+      }
+      const plan = buildTabClosePlan(editorTabs, anchorId, mode)
+      setTabMenu(null)
+      if (plan.removedIds.length === 0) return
+      dropTabSideData(plan.removedIds)
+      forgetTabStats(plan.removedIds)
+      setEditorTabs(plan.kept)
+      setActiveEditorTab(prev => (prev && plan.removedIds.includes(prev) ? plan.focusId : prev))
+    },
+    [editorTabs, dropTabSideData, forgetTabStats],
+  )
+
+  // Tab in overflow: a capo automatico fino a 2 righe; oltre compare "»" con l'elenco.
+  const measureTabOverflow = useCallback(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const probe = el.querySelector<HTMLElement>('.sql-tab')
+    if (!probe) {
+      setTabOverflow(false)
+      setOverflowOpen(false)
+      return
+    }
+    const twoRows = probe.offsetHeight * 2 + 4 // gap-1 tra le righe
+    const top = el.getBoundingClientRect().top
+    const clipped = [...el.children].some(
+      c => c.getBoundingClientRect().bottom > top + twoRows + 1,
+    )
+    el.style.maxHeight = clipped ? `${twoRows}px` : ''
+    setTabOverflow(clipped)
+    if (!clipped) setOverflowOpen(false)
+  }, [])
+  useLayoutEffect(() => {
+    measureTabOverflow()
+  }, [measureTabOverflow, editorTabs])
+  useLayoutEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const ro = new ResizeObserver(measureTabOverflow)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [measureTabOverflow])
+
+  /** Salva titolo, descrizione e icona della tab in modifica. */
+  const saveTabDescription = useCallback(() => {
+    if (!descEditingTab) return
+    const clean = descDraft.trim()
+    const newTitle = titleDraft.trim()
+    const icon = normalizeTabIcon(iconDraft)
+    setEditorTabs(prev =>
+      prev.map(t =>
+        t.id === descEditingTab
+          ? {
+              ...t,
+              // titolo vuoto → resta quello attuale
+              title: newTitle || t.title,
+              titleCustom: newTitle && newTitle !== t.title ? true : t.titleCustom,
+              description: clean || undefined,
+              icon,
+            }
+          : t,
+      ),
+    )
+    setDescEditingTab(null)
+  }, [descEditingTab, descDraft, titleDraft, iconDraft])
 
   const togglePin = useCallback((id: string) => {
     setEditorTabs(prev => {
@@ -364,10 +616,16 @@ export default function App() {
   const handleConnected = useCallback(
     async (res: ConnectResponse) => {
       setConnection(res)
-      // nuova connessione: i risultati delle tab appartenevano al DB precedente
-      setTabResults({})
-      setTabExecuting({})
-      setTabResultTab({})
+      // tab e query sono salvate PER ISTANZA SQL: carica quelle dell'istanza appena connessa
+      setTabsInstance(res.server)
+      const persisted = loadPersistedTabs(res.server)
+      setEditorTabs(persisted?.tabs ?? [firstTab()])
+      setActiveEditorTab(persisted?.tabs.some(t => t.id === persisted.active) ? persisted.active : 'tab-1')
+        // nuova connessione: i risultati delle tab appartenevano al DB precedente
+        setTabResults({})
+        setTabExecuting({})
+        setTabResultTab({})
+        setTabSql({})
       setLoadingSummary(true)
       try {
         setSummary(await api.getSummary(res.connectionId))
@@ -388,23 +646,47 @@ export default function App() {
   const handleExecute = useCallback(
     async (sql: string) => {
       if (!connection) return
+      // drago e fuoco compaiono SOLO con PRINT 'drago' / PRINT 'fuoco' nella query
+      const magic = detectPrintMagic(sql)
+      if (magic === 'drago') {
+        // il drago si nutre a ogni evocazione (max 100, persistito)
+        setDragonLevel(prev => {
+          const next = nextDragonLevel(prev)
+          try {
+            localStorage.setItem('sql-intelli:dragon', String(next))
+          } catch {
+            /* ignora */
+          }
+          return next
+        })
+        summonDragon()
+      } else if (magic === 'fuoco') {
+        setFireTick(t => t + 1)
+      }
+      // eseguendo una query i risultati compaiono sempre, anche se nascosti con Ctrl+R
+      setResultsVisible(true)
       // il risultato va alla tab ATTIVA al momento dell'esecuzione
       const tabId = activeEditorTab
       if (!tabId) return
+      setTabSql(prev => ({ ...prev, [tabId]: sql }))
       setTabExecuting(prev => ({ ...prev, [tabId]: true }))
       setBanner(null)
       try {
         const r = await api.execute(connection.connectionId, sql)
         setTabResults(prev => ({ ...prev, [tabId]: r }))
+        // GAMIFICATION: esecuzione riuscita o con errore (+ durata)
+        updateTabStats(tabId, s => recordExecution(s, r.elapsedMs, !r.error, Date.now()))
         // senza SELECT (solo PRINT/messaggi) si apre la schermata dei print
         setTabResultTab(prev => ({ ...prev, [tabId]: chooseResultTab(r) }))
       } catch (e) {
+        // errore di trasporto/API: conta come esecuzione fallita
+        updateTabStats(tabId, s => recordExecution(s, 0, false, Date.now()))
         setBanner(e instanceof Error ? e.message : String(e))
       } finally {
         setTabExecuting(prev => ({ ...prev, [tabId]: false }))
       }
     },
-    [connection, activeEditorTab],
+    [connection, activeEditorTab, updateTabStats],
   )
 
   const handleDisconnect = useCallback(async () => {
@@ -417,13 +699,77 @@ export default function App() {
     }
     setConnection(null)
     setSummary(null)
+    setCallGraph(null)
     setTabResults({})
     setTabExecuting({})
     setTabResultTab({})
+    setTabSql({})
     setBanner(null)
     setAiStatus(null)
     setEditor(null)
   }, [connection])
+
+  /**
+   * Auto-riparazione dello schema: se i metadati non sono disponibili (es. backend
+   * riavviato → sessione scaduta) l'intellisense resta senza tabelle/colonne.
+   * Si riprova a caricarli alcune volte; poi si mostra l'errore e si smette.
+   *
+   * NOTA: l'effetto NON deve dipendere da `loadingSummary` (che lui stesso cambia):
+   * altrimenti il cleanup annulla la richiesta in corso e lo stato resta "in
+   * caricamento" per sempre, lasciando l'editor senza schema (bug introdotto e
+   * corretto). Il ri-tentativo è pilotato da `summaryRetryTick`.
+   */
+  const summaryRetries = useRef(0)
+  const [summaryRetryTick, setSummaryRetryTick] = useState(0)
+  const [summaryReloading, setSummaryReloading] = useState(false)
+
+  /** Ricarica manuale dei metadati (pulsante nell'header quando lo schema manca). */
+  const reloadSummary = useCallback(async () => {
+    if (!connection) return
+    setSummaryReloading(true)
+    setBanner(null)
+    try {
+      const s = await api.getSummary(connection.connectionId)
+      setSummary(s)
+      summaryRetries.current = 0
+    } catch (e) {
+      setBanner(`Schema non caricato: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setSummaryReloading(false)
+    }
+  }, [connection])
+
+  useEffect(() => {
+    if (!connection || summary) return
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      if (cancelled) return
+      setLoadingSummary(true)
+      try {
+        const s = await api.getSummary(connection.connectionId)
+        if (cancelled) return
+        setSummary(s)
+        summaryRetries.current = 0
+      } catch (e) {
+        if (cancelled) return
+        summaryRetries.current += 1
+        const msg = e instanceof Error ? e.message : String(e)
+        if (summaryRetries.current < 3) {
+          setBanner(`Schema non caricato (${msg}). Nuovo tentativo…`)
+          setSummaryRetryTick(t => t + 1) // pianifica il prossimo tentativo
+        } else {
+          summaryRetries.current = 0
+          setBanner(`Schema non caricato: ${msg}. Riconnettiti per i suggerimenti su tabelle e colonne.`)
+        }
+      } finally {
+        setLoadingSummary(false)
+      }
+    }, 2500)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [connection, summary, summaryRetryTick])
 
   const handleInsertText = useCallback(
     (text: string) => {
@@ -480,8 +826,37 @@ export default function App() {
     [connection, newEditorTab],
   )
 
-  /** Apre i file SQL trascinati (drag & drop) in nuove tab (nome = file, sovrascrittura via picker). */
-  const handleOpenFiles = useCallback(
+  /**
+   * DIAGRAMMA CHIAMATE: apre la finestra con i legami della routine indicata.
+   * I legami di tutto il database si leggono una volta sola (sono ~1700 in WSBRITVIC) e
+   * restano in memoria: ricentrare il diagramma o cambiare direzione non richiede il backend.
+   */
+  const loadCallGraph = useCallback(
+    async (force = false) => {
+      if (!connection) return
+      if (!force && callGraph) return
+      setCallGraphLoading(true)
+      setCallGraphError(null)
+      try {
+        setCallGraph(await api.getRoutineCallGraph(connection.connectionId))
+      } catch (e) {
+        setCallGraphError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setCallGraphLoading(false)
+      }
+    },
+    [connection, callGraph],
+  )
+
+  const openCallGraph = useCallback(
+    (schema: string, name: string, kind: 'procedure' | 'function') => {
+      setCallGraphTarget({ schema, name, kind })
+      void loadCallGraph()
+    },
+    [loadCallGraph],
+  )
+
+  /** Apre i file SQL trascinati (drag & drop) in nuove tab (nome = file, sovrascrittura via picker). */  const handleOpenFiles = useCallback(
     (files: { name: string; content: string }[]) => {
       for (const f of files) {
         newEditorTab(f.name.replace(/\.sql$/i, ''), f.content, connection?.database, true)
@@ -498,7 +873,9 @@ export default function App() {
       if (!tab) return
       const sql = editor.getValue()
       setBanner(null)
-      const suggestedName = /\.sql$/i.test(tab.title) ? tab.title : `${tab.title}.sql`
+      const suggestedName = /\.sql$/i.test(tab.fileName ?? tab.title)
+        ? (tab.fileName ?? tab.title)
+        : `${tab.fileName ?? tab.title}.sql`
       // l'handle potrebbe essere stato perso dopo un reload (JSON): verifica che sia reale
       const handle =
         !saveAs && tab.fileHandle && typeof tab.fileHandle.createWritable === 'function'
@@ -519,7 +896,9 @@ export default function App() {
               sql,
               fileHandle: savedHandle ?? t.fileHandle,
               fromFile: savedHandle ? true : t.fromFile,
-              title: newTitle && !saveAs ? newTitle : t.title,
+              fileName: newTitle ?? t.fileName,
+              // titolo rinominato a mano: resta com'è al salvataggio
+              title: newTitle && !saveAs && !t.titleCustom ? newTitle : t.title,
             }
           }),
         )
@@ -538,7 +917,8 @@ export default function App() {
     try {
       const files = await openSqlFiles()
       for (const f of files) {
-        newEditorTab(f.name.replace(/\.sql$/i, ''), f.content, connection?.database, true, f.handle)
+        const base = f.name.replace(/\.sql$/i, '')
+        newEditorTab(base, f.content, connection?.database, true, f.handle, base)
       }
     } catch (e) {
       if (!(e instanceof DOMException && e.name === 'AbortError')) {
@@ -569,6 +949,11 @@ export default function App() {
   // risultati/esecuzione/sottotab legati alla tab attiva
   const activeResult = activeEditorTab ? (tabResults[activeEditorTab] ?? null) : null
   const activeExecuting = activeEditorTab ? (tabExecuting[activeEditorTab] ?? false) : false
+  const activeSql = activeEditorTab ? (tabSql[activeEditorTab] ?? '') : ''
+  // GAMIFICATION: statistiche della tab attiva (dai dati salvati se non ancora in memoria)
+  const activeStats: QueryStats | null = activeEditorTab
+    ? (tabStats[activeEditorTab] ?? loadQueryStats(tabsInstance ?? '', activeEditorTab) ?? emptyQueryStats())
+    : null
   const activeResultTab: Tab = activeEditorTab ? (tabResultTab[activeEditorTab] ?? 'results') : 'results'
   const setActiveResultTab = (t: Tab) => {
     if (!activeEditorTab) return
@@ -578,7 +963,8 @@ export default function App() {
   return (
     <FileDropZone onFiles={handleOpenFiles}>
       <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/70 px-4 py-2">
+        <DragonBackground level={dragonLevel} visible={dragonShow} />
+        <header className="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/70 px-4 py-2">
         <div className="flex items-center gap-2 font-semibold text-zinc-100">
           <DbIcon className="h-5 w-5 text-sky-400" />
           SQL Intelligence Assistant
@@ -587,6 +973,21 @@ export default function App() {
           {connection.server} · {connection.database}
         </Badge>
         <Badge tone={aiConfigured ? 'emerald' : 'amber'}>{aiStatusText}</Badge>
+        {summary ? (
+          <Badge tone="emerald">Schema: {summary.tables.length} tabelle</Badge>
+        ) : (
+          <span className="flex items-center gap-1">
+            <Badge tone="rose">Schema non caricato</Badge>
+            <button
+              onClick={() => void reloadSummary()}
+              disabled={summaryReloading}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-rose-200 transition-colors hover:bg-rose-950/60 disabled:opacity-50"
+              title="Ricarica i metadati (tabelle, colonne, viste…) dal database"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${summaryReloading ? 'animate-spin' : ''}`} /> Ricarica schema
+            </button>
+          </span>
+        )}
         <button
           onClick={() => setHelpOpen(true)}
           className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
@@ -594,6 +995,7 @@ export default function App() {
         >
           <BookOpen className="h-4 w-4" /> Aiuto
         </button>
+        {activeStats && <QueryStatsBadge stats={activeStats} onClick={() => setStatsOpen(true)} />}
         <button
           onClick={() => void handleDisconnect()}
           className="ml-auto inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
@@ -616,10 +1018,12 @@ export default function App() {
               summary={summary}
               loading={loadingSummary && !summary}
               activeDatabase={connection.database}
+              connectionId={connection.connectionId}
               onInsertText={handleInsertText}
               onPreviewInEditor={handlePreviewInEditor}
               onOpenScript={handleOpenScript}
               onOpenObject={handleOpenObject}
+              onShowCallGraph={openCallGraph}
               onSwitchDatabase={handleSwitchDatabase}
               dbColors={dbColors}
               onSetDbColor={handleSetDbColor}
@@ -636,8 +1040,8 @@ export default function App() {
         </aside>
 
         <main className="flex min-w-0 flex-1 flex-col">
-          {/* Barra delle tab dell'editor */}
-          <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-zinc-800 bg-zinc-900/60 px-1">
+          {/* Barra delle tab dell'editor: a capo su 2 righe, poi elenco "»" */}
+          <div className="flex items-center gap-1 border-b border-zinc-800 bg-zinc-900/60 px-1">
             <select
               value={connection.database}
               onChange={e => void handleSwitchDatabase(e.target.value)}
@@ -651,9 +1055,21 @@ export default function App() {
                 </option>
               ))}
             </select>
+            <div
+              ref={wrapRef}
+              className="flex min-w-0 flex-1 flex-wrap items-center gap-1 overflow-hidden"
+            >
             {editorTabs.map(t => (
               <div
                 key={t.id}
+                onContextMenu={e => {
+                  e.preventDefault()
+                  setTabMenu({
+                    id: t.id,
+                    x: Math.min(e.clientX, window.innerWidth - 230),
+                    y: Math.min(e.clientY, window.innerHeight - 280),
+                  })
+                }}
                 draggable
                 onDragStart={e => {
                   e.dataTransfer.setData('text/tab-id', t.id)
@@ -668,21 +1084,46 @@ export default function App() {
                   const fromId = e.dataTransfer.getData('text/tab-id')
                   if (fromId) moveTab(fromId, t.id)
                 }}
-                className={`group flex shrink-0 cursor-grab items-center gap-1 border-t-2 border-r border-zinc-800 px-2 py-1 text-xs active:cursor-grabbing ${
+                className={`group sql-tab relative flex h-7 shrink-0 cursor-grab items-center gap-1 border-t-2 border-r px-3 text-xs active:cursor-grabbing ${
                   t.id === activeEditorTab
-                    ? 'bg-zinc-800/80 text-zinc-100'
-                    : 'text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300'
+                    ? 'border-x border-x-zinc-700 border-b-2 border-b-zinc-900 bg-zinc-700/90 font-semibold text-white shadow-[0_-2px_10px_rgba(56,189,248,0.12)]'
+                    : 'border-r-zinc-800 text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300'
                 }`}
                 style={{ borderTopColor: dbTabColor(t.database ?? connection.database, dbColors) }}
-                title={`${t.title} · db: ${t.database || connection.database}${t.pinned ? ' (appuntata)' : ''}${t.id === activeEditorTab ? ' — trascina per riordinare' : ''}`}
+                title={`${t.title} · db: ${t.database || connection.database}${t.description ? ` — ${t.description}` : ''}${t.pinned ? ' (appuntata)' : ''}${t.id === activeEditorTab ? ' — SCHEDA ATTIVA — trascina per riordinare' : ''} — tasto destro: chiudi le altre / a destra / a sinistra / le non appuntate`}
               >
+                {t.id === activeEditorTab && (
+                  <span
+                    className="absolute inset-x-0 -bottom-0.5 h-0.5"
+                    style={{ backgroundColor: dbTabColor(t.database ?? connection.database, dbColors) }}
+                  />
+                )}
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: dbTabColor(t.database ?? connection.database, dbColors) }} />
+                {t.icon && (
+                  <span className="shrink-0 text-[13px] leading-none" title="Icona della tab">
+                    {t.icon}
+                  </span>
+                )}
                 <button
                   onClick={() => switchEditorTab(t.id)}
-                  className="max-w-40 truncate font-medium"
+                  className={`max-w-40 truncate ${t.id === activeEditorTab ? 'font-bold' : 'font-medium'}`}
                   title={t.title}
                 >
                   {t.title}
+                </button>
+                <button
+                  onClick={() => {
+                    setTitleDraft(t.title)
+                    setDescDraft(t.description ?? '')
+                    setIconDraft(t.icon ?? '')
+                    setDescEditingTab(t.id)
+                  }}
+                  className={`rounded p-0.5 opacity-0 transition-opacity hover:bg-zinc-700 group-hover:opacity-100 ${
+                    t.description ? '!opacity-100 text-amber-400' : 'text-zinc-400'
+                  }`}
+                  title={t.description ? `Titolo: ${t.title} — Descrizione: ${t.description} (modifica)` : 'Modifica titolo e descrizione della tab'}
+                >
+                  <StickyNote className="h-3 w-3" />
                 </button>
                 <button
                   onClick={() => togglePin(t.id)}
@@ -704,6 +1145,54 @@ export default function App() {
                 )}
               </div>
             ))}
+            </div>
+            {tabOverflow && (
+              <div className="relative shrink-0">
+                <button
+                  onClick={() => setOverflowOpen(v => !v)}
+                  className={`inline-flex h-7 items-center rounded px-2 text-sm text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 ${
+                    overflowOpen ? 'bg-zinc-800 text-zinc-200' : ''
+                  }`}
+                  title={`${editorTabs.length} tab aperte: mostra l'elenco`}
+                >
+                  <span className="leading-none">»</span>
+                </button>
+                {overflowOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setOverflowOpen(false)} />
+                    <div className="absolute right-0 top-full z-50 mt-1 max-h-80 w-72 overflow-y-auto rounded-md border border-zinc-700 bg-zinc-900 py-1 shadow-2xl">
+                      <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                        {editorTabs.length} tab aperte
+                      </div>
+                      {editorTabs.map(t => (
+                        <button
+                          key={t.id}
+                          onClick={() => {
+                            switchEditorTab(t.id)
+                            setOverflowOpen(false)
+                          }}
+                          className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-zinc-800 ${
+                            t.id === activeEditorTab ? 'bg-zinc-800/70 text-white' : 'text-zinc-300'
+                          }`}
+                          title={t.title}
+                        >
+                          <span
+                            className="h-2 w-2 shrink-0 rounded-full"
+                            style={{ backgroundColor: dbTabColor(t.database ?? connection.database, dbColors) }}
+                          />
+                          <span className="min-w-0 flex-1 truncate">
+                            {t.icon ? `${t.icon} ` : ''}
+                            {t.title}
+                          </span>
+                          {t.pinned && <Pin className="h-3 w-3 shrink-0 text-amber-400" />}
+                          {t.id === activeEditorTab && <span className="shrink-0 text-sky-400">●</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
             <button
               onClick={() => newEditorTab()}
               className="ml-1 inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
@@ -713,10 +1202,26 @@ export default function App() {
             </button>
           </div>
 
+          {/* descrizione della tab attiva (nota libera) */}
+          {activeTabInfo?.description && (
+            <div className="flex items-center gap-1.5 border-b border-zinc-800 bg-zinc-900/30 px-3 py-1 text-xs italic text-zinc-400">
+              <StickyNote className="h-3 w-3 shrink-0 text-amber-400" />
+              <span className="truncate" title={activeTabInfo.description}>
+                {activeTabInfo.description}
+              </span>
+            </div>
+          )}
+
           <div
-            className="h-[52%] min-h-44 shrink-0"
-            style={{ border: `2px solid ${activeDbColor}` }}
-            title={`Query su database: ${activeDbName}`}
+            ref={editorPaneRef}
+            className="shrink-0"
+            style={{
+              flexGrow: resultsVisible ? editorPct : 1,
+              flexBasis: 0,
+              border: `2px solid ${activeDbColor}`,
+              minHeight: 0,
+            }}
+            title={`Query su database: ${activeDbName} — trascina il divisore sotto per ridimensionare`}
           >
             {activeEditorTab ? (
               <SqlEditor
@@ -727,6 +1232,8 @@ export default function App() {
                 onAiEnabledChange={setAiEnabled}
                 aiConfigured={aiConfigured}
                 aiStatusText={aiStatusText}
+                dragonLevel={dragonLevel}
+                fireTick={fireTick}
                 onExecute={(sql: string) => void handleExecute(sql)}
                 onContentChange={handleContentChange}
                 onSave={() => saveActiveTab(false)}
@@ -737,6 +1244,8 @@ export default function App() {
                 onZoomFont={zoomFont}
                 onToggleTheme={toggleTheme}
                 registerEditor={setEditor}
+                onOpenObject={handleOpenObject}
+                onShowCallGraph={(kind, schema, name) => openCallGraph(schema, name, kind)}
               />
             ) : (
               <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-zinc-600">
@@ -753,31 +1262,47 @@ export default function App() {
             )}
           </div>
 
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-900/40 px-2">
-              <TabButton
-                active={activeResultTab === 'results'}
-                onClick={() => setActiveResultTab('results')}
-                icon={<Table2 className="h-4 w-4" />}
-                label="Risultati"
-                count={activeResult?.resultSets.length}
-              />
-              <TabButton
-                active={activeResultTab === 'print'}
-                onClick={() => setActiveResultTab('print')}
-                icon={<TerminalSquare className="h-4 w-4" />}
-                label="Messaggi / PRINT"
-                count={activeResult?.messages.length}
-              />
+          {resultsVisible && (
+            <div
+              onMouseDown={startSplitDrag}
+              className="group relative z-10 flex h-1.5 shrink-0 cursor-row-resize items-center justify-center border-y border-zinc-800 bg-zinc-900/80 hover:bg-sky-950/60"
+              title="Trascina per ridimensionare editor/risultati"
+            >
+              <div className="h-0.5 w-10 rounded bg-zinc-700 group-hover:bg-sky-400" />
             </div>
-            <div className="min-h-0 flex-1">
-              {activeResultTab === 'results' ? (
-                <ResultsPanel result={activeResult} executing={activeExecuting} />
-              ) : (
-                <PrintPanel result={activeResult} />
-              )}
+          )}
+
+          {resultsVisible && (
+            <div
+              ref={resultsPaneRef}
+              className="flex min-h-0 flex-col"
+              style={{ flexGrow: 100 - editorPct, flexBasis: 0 }}
+            >
+              <div className="flex shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-900/40 px-2">
+                <TabButton
+                  active={activeResultTab === 'results'}
+                  onClick={() => setActiveResultTab('results')}
+                  icon={<Table2 className="h-4 w-4" />}
+                  label="Risultati"
+                  count={activeResult?.resultSets.length}
+                />
+                <TabButton
+                  active={activeResultTab === 'print'}
+                  onClick={() => setActiveResultTab('print')}
+                  icon={<TerminalSquare className="h-4 w-4" />}
+                  label="Messaggi / PRINT"
+                  count={activeResult?.messages.length}
+                />
+              </div>
+              <div className="min-h-0 flex-1">
+                {activeResultTab === 'results' ? (
+                  <ResultsPanel result={activeResult} executing={activeExecuting} sourceSql={activeSql} />
+                ) : (
+                  <PrintPanel result={activeResult} />
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </main>
 
         {/* Colonna destra: ospita il pannello agganciato a destra (contenuto portato dalla Sidebar) */}
@@ -797,6 +1322,190 @@ export default function App() {
       </div>
       </div>
       {helpOpen && <HelpPage onClose={() => setHelpOpen(false)} />}
+      {statsOpen && activeStats && <QueryStatsModal stats={activeStats} onClose={() => setStatsOpen(false)} />}
+
+      {/* Diagramma delle chiamate: chi chiama una routine, fino al chiamante più lontano */}
+      {callGraphTarget && (
+        <CallGraphModal
+          target={callGraphTarget}
+          graph={callGraph}
+          loading={callGraphLoading}
+          error={callGraphError}
+          onClose={() => setCallGraphTarget(null)}
+          onReload={() => void loadCallGraph(true)}
+          onOpenObject={(kind, schema, name) => handleOpenObject(kind, schema, name, 'alter')}
+        />
+      )}
+
+      {/* Popover: titolo e descrizione libera della tab */}
+      {descEditingTab && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setDescEditingTab(null)}
+        >
+          <div
+            className="w-[min(480px,92vw)] rounded-lg border border-zinc-700 bg-zinc-900 p-4 shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-zinc-100">
+              <StickyNote className="h-4 w-4 text-amber-400" /> Titolo, icona e descrizione della tab
+            </h3>
+            <label className="mb-1 block text-xs font-medium text-zinc-400">
+              Icona / simbolo / emoji (facoltativa)
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                value={iconDraft}
+                onChange={e => setIconDraft(e.target.value)}
+                placeholder="es. ⭐  ✅  🐞  ⚠️  (anche un simbolo come ★  ◆  →)"
+                maxLength={8}
+                className="w-24 rounded-md border border-zinc-700 bg-zinc-950 px-2.5 py-2 text-center text-lg text-zinc-100 placeholder:text-xs placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none"
+              />
+              <div className="flex flex-1 flex-wrap gap-1">
+                {TAB_ICON_PRESETS.map(ic => (
+                  <button
+                    key={ic}
+                    onClick={() => setIconDraft(ic)}
+                    title={`Usa ${ic}`}
+                    className={`rounded px-1.5 py-0.5 text-base transition-colors hover:bg-zinc-700 ${
+                      iconDraft === ic ? 'bg-zinc-700 ring-1 ring-sky-500' : 'bg-zinc-800/60'
+                    }`}
+                  >
+                    {ic}
+                  </button>
+                ))}
+                <button
+                  onClick={() => setIconDraft('')}
+                  title="Nessuna icona"
+                  className="rounded bg-zinc-800/60 px-1.5 py-0.5 text-[11px] text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-200"
+                >
+                  nessuna
+                </button>
+              </div>
+            </div>
+            <label className="mb-1 mt-3 block text-xs font-medium text-zinc-400">Titolo</label>
+            <input
+              autoFocus
+              value={titleDraft}
+              onChange={e => setTitleDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  saveTabDescription()
+                }
+                if (e.key === 'Escape') setDescEditingTab(null)
+              }}
+              placeholder="Nome della tab (es. 'Report clienti Q3')"
+              className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2.5 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none"
+            />
+            <label className="mb-1 mt-3 block text-xs font-medium text-zinc-400">Descrizione (nota libera)</label>
+            <textarea
+              value={descDraft}
+              onChange={e => setDescDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  saveTabDescription()
+                }
+                if (e.key === 'Escape') setDescEditingTab(null)
+              }}
+              placeholder="Scrivi una nota libera per questa tab (es. 'Report mensile clienti', 'Da controllare', …)"
+              rows={3}
+              className="w-full rounded-md border border-zinc-700 bg-zinc-950 p-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setDescEditingTab(null)}>
+                Annulla
+              </Button>
+              <Button size="sm" onClick={saveTabDescription}>
+                Salva
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Menu contestuale della tab (tasto destro): chiusure multiple in stile SSMS */}
+      {tabMenu &&
+        (() => {
+          const anchor = editorTabs.find(t => t.id === tabMenu.id)
+          const pinned = !!anchor?.pinned
+          const n = (mode: TabCloseMode) => countClosableTabs(editorTabs, tabMenu.id, mode)
+          const run = (mode: TabCloseMode) => applyTabClosePlan(tabMenu.id, mode)
+          const itemCls =
+            'flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-zinc-200 transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600'
+          const item = (label: string, count: number, mode: TabCloseMode) => (
+            <button className={itemCls} disabled={count === 0} onClick={() => run(mode)}>
+              <span className="flex-1">{label}</span>
+              <span className="tabular-nums text-zinc-500">{count}</span>
+            </button>
+          )
+          return (
+            <>
+              <div
+                className="fixed inset-0 z-50"
+                onClick={() => setTabMenu(null)}
+                onContextMenu={e => {
+                  e.preventDefault()
+                  setTabMenu(null)
+                }}
+              />
+              <div
+                className="fixed z-50 min-w-56 rounded-md border border-zinc-700 bg-zinc-900 py-1 shadow-2xl"
+                style={{ left: tabMenu.x, top: tabMenu.y }}
+              >
+                <div className="flex items-center gap-2 border-b border-zinc-800 px-3 pb-1.5 pt-1">
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: dbTabColor(anchor?.database ?? connection.database, dbColors) }}
+                  />
+                  <span className="min-w-0 flex-1 truncate text-xs font-semibold text-zinc-100">
+                    {anchor?.title ?? 'Tab'}
+                  </span>
+                  {pinned && (
+                    <span className="flex items-center gap-1 text-[10px] text-amber-400">
+                      <Pin className="h-3 w-3" /> appuntata
+                    </span>
+                  )}
+                </div>
+                <button
+                  className={itemCls}
+                  disabled={pinned}
+                  onClick={() => {
+                    const id = tabMenu.id
+                    setTabMenu(null)
+                    closeEditorTab(id)
+                  }}
+                  title={pinned ? 'Le tab appuntate non si chiudono: togli prima il pin' : undefined}
+                >
+                  Chiudi
+                </button>
+                <button
+                  className={itemCls}
+                  onClick={() => {
+                    const tab = editorTabs.find(t => t.id === tabMenu.id)
+                    if (!tab) {
+                      setTabMenu(null)
+                      return
+                    }
+                    setTitleDraft(tab.title)
+                    setDescDraft(tab.description ?? '')
+                    setIconDraft(tab.icon ?? '')
+                    setDescEditingTab(tab.id)
+                    setTabMenu(null)
+                  }}
+                >
+                  Icona / titolo / descrizione…
+                </button>
+                <div className="my-1 h-px bg-zinc-800" />
+                {item('Chiudi tutte le altre', n('others'), 'others')}
+                {item('Chiudi quelle a destra', n('right'), 'right')}
+                {item('Chiudi quelle a sinistra', n('left'), 'left')}
+                <div className="my-1 h-px bg-zinc-800" />
+                {item('Chiudi le non appuntate', n('unpinned'), 'unpinned')}
+              </div>
+            </>
+          )
+        })()}
     </FileDropZone>
   )
 }

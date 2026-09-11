@@ -1,7 +1,8 @@
-// Griglia risultati SELEZIONABILE + generatore SQL (INSERT/UPDATE/MERGE/DELETE/INSERT INTO #):
-// condivisa tra la finestra di anteprima dati (F4) e i risultati delle query.
-// Le colonne si tolgono/mantengono con i checkbox nell'header; le righe con quelli a
-// sinistra; la tabella target è editabile (per generare anche da query arbitrarie).
+// GENERATORE SQL dai risultati (INSERT/UPDATE/MERGE/DELETE/INSERT INTO #):
+// caselle di selezione su righe e colonne, tabella target editabile e anteprima dello
+// statement. Il disegno della griglia sta in ResultDataTable, condiviso con la vista
+// normale dei risultati (numero di riga, linee delle colonne, tre colori alternati,
+// colonne spostabili).
 import { useEffect, useMemo, useState } from 'react'
 import { ClipboardCopy } from 'lucide-react'
 import {
@@ -15,11 +16,10 @@ import {
 import type { GenColumn } from '../sqlGen'
 import type { CellValue } from '../types'
 import { Button } from './ui'
+import ResultDataTable from './ResultDataTable'
+import type { ResultColumnSpec } from './ResultDataTable'
 
-export interface ResultColumnSpec {
-  name: string
-  dataType: string
-}
+export type { ResultColumnSpec }
 
 type GenKind = 'INSERT' | 'UPDATE' | 'MERGE' | 'DELETE' | 'INSERT#'
 
@@ -30,9 +30,11 @@ interface Props {
   initialTarget?: string
   /** Nomi delle colonne identity (chiave del MERGE/DELETE). */
   identityColumns?: string[]
+  /** Numero della prima riga mostrata (paginazione). Default 1. */
+  firstRowNumber?: number
 }
 
-export default function SelectableResultGrid({ columns, rows, initialTarget, identityColumns }: Props) {
+export default function SelectableResultGrid({ columns, rows, initialTarget, identityColumns, firstRowNumber = 1 }: Props) {
   const [targetTable, setTargetTable] = useState(initialTarget ?? '')
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set())
   const [selectedCols, setSelectedCols] = useState<Set<number>>(new Set())
@@ -131,58 +133,13 @@ export default function SelectableResultGrid({ columns, rows, initialTarget, ide
         {columns.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-zinc-600">Nessun dato.</div>
         ) : (
-          <table className="w-full border-collapse text-left text-[13px]">
-            <thead className="sticky top-0 z-10">
-              <tr>
-                <th className="w-10 border-b border-zinc-700 bg-zinc-800 px-2 py-1.5">
-                  <input
-                    type="checkbox"
-                    checked={selectedRows.size === rows.length && rows.length > 0}
-                    onChange={toggleAllRows}
-                    className="accent-sky-500"
-                  />
-                </th>
-                {columns.map((c, i) => (
-                  <th key={`${c.name}-${i}`} className="border-b border-zinc-700 bg-zinc-800 px-3 py-1.5">
-                    <label className="flex cursor-pointer items-center gap-1.5 font-semibold text-zinc-100">
-                      <input
-                        type="checkbox"
-                        checked={selectedCols.has(i)}
-                        onChange={() => toggleCol(i)}
-                        className="accent-sky-500"
-                      />
-                      {c.name}
-                      <span className="font-normal text-zinc-500">{c.dataType}</span>
-                    </label>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, ri) => (
-                <tr
-                  key={ri}
-                  className={`cursor-pointer transition-colors ${
-                    selectedRows.has(ri) ? 'bg-sky-950/60' : ri % 2 ? 'bg-zinc-900/50' : 'bg-zinc-950'
-                  }`}
-                  onClick={() => toggleRow(ri)}
-                >
-                  <td className="border-b border-zinc-800/60 px-2 py-1">
-                    <input
-                      type="checkbox"
-                      checked={selectedRows.has(ri)}
-                      onChange={() => toggleRow(ri)}
-                      onClick={e => e.stopPropagation()}
-                      className="accent-sky-500"
-                    />
-                  </td>
-                  {row.map((cell, ci) => (
-                    <Cell key={ci} value={cell} />
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <ResultDataTable
+            columns={columns}
+            rows={rows}
+            firstRowNumber={firstRowNumber}
+            rowSelection={{ selected: selectedRows, onToggle: toggleRow, onToggleAll: toggleAllRows }}
+            colSelection={{ selected: selectedCols, onToggle: toggleCol }}
+          />
         )}
       </div>
 
@@ -194,6 +151,7 @@ export default function SelectableResultGrid({ columns, rows, initialTarget, ide
             value={targetTable}
             onChange={e => setTargetTable(e.target.value)}
             placeholder="schema.tabella"
+            title="Tabella target degli statement: proposta automaticamente dal SQL eseguito, ma sempre modificabile"
             className="w-44 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono text-xs text-zinc-200 focus:border-sky-500 focus:outline-none"
           />
         </label>
@@ -237,20 +195,5 @@ export default function SelectableResultGrid({ columns, rows, initialTarget, ide
         {output || 'Seleziona righe e colonne e imposta la tabella target per generare lo statement.'}
       </pre>
     </div>
-  )
-}
-
-function Cell({ value }: { value: CellValue }) {
-  if (value === null || value === undefined) {
-    return <td className="border-b border-zinc-800/60 px-3 py-1 italic text-zinc-600">NULL</td>
-  }
-  let text: string
-  if (typeof value === 'boolean') text = String(value)
-  else if (typeof value === 'object') text = JSON.stringify(value)
-  else text = String(value)
-  return (
-    <td className="max-w-[380px] truncate border-b border-zinc-800/60 px-3 py-1 font-mono text-zinc-200" title={text}>
-      {text}
-    </td>
   )
 }

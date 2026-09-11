@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { colorClassFor, colorizeSqlTokens, splitUserFunctions, tokenizeSql } from '../helpers'
+import { colorClassFor, colorClassMapForKeys, colorizeSqlTokens, isTableValuedFunctionType, splitUserFunctions, tokenizeSql } from '../helpers'
 import type { DatabaseSummary } from '../types'
 import { wsbritvicLikeSummary } from './schema'
 
@@ -172,6 +172,30 @@ describe('colori funzioni tabellari e tabelle temporanee', () => {
     expect(colorClassFor('#tmp1')).not.toBe(colorClassFor('#tmp2'))
   })
 
+  it('in un documento ogni tabella DISTINTA ha un colore suo (niente collisioni di hash)', () => {
+    // regressione utente: query con 4 tabelle dove ne comparivano solo 2 di colori
+    const keys = [
+      'dbo.RUN_ESEGUI',
+      '#tbl_InventoryKitting_St1',
+      'dbo.DAT_SCOMPART',
+      'dbo.DAT_ORDINI_RIGHE',
+    ]
+    const map = colorClassMapForKeys(keys)
+    expect(map.size).toBe(4)
+    expect(new Set(map.values()).size).toBe(4) // tutti diversi
+    for (const k of keys) expect(map.get(k)).toMatch(/^sql-tbl-\d+$/)
+  })
+
+  it('colorClassMapForKeys: il colore non collide finché la palette basta (12)', () => {
+    const twelve = Array.from({ length: 12 }, (_, i) => `tbl_${String.fromCharCode(97 + i)}`)
+    const map12 = colorClassMapForKeys(twelve)
+    expect(new Set(map12.values()).size).toBe(12)
+    // oltre la palette qualcosa si ripete (limite fisico di 12 colori)
+    const thirteen = [...twelve, 'tbl_extra']
+    const map13 = colorClassMapForKeys(thirteen)
+    expect(new Set(map13.values()).size).toBe(12)
+  })
+
   it('splitUserFunctions: FN → scalari (espressioni), IF/TF → tabellari (sorgenti)', () => {
     const { scalars, tableValued } = splitUserFunctions(summaryTvf.functions)
     expect(scalars.map(f => f.name)).toEqual(['fn_Scalare'])
@@ -180,5 +204,26 @@ describe('colori funzioni tabellari e tabelle temporanee', () => {
     const unknown = splitUserFunctions([{ schema: 'dbo', name: 'fn_X', type: 'X' }])
     expect(unknown.scalars.map(f => f.name)).toEqual(['fn_X'])
     expect(unknown.tableValued.length).toBe(0)
+  })
+
+  it('splitUserFunctions: il backend manda i type_desc → riconosciuti come tabellari', () => {
+    const reali = [
+      { schema: 'dbo', name: 'fn_inline', type: 'SQL_INLINE_TABLE_VALUED_FUNCTION' },
+      { schema: 'dbo', name: 'fn_multi', type: 'SQL_TABLE_VALUED_FUNCTION' },
+      { schema: 'dbo', name: 'fn_clr', type: 'CLR_TABLE_VALUED_FUNCTION' },
+      { schema: 'dbo', name: 'fn_scalare', type: 'SQL_SCALAR_FUNCTION' },
+    ]
+    const { scalars, tableValued } = splitUserFunctions(reali)
+    expect(tableValued.map(f => f.name).sort()).toEqual(['fn_clr', 'fn_inline', 'fn_multi'])
+    expect(scalars.map(f => f.name)).toEqual(['fn_scalare'])
+  })
+
+  it('isTableValuedFunctionType: codici brevi, type_desc e casi limite', () => {
+    for (const t of ['IF', 'TF', 'if', 'tf', 'SQL_INLINE_TABLE_VALUED_FUNCTION', 'SQL_TABLE_VALUED_FUNCTION', 'CLR_TABLE_VALUED_FUNCTION']) {
+      expect(isTableValuedFunctionType(t), t).toBe(true)
+    }
+    for (const t of ['FN', 'SQL_SCALAR_FUNCTION', 'CLR_SCALAR_FUNCTION', 'FS', 'X', '', null, undefined]) {
+      expect(isTableValuedFunctionType(t as string), String(t)).toBe(false)
+    }
   })
 })

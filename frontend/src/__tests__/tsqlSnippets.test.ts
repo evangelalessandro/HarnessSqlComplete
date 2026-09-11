@@ -20,6 +20,7 @@ import {
   detectTableHintsContext,
   detectVariableContext,
   extractDeclaredVariables,
+  extractRoutineParameters,
   systemVariablePrefixLen,
   variablePrefixLen,
 } from '../tsqlSnippets'
@@ -63,6 +64,14 @@ describe('tsqlSnippets: SET <opzione> → ON/OFF e opzioni', () => {
 
   it('SET dentro UPDATE non è un\'opzione', () => {
     expect(detectSetContext('update t set a = 1 ')).toBeNull()
+  })
+
+  it('UPDATE … \nSET (a capo) non è un\'opzione: servono le colonne', () => {
+    expect(detectSetContext('UPDATE dbo.T\nSET ')).toBeNull()
+    expect(detectSetContext('UPDATE dbo.T\nSET a = ')).toBeNull()
+    // il SET opzione a inizio riga (dopo GO / AS) resta un'opzione
+    expect(detectSetContext('GO\nSET ')).toEqual({ kind: 'options' })
+    expect(detectSetContext('AS\nSET NOCOUNT ')).toEqual({ kind: 'values', option: 'NOCOUNT' })
   })
 
   it('opzioni principali presenti con ON/OFF', () => {
@@ -240,6 +249,29 @@ describe('tsqlSnippets: variabili dichiarate (DECLARE @var)', () => {
     expect(vars[1].dataType).toBe('nvarchar')
   })
 
+  it('DECLARE multilinea allineato SENZA virgola iniziale (stile reale SP)', () => {
+    const text = `declare @retVal int,
+        @ordine nvarchar(20),
+         @fTransaction bit,
+        @riga int,
+        @fArtScoOk bit
+
+set @retVal = 0
+select @cau`
+    const names = extractDeclaredVariables(text).map(v => v.name)
+    expect(names).toEqual(['@retVal', '@ordine', '@fTransaction', '@riga', '@fArtScoOk'])
+  })
+
+  it('la dichiarazione termina alla prima riga che non inizia con @ o ,', () => {
+    const text = `declare @a int
+        @b int
+if @a > 0
+  declare @c int`
+    const vars = extractDeclaredVariables(text)
+    // '@c' è in un secondo DECLARE e va estratto; 'if' non fa parte della dichiarazione
+    expect(vars.map(v => v.name)).toEqual(['@a', '@b', '@c'])
+  })
+
   it('detectVariableContext: dopo "@nome" o "@" → true; "@@..." → false', () => {
     expect(detectVariableContext('select @p')).toBe(true)
     expect(detectVariableContext('set @x = @')).toBe(true)
@@ -251,5 +283,54 @@ describe('tsqlSnippets: variabili dichiarate (DECLARE @var)', () => {
     expect(variablePrefixLen('select @p')).toBe(2)
     expect(variablePrefixLen('set @x = @')).toBe(1)
     expect(variablePrefixLen('if @@ERROR')).toBe(0)
+  })
+})
+
+describe('extractRoutineParameters: in modifica propone i PARAMETRI della routine', () => {
+  it('procedure con parametri e default → li estrae dalla firma (anche se non DECLARATI)', () => {
+    const text = `CREATE OR ALTER PROCEDURE [dbo].[ws_L2_LancioImmed]
+    @pRiga int = 0
+    ,@pOrdine nvarchar(50)
+    ,@baia int OUTPUT
+    ,@esito nvarchar(4000) = NULL OUTPUT
+AS
+BEGIN
+  DECLARE @locale int = 0
+  SELECT @p`
+    const params = extractRoutineParameters(text)
+    expect(params.map(p => p.name)).toEqual(['@pRiga', '@pOrdine', '@baia', '@esito'])
+    // i tipi (con lunghezza) sono catturati
+    expect(params[1]).toEqual({ name: '@pOrdine', dataType: 'nvarchar(50)' })
+    expect(params[3]).toEqual({ name: '@esito', dataType: 'nvarchar(4000)' })
+    // le variabili dichiarate restano separate (le estrae extractDeclaredVariables)
+    expect(extractDeclaredVariables(text).map(v => v.name)).toEqual(['@locale'])
+  })
+
+  it('function: parametri tra parentesi', () => {
+    const text = `CREATE FUNCTION dbo.FnTest(@a INT, @b NVARCHAR(10))
+RETURNS INT
+AS
+BEGIN
+  RETURN @a
+END`
+    const params = extractRoutineParameters(text)
+    expect(params.map(p => p.name)).toEqual(['@a', '@b'])
+  })
+
+  it('trigger o testo senza routine → nessun parametro', () => {
+    expect(extractRoutineParameters('CREATE TRIGGER tr ON dbo.T FOR INSERT AS SELECT 1')).toEqual([])
+    expect(extractRoutineParameters('SELECT @x = 1')).toEqual([])
+    expect(extractRoutineParameters('')).toEqual([])
+  })
+
+  it('in un file con più routine prende l\'ULTIMA (quella aperta/modificata)', () => {
+    const text = `CREATE OR ALTER PROCEDURE dbo.Prima(@a INT) AS SELECT @a
+GO
+CREATE OR ALTER PROCEDURE dbo.Seconda(@x NVARCHAR(10), @y INT = 0) AS
+BEGIN
+  SELECT @x, @y
+END`
+    const params = extractRoutineParameters(text)
+    expect(params.map(p => p.name)).toEqual(['@x', '@y'])
   })
 })

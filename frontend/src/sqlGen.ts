@@ -32,6 +32,142 @@ export function parseTargetTable(ref: string): { schema: string; table: string }
   return { schema: t.slice(0, idx).trim(), table: t.slice(idx + 1).trim() }
 }
 
+// ---------- Proposta automatica della tabella target (dal SQL eseguito) ----------
+//
+// "Data un recordset, non richiedere il nome della tabella: proponilo (modificabile)".
+// Il generatore della griglia risultati propone la tabella sorgente/destinazione
+// dello statement che ha prodotto il recordset (es. "select * from dbo.TIPI_EVENTI"
+// → propone "dbo.TIPI_EVENTI"). La proposta è SEMPRE editabile dall'utente.
+
+/** Keyword che, a inizio riga (fuori parentesi), aprono una nuova istruzione del batch. */
+const BATCH_STARTERS = new Set([
+  'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'EXEC', 'EXECUTE', 'DECLARE', 'SET',
+  'PRINT', 'IF', 'WHILE', 'BEGIN', 'CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'USE', 'GO',
+  'BACKUP', 'RESTORE', 'GRANT', 'REVOKE', 'DENY', 'WITH', 'COMMIT', 'ROLLBACK', 'SAVE',
+  'RAISERROR', 'THROW', 'RETURN', 'WAITFOR', 'CHECKPOINT', 'DBCC', 'KILL',
+])
+
+/**
+ * Copia del SQL senza stringhe e commenti (le righe restano): l'analisi dei target
+ * non deve inciampare in parole chiave dentro letterali o commenti.
+ */
+export function stripSqlNoise(sql: string): string {
+  let out = ''
+  let i = 0
+  const n = sql.length
+  while (i < n) {
+    const ch = sql[i]
+    const next = sql[i + 1]
+    if (ch === "'") {
+      // stringa (es. 'from x', N'…'): le '' interne sono l'escape
+      i += 1
+      while (i < n) {
+        if (sql[i] === "'") {
+          if (sql[i + 1] === "'") {
+            i += 2
+            continue
+          }
+          i += 1
+          break
+        }
+        out += sql[i] === '\n' ? '\n' : ' '
+        i += 1
+      }
+      continue
+    }
+    if (ch === '-' && next === '-') {
+      while (i < n && sql[i] !== '\n') i += 1
+      continue
+    }
+    if (ch === '/' && next === '*') {
+      i += 2
+      while (i < n && !(sql[i] === '*' && sql[i + 1] === '/')) {
+        out += sql[i] === '\n' ? '\n' : ' '
+        i += 1
+      }
+      i = Math.min(n, i + 2)
+      continue
+    }
+    out += ch
+    i += 1
+  }
+  return out
+}
+
+/**
+ * Divide il batch eseguito in istruzioni: a ';', a 'GO' e a inizio riga con una
+ * keyword di statement (i batch reali sono spesso scritti senza ';').
+ */
+export function splitExecutedStatements(sql: string): string[] {
+  const code = stripSqlNoise(sql)
+  const chunks: string[] = []
+  let start = 0
+  let i = 0
+  const n = code.length
+  let depth = 0
+  const push = (end: number) => {
+    const c = code.slice(start, end).trim()
+    if (c) chunks.push(c)
+  }
+  while (i < n) {
+    const ch = code[i]
+    if (ch === '(') {
+      depth += 1
+      i += 1
+    } else if (ch === ')') {
+      depth = Math.max(0, depth - 1)
+      i += 1
+    } else if (ch === ';' && depth === 0) {
+      push(i)
+      i += 1
+      while (i < n && (code[i] === ';' || code[i] === ' ' || code[i] === '\t' || code[i] === '\r' || code[i] === '\n')) i += 1
+      start = i
+    } else if ((ch === '\n' || ch === '\r') && depth === 0) {
+      // la prossima riga inizia con una keyword di statement → nuova istruzione
+      let j = i + 1
+      while (j < n && (code[j] === ' ' || code[j] === '\t' || code[j] === '\r' || code[j] === '\n')) j += 1
+      const word = /^[A-Za-z_][A-Za-z0-9_]*/.exec(code.slice(j))
+      if (word && BATCH_STARTERS.has(word[0].toUpperCase())) {
+        push(j)
+        start = j
+        i = j
+        continue
+      }
+      i += 1
+    } else {
+      i += 1
+    }
+  }
+  push(n)
+  // "GO" separa i batch ma non è un'istruzione: non conta come statement
+  return chunks.filter(c => c.toUpperCase() !== 'GO')
+}
+
+/**
+ * Tabella "schema.tabella" (o "tabella") che ha prodotto il recordset di uno statement:
+ * il PRIMO riferimento a una sorgente/destinazione dati (INTO/FROM/UPDATE/JOIN),
+ * saltando tabelle temporanee/variabili ('#'/'@'). Per "MERGE INTO t USING (VALUES…)"
+ * vale t; per "INSERT INTO t … SELECT … FROM s" vale t (la destinazione).
+ */
+export function targetTableOfStatement(stmt: string): string {
+  const code = stripSqlNoise(stmt)
+  const re = /\b(?:INTO|FROM|UPDATE|JOIN)\s+((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(code)) !== null) {
+    const raw = m[1].replace(/[\[\]\s]/g, '')
+    if (raw.startsWith('#') || raw.startsWith('@')) continue
+    const parts = raw.split('.')
+    if (parts.length > 2) continue
+    return parts.join('.')
+  }
+  return ''
+}
+
+/** Proposta di tabella target ('' se non ricavabile) per ogni statement del batch. */
+export function suggestTargetTables(sql: string): string[] {
+  return splitExecutedStatements(sql).map(targetTableOfStatement)
+}
+
 function colList(columns: GenColumn[]): string {
   return columns.map(c => `[${c.name}]`).join(', ')
 }

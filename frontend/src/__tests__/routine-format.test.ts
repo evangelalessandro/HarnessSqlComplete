@@ -127,12 +127,31 @@ describe('formatRoutineWithProfile: BEGIN ... non deve mai perdere il resto del 
 ROLLBACK`
     const out = formatRoutineWithProfile(sql, profile)
     expect(out).toContain('BEGIN TRANSACTION')
-    expect(out).toContain('SELECT * FROM dbo.MAG_BAIE_INTERNE ORDER BY 1 DESC')
+    expect(out).toContain('FROM dbo.MAG_BAIE_INTERNE')
     expect(out).toContain('IF 12 = 0')
     expect(out).toContain('ROLLBACK')
-    // il blocco dopo BEGIN TRANSACTION è indentato
+    // BEGIN TRANSACTION NON apre un blocco: i statement successivi restano a margine
     expect(out).toMatch(/^BEGIN TRANSACTION$/m)
-    expect(out).toMatch(/^  SELECT \* FROM dbo\.MAG_BAIE_INTERNE ORDER BY 1 DESC$/m)
+    // SELECT con FROM/ORDER BY spezzati a clausole (clausole allineate alla SELECT)
+    expect(out).toMatch(/^SELECT \*$/m)
+    expect(out).toMatch(/^FROM dbo\.MAG_BAIE_INTERNE$/m)
+    expect(out).toMatch(/^ORDER BY 1 DESC$/m)
+  })
+
+  it('IF + BEGIN TRANSACTION non apre un blocco: niente indentazione dei successivi (bug utente)', () => {
+    const sql = `DECLARE @trancount INT = @@trancount
+IF @trancount < 1
+BEGIN TRANSACTION
+
+EXEC @retVal = ws_L2_LockRunHandHeld @errore = @txtError out
+IF @retVal <> 0
+GOTO lblExit`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toMatch(/^IF @trancount < 1\nBEGIN TRANSACTION$/m)
+    // i statement successivi restano a margine (non indentati come dentro un BEGIN…END)
+    expect(out).toMatch(/^EXEC @retVal = ws_L2_LockRunHandHeld/m)
+    expect(out).toMatch(/^IF @retVal <> 0$/m)
+    expect(out).toMatch(/^  GOTO lblExit$/m)
   })
 
   it('BEGIN TRAN e BEGIN TRY/CATCH con il resto sulla stessa riga: testo preservato', () => {
@@ -183,5 +202,106 @@ END`
     const selectIdx = out.indexOf('SELECT 1')
     expect(grantIdx).toBeGreaterThanOrEqual(0)
     expect(selectIdx).toBeGreaterThan(grantIdx)
+  })
+})
+
+describe('formatRoutineWithProfile: SELECT/INSERT…SELECT con clausole spezzate (come le query semplici)', () => {
+  it('INSERT INTO … SELECT: FROM e JOIN a capo, niente riga unica', () => {
+    const sql = `BEGIN
+  INSERT INTO @tblPitches
+  SELECT ROW_NUMBER() OVER (ORDER BY GM_ORD_PIAZZ), BPZ_PIAZZOLA FROM dbo.MAG_BAIE_PIAZ INNER JOIN dbo.GESTORI_MODULI ON (GM_PIAZZOLA = BPZ_PIAZZOLA) WHERE BPZ_BAIA = @nDestBay AND BPZ_PIAZZOLA > 0
+END`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toMatch(/^  INSERT INTO @tblPitches$/m)
+    expect(out).toMatch(/^  SELECT ROW_NUMBER \(\) OVER \(ORDER BY GM_ORD_PIAZZ\), BPZ_PIAZZOLA$/m)
+    expect(out).toMatch(/^  FROM dbo\.MAG_BAIE_PIAZ$/m)
+    expect(out).toMatch(/^    INNER JOIN dbo\.GESTORI_MODULI ON \(GM_PIAZZOLA = BPZ_PIAZZOLA\)$/m)
+    expect(out).toMatch(/^  WHERE BPZ_BAIA = @nDestBay$/m)
+    expect(out).toMatch(/^\s{8}AND BPZ_PIAZZOLA > 0$/m)
+  })
+
+  it('SELECT semplice con FROM/JOIN/WHERE spezzati su più righe', () => {
+    const sql = `BEGIN
+  SELECT a, b FROM dbo.T INNER JOIN dbo.U ON (T.id = U.id) WHERE x = 1 AND y = 2
+END`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toMatch(/^  SELECT a, b$/m)
+    expect(out).toMatch(/^  FROM dbo\.T$/m)
+    expect(out).toMatch(/^    INNER JOIN dbo\.U ON \(T\.id = U\.id\)$/m)
+    expect(out).toMatch(/^  WHERE x = 1$/m)
+    expect(out).toMatch(/^\s{8}AND y = 2$/m)
+  })
+
+  it('SELECT semplice: WHERE con AND spezzati su righe proprie (come le query semplici)', () => {
+    const sql = `BEGIN
+  SELECT a, b FROM dbo.T INNER JOIN dbo.U ON (T.id = U.id) WHERE x = 1 AND y = 2 AND z = 3
+END`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toMatch(/^  WHERE x = 1$/m)
+    expect(out).toMatch(/^        AND y = 2$/m)
+    expect(out).toMatch(/^        AND z = 3$/m)
+  })
+
+  it(';WITH … AS (SELECT…): parentesi su riga propria PRIMA della SELECT interna', () => {
+    const sql = `BEGIN
+; WITH TBL_MASTER_BAYS /* Master bays list */ AS (SELECT DISTINCT b.BCO_BAIA AS FLD_MASTER_BAY, b.BCO_ABI AS FLD_MASTER_BAY_ABI FROM dbo.MAG_BAIE b INNER JOIN dbo.MAG_BAIE bm ON (bm.BCO_MASTER = b.BCO_BAIA))
+  SELECT TOP 1 @nDestBay = BCO_BAIA FROM dbo.MAG_BAIE WHERE BCO_MASTER = @nDestBayMaster
+END`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toMatch(/^  ; WITH TBL_MASTER_BAYS \/\* Master bays list \*\/ AS$/m)
+    expect(out).toMatch(/^  \($/m)
+    expect(out).toMatch(/^    SELECT DISTINCT b\.BCO_BAIA AS FLD_MASTER_BAY, b\.BCO_ABI AS FLD_MASTER_BAY_ABI$/m)
+    expect(out).toMatch(/^    FROM dbo\.MAG_BAIE b$/m)
+    expect(out).toMatch(/^    INNER JOIN dbo\.MAG_BAIE bm ON \(bm\.BCO_MASTER = b\.BCO_BAIA\)$/m)
+    expect(out).toMatch(/^  \)$/m)
+    // lo statement che usa la CTE segue su riga propria
+    expect(out).toMatch(/^  SELECT TOP 1 @nDestBay = BCO_BAIA$/m)
+  })
+})
+
+describe('formatRoutineWithProfile: header CREATE/ALTER su riga propria dopo i commenti', () => {
+  it('commento a blocco prima di CREATE PROCEDURE → CREATE su nuova riga', () => {
+    const sql = `/*
+    Returns:
+      -1 = Runtime error
+       0 = Ok
+
+*/ CREATE PROCEDURE [dbo] . [ws_LGV_Redirection]
+(
+ @pLgvManager NVARCHAR(30) /* Lgv manager */
+)
+AS
+SET NOCOUNT ON`
+    const out = formatRoutineWithProfile(sql, profile)
+    expect(out).toMatch(/^\*\/\s*$/m) // il commento chiude su una riga propria
+    expect(out).toMatch(/^CREATE PROCEDURE \[dbo\]\.\[ws_LGV_Redirection\]$/m)
+    expect(out).not.toMatch(/\*\/ CREATE/)
+  })
+})
+
+describe('formatRoutineWithProfile: DECLARE con variabili allineate (stile SQL Prompt)', () => {
+  it('virgole in colonna e tipi allineati su più variabili', () => {
+    const sql = `declare @nDestinationType int, @nSourceBay int, @nDstPitchLeft int = 0, @sTipoUdc nvarchar(5), @bIsEvacuation bit`
+    const out = formatRoutineWithProfile(sql, profile)
+    const lines = out.split('\n').filter(l => l.trim().length > 0)
+    expect(lines).toHaveLength(5)
+    expect(lines[0]).toBe('DECLARE @nDestinationType INT')
+    expect(lines[1]).toBe('       ,@nSourceBay       INT')
+    expect(lines[2]).toBe('       ,@nDstPitchLeft    INT = 0')
+    expect(lines[3]).toBe('       ,@sTipoUdc         NVARCHAR(5)')
+    expect(lines[4]).toBe('       ,@bIsEvacuation    BIT')
+  })
+
+  it('DECLARE annidato in un blocco mantiene l\'indentazione base e l\'allineamento', () => {
+    const sql = `begin
+  declare @a int, @bb nvarchar(10)
+end`
+    const out = formatRoutineWithProfile(sql, profile)
+    const lines = out.split('\n').filter(l => l.trim().length > 0)
+    // indentazione base (2 spazi dentro BEGIN) + allineamento tipi nella stessa colonna
+    expect(lines.find(l => l.includes('DECLARE'))).toMatch(/^  DECLARE @a +INT$/)
+    const decl = lines.findIndex(l => l.includes('DECLARE'))
+    expect(lines[decl]).toBe('  DECLARE @a  INT')
+    expect(lines[decl + 1]).toBe('         ,@bb NVARCHAR(10)')
   })
 })

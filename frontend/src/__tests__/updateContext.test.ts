@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildColumnContextSuggestions } from '../helpers'
+import { buildColumnContextSuggestions, statementRangeAt } from '../helpers'
 import { classifyContext } from '../intellisenseContext'
 import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
 
@@ -60,5 +60,41 @@ describe('intellisense: UPDATE ... WHERE con affinità di colonna', () => {
   it('senza tabella target riconosciuta non inventa colonne', () => {
     const res = buildColumnContextSuggestions(`update tabella_inesistente\nset x = 1\nwhere udc`, before, 'udc', summary)
     expect(res).toHaveLength(0)
+  })
+})
+
+describe('UPDATE: i campi NON si qualificano col nome tabella se inutile (statement separati senza ";")', () => {
+  const summary = wsbritvicLikeSummary()
+  // DAT_SCOMPART è la tabella dell'UPDATE; ALTRO è referenziato da una SELECT
+  // PRECEDENTE (stesso batch senza ';') e ha una colonna con lo STESSO nome.
+  summary.tables.push(
+    mkTbl('dbo', 'DAT_SCOMPART', [
+      mkCol('SCO_SCOMPARTO', 'int'),
+      mkCol('SCO_UDC', 'nvarchar'),
+      mkCol('SCO_ARTICOLO', 'nvarchar'),
+    ]),
+  )
+  summary.tables.push(mkTbl('dbo', 'ALTRO', [mkCol('SCO_UDC', 'nvarchar'), mkCol('ALTRO_X', 'int')]))
+
+  const sql = `select * from dbo.ALTRO\nupdate dbo.DAT_SCOMPART\nset SCO_`
+
+  it('statementRangeAt: l\'UPDATE è uno statement a sé (parte da "update", non da "select")', () => {
+    const cursor = sql.length
+    const r = statementRangeAt(sql, cursor)
+    expect(sql.slice(r.start, r.start + 6).toLowerCase()).toBe('update')
+    expect(sql.slice(r.start, r.end)).not.toMatch(/ALTRO/)
+  })
+
+  it('in SET propone il campo SENZA prefisso (univoco nello statement dell\'UPDATE)', () => {
+    const cursor = sql.length
+    const r = statementRangeAt(sql, cursor)
+    const stmtText = sql.slice(r.start, r.end)
+    const stmtBefore = stmtText.slice(0, cursor - r.start)
+    const res = buildColumnContextSuggestions(stmtText, stmtBefore, 'SCO_', summary)
+    const sc = res.find(s => s.name === 'SCO_UDC')
+    expect(sc).toBeDefined()
+    expect(sc!.insertText).toBe('SCO_UDC') // niente "DAT_SCOMPART.SCO_UDC"
+    expect(sc!.insertText).not.toContain('.')
+    expect(sc!.shared).toBe(false)
   })
 })

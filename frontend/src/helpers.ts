@@ -1,4 +1,4 @@
-import type { CellValue, ColumnInfo, DatabaseSummary, ForeignKeyInfo, FunctionInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableUsage } from './types'
+import type { CellValue, ColumnInfo, DatabaseSummary, ForeignKeyInfo, FunctionInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableReportRow, TableUsage } from './types'
 
 /**
  * Identificatore SQL: restituisce il nome senza parentesi quadre se è "sicuro"
@@ -18,7 +18,8 @@ export function qualified(schema: string, name: string): string {
 
 /** Estrae i riferimenti a tabelle (FROM/JOIN/UPDATE/INTO) dal testo SQL prima del cursore (nomi in minuscolo). */
 export function findTableRefs(text: string): string[] {
-  const re = /\b(?:from|join|update|into|table)\s+((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)/gi
+  // '#'/'@' ammessi: tabelle temporanee (#temp, ##globale) e variabili tabella (@t)
+  const re = /\b(?:from|join|update|into|table)\s+((?:[@#][A-Za-z0-9_#]+|\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)/gi
   const refs = new Set<string>()
   for (const m of text.matchAll(re)) {
     const token = m[1].replace(/[\[\]\s]/g, '')
@@ -375,7 +376,11 @@ export function parseInsertContext(text: string, base = 0): InsertContext | null
   const schema = parts.length > 1 ? parts[0] : null
   const table = parts[parts.length - 1]
 
-  const valuesIdx = text.search(/\bVALUES\b/i)
+  // VALUES/SELECT contano SOLO se compaiono DOPO il nome della tabella corrente:
+  // in un batch ("BEGIN TRAN … INSERT INTO LOG (a) VALUES (1) … INSERT INTO
+  // TIPI_EVENTI (TI…") un VALUES di un INSERT precedente non deve far scambiare
+  // la '(' del secondo INSERT per una subquery (colOpen = -1 → niente colonne).
+  const valuesIdx = text.indexOf('VALUES', tableEnd)
   const selectIdx = searchSelectKeyword(text, tableEnd)
   const firstParen = text.indexOf('(', tableEnd)
   let colOpen = -1
@@ -546,6 +551,16 @@ export function insertTupleAt(ctx: InsertContext, offset: number): InsertTuple |
   return null
 }
 
+/**
+ * True se il cursore è dentro una tupla VALUES VERA ("… VALUES (…)"): esclude
+ * INSERT … SELECT (dove le "tuple" non hanno parentesi) e le posizioni fuori dalla
+ * tupla. Serve a non dirottare sulla logica dei valori il SELECT di un INSERT…SELECT.
+ */
+export function isInsideValuesTuple(ctx: InsertContext, offset: number): boolean {
+  const tuple = insertTupleAt(ctx, offset)
+  return tuple !== null && tuple.open >= 0
+}
+
 /** Range interno della tupla (dentro le parentesi) da sostituire con i valori di default. */
 export function insertTupleInnerRange(tuple: InsertTuple): { start: number; end: number } {
   if (tuple.open >= 0) {
@@ -582,6 +597,29 @@ export function scriptCreateTable(table: TableInfo): string {
   return `CREATE TABLE ${qualified(table.schema, table.name)} (\n${defs.join(',\n')}\n);\n`
 }
 
+/** Script ALTER TABLE ... ADD CONSTRAINT ... CHECK: per vedere/modificare un vincolo CHECK esistente. */
+export function scriptCheckConstraint(
+  schema: string,
+  tableName: string,
+  name: string,
+  definition: string,
+  isDisabled = false,
+): string {
+  const target = qualified(schema, tableName)
+  const lines = [
+    `-- Vincolo CHECK "${name}" su ${target}`,
+    `-- Testo originale: CHECK (${definition})`,
+  ]
+  if (isDisabled) {
+    lines.push(
+      '-- ⚠ il vincolo è DISABILITATO nel database (dati esistenti non verificati)',
+      `-- per riabilitarlo: ALTER TABLE ${target} WITH CHECK CHECK CONSTRAINT ${sqlIdent(name)};`,
+    )
+  }
+  lines.push(`ALTER TABLE ${target} WITH CHECK ADD CONSTRAINT ${sqlIdent(name)} CHECK (${definition});`)
+  return lines.join('\n') + '\n'
+}
+
 /** Script MERGE generato: chiave = colonna IDENTITY (o la prima), sorgente con valori di default. */
 export function scriptMergeTable(table: TableInfo): string {
   const cols = table.columns ?? []
@@ -616,6 +654,136 @@ export function scriptExecProcedure(proc: ProcedureInfo): string {
     })
     .join(', ')
   return `EXEC ${qualified(proc.schema, proc.name)} ${args};\n`
+}
+
+/** Millisecondi rimanenti perché una durata minima sia rispettata (0 se già superata).
+ *  Usata per l'animazione di connessione: resta visibile almeno minMs anche con server rapidi. */
+export function remainingMinDelay(startedAt: number, minMs: number): number {
+  return Math.max(0, minMs - (Date.now() - startedAt))
+}
+
+/** Livello del drago dopo una query eseguita: cresce di 1 fino a 100 (poi resta 100). */
+export function nextDragonLevel(current: number): number {
+  return Math.min(100, Math.max(0, current) + 1)
+}
+
+/** Comando magico dentro un PRINT: 'drago' evoca il drago, 'fuoco' la fiammata. */
+export function detectPrintMagic(sql: string): 'drago' | 'fuoco' | null {
+  const re = /\bprint\s+N?\s*['"]([^'"]*)['"]/gi
+  let fuoco: 'fuoco' | null = null
+  for (const m of sql.matchAll(re)) {
+    const payload = (m[1] ?? '').toLowerCase()
+    if (/\b(drago|dragon)\b/.test(payload)) return 'drago'
+    if (/\b(fuoco|fire|fiamma)\b/.test(payload)) fuoco = 'fuoco'
+  }
+  return fuoco
+}
+
+/** True se l'offset è DENTRO un commento (di riga o a blocco), rispettando stringhe,
+ *  identificatori tra [] e stringhe tra "". Un solo costrutto "sballato" in un file lungo
+ *  (es. un apostrofo dentro [un'identificatore]) faceva credere di essere dentro un
+ *  commento → il provider restituiva lista vuota ("No suggestions."). */
+export function isTextOffsetInComment(text: string, offset: number): boolean {
+  let i = 0
+  let lineComment = false
+  let block = false
+  let quote: string | null = null
+  const n = Math.min(offset, text.length)
+  while (i < n) {
+    const c = text[i]
+    const nx = i + 1 < text.length ? text[i + 1] : ''
+    if (block) {
+      if (c === '*' && nx === '/') {
+        block = false
+        i += 2
+        continue
+      }
+      i++
+      continue
+    }
+    if (quote) {
+      if (c === quote) {
+        if (nx === quote) {
+          i += 2
+          continue
+        }
+        quote = null
+      }
+      i++
+      continue
+    }
+    // identificatore tra parentesi quadre: [Quantita'] NON apre una stringa
+    if (c === '[') {
+      const end = text.indexOf(']', i + 1)
+      i = end === -1 ? i + 1 : end + 1
+      continue
+    }
+    if (c === "'" || c === '"') {
+      quote = c
+      i++
+      continue
+    }
+    if (c === '-' && nx === '-') {
+      lineComment = true
+      const eol = text.indexOf('\n', i)
+      if (eol === -1 || eol >= n) break
+      i = eol + 1
+      lineComment = false
+      continue
+    }
+    if (c === '/' && nx === '*') {
+      block = true
+      i += 2
+      continue
+    }
+    i++
+  }
+  return lineComment || block
+}
+
+// ---------- Report utilizzo tabelle (ordinamento) ----------
+
+export type TableReportSortKey =
+  | 'name'
+  | 'rowCount'
+  | 'reservedKb'
+  | 'usedKb'
+  | 'dataKb'
+  | 'indexKb'
+  | 'unusedKb'
+  | 'indexCount'
+  | 'reads'
+  | 'writes'
+  | 'lastRead'
+  | 'lastWrite'
+  | 'createDate'
+
+export type SortDir = 'asc' | 'desc'
+
+/** Confronto di una riga del report per la colonna scelta (numeri e date in modo naturale). */
+export function compareTableReport(
+  a: TableReportRow,
+  b: TableReportRow,
+  key: TableReportSortKey,
+): number {
+  const av = a[key]
+  const bv = b[key]
+  if (typeof av === 'number' && typeof bv === 'number') return av - bv
+  if (typeof av === 'string' && typeof bv === 'string') return av.localeCompare(bv)
+  if (av == null && bv == null) return 0
+  if (av == null) return 1 // i null vanno in fondo (asc)
+  if (bv == null) return -1
+  return String(av).localeCompare(String(bv))
+}
+
+/** Ordinamento stabile del report per la colonna selezionata. */
+export function sortTableReport(
+  rows: TableReportRow[],
+  key: TableReportSortKey,
+  dir: SortDir,
+): TableReportRow[] {
+  const mult = dir === 'asc' ? 1 : -1
+  return [...rows].sort((a, b) => compareTableReport(a, b, key) * mult)
 }
 
 // ---------- Script "as" stile SSMS (tasto destro) ----------
@@ -1299,6 +1467,30 @@ export function colorClassFor(tableKey: string): string {
   return TABLE_COLOR_PALETTE[h % TABLE_COLOR_PALETTE.length]
 }
 
+/**
+ * Assegna ai `tableKeys` del documento classi colore TUTTE diverse (finché ci sono
+ * colori disponibili): se l'hash di due tabelle collide (es. in una query con 4
+ * tabelle ne comparivano solo 2 di colori), la seconda viene spostata sul primo
+ * colore libero della palette — così OGNI tabella ha il suo colore.
+ * Il colore resta stabile quando non ci sono collisioni (stesso hash di prima).
+ */
+export function colorClassMapForKeys(keys: Iterable<string>): Map<string, string> {
+  const map = new Map<string, string>()
+  const used = new Set<string>()
+  for (const key of keys) {
+    let cls = colorClassFor(key)
+    let guard = 0
+    while (used.has(cls) && guard < TABLE_COLOR_PALETTE.length) {
+      const idx = TABLE_COLOR_PALETTE.indexOf(cls)
+      cls = TABLE_COLOR_PALETTE[(idx + 1) % TABLE_COLOR_PALETTE.length]
+      guard += 1
+    }
+    used.add(cls)
+    map.set(key, cls)
+  }
+  return map
+}
+
 // ---------- Tokenizer SQL + colorazione tabelle/colonne ----------
 
 export interface SqlToken {
@@ -1386,11 +1578,27 @@ export function tokenizeSql(text: string): SqlToken[] {
   return tokens
 }
 
-/** Offset di inizio di ogni statement SQL (dopo i ';' fuori da stringhe/commenti). */
+/** Keyword che, a inizio riga (fuori parentesi), aprono una nuova istruzione di un batch senza ';'. */
+const SQL_STATEMENT_STARTERS = new Set([
+  'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'EXEC', 'EXECUTE', 'DECLARE', 'SET',
+  'PRINT', 'IF', 'WHILE', 'BEGIN', 'CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'USE', 'GO',
+  'BACKUP', 'RESTORE', 'GRANT', 'REVOKE', 'DENY', 'WITH', 'COMMIT', 'ROLLBACK', 'SAVE',
+  'RAISERROR', 'THROW', 'RETURN', 'WAITFOR', 'CHECKPOINT', 'DBCC', 'KILL',
+])
+
+/**
+ * Offset di inizio di ogni statement SQL: dopo i ';' fuori da stringhe/commenti,
+ * dopo una riga "GO" e dopo un a-capo a profondità 0 seguito da una keyword di
+ * statement ("declare @a int\nupdate dbo.T set …" sono DUE statement anche senza ';').
+ * Così una SELECT di un'istruzione PRECEDENTE non inquina le colonne dello statement
+ * corrente (es. "update ... set CAMPO" non antepone il nome tabella a un campo che
+ * è univoco NEL SUO statement ma condiviso con le tabelle di prima).
+ */
 export function findSqlStatementStarts(text: string): number[] {
   const starts = [0]
   let i = 0
   const n = text.length
+  let depth = 0
   while (i < n) {
     const ch = text[i]
     if (ch === "'" || ch === '"') {
@@ -1406,10 +1614,38 @@ export function findSqlStatementStarts(text: string): number[] {
       i = end === -1 ? n : end + 2
       continue
     }
+    if (ch === '(') {
+      depth += 1
+      i++
+      continue
+    }
+    if (ch === ')') {
+      depth = Math.max(0, depth - 1)
+      i++
+      continue
+    }
     if (ch === ';') {
       starts.push(i + 1)
       i++
       continue
+    }
+    if (ch === '\n' && depth === 0) {
+      // la riga successiva (dopo spazi/tab) inizia con una keyword di statement → nuovo statement
+      let j = i + 1
+      while (j < n && (text[j] === ' ' || text[j] === '\t' || text[j] === '\r' || text[j] === '\n')) j++
+      const word = /^[A-Za-z_][A-Za-z0-9_]*/.exec(text.slice(j, j + 40))
+      if (word && SQL_STATEMENT_STARTERS.has(word[0].toUpperCase())) {
+        // "SET" a inizio riga NON rompe un UPDATE scritto su più righe:
+        // "update dbo.T\nset col = …" è UN solo statement.
+        const prevChunk = text.slice(starts[starts.length - 1], j)
+        const setContinuesUpdate =
+          word[0].toUpperCase() === 'SET' && /\bUPDATE\b/i.test(prevChunk)
+        if (!setContinuesUpdate) {
+          starts.push(j)
+          i = j
+          continue
+        }
+      }
     }
     i++
   }
@@ -1681,15 +1917,30 @@ function msDescription(props: { name: string; value: string }[] | null | undefin
 }
 
 /**
+ * True se il tipo di una funzione è TABELLARE (usabile come sorgente in FROM/JOIN/APPLY).
+ * Accetta sia i codici brevi di sys.objects.type ('IF' inline, 'TF' table-valued)
+ * sia i type_desc del backend ('SQL_INLINE_TABLE_VALUED_FUNCTION',
+ * 'SQL_TABLE_VALUED_FUNCTION', 'CLR_TABLE_VALUED_FUNCTION'…): il backend manda i
+ * type_desc, quindi confrontare solo 'IF'/'TF' faceva trattare TUTTE le funzioni come
+ * scalari → le funzioni tabellari non comparivano dopo FROM/JOIN (bug utente).
+ */
+export function isTableValuedFunctionType(type: string | null | undefined): boolean {
+  const t = (type ?? '').trim().toUpperCase()
+  if (t === '') return false
+  if (t === 'IF' || t === 'TF') return true
+  return t.includes('TABLE_VALUED') || t.includes('TABLE VALUED')
+}
+
+/**
  * Separa le funzioni utente del database per tipo d'uso:
- * - `scalars` (FN e tipi sconosciuti): utilizzabili nelle ESPRESSIONI (SELECT/WHERE/GROUP BY/…);
- * - `tableValued` (IF inline / TF): utilizzabili SOLO come sorgente (FROM/JOIN/APPLY), come le tabelle.
+ * - `scalars` (FN/SQL_SCALAR_FUNCTION e tipi sconosciuti): usabili nelle ESPRESSIONI;
+ * - `tableValued` (IF/TF e varianti SQL_/CLR_): usabili SOLO come sorgente (FROM/JOIN/APPLY).
  */
 export function splitUserFunctions(functions: FunctionInfo[]): { scalars: FunctionInfo[]; tableValued: FunctionInfo[] } {
   const scalars: FunctionInfo[] = []
   const tableValued: FunctionInfo[] = []
   for (const f of functions) {
-    if (f.type === 'IF' || f.type === 'TF') tableValued.push(f)
+    if (isTableValuedFunctionType(f.type)) tableValued.push(f)
     else scalars.push(f)
   }
   return { scalars, tableValued }
@@ -1931,14 +2182,83 @@ export function buildExecParamSnippet(parameters: ProcParamInfo[]): string {
 // ---------- Definizioni oggetti (Create or Alter) ----------
 
 /**
- * Prepara una definizione per la modifica: "CREATE PROCEDURE ..." →
- * "CREATE OR ALTER PROCEDURE ..." (eseguibile anche su un oggetto esistente).
- * "CREATE OR ALTER ..." resta invariato; se non inizia con CREATE, testo invariato.
+ * Normalizza l'icona/simbolo/emoji di una tab: spazi compattati, trim, massimo 4
+ * code point (un'emoji composta come "⚠️" resta integra); vuota → undefined.
+ */
+export function normalizeTabIcon(value: string | null | undefined): string | undefined {
+  const t = (value ?? '').replace(/\s+/g, ' ').trim()
+  if (!t) return undefined
+  return Array.from(t).slice(0, 4).join('')
+}
+
+/** Icone proposte nel selettore della tab (l'utente può comunque scriverne una sua). */
+export const TAB_ICON_PRESETS = [
+  '⭐',
+  '🔥',
+  '✅',
+  '⚠️',
+  '🐞',
+  '🐉',
+  '🚀',
+  '📝',
+  '📊',
+  '🔎',
+  '💡',
+  '🧪',
+  '🧩',
+  '🛠️',
+  '📌',
+  '🐢',
+] as const
+
+/**
+ * Prepara una definizione per la modifica: "CREATE PROCEDURE ..." o "ALTER PROCEDURE ..."
+ * → "CREATE OR ALTER PROCEDURE ..." (eseguibile anche su un oggetto esistente).
+ * "CREATE OR ALTER ..." resta invariato; se non inizia con CREATE/ALTER, testo invariato.
+ * Prima dell'intestazione salta BOM, spazi e commenti iniziali (riga o a blocco), così
+ * "Modifica" apre SEMPRE in CREATE OR ALTER anche se la definizione non parte
+ * letteralmente con CREATE/ALTER.
+ *
+ * I commenti iniziali si conservano COSÌ COME SONO, spazi e righe vuote comprese
+ * (nel DB reale gli header sono fatti di più commenti a blocco separati da righe vuote),
+ * e l'istruzione viene sempre portata su una RIGA NUOVA: senza questo, un header
+ * "/* note *\/" finiva attaccato all'istruzione ("/* note *\/CREATE OR ALTER ...").
  */
 export function toCreateOrAlterStatement(definition: string): string {
-  const m = /^\s*CREATE\s+(?:OR\s+ALTER\s+)?/i.exec(definition)
+  const start = definition.charCodeAt(0) === 0xfeff ? 1 : 0
+  const n = definition.length
+  let i = start
+  // fine dell'ultimo commento iniziale trovato (-1 = nessun commento)
+  let lastCommentEnd = -1
+  for (;;) {
+    // spazi e righe vuote: non si perdono, restano nel prefisso (slice più sotto)
+    while (i < n && (definition[i] === ' ' || definition[i] === '\t' || definition[i] === '\n' || definition[i] === '\r')) i += 1
+    const ch = definition[i]
+    if (ch === '-' && definition[i + 1] === '-') {
+      const eol = definition.indexOf('\n', i + 2)
+      i = eol === -1 ? n : eol + 1
+      lastCommentEnd = i
+      continue
+    }
+    if (ch === '/' && definition[i + 1] === '*') {
+      const close = definition.indexOf('*/', i + 2)
+      i = close === -1 ? n : close + 2
+      lastCommentEnd = i
+      continue
+    }
+    break
+  }
+  const head = definition.slice(i)
+  const m = /^(?:CREATE|ALTER)\s+(?:OR\s+ALTER\s+)?/i.exec(head)
   if (!m) return definition
-  return 'CREATE OR ALTER ' + definition.slice(m[0].length)
+  // prefisso = commenti iniziali (e le righe vuote fra loro) copiati IDENTICI dal testo
+  // originale; `between` è lo spazio rimasto fra l'ultimo commento e l'istruzione:
+  // se contiene già un a capo si tiene così com'è, altrimenti se ne aggiunge uno, così
+  // CREATE OR ALTER non finisce mai attaccato al commento.
+  const prefix = lastCommentEnd === -1 ? '' : definition.slice(start, lastCommentEnd)
+  const between = lastCommentEnd === -1 ? '' : definition.slice(lastCommentEnd, i)
+  const sep = prefix.length === 0 ? '' : /[\r\n]/.test(between) ? between : '\n'
+  return prefix + sep + 'CREATE OR ALTER ' + head.slice(m[0].length)
 }
 
 /** Parole chiave che non possono essere alias di tabella: se seguono il nome, la tabella non ha alias. */
@@ -1967,7 +2287,8 @@ const TABLE_ALIAS_BLOCK =
  */
 const TABLE_REF_RE = new RegExp(
   '\\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\\s+' +
-    '((?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*(?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*))?)' +
+    // '#'/'@' ammessi: tabelle temporanee (#temp, ##globale) e variabili tabella (@t)
+    '((?:[@#][A-Za-z0-9_#]+|\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*(?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*))?)' +
     '(?:\\s+(?:AS\\s+)?(?!(?:' + TABLE_ALIAS_BLOCK + ')\\b)([A-Za-z_][A-Za-z0-9_]*))?',
   'gi',
 )
@@ -2017,7 +2338,7 @@ export function colorizeSqlTokens(text: string, summary: DatabaseSummary): Color
   // funzioni TABELLARI (IF = inline, TF = table-valued): colorate come le tabelle
   const tvfByLower = new Map<string, FunctionInfo>()
   for (const f of summary.functions) {
-    if (f.type === 'IF' || f.type === 'TF') tvfByLower.set(f.name.toLowerCase(), f)
+    if (isTableValuedFunctionType(f.type)) tvfByLower.set(f.name.toLowerCase(), f)
   }
   const columnOwners = new Map<string, string[]>()
   for (const t of summary.tables) {

@@ -45,7 +45,12 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Multi-tab',
         detail:
-          'Apri più query in tab separate: trascina per riordinarle, clicca la puntina per appuntarle (non chiudibili, restano in testa), chiudi con la X. Le tab vengono ripristinate al riavvio.',
+          'Apri più query in tab separate: trascina per riordinarle, clicca la puntina per appuntarle (non chiudibili, restano in testa), chiudi con la X. Le tab vengono ripristinate al riavvio. Con l\'icona nota (o tasto destro → "Icona / titolo / descrizione…") puoi dare a ogni tab un simbolo/emoji (⭐ 🐞 ⚠️ …) che resta visibile nella barra.',
+      },
+      {
+        title: 'Tante tab? Tasto destro e "»"',
+        detail:
+          'Tasto destro su una tab per chiudere in blocco come in SSMS: tutte le altre, quelle a destra, quelle a sinistra, o tutte le non appuntate (le appuntate sono protette). Quando le tab non stanno in una riga vanno a capo su una seconda riga; se non bastano nemmeno due righe compare il pulsante "»" che elenca tutte le tab aperte.',
       },
       {
         title: 'Esegui query',
@@ -88,6 +93,11 @@ export const HELP_SECTIONS: HelpSection[] = [
         title: 'Tasto destro su un oggetto',
         detail:
           'Menu contestuale stile SSMS: per le tabelle "Seleziona le prime 1000 righe" e gli script per ogni operazione (Script CREATE, Script DROP, Script SELECT, Script INSERT, Script UPDATE, Script DELETE, Script MERGE); per procedure/funzioni/viste/trigger "Modifica" (CREATE OR ALTER), "Apri definizione" ed EXEC con parametri.',
+      },
+      {
+        title: 'Diagramma chiamate',
+        detail:
+          'Tasto destro su una stored procedure o una funzione → "Diagramma chiamate": mostra i legami con le altre routine, salendo fino al chiamante più lontano (o scendendo verso quello che chiama). I cicli e le routine ricorsive sono segnalati con ↻ invece di bloccare il disegno. Clic su una routine per i dettagli, doppio clic per ricentrare il diagramma, e da lì si apre la definizione in una nuova tab.',
       },
       {
         title: 'Cerca',
@@ -161,7 +171,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Griglia risultati',
         detail:
-          'Ogni result set appare in una tabella con le colonne tipizzate. Le celle si possono selezionare e copiare; in alto il conteggio righe e il tempo di esecuzione.',
+          'Ogni result set appare in una tabella con le colonne tipizzate. Le celle si possono selezionare e copiare; in alto il conteggio righe e il tempo di esecuzione. Il numero di riga sta nella prima colonna (insieme alla casella di selezione resta fisso a sinistra mentre si scorre), le colonne sono separate da una linea verticale e le righe hanno tre colori alternati. Trascinando l\'intestazione di una colonna la si può spostare: cambia solo la vista, mentre selezione e SQL generato seguono l\'ordine originale.',
       },
       {
         title: 'Stampa',

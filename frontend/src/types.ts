@@ -74,6 +74,13 @@ export interface ForeignKeyInfo {
   refColumn: string
 }
 
+export interface IndexInfo {
+  name: string
+  isPrimaryKey: boolean
+  isUnique: boolean
+  columns: string[] | null
+}
+
 export interface TableInfo {
   schema: string
   name: string
@@ -82,6 +89,7 @@ export interface TableInfo {
   columns: ColumnInfo[] | null
   usage: TableUsage | null
   extendedProperties: ExtendedProperty[] | null
+  indexes?: IndexInfo[] | null
 }
 
 export interface ViewInfo {
@@ -111,6 +119,16 @@ export interface TriggerInfo {
   name: string
 }
 
+/** Vincolo CHECK di una tabella: nome, tabella e testo della condizione. */
+export interface CheckConstraintInfo {
+  schema: string
+  tableName: string
+  name: string
+  /** Testo della condizione (es. "([importo]>=(0))"). */
+  definition: string
+  isDisabled?: boolean
+}
+
 export interface FunctionInfo {
   schema: string
   name: string
@@ -128,11 +146,33 @@ export interface TableCooccurrence {
   count: number
 }
 
+/**
+ * Legame di chiamata fra due routine (chi chiama → chi è chiamato), letto dalle dipendenze
+ * reali registrate da SQL Server. `callerType`/`calleeType` sono i tipi di sys.objects
+ * ('P' procedura, 'FN'/'IF'/'TF' funzioni, 'TR' trigger, 'V' vista).
+ */
+export interface RoutineCallEdge {
+  callerSchema: string
+  callerName: string
+  callerType: string
+  calleeSchema: string
+  calleeName: string
+  calleeType: string
+}
+
+/** Grafo delle chiamate fra routine: solo i legami DIRETTI (il percorso si calcola lato client). */
+export interface RoutineCallGraph {
+  edges: RoutineCallEdge[]
+  truncated: boolean
+}
+
 export interface DatabaseSummary {
   tables: TableInfo[]
   views: ViewInfo[]
   procedures: ProcedureInfo[]
   triggers: TriggerInfo[]
+  /** Vincoli CHECK delle tabelle (per mostrarli e modificarli). */
+  checkConstraints?: CheckConstraintInfo[] | null
   functions: FunctionInfo[]
   foreignKeys: ForeignKeyInfo[]
   databases: DatabaseInfo[]
@@ -187,17 +227,43 @@ export interface AutocompleteStatus {
 
 export type ObjectKind = 'table' | 'view' | 'procedure' | 'function' | 'trigger'
 
+/** Riga del report utilizzo tabelle: spazio riservato/usato (KB), righe, indici e accessi. */
+export interface TableReportRow {
+  schema: string
+  name: string
+  createDate: string | null
+  rowCount: number
+  reservedKb: number
+  usedKb: number
+  dataKb: number
+  indexKb: number
+  unusedKb: number
+  indexCount: number
+  reads: number
+  writes: number
+  lastRead: string | null
+  lastWrite: string | null
+}
+
 /** Tab dell'editor (query o definizione oggetto). */
 export interface EditorTab {
   id: string
   title: string
   sql: string
+  /** Descrizione libera della tab (nota dell'utente). */
+  description?: string
+  /** Icona/simbolo/emoji della tab scelto dall'utente (mostrato nella barra). */
+  icon?: string
   /** Tab appuntata: resta in testa e non è chiudibile. */
   pinned?: boolean
   /** Database associato alla tab (per il colore). */
   database?: string
   /** Tab nata da un file (nome = file). */
   fromFile?: boolean
+  /** Nome reale del file (senza .sql): usato per suggerire il salvataggio anche con titolo personalizzato. */
+  fileName?: string
+  /** Titolo rinominato manualmente dall'utente: non va sovrascritto al salvataggio. */
+  titleCustom?: boolean
   /** Handle del file aperto col picker: permette di sovrascrivere l'originale. */
   fileHandle?: FileSystemFileHandle | null
 }
