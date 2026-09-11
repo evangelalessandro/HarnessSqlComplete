@@ -6,6 +6,7 @@ import type {
   ConnectionTestResult,
   DatabaseSummary,
   QueryResult,
+  RoutineCallGraph,
   SavedConnectionDto,
   SearchResult,
   TableReportRow,
@@ -84,6 +85,10 @@ export const api = {
     http<{ definition: string }>(
       `/metadata/${connectionId}/objects/${encodeURIComponent(schema)}/${encodeURIComponent(name)}/definition`,
     ),
+
+  /** Grafo delle chiamate fra routine: legami diretti "chi chiama chi" (per il diagramma). */
+  getRoutineCallGraph: (connectionId: string) =>
+    http<RoutineCallGraph>(`/metadata/${connectionId}/routine-call-graph`),
 
   execute: (connectionId: string, sql: string, timeoutSeconds?: number) =>
     http<QueryResult>(`/query/${connectionId}/execute`, {

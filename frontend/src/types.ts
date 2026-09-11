@@ -146,6 +146,26 @@ export interface TableCooccurrence {
   count: number
 }
 
+/**
+ * Legame di chiamata fra due routine (chi chiama → chi è chiamato), letto dalle dipendenze
+ * reali registrate da SQL Server. `callerType`/`calleeType` sono i tipi di sys.objects
+ * ('P' procedura, 'FN'/'IF'/'TF' funzioni, 'TR' trigger, 'V' vista).
+ */
+export interface RoutineCallEdge {
+  callerSchema: string
+  callerName: string
+  callerType: string
+  calleeSchema: string
+  calleeName: string
+  calleeType: string
+}
+
+/** Grafo delle chiamate fra routine: solo i legami DIRETTI (il percorso si calcola lato client). */
+export interface RoutineCallGraph {
+  edges: RoutineCallEdge[]
+  truncated: boolean
+}
+
 export interface DatabaseSummary {
   tables: TableInfo[]
   views: ViewInfo[]

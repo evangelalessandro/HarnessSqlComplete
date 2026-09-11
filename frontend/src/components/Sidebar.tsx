@@ -18,6 +18,7 @@ import {
   Plus,
   Rows3,
   Search,
+  Share2,
   SquarePen,
   Table2,
   Trash2,
@@ -89,6 +90,8 @@ interface Props {
     name: string,
     mode: 'alter' | 'open',
   ) => void
+  /** Apre il DIAGRAMMA delle chiamate di una routine (chi la chiama / cosa chiama). */
+  onShowCallGraph?: (schema: string, name: string, kind: 'procedure' | 'function') => void
 }
 
 type HitKind = 'tabella' | 'vista' | 'procedura' | 'funzione' | 'trigger' | 'check'
@@ -126,6 +129,7 @@ export default function Sidebar({
   onPreviewInEditor,
   onOpenScript,
   onOpenObject,
+  onShowCallGraph,
   onSwitchDatabase,
   dbColors,
   onSetDbColor,
@@ -445,6 +449,13 @@ export default function Sidebar({
             run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'alter'),
           },
           {
+            id: 'callgraph',
+            label: 'Diagramma chiamate',
+            icon: <Share2 className="h-3.5 w-3.5" />,
+            hint: 'Chi la chiama, fino al chiamante più lontano (cicli segnalati)',
+            run: () => onShowCallGraph?.(hit.schema, hit.name, 'procedure'),
+          },
+          {
             id: 'script',
             label: 'Script stored procedure',
             icon: <FileCode2 className="h-3.5 w-3.5" />,
@@ -466,6 +477,13 @@ export default function Sidebar({
             icon: <SquarePen className="h-3.5 w-3.5" />,
             hint: 'Genera CREATE OR ALTER FUNCTION in una nuova tab',
             run: () => onOpenObject?.('function', hit.schema, hit.name, 'alter'),
+          },
+          {
+            id: 'callgraph',
+            label: 'Diagramma chiamate',
+            icon: <Share2 className="h-3.5 w-3.5" />,
+            hint: 'Chi la chiama, fino al chiamante più lontano (cicli segnalati)',
+            run: () => onShowCallGraph?.(hit.schema, hit.name, 'function'),
           },
           {
             id: 'script',

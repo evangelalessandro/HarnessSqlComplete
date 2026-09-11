@@ -445,6 +445,58 @@ public class MetadataService
         return new DatabaseSummary(tables, views, procs, triggers, checkConstraints, functions, foreignKeys, databases, cooccurrences);
     }
 
+    /// <summary>Numero massimo di legami restituiti (protezione per database molto grandi).</summary>
+    private const int MaxCallEdges = 20000;
+
+    /// <summary>
+    /// Grafo delle chiamate fra routine: chi chiama chi, letto dalle dipendenze reali che
+    /// SQL Server registra per procedure, funzioni, trigger e viste.
+    /// Sono inclusi anche i legami di una routine verso SE STESSA (procedure/funzioni
+    /// ricorsive): il percorso si calcola lato client, che protegge dai cicli.
+    /// </summary>
+    public async Task<RoutineCallGraph> GetRoutineCallGraphAsync(string connectionString, CancellationToken ct = default)
+    {
+        await using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        // Un solo giro sul catalogo: si leggono i legami diretti, il resto si calcola dopo.
+        // - chi chiama: procedure, trigger, funzioni e viste (una vista che usa una funzione
+        //   è un punto di partenza reale della catena);
+        // - chi è chiamato: solo routine (procedure e funzioni), non tabelle o viste.
+        cmd.CommandText = """
+            SELECT DISTINCT
+                   s1.name AS CallerSchema, o1.name AS CallerName, RTRIM(o1.type) AS CallerType,
+                   s2.name AS CalleeSchema, o2.name AS CalleeName, RTRIM(o2.type) AS CalleeType
+            FROM sys.sql_expression_dependencies d
+            INNER JOIN sys.objects o1 ON o1.object_id = d.referencing_id
+            INNER JOIN sys.schemas s1 ON s1.schema_id = o1.schema_id
+            INNER JOIN sys.objects o2 ON o2.object_id = d.referenced_id
+            INNER JOIN sys.schemas s2 ON s2.schema_id = o2.schema_id
+            WHERE d.referenced_id IS NOT NULL
+              AND o1.is_ms_shipped = 0
+              AND o2.is_ms_shipped = 0
+              AND o1.type IN ('P', 'TR', 'FN', 'IF', 'TF', 'V')
+              AND o2.type IN ('P', 'FN', 'IF', 'TF')
+            ORDER BY CallerSchema, CallerName, CalleeSchema, CalleeName;
+            """;
+
+        var edges = new List<RoutineCallEdge>();
+        var truncated = false;
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+        {
+            if (edges.Count >= MaxCallEdges)
+            {
+                truncated = true;
+                break;
+            }
+            edges.Add(new RoutineCallEdge(
+                r.GetString(0), r.GetString(1), r.GetString(2),
+                r.GetString(3), r.GetString(4), r.GetString(5)));
+        }
+        return new RoutineCallGraph(edges, truncated);
+    }
+
     public async Task<List<ColumnInfo>> GetTableColumnsAsync(string connectionString, string schema, string table, CancellationToken ct = default)
     {
         await using var conn = new SqlConnection(connectionString);

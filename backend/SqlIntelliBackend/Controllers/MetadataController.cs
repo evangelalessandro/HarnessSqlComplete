@@ -130,10 +130,29 @@ public class MetadataController(
         return Ok(new ObjectDefinitionResponse(definition));
     }
 
+    /// <summary>
+    /// Grafo delle chiamate fra routine (procedure, funzioni, trigger, viste): i legami
+    /// diretti "chi chiama chi". Il percorso fino al chiamante più lontano — con la
+    /// protezione dai cicli — si calcola lato client su questi dati.
+    /// </summary>
+    [HttpGet("routine-call-graph")]
+    public async Task<ActionResult<RoutineCallGraph>> RoutineCallGraph([FromRoute] string connectionId, CancellationToken ct)
+    {
+        if (!TryGetConnectionString(connectionId, out var cs))
+            return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
+
+        var cached = cache.GetCallGraph(connectionId);
+        if (cached is not null)
+            return Ok(cached);
+
+        var graph = await metadata.GetRoutineCallGraphAsync(cs, ct);
+        cache.SetCallGraph(connectionId, graph);
+        return Ok(graph);
+    }
+
     [HttpGet("search")]
     public async Task<ActionResult<List<SearchResult>>> Search(
-        [FromRoute] string connectionId, [FromQuery] string q, CancellationToken ct)
-    {
+        [FromRoute] string connectionId, [FromQuery] string q, CancellationToken ct)    {
         if (!TryGetConnectionString(connectionId, out var cs))
             return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
         var results = await metadata.SearchAsync(cs, q, ct);

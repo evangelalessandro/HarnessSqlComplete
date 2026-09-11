@@ -119,6 +119,24 @@ public record DatabaseSummary(
 /// <summary>Coppia di tabelle che compaiono insieme nei JOIN reali delle stored procedure (per ranking).</summary>
 public record TableCooccurrence(string TableA, string TableB, int Count);
 
+/// <summary>
+/// Legame di chiamata fra due routine (chi chiama → chi è chiamato), ricavato dalle
+/// dipendenze reali registrate da SQL Server (sys.sql_expression_dependencies).
+/// </summary>
+public record RoutineCallEdge(
+    string CallerSchema,
+    string CallerName,
+    string CallerType,
+    string CalleeSchema,
+    string CalleeName,
+    string CalleeType);
+
+/// <summary>
+/// Grafo delle chiamate fra routine: solo i legami DIRETTI. Il percorso fino al chiamante
+/// più lontano si calcola lato client, che è anche il posto dove si gestiscono i cicli.
+/// </summary>
+public record RoutineCallGraph(List<RoutineCallEdge> Edges, bool Truncated);
+
 // ---------- Query ----------
 
 public record ExecuteRequest(string Sql, int? TimeoutSeconds, bool CheckSyntax = false);

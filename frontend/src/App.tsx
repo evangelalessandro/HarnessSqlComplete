@@ -11,7 +11,7 @@ import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
 import { buildTabClosePlan, countClosableTabs, insertTabAfterActive } from './tabOps'
 import type { TabCloseMode } from './tabOps'
-import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryResult } from './types'
+import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryResult, RoutineCallGraph } from './types'
 import { chooseResultTab } from './queryTabs'
 import {
   clearQueryStats,
@@ -23,6 +23,8 @@ import {
   type QueryStats,
 } from './gamification'
 import { QueryStatsBadge, QueryStatsModal } from './components/QueryStatsPanel'
+import CallGraphModal from './components/CallGraphModal'
+import type { CallGraphTarget } from './components/CallGraphModal'
 import LoginScreen from './components/LoginScreen'
 import Sidebar from './components/Sidebar'
 import SqlEditor, { DEFAULT_SQL } from './components/SqlEditor'
@@ -41,6 +43,12 @@ export default function App() {
   const [connection, setConnection] = useState<ConnectResponse | null>(null)
   const [summary, setSummary] = useState<DatabaseSummary | null>(null)
   const [loadingSummary, setLoadingSummary] = useState(false)
+  // DIAGRAMMA CHIAMATE: legami fra routine (chi chiama chi) di tutto il database,
+  // caricati alla prima apertura del diagramma e riusati; routine analizzata + stato.
+  const [callGraph, setCallGraph] = useState<RoutineCallGraph | null>(null)
+  const [callGraphTarget, setCallGraphTarget] = useState<CallGraphTarget | null>(null)
+  const [callGraphLoading, setCallGraphLoading] = useState(false)
+  const [callGraphError, setCallGraphError] = useState<string | null>(null)
   // Risultati LEGATI alla singola tab dell'editor (non condivisi tra le tab)
   const [tabResults, setTabResults] = useState<Record<string, QueryResult | null>>({})
   const [tabExecuting, setTabExecuting] = useState<Record<string, boolean>>({})
@@ -691,6 +699,7 @@ export default function App() {
     }
     setConnection(null)
     setSummary(null)
+    setCallGraph(null)
     setTabResults({})
     setTabExecuting({})
     setTabResultTab({})
@@ -817,8 +826,37 @@ export default function App() {
     [connection, newEditorTab],
   )
 
-  /** Apre i file SQL trascinati (drag & drop) in nuove tab (nome = file, sovrascrittura via picker). */
-  const handleOpenFiles = useCallback(
+  /**
+   * DIAGRAMMA CHIAMATE: apre la finestra con i legami della routine indicata.
+   * I legami di tutto il database si leggono una volta sola (sono ~1700 in WSBRITVIC) e
+   * restano in memoria: ricentrare il diagramma o cambiare direzione non richiede il backend.
+   */
+  const loadCallGraph = useCallback(
+    async (force = false) => {
+      if (!connection) return
+      if (!force && callGraph) return
+      setCallGraphLoading(true)
+      setCallGraphError(null)
+      try {
+        setCallGraph(await api.getRoutineCallGraph(connection.connectionId))
+      } catch (e) {
+        setCallGraphError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setCallGraphLoading(false)
+      }
+    },
+    [connection, callGraph],
+  )
+
+  const openCallGraph = useCallback(
+    (schema: string, name: string, kind: 'procedure' | 'function') => {
+      setCallGraphTarget({ schema, name, kind })
+      void loadCallGraph()
+    },
+    [loadCallGraph],
+  )
+
+  /** Apre i file SQL trascinati (drag & drop) in nuove tab (nome = file, sovrascrittura via picker). */  const handleOpenFiles = useCallback(
     (files: { name: string; content: string }[]) => {
       for (const f of files) {
         newEditorTab(f.name.replace(/\.sql$/i, ''), f.content, connection?.database, true)
@@ -985,6 +1023,7 @@ export default function App() {
               onPreviewInEditor={handlePreviewInEditor}
               onOpenScript={handleOpenScript}
               onOpenObject={handleOpenObject}
+              onShowCallGraph={openCallGraph}
               onSwitchDatabase={handleSwitchDatabase}
               dbColors={dbColors}
               onSetDbColor={handleSetDbColor}
@@ -1283,6 +1322,19 @@ export default function App() {
       </div>
       {helpOpen && <HelpPage onClose={() => setHelpOpen(false)} />}
       {statsOpen && activeStats && <QueryStatsModal stats={activeStats} onClose={() => setStatsOpen(false)} />}
+
+      {/* Diagramma delle chiamate: chi chiama una routine, fino al chiamante più lontano */}
+      {callGraphTarget && (
+        <CallGraphModal
+          target={callGraphTarget}
+          graph={callGraph}
+          loading={callGraphLoading}
+          error={callGraphError}
+          onClose={() => setCallGraphTarget(null)}
+          onReload={() => void loadCallGraph(true)}
+          onOpenObject={(kind, schema, name) => handleOpenObject(kind, schema, name, 'alter')}
+        />
+      )}
 
       {/* Popover: titolo e descrizione libera della tab */}
       {descEditingTab && (
