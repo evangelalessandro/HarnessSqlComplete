@@ -463,20 +463,44 @@ public class MetadataService
         // - chi chiama: procedure, trigger, funzioni e viste (una vista che usa una funzione
         //   è un punto di partenza reale della catena);
         // - chi è chiamato: solo routine (procedure e funzioni), non tabelle o viste.
+        //
+        // CHIAMATE NON QUALIFICATE: quando il codice fa "EXEC nomeproc" senza lo schema,
+        // SQL Server non sa risolvere il nome in fase di compilazione e lascia
+        // referenced_id a NULL con is_caller_dependent = 1. Con un INNER JOIN su
+        // referenced_id quei legami sparivano dal diagramma (in WSGSDMALTA erano 671, e
+        // per questo non comparivano chiamanti come dbo.ws_L2_GestMissWaitCorr).
+        // Qui il nome viene risolto sul catalogo: si preferisce lo schema del chiamante
+        // (è la regola con cui SQL Server risolve a runtime), altrimenti il primo in
+        // ordine alfabetico — scelta deterministica, così il grafo è sempre lo stesso.
         cmd.CommandText = """
             SELECT DISTINCT
                    s1.name AS CallerSchema, o1.name AS CallerName, RTRIM(o1.type) AS CallerType,
-                   s2.name AS CalleeSchema, o2.name AS CalleeName, RTRIM(o2.type) AS CalleeType
+                   COALESCE(s2.name, s3.name) AS CalleeSchema,
+                   COALESCE(o2.name, o3.name) AS CalleeName,
+                   RTRIM(COALESCE(o2.type, o3.type)) AS CalleeType
             FROM sys.sql_expression_dependencies d
             INNER JOIN sys.objects o1 ON o1.object_id = d.referencing_id
             INNER JOIN sys.schemas s1 ON s1.schema_id = o1.schema_id
-            INNER JOIN sys.objects o2 ON o2.object_id = d.referenced_id
-            INNER JOIN sys.schemas s2 ON s2.schema_id = o2.schema_id
-            WHERE d.referenced_id IS NOT NULL
-              AND o1.is_ms_shipped = 0
-              AND o2.is_ms_shipped = 0
+            LEFT JOIN sys.objects o2 ON o2.object_id = d.referenced_id
+            LEFT JOIN sys.schemas s2 ON s2.schema_id = o2.schema_id
+            OUTER APPLY (
+                SELECT TOP (1) o3.name, o3.type, o3.schema_id
+                FROM sys.objects o3
+                INNER JOIN sys.schemas sc ON sc.schema_id = o3.schema_id
+                WHERE o2.object_id IS NULL
+                  AND o3.name = d.referenced_entity_name
+                  AND o3.type IN ('P', 'FN', 'IF', 'TF')
+                  AND o3.is_ms_shipped = 0
+                  AND (d.referenced_schema_name IS NULL
+                       OR d.referenced_schema_name = ''
+                       OR d.referenced_schema_name = sc.name)
+                ORDER BY CASE WHEN sc.name = s1.name THEN 0 ELSE 1 END, sc.name
+            ) o3
+            LEFT JOIN sys.schemas s3 ON s3.schema_id = o3.schema_id
+            WHERE o1.is_ms_shipped = 0
               AND o1.type IN ('P', 'TR', 'FN', 'IF', 'TF', 'V')
-              AND o2.type IN ('P', 'FN', 'IF', 'TF')
+              AND ((d.referenced_id IS NOT NULL AND o2.type IN ('P', 'FN', 'IF', 'TF'))
+                   OR o3.name IS NOT NULL)
             ORDER BY CallerSchema, CallerName, CalleeSchema, CalleeName;
             """;
 

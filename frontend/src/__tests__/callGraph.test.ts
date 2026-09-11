@@ -312,6 +312,18 @@ describe('GRAFO REALE di WSBRITVIC (1696 legami)', () => {
     expect(selfLoops.map(e => e.callerName)).toContain('fn_tabUdcFront')
   })
 
+  it('contiene anche i legami da CHIAMATE NON QUALIFICATE (risolte per nome dal backend)', () => {
+    // Quando il codice fa "EXEC nomeproc" senza schema, SQL Server lascia referenced_id a
+    // NULL (is_caller_dependent = 1) e il legame va risolto per nome: in WSBRITVIC erano
+    // 524 legami invisibili al diagramma. Se il backend tornasse a scartarli, questo
+    // fixture (rigenerato) perderebbe questi legami e il test lo segnalerebbe.
+    expect(realCallEdges.length).toBeGreaterThan(2000)
+    const selfLoops = realCallEdges.filter(e => e.callerName === e.calleeName && e.callerSchema === e.calleeSchema)
+    // due ricorsioni vengono fuori solo grazie alla risoluzione per nome
+    expect(selfLoops.map(e => e.callerName)).toContain('ws_L1_Azt_05')
+    expect(selfLoops.map(e => e.callerName)).toContain('ws_L2_ORD_Export')
+  })
+
   it('salendo dai chiamanti di una funzione molto usata si termina in fretta', () => {
     const started = Date.now()
     const view = walkCallGraph(index, { schema: 'dbo', name: 'fn_InsFromString' }, 'callers', {

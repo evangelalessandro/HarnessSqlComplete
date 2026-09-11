@@ -415,8 +415,9 @@ export default function CallGraphModal({
                 <p className="text-amber-400">↻ tratteggiato = legame che chiude un ciclo (chiamata ricorsiva o catena che si richiude).</p>
                 <p>Tabelle e campi non compaiono: il diagramma segue solo i legami fra routine.</p>
                 <p className="text-zinc-500">
-                  I legami arrivano dalle dipendenze registrate da SQL Server: il codice costruito con SQL dinamico (EXEC di una stringa)
-                  non è tracciabile.
+                  I legami arrivano dalle dipendenze registrate da SQL Server. Le chiamate scritte senza schema
+                  («EXEC nomeproc») vengono risolte per nome sullo schema del chiamante, come fa il server; il codice
+                  costruito con SQL dinamico (EXEC di una stringa) non è invece tracciabile.
                 </p>
               </div>
             )}
