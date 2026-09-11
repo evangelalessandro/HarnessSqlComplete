@@ -26,7 +26,7 @@ import FormatProfilePanel from './FormatProfilePanel'
 import { Badge, Button, Spinner, Toggle } from './ui'
 
 /** Testo del tipo per il dettaglio di una colonna ("INT NULL"), o '' se il tipo
- *  non Ã¨ noto (colonne di temporanee dedotte da "SELECT â€¦ INTO", variabili tabellaâ€¦). */
+ *  non è noto (colonne di temporanee dedotte da "SELECT … INTO", variabili tabella…). */
 
 interface Props {
   connectionId: string
@@ -62,7 +62,7 @@ interface Props {
   registerEditor: (editor: monaco.editor.IStandaloneCodeEditor) => void
 }
 
-export const DEFAULT_SQL = `-- Nuova query â€” modello transazione sicura
+export const DEFAULT_SQL = `-- Nuova query — modello transazione sicura
 -- Sostituisci dbo.Tabella e premi F5 / Ctrl+Invio
 BEGIN TRAN;
 
@@ -133,7 +133,7 @@ export default function SqlEditor({
   const hoveredTableRef = useRef<{ schema: string; table: string } | null>(null)
 
   // Il link "command:sqlIntelli.openPreview" nella tooltip NON esegue comandi in
-  // Monaco standalone (l'opener dei command: Ã¨ roba da workbench): intercettiamo il
+  // Monaco standalone (l'opener dei command: è roba da workbench): intercettiamo il
   // click sull'anchor con un listener a livello documento e apriamo la preview.
   useEffect(() => {
     const onClick = (ev: MouseEvent) => {
@@ -184,7 +184,7 @@ export default function SqlEditor({
   /**
    * Verifica di sintassi opzionale: con il toggle attivo, a ogni modifica (debounce)
    * chiede al backend di eseguire il testo in una transazione con rollback; gli errori
-   * reali di SQL Server ("Riga N: â€¦") diventano sottolineature nel documento.
+   * reali di SQL Server ("Riga N: …") diventano sottolineature nel documento.
    */
   useEffect(() => {
     const model = editorRef.current?.getModel()
@@ -252,7 +252,7 @@ export default function SqlEditor({
   }
 
   /**
-   * Testo da eseguire: come SSMS, se c'Ã¨ una selezione nell'editor viene eseguita
+   * Testo da eseguire: come SSMS, se c'è una selezione nell'editor viene eseguita
    * SOLO la selezione (ripulita dagli spazi ai bordi); altrimenti tutto il contenuto.
    */
   const getSqlToExecute = (): string => {
@@ -396,7 +396,7 @@ export default function SqlEditor({
         provideInlineCompletions: async (model, position, context, token) => {
           const st = stateRef.current
           if (!st.aiEnabled) return { items: [] }
-          // la preview dati ha un mini-editor: niente autocompletamento IA lÃ¬
+          // la preview dati ha un mini-editor: niente autocompletamento IA lì
           if (model.uri.toString().startsWith('sql-intelli://preview')) return { items: [] }
 
           const textBefore = model.getValueInRange(
@@ -482,12 +482,12 @@ export default function SqlEditor({
       const text = m.getValue()
       const guides = computeBlockGuides(text)
       const newDecorations: monaco.editor.IModelDeltaDecoration[] = []
-      // piÃ¹ guide sulla STESSA colonna di una riga (es. IF agganciato al BEGIN) â†’
+      // più guide sulla STESSA colonna di una riga (es. IF agganciato al BEGIN) →
       // una sola linea: niente linee doppie
       const guideKeys = new Set<string>()
       for (const g of guides) {
         // linea verticale su ogni riga compresa tra apertura e chiusura (incluse).
-        // Sulle righe vuote o piÃ¹ corte della colonna della guida Monaco non disegna
+        // Sulle righe vuote o più corte della colonna della guida Monaco non disegna
         // il box (la linea si interrompe): si usa la fine della riga e si compensa con
         // un margine in "ch" (classe sql-guide-offset-N) per restare sulla colonna giusta.
         for (let line = g.openLine; line <= g.closeLine; line++) {
@@ -533,7 +533,7 @@ export default function SqlEditor({
   /**
    * Folding: chiudi/espandi porzioni di codice con le frecce nella gutter.
    * Copre blocchi BEGIN/END, regioni SSMS (--#region/--#endregion) e commenti
-   * a blocco su piÃ¹ righe. Scorciatoie Monaco: Ctrl+Shift+[ (chiudi), Ctrl+Shift+]
+   * a blocco su più righe. Scorciatoie Monaco: Ctrl+Shift+[ (chiudi), Ctrl+Shift+]
    * (apri), Ctrl+K Ctrl+L (alterna), Ctrl+K Ctrl+0 (chiudi tutto), Ctrl+K Ctrl+J (apri tutto).
    */
   const registerFolding = () => {
@@ -569,7 +569,7 @@ export default function SqlEditor({
                 onExecute(sql)
               }}
               loading={executing}
-              title="Esegui (F5 / Ctrl+Invio) â€” se hai selezionato del testo esegue solo la selezione"
+              title="Esegui (F5 / Ctrl+Invio) — se hai selezionato del testo esegue solo la selezione"
             >
               <Play className="h-4 w-4" /> Esegui
             </Button>
@@ -588,16 +588,16 @@ export default function SqlEditor({
                       fontSize: `${14 + Math.min(dragonLevel / 100, 1) * 10}px`,
                     }}
                   >
-                    ðŸ”¥
+                    🔥
                   </span>
                 ))}
               </div>
             )}
           </span>
-          <Button variant="secondary" onClick={() => onSave?.()} title="Salva la query (Ctrl+S) â€” sovrascrive il file originale se aperto">
+          <Button variant="secondary" onClick={() => onSave?.()} title="Salva la query (Ctrl+S) — sovrascrive il file originale se aperto">
             <Save className="h-4 w-4" /> Salva
           </Button>
-          <Button variant="ghost" onClick={() => onSaveAs?.()} title="Salva con nome (Ctrl+Shift+S) â€” scegli dove salvarla">
+          <Button variant="ghost" onClick={() => onSaveAs?.()} title="Salva con nome (Ctrl+Shift+S) — scegli dove salvarla">
             <Save className="h-4 w-4" /> Salva con nome
           </Button>
           <Button variant="ghost" onClick={() => onOpenFile?.()} title="Apri file .sql (permette di sovrascrivere l'originale)">
@@ -633,7 +633,7 @@ export default function SqlEditor({
           >
             <IndentDecrease className="h-4 w-4" /> Fuori rientro
           </Button>
-          <Button variant="secondary" onClick={handleFormat} title="Formatta (Ctrl+Shift+F) â€” con una selezione formatta solo quella parte">
+          <Button variant="secondary" onClick={handleFormat} title="Formatta (Ctrl+Shift+F) — con una selezione formatta solo quella parte">
             <Wand2 className="h-4 w-4" /> Formatta
           </Button>
           <Button
@@ -650,7 +650,7 @@ export default function SqlEditor({
                 setPreviewTarget({ schema: resolved.table.schema, table: resolved.table.name })
               }
             }}
-            title="Anteprima dati della tabella sotto il cursore (F4) â€” genera INSERT/UPDATE/MERGE/DELETE/#tmp"
+            title="Anteprima dati della tabella sotto il cursore (F4) — genera INSERT/UPDATE/MERGE/DELETE/#tmp"
           >
             <Table2 className="h-4 w-4" /> Anteprima
           </Button>
@@ -667,7 +667,7 @@ export default function SqlEditor({
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1">
-            <Button variant="ghost" onClick={() => onZoomFont?.(-1)} title="Riduci testo (Ctrl+rotella giÃ¹)">
+            <Button variant="ghost" onClick={() => onZoomFont?.(-1)} title="Riduci testo (Ctrl+rotella giù)">
               <ZoomOut className="h-4 w-4" />
             </Button>
             <span className="w-6 text-center text-xs tabular-nums text-zinc-400">{fontSize}</span>
@@ -687,7 +687,7 @@ export default function SqlEditor({
             checked={syntaxCheck}
             onChange={setSyntaxCheck}
             label="Verifica sintassi"
-            title="Sottolinea gli errori reali di SQL Server (esegue il testo in una transazione che viene annullata â€” nessun effetto collaterale)"
+            title="Sottolinea gli errori reali di SQL Server (esegue il testo in una transazione che viene annullata — nessun effetto collaterale)"
           />
           <Badge tone={aiConfigured ? 'emerald' : 'amber'}>{aiStatusText}</Badge>
         </div>
@@ -703,7 +703,7 @@ export default function SqlEditor({
           onChange={value => onContentChange?.(value ?? '')}
           loading={
             <div className="flex h-full items-center justify-center gap-2 text-sm text-zinc-500">
-              <Spinner /> Caricamento editorâ€¦
+              <Spinner /> Caricamento editor…
             </div>
           }
           options={{

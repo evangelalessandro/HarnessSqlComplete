@@ -141,9 +141,9 @@ export function provideSqlCompletions({
             rank++
           }
 
-          // Funzioni T-SQL (aggregati, window, stringheâ€¦) + funzioni utente SCALARI del database.
+          // Funzioni T-SQL (aggregati, window, stringhe…) + funzioni utente SCALARI del database.
           // Le funzioni tabellari (IF/TF) si propongono solo come sorgente (vedi loop dopo le viste).
-          // filterText = nome, cosÃ¬ Monaco le filtra con la parola digitata.
+          // filterText = nome, così Monaco le filtra con la parola digitata.
           const pushSqlFunctions = () => {
             for (const f of SQL_FUNCTIONS) {
               push({
@@ -181,7 +181,7 @@ export function provideSqlCompletions({
               return { suggestions }
             }
 
-            // SET <opzione> â†’ valori possibili (ON/OFFâ€¦); dopo "SET " â†’ nomi delle opzioni
+            // SET <opzione> → valori possibili (ON/OFF…); dopo "SET " → nomi delle opzioni
             const setCtx = detectSetContext(textBefore)
             if (setCtx) {
               if (setCtx.kind === 'options') {
@@ -215,7 +215,7 @@ export function provideSqlCompletions({
               return { suggestions }
             }
 
-            // ALTER TABLE <tabella> â†’ snippet (constraint, colonne, abilita/disabilita trigger)
+            // ALTER TABLE <tabella> → snippet (constraint, colonne, abilita/disabilita trigger)
             if (detectAlterTableContext(textBefore)) {
               for (const sn of TSQL_ALTER_SNIPPETS) {
                 push({
@@ -231,10 +231,10 @@ export function provideSqlCompletions({
               return { suggestions }
             }
 
-            // "@@..." â†’ variabili di sistema T-SQL (es. "IF @@ERROR", "SELECT @@ROWCOUNT").
-            // Monaco non considera '@@' una parola (l'@ Ã¨ separatore): il range deve
-            // coprire il "@@" (e l'eventuale prefisso parziale) giÃ  digitato, altrimenti
-            // il nome si aggiunge dopo â†’ "IF @@@@ROWCOUNT".
+            // "@@..." → variabili di sistema T-SQL (es. "IF @@ERROR", "SELECT @@ROWCOUNT").
+            // Monaco non considera '@@' una parola (l'@ è separatore): il range deve
+            // coprire il "@@" (e l'eventuale prefisso parziale) già digitato, altrimenti
+            // il nome si aggiunge dopo → "IF @@@@ROWCOUNT".
             if (detectSystemVariableContext(textBefore)) {
               const prefixLen = systemVariablePrefixLen(textBefore)
               if (prefixLen > 0) {
@@ -278,7 +278,7 @@ export function provideSqlCompletions({
               } else if (objKind === 'view') {
                 for (const v of st.summary.views) pushObj(qualified(v.schema, v.name), 'vista', qualified(v.schema, v.name), monaco.languages.CompletionItemKind.Interface)
               } else if (objKind === 'procedure') {
-                for (const p of st.summary.procedures) pushObj(qualified(p.schema, p.name), `proc Â· ${p.parameters?.length ?? 0} param.`, qualified(p.schema, p.name), monaco.languages.CompletionItemKind.Function)
+                for (const p of st.summary.procedures) pushObj(qualified(p.schema, p.name), `proc · ${p.parameters?.length ?? 0} param.`, qualified(p.schema, p.name), monaco.languages.CompletionItemKind.Function)
               } else if (objKind === 'function') {
                 for (const f of st.summary.functions) pushObj(qualified(f.schema, f.name), f.type, qualified(f.schema, f.name), monaco.languages.CompletionItemKind.Method)
               } else if (objKind === 'trigger') {
@@ -289,7 +289,7 @@ export function provideSqlCompletions({
               return { suggestions }
             }
 
-            // CREATE TABLE t (id â†’ tipi di dato
+            // CREATE TABLE t (id → tipi di dato
             if (detectCreateTableColumnContext(textBefore)) {
               for (const t of TSQL_TYPES) {
                 push({
@@ -304,7 +304,7 @@ export function provideSqlCompletions({
               return { suggestions }
             }
 
-            // OPTION ( â†’ hint di query
+            // OPTION ( → hint di query
             if (detectOptionHintsContext(textBefore)) {
               for (const h of TSQL_OPTION_HINTS) {
                 push({
@@ -322,7 +322,7 @@ export function provideSqlCompletions({
               return { suggestions }
             }
 
-            // CREATE INDEX â†’ snippet del nome; dopo "ON " â†’ tabelle
+            // CREATE INDEX → snippet del nome; dopo "ON " → tabelle
             const idxCtx = detectCreateIndexContext(textBefore)
             if (idxCtx === 'name') {
               push({
@@ -349,7 +349,7 @@ export function provideSqlCompletions({
               return { suggestions }
             }
 
-            // FROM t WITH ( â†’ hint di tabella (NOLOCKâ€¦)
+            // FROM t WITH ( → hint di tabella (NOLOCK…)
             if (detectTableHintsContext(textBefore)) {
               for (const h of TSQL_TABLE_HINTS) {
                 push({
@@ -364,7 +364,7 @@ export function provideSqlCompletions({
               return { suggestions }
             }
 
-            // Funzioni finestra: dentro OVER( ... ) â†’ PARTITION BY / ORDER BY / ROWS / RANGE
+            // Funzioni finestra: dentro OVER( ... ) → PARTITION BY / ORDER BY / ROWS / RANGE
             const overCtx = detectOverContext(textBefore)
             if (overCtx) {
               const list =
@@ -387,8 +387,8 @@ export function provideSqlCompletions({
               return { suggestions }
             }
 
-            // Variabili (@var): "select @p" in una routine â†’ i PARAMETRI della firma
-            // (modifica di una store: @pRiga, @pOrdineâ€¦) PIÃ™ le variabili dichiarate
+            // Variabili (@var): "select @p" in una routine → i PARAMETRI della firma
+            // (modifica di una store: @pRiga, @pOrdine…) PIÙ le variabili dichiarate
             if (detectVariableContext(textBefore)) {
               const locals = extractDeclaredVariables(textBefore)
               const params = extractRoutineParameters(textBefore)
@@ -406,7 +406,7 @@ export function provideSqlCompletions({
                 for (const [name, v] of all) {
                   push({
                     label: name,
-                    detail: v.isParam ? `${v.dataType} Â· parametro della routine` : `${v.dataType} Â· variabile dichiarata`,
+                    detail: v.isParam ? `${v.dataType} · parametro della routine` : `${v.dataType} · variabile dichiarata`,
                     kind: monaco.languages.CompletionItemKind.Variable,
                     insertText: name,
                     range: varRange,
@@ -431,16 +431,16 @@ export function provideSqlCompletions({
                     insertText: sn.insertText,
                     insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                     range,
-                    // filterText stabile = label ("INSERT INTO"â€¦): con la parola digitata
-                    // il popup si svuoterebbe digitando un carattere in piÃ¹ (es. "ins" â†’ "inse").
+                    // filterText stabile = label ("INSERT INTO"…): con la parola digitata
+                    // il popup si svuoterebbe digitando un carattere in più (es. "ins" → "inse").
                     filterText: sn.label,
                   })
                 }
               }
             }
-            // Aiuto INSERT: dentro la lista colonne di "INSERT INTO tab (" â†’
+            // Aiuto INSERT: dentro la lista colonne di "INSERT INTO tab (" →
             // suggerisce le colonne della tabella, con opzione "tutte le colonne";
-            // dentro i VALUES â†’ suggerisce i valori di default per la colonna corrente
+            // dentro i VALUES → suggerisce i valori di default per la colonna corrente
             const insertCtx = parseInsertContext(textBefore)
             const insTable = insertCtx
               ? st.summary.tables.find(
@@ -457,7 +457,7 @@ export function provideSqlCompletions({
                 if (insTable?.columns && insTable.columns.length > 0) {
                   if (word.word.length === 0) {
                     push({
-                      label: 'â€” tutte le colonne â€”',
+                      label: '— tutte le colonne —',
                       detail: `inserisce le ${insTable.columns.length} colonne di ${insTable.name}`,
                       kind: monaco.languages.CompletionItemKind.Snippet,
                       insertText: insTable.columns.map(c => sqlIdent(c.name)).join(', '),
@@ -467,7 +467,7 @@ export function provideSqlCompletions({
                   for (const c of insTable.columns) {
                     push({
                       label: c.name,
-                      detail: `colonna di ${insTable.schema}.${insTable.name} Â· ${c.dataType}${c.isNullable ? ' NULL' : ''}${c.isIdentity ? ' IDENTITY' : ''}`,
+                      detail: `colonna di ${insTable.schema}.${insTable.name} · ${c.dataType}${c.isNullable ? ' NULL' : ''}${c.isIdentity ? ' IDENTITY' : ''}`,
                       documentation: columnInfoMarkdown(insTable, c),
                       kind: monaco.languages.CompletionItemKind.Field,
                       insertText: sqlIdent(c.name),
@@ -480,10 +480,10 @@ export function provideSqlCompletions({
               }
             }
 
-            // Aiuto VALUES: SOLO dentro una tupla "VALUES (â€¦)" â†’ valori di default per la
-            // colonna corrente. NON per INSERT â€¦ SELECT: lÃ¬ il SELECT deve seguire i rami
+            // Aiuto VALUES: SOLO dentro una tupla "VALUES (…)" → valori di default per la
+            // colonna corrente. NON per INSERT … SELECT: lì il SELECT deve seguire i rami
             // normali (colonne/tabelle), altrimenti il popup resta vuoto quando la tabella
-            // target Ã¨ una variabile tabella o una temporanea non note allo schema.
+            // target è una variabile tabella o una temporanea non note allo schema.
             if (insertCtx && isInsideValuesTuple(insertCtx, model.getOffsetAt(position))) {
               const cursorOffset = model.getOffsetAt(position)
               const tuple = insertTupleAt(insertCtx, cursorOffset)
@@ -515,7 +515,7 @@ export function provideSqlCompletions({
                       endPos.column,
                     )
                     push({
-                      label: `â€” tutti i valori (${valueColumns.length}) â€”`,
+                      label: `— tutti i valori (${valueColumns.length}) —`,
                       detail: 'inserisce un valore di default per ogni colonna',
                       kind: monaco.languages.CompletionItemKind.Snippet,
                       insertText: buildInsertValues(valueColumns),
@@ -544,7 +544,7 @@ export function provideSqlCompletions({
                   for (const v of candidates) {
                     push({
                       label: v,
-                      detail: `valore per ${column.name} Â· ${column.dataType}`,
+                      detail: `valore per ${column.name} · ${column.dataType}`,
                       kind: monaco.languages.CompletionItemKind.Constant,
                       insertText: v,
                       range: slotRange,
@@ -575,7 +575,7 @@ export function provideSqlCompletions({
                     const atSign = prefix.endsWith('@')
                     if (word.word.length === 0 && available.length === execProc.parameters.length) {
                       push({
-                        label: 'â€” tutti i parametri â€”',
+                        label: '— tutti i parametri —',
                         detail: `inserisce i ${execProc.parameters.length} parametri di ${execProc.name}`,
                         kind: monaco.languages.CompletionItemKind.Snippet,
                         insertText: buildExecParamSnippet(execProc.parameters),
@@ -585,10 +585,10 @@ export function provideSqlCompletions({
                     }
                     for (const par of available) {
                       const isOut = par.mode === 'OUTPUT'
-                      const defText = par.defaultValue ? ` Â· default ${par.defaultValue}` : ''
+                      const defText = par.defaultValue ? ` · default ${par.defaultValue}` : ''
                       push({
                         label: `@${par.name}`,
-                        detail: `${par.dataType}${isOut ? ' Â· OUTPUT' : ''}${defText} Â· ${execProc.schema}.${execProc.name}`,
+                        detail: `${par.dataType}${isOut ? ' · OUTPUT' : ''}${defText} · ${execProc.schema}.${execProc.name}`,
                         kind: monaco.languages.CompletionItemKind.Variable,
                         insertText: atSign ? `${par.name}${isOut ? ' OUTPUT' : ''}` : `@${par.name}${isOut ? ' OUTPUT' : ''}`,
                         range,
@@ -603,7 +603,7 @@ export function provideSqlCompletions({
 
             // Contesto = SOLO lo statement corrente (prima del cursore): le query
             // precedenti non devono filtrare le tabelle/colonne dello statement in
-            // corso (es. DAT_UDC giÃ  usata prima NON va nascosta a un nuovo JOIN).
+            // corso (es. DAT_UDC già usata prima NON va nascosta a un nuovo JOIN).
             const contextTables = findTableRefs(stmtBefore)
             const summaryTables = st.summary.tables
 
@@ -641,7 +641,7 @@ export function provideSqlCompletions({
               for (const col of orderCols) {
                 push({
                   label: col.name,
-                  detail: [columnTypeText(col.dataType, col.isNullable), col.ownerLabel].filter(Boolean).join(' Â· '),
+                  detail: [columnTypeText(col.dataType, col.isNullable), col.ownerLabel].filter(Boolean).join(' · '),
                   documentation: col.documentation,
                   kind: monaco.languages.CompletionItemKind.Field,
                   insertText: col.insertText,
@@ -652,18 +652,18 @@ export function provideSqlCompletions({
               return { suggestions }
             }
 
-            // Aiuto SELECT: se il cursore Ã¨ nella select-list (tra SELECT e FROM dello statement),
+            // Aiuto SELECT: se il cursore è nella select-list (tra SELECT e FROM dello statement),
             // suggerisce le colonne delle tabelle referenziate in tutto lo statement (anche dopo il cursore)
             if (inSelectList) {
               const sel = buildSelectListSuggestions(stmtText, stmtBefore, st.summary)
-              // Con una parola in corso: solo i campi con affinitÃ , ordinati per punteggio.
+              // Con una parola in corso: solo i campi con affinità, ordinati per punteggio.
               // filterText = NOME colonna (stabile): Monaco rifiltra le voci memorizzate
               // con la parola corrente, quindi con la parola digitata come filterText il
-              // popup sparirebbe appena si digita un carattere in piÃ¹ (es. "MIS" â†’ "MIS_":
-              // "mis_" non fa piÃ¹ match con filterText "mis"). L'ordine resta il nostro (sortText).
+              // popup sparirebbe appena si digita un carattere in più (es. "MIS" → "MIS_":
+              // "mis_" non fa più match con filterText "mis"). L'ordine resta il nostro (sortText).
               if (word.word.length > 0) {
-                // solo i campi con affinitÃ , ordinati per punteggio (il boost FK
-                // si applica ai campi che matchano giÃ , non a tutte le chiavi)
+                // solo i campi con affinità, ordinati per punteggio (il boost FK
+                // si applica ai campi che matchano già, non a tutte le chiavi)
                 const rankedCols = rankSelectListForTyped(sel.columns, word.word)
                 for (const { col, score } of rankedCols) {
                   push({
@@ -671,10 +671,10 @@ export function provideSqlCompletions({
                     detail: [
                       columnTypeText(col.dataType, col.isNullable),
                       `${col.ownerLabel}${col.shared ? ' (condivisa)' : ''}`,
-                      `affinitÃ  ${score}`,
+                      `affinità ${score}`,
                     ]
                       .filter(Boolean)
-                      .join(' Â· '),
+                      .join(' · '),
                     documentation: col.documentation,
                     kind: monaco.languages.CompletionItemKind.Field,
                     insertText: col.insertText,
@@ -682,7 +682,7 @@ export function provideSqlCompletions({
                     filterText: completionFilterText(col.name),
                   })
                 }
-                // anche le funzioni (SUM/AVG/RANK/â€¦) se matchano la parola digitata
+                // anche le funzioni (SUM/AVG/RANK/…) se matchano la parola digitata
                 pushSqlFunctions()
                 return { suggestions }
               }
@@ -702,7 +702,7 @@ export function provideSqlCompletions({
                   filterText = starFilterText(stmtText, sel.starOffset, cursorOffset - stmtRange.start)
                 }
                 push({
-                  label: `â€” tutti i campi (${sel.starCount}) â€”`,
+                  label: `— tutti i campi (${sel.starCount}) —`,
                   detail: sel.starOffset >= 0
                     ? 'espande * con le colonne delle tabelle dello statement'
                     : 'inserisce tutte le colonne delle tabelle dello statement',
@@ -720,7 +720,7 @@ export function provideSqlCompletions({
                     `${col.ownerLabel}${col.shared ? ' (condivisa)' : ''}`,
                   ]
                     .filter(Boolean)
-                    .join(' Â· '),
+                    .join(' · '),
                   documentation: col.documentation,
                   kind: monaco.languages.CompletionItemKind.Field,
                   insertText: col.insertText,
@@ -728,7 +728,7 @@ export function provideSqlCompletions({
                   filterText: col.name,
                 })
               }
-              // anche le funzioni T-SQL (SUM/AVG/RANK/â€¦) e quelle utente del database
+              // anche le funzioni T-SQL (SUM/AVG/RANK/…) e quelle utente del database
               pushSqlFunctions()
               // select-list: campi delle tabelle dello statement + funzioni (niente tabelle/proc/keyword)
               return { suggestions }
@@ -737,7 +737,7 @@ export function provideSqlCompletions({
             const contextTableInfos = contextTables
               .map(name => summaryTables.find(x => x.name.toLowerCase() === name))
               .filter((x): x is TableInfo => x !== undefined)
-            // Posizione FROM/INTO/UPDATE/TABLE o inizio statement: clausola NUOVA â†’
+            // Posizione FROM/INTO/UPDATE/TABLE o inizio statement: clausola NUOVA →
             // si propongono TUTTE le tabelle per utilizzo reale (le query precedenti
             // non devono nascondere tabelle riscrivibili, es. RUN_MISSIONI).
             // Posizione JOIN (o contesti generici): solo le tabelle collegabili al contesto.
@@ -779,7 +779,7 @@ export function provideSqlCompletions({
                 for (const col of qualified) {
                   push({
                     label: col.name,
-                    detail: [columnTypeText(col.dataType, col.isNullable), 'colonna qualificata'].filter(Boolean).join(' Â· '),
+                    detail: [columnTypeText(col.dataType, col.isNullable), 'colonna qualificata'].filter(Boolean).join(' · '),
                     documentation: col.documentation,
                     kind: monaco.languages.CompletionItemKind.Field,
                     insertText: col.insertText,
@@ -793,11 +793,11 @@ export function provideSqlCompletions({
 
             // Contesti di colonne (WHERE/ON/HAVING/GROUP BY/SET/AND/OR/=):
             // SOLO colonne delle tabelle dello statement + funzioni SQL.
-            // Con una parola in corso: solo le colonne con affinitÃ , ordinate per punteggio,
-            // piÃ¹ le controparti di JOIN (FK esatte o token condivisi) dopo "col = ".
+            // Con una parola in corso: solo le colonne con affinità, ordinate per punteggio,
+            // più le controparti di JOIN (FK esatte o token condivisi) dopo "col = ".
             if (isColumnContext) {
-              // Dopo "ORDER " serve "BY" (completa ORDER BY) â†’ prima di tutto, anche
-              // mentre si digita giÃ  "b"/"by" (il range copre la parola in corso).
+              // Dopo "ORDER " serve "BY" (completa ORDER BY) → prima di tutto, anche
+              // mentre si digita già "b"/"by" (il range copre la parola in corso).
               if (isAfterOrderKeyword(prefix)) {
                 push({
                   label: 'BY',
@@ -808,15 +808,15 @@ export function provideSqlCompletions({
                   filterText: 'by',
                 })
               }
-              // Dentro una clausola ON con condizioni giÃ  scritte: propone anche le altre
+              // Dentro una clausola ON con condizioni già scritte: propone anche le altre
               // coppie FK tra le stesse tabelle (es. dopo "MIS_D_CORRIDOIO = CEL_CORRIDOIO"
-              // suggerisce "AND MIS_D_CELLA = CEL_CELLA") â€” solo se NON si sta digitando
+              // suggerisce "AND MIS_D_CELLA = CEL_CELLA") — solo se NON si sta digitando
               // una colonna, altrimenti gli "AND ..." coprirebbero i campi delle tabelle.
               if (shouldSuggestJoinConditions(word.word, stmtBefore)) {
                 for (const jc of buildJoinConditionSuggestions(stmtText, stmtBefore, st.summary)) {
                   push({
                     label: jc.text,
-                    detail: `condizione di JOIN Â· ${jc.left} = ${jc.right}`,
+                    detail: `condizione di JOIN · ${jc.left} = ${jc.right}`,
                     kind: monaco.languages.CompletionItemKind.Snippet,
                     insertText: jc.text,
                     range,
@@ -830,16 +830,16 @@ export function provideSqlCompletions({
                   label: col.name,
                   detail: [
                     columnTypeText(col.dataType, col.isNullable),
-                    `${col.ownerLabel}${col.shared ? ' (condivisa)' : ''}${col.counterpart ? ' Â· â‡„' : ''}`,
+                    `${col.ownerLabel}${col.shared ? ' (condivisa)' : ''}${col.counterpart ? ' · ⇄' : ''}`,
                   ]
                     .filter(Boolean)
-                    .join(' Â· '),
+                    .join(' · '),
                   documentation: col.documentation,
                   kind: monaco.languages.CompletionItemKind.Field,
                   insertText: col.insertText,
                   range,
                   // filterText stabile = nome colonna (vedi select-list: con la parola
-                  // digitata il popup sparirebbe digitando un carattere in piÃ¹, es. "MIS_").
+                  // digitata il popup sparirebbe digitando un carattere in più, es. "MIS_").
                   filterText: completionFilterText(col.name),
                 })
               }
@@ -851,8 +851,8 @@ export function provideSqlCompletions({
             // Tabelle: prima quelle collegabili via FK (con clausola ON), poi per utilizzo reale.
             // In posizione JOIN ogni relazione FK diventa una voce selezionabile (come Visual Studio).
             // NIENTE alias se non necessari: l'alias della tabella candidata si usa solo per i
-            // self-join (stessa tabella giÃ  nello statement); le tabelle del contesto con un
-            // alias giÃ  scritto nell'editor vengono riferite con il loro alias (altrimenti SQL invalido).
+            // self-join (stessa tabella già nello statement); le tabelle del contesto con un
+            // alias già scritto nell'editor vengono riferite con il loro alias (altrimenti SQL invalido).
             const stmtRefs = extractStatementTableRefs(stmtText)
             const aliasedCtxTables = new Set(stmtRefs.filter(r => r.alias).map(r => r.tableName.toLowerCase()))
             for (const ranked of rankedTables) {
@@ -860,7 +860,7 @@ export function provideSqlCompletions({
               for (const item of buildJoinSuggestions(ranked, contextTableInfos, isJoinPosition, needsAlias, aliasedCtxTables)) {
                 const details = [usageDetail(ranked.table.usage)]
                 if (ranked.hints.length > 0) details.push(`${ranked.hints.length} FK`)
-                const detail = details.filter(Boolean).join(' Â· ') || `tabella Â· ${ranked.table.columnCount} colonne`
+                const detail = details.filter(Boolean).join(' · ') || `tabella · ${ranked.table.columnCount} colonne`
                 push({
                   label: item.label,
                   detail: item.detail || detail,
@@ -884,7 +884,7 @@ export function provideSqlCompletions({
             }
 
             // Funzioni TABELLARI (IF/TF): sorgenti come le tabelle/viste (FROM/JOIN/APPLY),
-            // NON nelle espressioni (SELECT/WHERE/GROUP BY/â€¦ dove vanno solo le scalari)
+            // NON nelle espressioni (SELECT/WHERE/GROUP BY/… dove vanno solo le scalari)
             for (const fn of splitUserFunctions(st.summary.functions).tableValued) {
               push({
                 label: `${fn.schema}.${fn.name}`,
@@ -896,8 +896,8 @@ export function provideSqlCompletions({
               })
             }
 
-            // Oggetti di catalogo di sistema (sys.tables, sys.columns, sys.dm_*â€¦): compaiono
-            // quando si digita "sys"/"dm" o dopo "sys." â€” sorgenti come le tabelle
+            // Oggetti di catalogo di sistema (sys.tables, sys.columns, sys.dm_*…): compaiono
+            // quando si digita "sys"/"dm" o dopo "sys." — sorgenti come le tabelle
             if (shouldSuggestSystemObjects(prefix, word.word)) {
               for (const obj of systemObjectsFor(prefix, word.word)) {
                 push({
@@ -911,8 +911,8 @@ export function provideSqlCompletions({
               }
             }
 
-            // Self-join: in posizione JOIN le tabelle giÃ  nello statement vengono riproposte
-            // con un alias (es. "MAG_CORRIDOI AS mc2 ON (â€¦)") â€” corso "Cross and Self Joins"
+            // Self-join: in posizione JOIN le tabelle già nello statement vengono riproposte
+            // con un alias (es. "MAG_CORRIDOI AS mc2 ON (…)") — corso "Cross and Self Joins"
             if (isJoinPosition) {
               for (const sj of buildSelfJoinSuggestions(stmtText, st.summary)) {
                 push({
@@ -957,7 +957,7 @@ export function provideSqlCompletions({
                   for (const c of t.columns) {
                     push({
                       label: c.name,
-                      detail: `colonna di ${t.schema}.${t.name} Â· ${c.dataType}${c.isNullable ? ' NULL' : ''}`,
+                      detail: `colonna di ${t.schema}.${t.name} · ${c.dataType}${c.isNullable ? ' NULL' : ''}`,
                       documentation: columnInfoMarkdown(t, c),
                       kind: monaco.languages.CompletionItemKind.Field,
                       insertText: sqlIdent(c.name),
@@ -969,7 +969,7 @@ export function provideSqlCompletions({
 
               // Keyword filtrate per contesto (dopo "FROM t " solo clausole, all'inizio solo statement)
               if (ctx.allowed.includes('keywords')) {
-                // "order" (o prefisso) â†’ "ORDER BY" come voce unica (non serve cercare BY a parte)
+                // "order" (o prefisso) → "ORDER BY" come voce unica (non serve cercare BY a parte)
                 if (isOrderWordTyped(word.word)) {
                   push({
                     label: 'ORDER BY',
@@ -991,9 +991,9 @@ export function provideSqlCompletions({
               }
             }
           } else {
-            // SOMMARIO NON DISPONIBILE (connessione scaduta, backend riavviatoâ€¦): prima
-            // il provider non proponeva NULLA (bug utente: "l'intellisense si Ã¨ rotto in
-            // FROM run"). In modalitÃ  ridotta proponiamo snippet, funzioni e keyword;
+            // SOMMARIO NON DISPONIBILE (connessione scaduta, backend riavviato…): prima
+            // il provider non proponeva NULLA (bug utente: "l'intellisense si è rotto in
+            // FROM run"). In modalità ridotta proponiamo snippet, funzioni e keyword;
             // l'avviso "schema non caricato" lo mostra il banner dell'app (App.tsx),
             // che ricarica i metadati da solo.
             for (const sn of buildStatementSnippets(word.word)) {
