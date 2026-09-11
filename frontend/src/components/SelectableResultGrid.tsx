@@ -2,8 +2,12 @@
 // condivisa tra la finestra di anteprima dati (F4) e i risultati delle query.
 // Le colonne si tolgono/mantengono con i checkbox nell'header; le righe con quelli a
 // sinistra; la tabella target è editabile (per generare anche da query arbitrarie).
+//
+// Foglio dati: numero di riga nella prima colonna, linee verticali fra le colonne, righe
+// alternate a gruppi di TRE colori e colonne che si possono spostare trascinando l'header.
+// Numero di riga e casella di selezione restano fissi a sinistra mentre si scorre.
 import { useEffect, useMemo, useState } from 'react'
-import { ClipboardCopy } from 'lucide-react'
+import { ClipboardCopy, GripVertical } from 'lucide-react'
 import {
   buildDeleteSql,
   buildInsertIntoTempSql,
@@ -13,6 +17,7 @@ import {
   parseTargetTable,
 } from '../sqlGen'
 import type { GenColumn } from '../sqlGen'
+import { identityOrder, reorderColumns, rowBackgroundClass } from '../resultGrid'
 import type { CellValue } from '../types'
 import { Button } from './ui'
 
@@ -39,11 +44,18 @@ export default function SelectableResultGrid({ columns, rows, initialTarget, ide
   const [kind, setKind] = useState<GenKind>('INSERT')
   const [tempName, setTempName] = useState('')
   const [copied, setCopied] = useState(false)
+  // Ordine di VISUALIZZAZIONE delle colonne (indici originali): si cambia trascinando l'header.
+  // Gli indici originali restano la chiave di tutto il resto (selezione e SQL generato),
+  // quindi spostare una colonna è solo un fatto di come la si guarda.
+  const [colOrder, setColOrder] = useState<number[]>(() => identityOrder(columns.length))
+  const [draggingCol, setDraggingCol] = useState<number | null>(null)
+  const [dropCol, setDropCol] = useState<number | null>(null)
 
   // quando cambiano le colonne (nuova query): tutte selezionate di default, righe vuote
   useEffect(() => {
     setSelectedCols(new Set(columns.map((_, i) => i)))
     setSelectedRows(new Set())
+    setColOrder(identityOrder(columns.length))
     setTempName(`#${initialTarget?.split('.').pop() ?? 'tmp'}`)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [columns, initialTarget])
@@ -125,6 +137,14 @@ export default function SelectableResultGrid({ columns, rows, initialTarget, ide
   const selectedCount = selRows.length
   const canGenerate = table.trim() !== '' && selCols.length > 0 && selRows.length > 0
 
+  /** Sposta la colonna trascinata al posto di quella su cui è stata rilasciata. */
+  const dropOn = (targetCol: number) => {
+    if (draggingCol === null) return
+    setColOrder(order => reorderColumns(order, draggingCol, targetCol))
+    setDraggingCol(null)
+    setDropCol(null)
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1 overflow-auto">
@@ -134,7 +154,14 @@ export default function SelectableResultGrid({ columns, rows, initialTarget, ide
           <table className="w-full border-collapse text-left text-[13px]">
             <thead className="sticky top-0 z-10">
               <tr>
-                <th className="w-10 border-b border-zinc-700 bg-zinc-800 px-2 py-1.5">
+                {/* Numero di riga: prima colonna, resta fermo durante lo scorrimento orizzontale */}
+                <th
+                  className="sticky left-0 z-20 w-12 border-b border-r border-zinc-700 bg-zinc-800 px-2 py-1.5 text-right font-semibold text-zinc-400"
+                  title="Numero di riga"
+                >
+                  #
+                </th>
+                <th className="sticky left-12 z-20 w-10 border-b border-r border-zinc-700 bg-zinc-800 px-2 py-1.5">
                   <input
                     type="checkbox"
                     checked={selectedRows.size === rows.length && rows.length > 0}
@@ -142,45 +169,87 @@ export default function SelectableResultGrid({ columns, rows, initialTarget, ide
                     className="accent-sky-500"
                   />
                 </th>
-                {columns.map((c, i) => (
-                  <th key={`${c.name}-${i}`} className="border-b border-zinc-700 bg-zinc-800 px-3 py-1.5">
-                    <label className="flex cursor-pointer items-center gap-1.5 font-semibold text-zinc-100">
-                      <input
-                        type="checkbox"
-                        checked={selectedCols.has(i)}
-                        onChange={() => toggleCol(i)}
-                        className="accent-sky-500"
-                      />
-                      {c.name}
-                      <span className="font-normal text-zinc-500">{c.dataType}</span>
-                    </label>
-                  </th>
-                ))}
+                {colOrder.map(ci => {
+                  const c = columns[ci]
+                  if (!c) return null
+                  const isDragging = draggingCol === ci
+                  const isDropTarget = dropCol === ci && draggingCol !== null && draggingCol !== ci
+                  return (
+                    <th
+                      key={`${c.name}-${ci}`}
+                      draggable
+                      onDragStart={e => {
+                        setDraggingCol(ci)
+                        e.dataTransfer.effectAllowed = 'move'
+                        // alcuni browser non avviano il trascinamento senza dati impostati
+                        e.dataTransfer.setData('text/plain', String(ci))
+                      }}
+                      onDragOver={e => {
+                        if (draggingCol === null) return
+                        e.preventDefault()
+                        e.dataTransfer.dropEffect = 'move'
+                        setDropCol(ci)
+                      }}
+                      onDrop={e => {
+                        e.preventDefault()
+                        dropOn(ci)
+                      }}
+                      onDragEnd={() => {
+                        setDraggingCol(null)
+                        setDropCol(null)
+                      }}
+                      title={`${c.name} ${c.dataType} — trascina per spostare la colonna`}
+                      className={`group cursor-grab border-b border-r border-zinc-700 bg-zinc-800 px-3 py-1.5 active:cursor-grabbing ${
+                        isDragging ? 'opacity-40' : ''
+                      } ${isDropTarget ? 'border-l-2 border-l-sky-400' : ''}`}
+                    >
+                      <label className="flex cursor-pointer items-center gap-1.5 font-semibold text-zinc-100">
+                        <GripVertical className="h-3.5 w-3.5 shrink-0 text-zinc-600 group-hover:text-sky-400" />
+                        <input
+                          type="checkbox"
+                          checked={selectedCols.has(ci)}
+                          onChange={() => toggleCol(ci)}
+                          className="accent-sky-500"
+                        />
+                        {c.name}
+                        <span className="font-normal text-zinc-500">{c.dataType}</span>
+                      </label>
+                    </th>
+                  )
+                })}
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, ri) => (
-                <tr
-                  key={ri}
-                  className={`cursor-pointer transition-colors ${
-                    selectedRows.has(ri) ? 'bg-sky-950/60' : ri % 2 ? 'bg-zinc-900/50' : 'bg-zinc-950'
-                  }`}
-                  onClick={() => toggleRow(ri)}
-                >
-                  <td className="border-b border-zinc-800/60 px-2 py-1">
-                    <input
-                      type="checkbox"
-                      checked={selectedRows.has(ri)}
-                      onChange={() => toggleRow(ri)}
-                      onClick={e => e.stopPropagation()}
-                      className="accent-sky-500"
-                    />
-                  </td>
-                  {row.map((cell, ci) => (
-                    <Cell key={ci} value={cell} />
-                  ))}
-                </tr>
-              ))}
+              {rows.map((row, ri) => {
+                // sfondo (3 colori alternati) usato anche dalle celle fisse, che sono opache
+                const bg = rowBackgroundClass(ri, selectedRows.has(ri))
+                return (
+                  <tr key={ri} className={`cursor-pointer transition-colors ${bg}`} onClick={() => toggleRow(ri)}>
+                    <td
+                      className={`sticky left-0 z-10 border-b border-r border-zinc-800/60 px-2 py-1 text-right font-mono text-xs tabular-nums text-zinc-500 ${bg}`}
+                    >
+                      {ri + 1}
+                    </td>
+                    <td className={`sticky left-12 z-10 border-b border-r border-zinc-800/60 px-2 py-1 ${bg}`}>
+                      <input
+                        type="checkbox"
+                        checked={selectedRows.has(ri)}
+                        onChange={() => toggleRow(ri)}
+                        onClick={e => e.stopPropagation()}
+                        className="accent-sky-500"
+                      />
+                    </td>
+                    {colOrder.map(ci =>
+                      ci < row.length ? (
+                        <Cell key={ci} value={row[ci]} />
+                      ) : (
+                        // riga più corta delle colonne (dato inatteso): cella vuota, non "NULL"
+                        <td key={ci} className="border-b border-r border-zinc-800/60 px-3 py-1" />
+                      ),
+                    )}
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         )}
@@ -242,15 +311,17 @@ export default function SelectableResultGrid({ columns, rows, initialTarget, ide
 }
 
 function Cell({ value }: { value: CellValue }) {
+  // linea verticale fra le colonne: rende leggibile una griglia con molte colonne
+  const base = 'border-b border-r border-zinc-800/60 px-3 py-1'
   if (value === null || value === undefined) {
-    return <td className="border-b border-zinc-800/60 px-3 py-1 italic text-zinc-600">NULL</td>
+    return <td className={`${base} italic text-zinc-600`}>NULL</td>
   }
   let text: string
   if (typeof value === 'boolean') text = String(value)
   else if (typeof value === 'object') text = JSON.stringify(value)
   else text = String(value)
   return (
-    <td className="max-w-[380px] truncate border-b border-zinc-800/60 px-3 py-1 font-mono text-zinc-200" title={text}>
+    <td className={`${base} max-w-[380px] truncate font-mono text-zinc-200`} title={text}>
       {text}
     </td>
   )
