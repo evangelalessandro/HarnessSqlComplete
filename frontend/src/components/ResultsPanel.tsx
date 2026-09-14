@@ -1,19 +1,25 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ChevronLeft, ChevronRight, Code2, Table2 } from 'lucide-react'
-import type { CellValue, QueryResult } from '../types'
+import { ChevronLeft, ChevronRight, Code2, Table2 } from 'lucide-react'
+import type { CellValue, DatabaseSummary, QueryResult } from '../types'
 import { suggestTargetTables } from '../sqlGen'
 import { Badge, Button, Spinner } from './ui'
 import SelectableResultGrid from './SelectableResultGrid'
 import ResultDataTable from './ResultDataTable'
+import QueryErrorBanner from './QueryErrorBanner'
+import type { ErrorObjectRef } from '../sqlMessages'
 
 interface Props {
   result: QueryResult | null
   executing: boolean
   /** SQL eseguito che ha prodotto `result`: serve a proporre la tabella target del generatore. */
   sourceSql?: string
+  /** Schema caricato: serve a riconoscere gli oggetti citati negli errori. */
+  summary?: DatabaseSummary | null
+  /** Apre un oggetto citato nell'errore in una nuova tab (Modifica / CREATE). */
+  onOpenObject?: (o: ErrorObjectRef) => void
 }
 
-export default function ResultsPanel({ result, executing, sourceSql }: Props) {
+export default function ResultsPanel({ result, executing, sourceSql, summary, onOpenObject }: Props) {
   const [setIndex, setSetIndex] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
@@ -45,12 +51,7 @@ export default function ResultsPanel({ result, executing, sourceSql }: Props) {
     )
   }
   if (result.error) {
-    return (
-      <div className="m-4 flex items-start gap-2 rounded-md border border-rose-800 bg-rose-950/50 p-3 text-sm text-rose-200">
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-        <span className="whitespace-pre-wrap font-mono">{result.error}</span>
-      </div>
-    )
+    return <QueryErrorBanner error={result.error} summary={summary} onOpenObject={onOpenObject} />
   }
 
   const activeSet = result.resultSets[Math.min(setIndex, Math.max(result.resultSets.length - 1, 0))]

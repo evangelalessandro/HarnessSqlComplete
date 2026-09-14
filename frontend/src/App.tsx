@@ -3,7 +3,7 @@ import { BookOpen, Check, ChevronLeft, Database as DbIcon, FilePlus2, Pin, Refre
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
-import { dbTabColor, detectPrintMagic, nextDragonLevel, normalizeTabIcon, TAB_ICON_PRESETS, toCreateOrAlterStatement } from './helpers'
+import { dbTabColor, detectPrintMagic, nextDragonLevel, normalizeTabIcon, scriptCreateTable, TAB_ICON_PRESETS, toCreateOrAlterStatement } from './helpers'
 import { openSqlFiles, saveSqlFile } from './fileSave'
 import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
@@ -24,6 +24,7 @@ import {
 } from './gamification'
 import { QueryStatsBadge, QueryStatsModal } from './components/QueryStatsPanel'
 import { hasErrorMessage } from './sqlMessages'
+import type { ErrorObjectRef } from './sqlMessages'
 import CallGraphModal from './components/CallGraphModal'
 import type { CallGraphTarget } from './components/CallGraphModal'
 import LoginScreen from './components/LoginScreen'
@@ -877,17 +878,20 @@ export default function App() {
   )
 
   /**
-   * Apre una routine citata in un messaggio di errore (SQL Server dà il nome SENZA schema):
-   * lo schema si ricava dallo schema caricato, con "dbo" come ripiego.
+   * Apre un oggetto citato in un messaggio di errore, con lo stesso risultato del tasto destro
+   * nell'albero: "Modifica" (CREATE OR ALTER) per routine, viste e trigger; per le tabelle lo
+   * script CREATE, che è l'unico modo di "aprirne la definizione".
    */
-  const openProcedureByName = useCallback(
-    (name: string) => {
-      const proc = summary?.procedures.find(p => p.name.toLowerCase() === name.toLowerCase())
-      const fn = summary?.functions.find(f => f.name.toLowerCase() === name.toLowerCase())
-      if (fn && !proc) void handleOpenObject('function', fn.schema, fn.name, 'alter')
-      else void handleOpenObject('procedure', proc?.schema ?? 'dbo', name, 'alter')
+  const openObjectFromError = useCallback(
+    (o: ErrorObjectRef) => {
+      if (o.kind === 'table') {
+        const t = summary?.tables.find(x => x.name.toLowerCase() === o.name.toLowerCase())
+        if (t) handleOpenScript(`CREATE ${o.schema}.${o.name}`, scriptCreateTable(t))
+        return
+      }
+      void handleOpenObject(o.kind, o.schema, o.name, 'alter')
     },
-    [summary, handleOpenObject],
+    [summary, handleOpenScript, handleOpenObject],
   )
 
   /** Apre i file SQL trascinati (drag & drop) in nuove tab (nome = file, sovrascrittura via picker). */  const handleOpenFiles = useCallback(
@@ -1343,9 +1347,15 @@ export default function App() {
               </div>
               <div className="min-h-0 flex-1">
                 {activeResultTab === 'results' ? (
-                  <ResultsPanel result={activeResult} executing={activeExecuting} sourceSql={activeSql} />
+                  <ResultsPanel
+                    result={activeResult}
+                    executing={activeExecuting}
+                    sourceSql={activeSql}
+                    summary={summary}
+                    onOpenObject={openObjectFromError}
+                  />
                 ) : (
-                  <PrintPanel result={activeResult} onOpenProcedure={openProcedureByName} />
+                  <PrintPanel result={activeResult} summary={summary} onOpenObject={openObjectFromError} />
                 )}
               </div>
             </div>

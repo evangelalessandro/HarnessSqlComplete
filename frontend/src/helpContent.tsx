@@ -184,9 +184,9 @@ export const HELP_SECTIONS: HelpSection[] = [
           'La tab "Stampa" mostra una versione pronta per la stampa dei risultati (griglia e messaggi), con pulsante di stampa del browser.',
       },
       {
-        title: 'Errori: quale procedura ha fallito',
+        title: 'Errori: quale procedura ha fallito e apri l oggetto',
         detail:
-          'Nei Messaggi ogni errore riporta gli stessi dati di SSMS: numero, livello, stato, la PROCEDURA che lo ha sollevato e la riga (es. "Msg 50000, Livello 16, Stato 1 · Procedura ws_X · Riga 42"). Quando una query richiama più stored procedure si vede subito quale ha fallito; il nome della procedura è cliccabile per aprirne la definizione in una nuova tab, e il contatore sulla tab dei messaggi si evidenzia in rosso.',
+          'Nei Messaggi ogni errore riporta gli stessi dati di SSMS: numero, livello, stato, la PROCEDURA che lo ha sollevato e la riga (es. "Msg 50000, Livello 16, Stato 1 · Procedura ws_X · Riga 42"), con il contatore in rosso sulla tab. Sotto il messaggio compaiono i pulsanti degli oggetti del database CITATI nell\'errore (es. "Invalid object name \'dbo.X\'"): "Modifica" apre la definizione CREATE OR ALTER di procedure, funzioni, viste e trigger, "Apri CREATE" apre lo script della tabella — gli stessi script del tasto destro nell\'albero. Solo gli oggetti che esistono davvero hanno il pulsante.',
       },
       {
         title: 'Anteprima tabelle',

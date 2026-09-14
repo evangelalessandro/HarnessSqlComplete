@@ -1,15 +1,25 @@
-import { AlertTriangle, Printer } from 'lucide-react'
-import type { QueryResult } from '../types'
-import { errorMessagesByDisplay, messageHeader } from '../sqlMessages'
+import { Printer, ExternalLink } from 'lucide-react'
+import type { DatabaseSummary, QueryResult } from '../types'
+import {
+  errorMessagesByDisplay,
+  errorObjectAction,
+  errorObjectKindLabel,
+  errorObjectsFor,
+  messageHeader,
+} from '../sqlMessages'
+import type { ErrorObjectRef } from '../sqlMessages'
 import { Badge } from './ui'
+import QueryErrorBanner from './QueryErrorBanner'
 
 interface Props {
   result: QueryResult | null
-  /** Apre la definizione di una procedura citata nell'errore (nuova tab, CREATE OR ALTER). */
-  onOpenProcedure?: (name: string) => void
+  /** Schema caricato: serve a riconoscere gli oggetti citati negli errori. */
+  summary?: DatabaseSummary | null
+  /** Apre un oggetto citato nell'errore in una nuova tab (Modifica / CREATE). */
+  onOpenObject?: (o: ErrorObjectRef) => void
 }
 
-export default function PrintPanel({ result, onOpenProcedure }: Props) {
+export default function PrintPanel({ result, summary, onOpenObject }: Props) {
   if (!result) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-zinc-600">
@@ -18,12 +28,7 @@ export default function PrintPanel({ result, onOpenProcedure }: Props) {
     )
   }
   if (result.error) {
-    return (
-      <div className="m-4 flex items-start gap-2 rounded-md border border-rose-800 bg-rose-950/50 p-3 text-sm text-rose-200">
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-        <span className="whitespace-pre-wrap font-mono">{result.error}</span>
-      </div>
-    )
+    return <QueryErrorBanner error={result.error} summary={summary} onOpenObject={onOpenObject} />
   }
   // messaggi che sono errori: si riconoscono dal testo già composto dal backend
   const errorByDisplay = errorMessagesByDisplay(result.errors)
@@ -58,21 +63,28 @@ export default function PrintPanel({ result, onOpenProcedure }: Props) {
                 </div>
               )
             }
-            // errore: intestazione in stile SSMS con la PROCEDURA in evidenza (cliccabile)
+            // errore: intestazione in stile SSMS + pulsanti per gli oggetti citati
+            const oggetti = errorObjectsFor(err, summary)
             return (
               <div key={i} className="flex gap-3 border-b border-zinc-900 bg-rose-950/30 py-1">
                 <span className="select-none text-rose-700">{String(i + 1).padStart(3, '0')}</span>
                 <span className="min-w-0 flex-1">
                   <span className="block text-rose-400">{messageHeader(err)}</span>
                   <span className="whitespace-pre-wrap text-rose-200">{err.text}</span>
-                  {err.procedure && onOpenProcedure && (
-                    <button
-                      onClick={() => onOpenProcedure(err.procedure!)}
-                      className="mt-0.5 rounded border border-rose-800 px-1.5 py-0.5 text-[11px] text-rose-300 transition-colors hover:bg-rose-900/40"
-                      title={`Apri ${err.procedure} in una nuova tab (CREATE OR ALTER)`}
-                    >
-                      Apri {err.procedure}
-                    </button>
+                  {oggetti.length > 0 && onOpenObject && (
+                    <span className="mt-1 flex flex-wrap items-center gap-1.5">
+                      {oggetti.map(o => (
+                        <button
+                          key={`${o.kind}-${o.schema}.${o.name}`}
+                          onClick={() => onOpenObject(o)}
+                          title={`${errorObjectAction(o)} ${o.schema}.${o.name} (${errorObjectKindLabel(o.kind)}) in una nuova tab`}
+                          className="inline-flex items-center gap-1 rounded border border-rose-800 px-1.5 py-0.5 text-[11px] text-rose-300 transition-colors hover:bg-rose-900/40"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          {errorObjectAction(o)} {o.schema}.{o.name}
+                        </button>
+                      ))}
+                    </span>
                   )}
                 </span>
               </div>

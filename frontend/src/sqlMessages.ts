@@ -5,7 +5,134 @@
 // (es. "Msg 50000, Livello 16, Stato 1, Procedura ws_X, Riga 42"). Il backend ora manda sia
 // il testo già composto sia i campi separati: qui si evidenzia il pezzo che serve — il nome
 // della procedura — invece di mostrare tutto uguale.
-import type { QueryMessage } from './types'
+import type { DatabaseSummary, QueryMessage } from './types'
+
+/** Oggetto del database citato in un messaggio di errore. */
+export interface ErrorObjectRef {
+  kind: 'table' | 'view' | 'procedure' | 'function' | 'trigger'
+  schema: string
+  name: string
+}
+
+/** Ordine di preferenza quando lo stesso nome esiste come più tipi di oggetto. */
+const KIND_PRIORITY: ErrorObjectRef['kind'][] = ['procedure', 'function', 'view', 'trigger', 'table']
+
+/**
+ * Trova gli oggetti del database CITATI NEL TESTO di un errore, fra quelli che esistono
+ * davvero nello schema caricato.
+ *
+ * Serve perché SQL Server nomina gli oggetti nei messaggi ("Invalid object name 'dbo.X'",
+ * "conflicted with the FOREIGN KEY constraint ... table 'dbo.Y'", "in procedure dbo.ws_Z"):
+ * solo gli oggetti esistenti possono essere aperti in una tab, gli altri (es. una tabella che
+ * non c'è) vengono ignorati — il pulsante non avrebbe senso.
+ *
+ * Riconosce i nomi qualificati (`dbo.X`, `[dbo].[X]`) e quelli semplici (`X`, `[X]`).
+ */
+export function objectsInErrorText(
+  text: string,
+  summary: DatabaseSummary | null | undefined,
+): ErrorObjectRef[] {
+  if (!text || !summary) return []
+  // identificatori: [nome] oppure parola; eventualmente qualificati con lo schema
+  const IDENT = '(?:\\[[^\\]]+\\]|[A-Za-z_#@][\\w#@$]*)'
+  const re = new RegExp(`(${IDENT})(?:\\s*\\.\\s*(${IDENT}))?`, 'g')
+  const found: ErrorObjectRef[] = []
+  const seen = new Set<string>()
+
+  const clean = (s: string) => s.replace(/^\[|\]$/g, '').trim()
+  const known = (kind: ErrorObjectRef['kind'], name: string, schema: string | null): ErrorObjectRef | null => {
+    const lower = name.toLowerCase()
+    const sameSchema = (s: string) => !schema || s.toLowerCase() === schema.toLowerCase()
+    switch (kind) {
+      case 'table': {
+        const t = summary.tables.find(x => x.name.toLowerCase() === lower && sameSchema(x.schema))
+        return t ? { kind, schema: t.schema, name: t.name } : null
+      }
+      case 'view': {
+        const v = summary.views.find(x => x.name.toLowerCase() === lower && sameSchema(x.schema))
+        return v ? { kind, schema: v.schema, name: v.name } : null
+      }
+      case 'procedure': {
+        const p = summary.procedures.find(x => x.name.toLowerCase() === lower && sameSchema(x.schema))
+        return p ? { kind, schema: p.schema, name: p.name } : null
+      }
+      case 'function': {
+        const f = summary.functions.find(x => x.name.toLowerCase() === lower && sameSchema(x.schema))
+        return f ? { kind, schema: f.schema, name: f.name } : null
+      }
+      case 'trigger': {
+        const t = summary.triggers.find(x => x.name.toLowerCase() === lower && sameSchema(x.schema))
+        return t ? { kind, schema: t.schema, name: t.name } : null
+      }
+    }
+  }
+
+  for (const match of text.matchAll(re)) {
+    const name = clean(match[2] ?? match[1])
+    const schema = match[2] ? clean(match[1]) : null
+    if (!name) continue
+    for (const kind of KIND_PRIORITY) {
+      const hit = known(kind, name, schema)
+      if (!hit) continue
+      const key = `${hit.kind}:${hit.schema}.${hit.name}`.toLowerCase()
+      if (!seen.has(key)) {
+        seen.add(key)
+        found.push(hit)
+      }
+      break // un solo tipo per nome (il primo in ordine di preferenza)
+    }
+  }
+  return found
+}
+
+/**
+ * Oggetti da proporre per un errore: quelli citati NEL TESTO più la procedura che l'ha
+ * sollevato (se lo schema la conosce). Oggetti sconosciuti non compaiono: aprire una tab per
+ * un oggetto che non esiste darebbe solo un errore.
+ */
+export function errorObjectsFor(
+  m: QueryMessage,
+  summary: DatabaseSummary | null | undefined,
+): ErrorObjectRef[] {
+  const refs = objectsInErrorText(`${m.procedure ?? ''} ${m.text}`, summary)
+  if (!m.procedure) return refs
+  const parts = m.procedure.split('.')
+  const name = parts[parts.length - 1]
+  const schema = parts.length > 1 ? parts[0] : 'dbo'
+  if (refs.some(r => r.name.toLowerCase() === name.toLowerCase())) return refs
+  // chi ha sollevato l'errore si mette per primo, ma solo se esiste davvero nello schema
+  const esiste = objectsInErrorText(`${schema}.${name}`, summary)[0]
+  return esiste ? [esiste, ...refs] : refs
+}
+
+/** Etichetta del pulsante che apre un oggetto citato nell'errore. */
+export function errorObjectAction(o: ErrorObjectRef): string {
+  switch (o.kind) {
+    case 'table':
+      return 'Apri CREATE'
+    case 'view':
+    case 'procedure':
+    case 'function':
+    case 'trigger':
+      return 'Modifica'
+  }
+}
+
+/** Nome del tipo di oggetto, per il testo del pulsante. */
+export function errorObjectKindLabel(kind: ErrorObjectRef['kind']): string {
+  switch (kind) {
+    case 'table':
+      return 'tabella'
+    case 'view':
+      return 'vista'
+    case 'procedure':
+      return 'stored procedure'
+    case 'function':
+      return 'funzione'
+    case 'trigger':
+      return 'trigger'
+  }
+}
 
 /** Intestazione in stile SSMS: "Msg 50000, Livello 16, Stato 1 · Procedura ws_X · Riga 42". */
 export function messageHeader(m: QueryMessage): string {

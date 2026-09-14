@@ -51,6 +51,15 @@ const BATCH_WITH_ERROR =
   "CREATE PROCEDURE #prova_err AS BEGIN RAISERROR('Errore di prova dentro la procedura', 16, 1); END;\nGO\nPRINT 'prima della chiamata';\nEXEC #prova_err;"
 
 /**
+ * Batch con un errore che CITA un oggetto esistente del database: serve a verificare che
+ * compaia il pulsante per aprirlo in una tab. Usa un RAISERROR con un testo realistico
+ * (nessuna scrittura sui dati).
+ */
+const BATCH_OBJECT_ERROR =
+  process.env.SHOT_OBJECT_ERROR_SQL ??
+  "CREATE PROCEDURE #prova_obj AS BEGIN RAISERROR('Inserimento non riuscito nella tabella ''dbo.DAT_UDC''', 16, 1); END;\nGO\nEXEC #prova_obj;"
+
+/**
  * Rettangolo dell'area di testo dell'editor: serve a cliccare "dentro" l'editor con un
  * evento del mouse vero (l'app non espone window.monaco, quindi niente API interna).
  */
@@ -410,8 +419,52 @@ async function verifyErrorMessages(page) {
   check('segnala il numero di errori', /1 errore/.test(pagina))
 
   const failed = results.filter(r => !r).length
-  console.log(`\nesito: ${results.length - failed}/${results.length} controlli superati`)
-  if (failed > 0) throw new Error(`${failed} controlli falliti`)
+  console.log(`\nesimo primo batch: ${results.length - failed}/${results.length} controlli superati`)
+
+  // ---- secondo batch: errore che CITA un oggetto esistente → deve comparire il pulsante ----
+  console.log('\n  --- errore che cita una tabella esistente ---')
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(BATCH_OBJECT_ERROR)
+  await sleep(500)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(4000)
+  const pagina2 = await page.eval(`document.body.innerText`)
+  const bottoni = await page.eval(
+    `[...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()).filter(t => t.startsWith('Modifica') || t.startsWith('Apri CREATE'))`,
+  )
+  const debug = await page.eval(
+    `(() => ({
+      tuttiIBottoni: [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()).slice(0, 25),
+      oggettiCitati: document.body.innerText.includes('Oggetti citati'),
+      pannello: (document.querySelector('.min-h-0.flex-1.overflow-auto.bg-zinc-950')?.innerText || '').slice(0, 300),
+    }))()`,
+  )
+  console.log(`  pulsanti trovati: ${JSON.stringify(bottoni)}`)
+  console.log(`  'Oggetti citati' presente: ${debug.oggettiCitati}`)
+  console.log(`  pannello: ${debug.pannello.replace(/\n/g, ' | ')}`)
+  console.log(`  pannello: ${debug.pannello.replace(/\n/g, ' | ')}`)
+  check('propone di aprire la tabella citata nell errore', bottoni.some(b => b.includes('Apri CREATE dbo.DAT_UDC')))
+  check('la procedura temporanea non produce pulsanti inutili', !bottoni.some(b => b.includes('#prova_obj')))
+  check('il messaggio mostra il testo del RAISERROR', /tabella 'dbo\.DAT_UDC'/.test(pagina2))
+
+  // ---- il pulsante deve APRIRE davvero l'oggetto in una nuova tab ----
+  const cliccato = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Apri CREATE dbo.DAT_UDC'))`,
+  )
+  await sleep(2500)
+  const dopoClick = await page.eval(`(() => ({
+    tab: [...document.querySelectorAll('[title*="\\u00b7 db:"]')].map(b => (b.getAttribute('title') || '').split(' \\u00b7 db: ')[0].trim()),
+    editor: [...document.querySelectorAll('.monaco-editor .view-line')].map(l => l.textContent).join(' ').slice(0, 200),
+  }))()`)
+  console.log(`  dopo il clic → tab: ${JSON.stringify(dopoClick.tab)}`)
+  console.log(`  editor: ${dopoClick.editor}`)
+  check('il clic ha aperto l oggetto', cliccato === true)
+  check('si apre una tab dedicata all oggetto', dopoClick.tab.some(t => t.includes('DAT_UDC')))
+  check('la tab contiene lo script CREATE TABLE', /CREATE\s+TABLE/i.test(dopoClick.editor))
+
+  const failed2 = results.filter(r => !r).length
+  console.log(`\nesito: ${results.length - failed2}/${results.length} controlli superati`)
+  if (failed2 > 0) throw new Error(`${failed2} controlli falliti`)
 }
 
 async function main() {
