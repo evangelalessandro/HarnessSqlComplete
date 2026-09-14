@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { BookOpen, Check, ChevronLeft, Database as DbIcon, FilePlus2, Pin, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { BookOpen, Check, ChevronLeft, Database as DbIcon, FilePlus2, Pin, Plus, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
@@ -1240,6 +1240,29 @@ export default function App() {
                 )}
               </div>
             ))}
+            {/* I pulsanti per la nuova tab stanno DENTRO la barra, attaccati all'ultima tab:
+                con la barra vuota restano a sinistra, altrimenti seguono l'ultima tab invece
+                di finire tutto a destra. */}
+            <button
+              onClick={e => newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, e.shiftKey ? 'start' : undefined)}
+              onAuxClick={e => {
+                // tasto centrale: nuova tab a sinistra
+                if (e.button === 1) newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, 'start')
+              }}
+              className="inline-flex h-7 shrink-0 items-center gap-1 rounded px-2 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+              title="Nuova query — Shift+clic o clic col tasto centrale per aprirla a sinistra"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Nuova
+            </button>
+            <button
+              onClick={() => newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, 'start')}
+              className="inline-flex h-7 shrink-0 items-center rounded px-1.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+              title="Nuova query come PRIMA tab (a sinistra)"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              <Plus className="h-3.5 w-3.5" />
+            </button>
             </div>
             {tabOverflow && (
               <div className="relative shrink-0">
@@ -1288,25 +1311,6 @@ export default function App() {
                 )}
               </div>
             )}
-            <button
-              onClick={e => newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, e.shiftKey ? 'start' : undefined)}
-              onAuxClick={e => {
-                // tasto centrale: nuova tab a sinistra
-                if (e.button === 1) newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, 'start')
-              }}
-              className="ml-1 inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-              title="Nuova query — Shift+clic o clic col tasto centrale per aprirla a sinistra"
-            >
-              <FilePlus2 className="h-3.5 w-3.5" /> Nuova
-            </button>
-            <button
-              onClick={() => newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, 'start')}
-              className="inline-flex shrink-0 items-center rounded px-1.5 py-1 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-              title="Nuova query come PRIMA tab (a sinistra)"
-            >
-              <ChevronLeft className="h-3.5 w-3.5" />
-              <FilePlus2 className="h-3.5 w-3.5" />
-            </button>
           </div>
 
           {/* descrizione della tab attiva (nota libera) */}

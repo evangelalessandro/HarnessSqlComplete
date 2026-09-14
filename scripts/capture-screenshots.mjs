@@ -23,6 +23,7 @@ const VERIFY_TABS = process.argv.includes('--verify-tabs')
 const VERIFY_ERRORS = process.argv.includes('--verify-errors')
 const VERIFY_TAB_CURSOR = process.argv.includes('--verify-tab-cursor')
 const DUMP_GENERATOR = process.argv.includes('--dump-generator')
+const DUMP_TABBAR = process.argv.includes('--dump-tabbar')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -690,6 +691,70 @@ async function dumpGenerator(page) {
   }
 }
 
+/**
+ * DIAGNOSTICA (--dump-tabbar): misura la barra delle tab per controllare che i pulsanti della
+ * nuova tab stiano attaccati all'ultima tab (e a sinistra quando la barra è vuota).
+ */
+async function dumpTabbar(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await sleep(2000)
+
+  const misura = () =>
+    page.eval(`(() => {
+      const tabs = [...document.querySelectorAll('[title*="\\u00b7 db:"]')].map(e => {
+        const r = e.getBoundingClientRect(); return { t: (e.getAttribute('title') || '').split(' ')[0], x: Math.round(r.left), w: Math.round(r.width) };
+      });
+      const nuovo = [...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').startsWith('Nuova query —'));
+      const aSinistra = [...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('PRIMA tab'));
+      const r = nuovo ? nuovo.getBoundingClientRect() : null;
+      const r2 = aSinistra ? aSinistra.getBoundingClientRect() : null;
+      return {
+        tabs,
+        nuovo: r ? { x: Math.round(r.left), w: Math.round(r.width), y: Math.round(r.top) } : null,
+        aSinistra: r2 ? { x: Math.round(r2.left), w: Math.round(r2.width), y: Math.round(r2.top) } : null,
+        barra: (() => { const b = nuovo ? nuovo.closest('div')?.parentElement : null; const rb = b ? b.getBoundingClientRect() : null; return rb ? { x: Math.round(rb.left), w: Math.round(rb.width) } : null })(),
+      };
+    })()`)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? ` — ${extra}` : ''}`)
+  }
+
+  // 1. barra VUOTA: si chiudono tutte le tab, il "+" deve restare a sinistra
+  for (let i = 0; i < 6; i++) {
+    const chiuso = await page.clickWhere(`[...document.querySelectorAll('button[title="Chiudi tab"]')][0]`)
+    if (!chiuso) break
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(500)
+  }
+  const vuota = await misura()
+  console.log(`  barra vuota: tab=${JSON.stringify(vuota.tabs)} nuovo=${JSON.stringify(vuota.nuovo)} barra=${JSON.stringify(vuota.barra)}`)
+  check('senza tab il "+" sta a sinistra, subito dopo il selettore database', !!vuota.nuovo && !!vuota.barra && vuota.nuovo.x - vuota.barra.x < 250)
+
+  // 2. con due tab: il "+" è attaccato all'ultima tab (stessa riga, subito dopo)
+  await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').startsWith('Nuova query —'))`)
+  await sleep(800)
+  await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').startsWith('Nuova query —'))`)
+  await sleep(800)
+  const piena = await misura()
+  const ultima = piena.tabs[piena.tabs.length - 1]
+  console.log(`  con tab: ${JSON.stringify(piena.tabs)} nuovo=${JSON.stringify(piena.nuovo)}`)
+  check('il "+" è attaccato all\'ultima tab (subito dopo)', !!ultima && !!piena.nuovo && piena.nuovo.x - (ultima.x + ultima.w) < 12, `ultima finisce a ${ultima ? ultima.x + ultima.w : '?'}, "+" a ${piena.nuovo?.x}`)
+  check('il "+" è sulla stessa riga dell\'ultima tab', !!ultima && !!piena.nuovo && Math.abs(piena.nuovo.y - (piena.tabs[0].y ?? piena.nuovo.y)) < 40)
+  check('non è spinto all\'estremità destra della barra', !!piena.nuovo && !!piena.barra && piena.nuovo.x + piena.nuovo.w < piena.barra.x + piena.barra.w - 100)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
 async function main() {
   const { proc, profileDir } = launchBrowser()
   let page
@@ -726,6 +791,11 @@ async function main() {
 
     if (DUMP_GENERATOR) {
       await dumpGenerator(page)
+      return
+    }
+
+    if (DUMP_TABBAR) {
+      await dumpTabbar(page)
       return
     }
 
