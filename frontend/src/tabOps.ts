@@ -65,18 +65,40 @@ export function countClosableTabs(tabs: EditorTab[], anchorId: string, mode: Tab
   }, 0)
 }
 
+/** Dove inserire una nuova tab: all'inizio (a sinistra), dopo quella attiva, oppure in fondo. */
+export type NewTabPosition = 'start' | 'afterActive' | 'end'
+
 /**
- * Posizione in cui inserire una nuova tab: SUBITO DOPO quella attiva (l'ultima aperta),
- * non in fondo a destra. Esempio: tab A B C D con attiva B → la nuova tab va fra B e C.
- * Se non c'è una tab attiva (o non esiste più) si accoda in fondo.
+ * Posizione in cui inserire una nuova tab.
+ * - `start`: come PRIMA tab, cioè tutto a sinistra (tab A B C → N A B C);
+ * - `afterActive`: subito dopo quella attiva, l'ultima aperta (A B C con attiva B → A B N C);
+ * - `end`: in fondo, a destra (A B C → A B C N).
+ * Se non c'è una tab attiva (o non esiste più), `afterActive` accoda in fondo.
  */
-export function newTabIndex(tabs: EditorTab[], activeId: string): number {
+export function newTabIndexFor(tabs: EditorTab[], activeId: string, position: NewTabPosition): number {
+  if (position === 'start') return 0
+  if (position === 'end') return tabs.length
   const active = tabs.findIndex(t => t.id === activeId)
   return active === -1 ? tabs.length : active + 1
 }
 
+/** Inserisce la nuova tab nella posizione richiesta, senza spostare le altre. */
+export function insertTabAt(
+  tabs: EditorTab[],
+  tab: EditorTab,
+  activeId: string,
+  position: NewTabPosition = 'afterActive',
+): EditorTab[] {
+  const at = newTabIndexFor(tabs, activeId, position)
+  return [...tabs.slice(0, at), tab, ...tabs.slice(at)]
+}
+
+/** Posizione in cui inserire una nuova tab: SUBITO DOPO quella attiva (l'ultima aperta). */
+export function newTabIndex(tabs: EditorTab[], activeId: string): number {
+  return newTabIndexFor(tabs, activeId, 'afterActive')
+}
+
 /** Inserisce la nuova tab dopo quella attiva, senza modificare l'ordine delle altre. */
 export function insertTabAfterActive(tabs: EditorTab[], tab: EditorTab, activeId: string): EditorTab[] {
-  const at = newTabIndex(tabs, activeId)
-  return [...tabs.slice(0, at), tab, ...tabs.slice(at)]
+  return insertTabAt(tabs, tab, activeId, 'afterActive')
 }

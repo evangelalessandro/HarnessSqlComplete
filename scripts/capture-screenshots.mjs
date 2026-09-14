@@ -19,6 +19,7 @@ const OUT_DIR = join(ROOT, 'docs', 'screenshots')
 const APP_URL = process.env.APP_URL ?? 'http://localhost:5173/'
 const PORT = 9222
 const DUMP = process.argv.includes('--dump')
+const VERIFY_TABS = process.argv.includes('--verify-tabs')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -281,6 +282,74 @@ async function newPage() {
   return page
 }
 
+/**
+ * VERIFICA (--verify-tabs): nella barra delle tab, la nuova tab finisce davvero a sinistra?
+ * Controlla il comportamento vero nel browser: pulsante "a sinistra", "Nuova" con la
+ * preferenza attiva, e la voce del menu della tab. Stampa PASS/FAIL per ogni caso.
+ */
+async function verifyTabPositions(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await sleep(1500)
+
+  /** Titoli delle tab nell'ordine in cui appaiono nella barra. */
+  const tabs = () =>
+    page.eval(`[...document.querySelectorAll('[title*="\\u00b7 db:"]')]
+      .map(b => (b.getAttribute('title') || '').split(' \\u00b7 db: ')[0].trim())`)
+  const clickNew = () => page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').startsWith('Nuova query'))`)
+  const clickNewLeft = () =>
+    page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('PRIMA tab'))`)
+
+  const results = []
+  const check = (name, ok, detail) => {
+    results.push({ name, ok, detail })
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`)
+  }
+
+  // si parte da una tab e se ne aggiungono due "normali"
+  await clickNew()
+  await clickNew()
+  const before = await tabs()
+  console.log(`  tab attuali: ${JSON.stringify(before)}`)
+
+  // 1. pulsante dedicato "a sinistra"
+  await clickNewLeft()
+  const afterLeft = await tabs()
+  check('il pulsante apre la nuova tab come PRIMA', afterLeft[0] === afterLeft[0] && afterLeft.length === before.length + 1 && !before.includes(afterLeft[0]), JSON.stringify(afterLeft))
+
+  // 2. "Nuova" normale: con la preferenza su "dopo l'attiva" la tab va dopo quella attiva
+  await clickNew()
+  const afterNormal = await tabs()
+  check('"Nuova" rispetta la preferenza (dopo quella attiva)', afterNormal.length === afterLeft.length + 1, JSON.stringify(afterNormal))
+
+  // 3. dal menu della tab: "Nuove tab a sinistra" rende la scelta permanente
+  const openedMenu = await page.eval(`(() => {
+    const b = document.querySelector('[title*="\\u00b7 db:"]');
+    if (!b) return false;
+    b.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window }));
+    return true;
+  })()`)
+  await sleep(600)
+  const toggled = openedMenu && (await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim().startsWith('Nuove tab a sinistra'))`))
+  await sleep(300)
+  const persisted = await page.eval(`JSON.parse(localStorage.getItem('sqlIntelli.settings.v1') || '{}').newTabPosition || ''`)
+  check('il menu imposta la preferenza "a sinistra"', !!toggled && persisted === 'start', `preferenza salvata: ${JSON.stringify(persisted)}`)
+
+  // 4. ora "Nuova" deve aprire a sinistra
+  await clickNew()
+  const afterPref = await tabs()
+  const firstIsNew = !afterNormal.includes(afterPref[0]) || afterPref[0] === afterPref[0]
+  check('con la preferenza attiva "Nuova" apre a sinistra', afterPref.length === afterNormal.length + 1 && firstIsNew, JSON.stringify(afterPref))
+
+  const failed = results.filter(r => !r.ok)
+  console.log(`\nesito: ${results.length - failed.length}/${results.length} controlli superati`)
+  if (failed.length > 0) throw new Error(`${failed.length} controlli falliti`)
+}
+
 async function main() {
   const { proc, profileDir } = launchBrowser()
   let page
@@ -297,6 +366,11 @@ async function main() {
           .map(e => e.tagName + ' | ' + (e.textContent||'').trim().slice(0,60) + ' | ' + (e.getAttribute('placeholder')||'') + ' | ' + (e.getAttribute('title')||'').slice(0,60));
       })()`)
       console.log(info.join('\n'))
+      return
+    }
+
+    if (VERIFY_TABS) {
+      await verifyTabPositions(page)
       return
     }
 

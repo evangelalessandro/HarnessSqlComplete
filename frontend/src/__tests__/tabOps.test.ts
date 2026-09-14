@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { buildTabClosePlan, countClosableTabs, insertTabAfterActive, newTabIndex } from '../tabOps'
+import {
+  buildTabClosePlan,
+  countClosableTabs,
+  insertTabAfterActive,
+  insertTabAt,
+  newTabIndex,
+  newTabIndexFor,
+} from '../tabOps'
 import type { EditorTab } from '../types'
 import appSource from '../App.tsx?raw'
 
@@ -103,9 +110,64 @@ describe('TAB: dove finisce una tab nuova', () => {
     for (const t of mixed) expect(out.filter(x => x.id === t.id).length).toBe(1)
   })
 
-  it('l apertura di una tab nell app usa questa regola', () => {
-    expect(appSource).toContain('insertTabAfterActive(prev, tab, activeEditorTab)')
+  it('l apertura di una tab nell app usa la posizione scelta', () => {
+    expect(appSource).toContain('insertTabAt(prev, tab, activeEditorTab, dove)')
     // e non deve essere tornata l aggiunta in fondo
     expect(appSource).not.toContain('setEditorTabs(prev => [...prev, tab])')
+  })
+})
+
+describe('TAB: dove aprire una tab nuova (le tre posizioni)', () => {
+  const tabs = [tab('A'), tab('B'), tab('C'), tab('D')]
+  const ids = (list: EditorTab[]) => list.map(t => t.id)
+
+  it('a SINISTRA: diventa la prima tab, qualunque sia quella attiva', () => {
+    expect(ids(insertTabAt(tabs, tab('N'), 'C', 'start'))).toEqual(['N', 'A', 'B', 'C', 'D'])
+    expect(ids(insertTabAt(tabs, tab('N'), 'A', 'start'))).toEqual(['N', 'A', 'B', 'C', 'D'])
+    expect(ids(insertTabAt(tabs, tab('N'), '', 'start'))).toEqual(['N', 'A', 'B', 'C', 'D'])
+    expect(newTabIndexFor(tabs, 'C', 'start')).toBe(0)
+  })
+
+  it('a sinistra anche con tab appuntate in testa', () => {
+    const mixed = [tab('P', true), tab('B'), tab('C')]
+    expect(ids(insertTabAt(mixed, tab('N'), 'C', 'start'))).toEqual(['N', 'P', 'B', 'C'])
+  })
+
+  it('dopo quella attiva (comportamento predefinito)', () => {
+    expect(ids(insertTabAt(tabs, tab('N'), 'B', 'afterActive'))).toEqual(['A', 'B', 'N', 'C', 'D'])
+    expect(newTabIndexFor(tabs, 'B', 'afterActive')).toBe(2)
+  })
+
+  it('in fondo: tutto a destra', () => {
+    expect(ids(insertTabAt(tabs, tab('N'), 'A', 'end'))).toEqual(['A', 'B', 'C', 'D', 'N'])
+    expect(newTabIndexFor(tabs, 'A', 'end')).toBe(4)
+  })
+
+  it('senza posizione indicata si comporta come "dopo quella attiva"', () => {
+    expect(ids(insertTabAt(tabs, tab('N'), 'B'))).toEqual(['A', 'B', 'N', 'C', 'D'])
+  })
+
+  it('su un elenco vuoto la tab è la prima in tutte le posizioni', () => {
+    for (const pos of ['start', 'afterActive', 'end'] as const) {
+      expect(ids(insertTabAt([], tab('N'), '', pos)), pos).toEqual(['N'])
+    }
+  })
+
+  it('nessuna tab esistente viene persa o duplicata', () => {
+    for (const pos of ['start', 'afterActive', 'end'] as const) {
+      const out = insertTabAt(tabs, tab('N'), 'B', pos)
+      expect(out, pos).toHaveLength(tabs.length + 1)
+      for (const t of tabs) expect(out.filter(x => x.id === t.id), `${pos} ${t.id}`).toHaveLength(1)
+    }
+  })
+
+  it('l app usa la preferenza salvata e il pulsante "a sinistra" forza la prima posizione', () => {
+    expect(appSource).toContain('insertTabAt(prev, tab, activeEditorTab, dove)')
+    expect(appSource).toMatch(/const dove = position \?\? newTabPositionRef\.current/)
+    // il pulsante accanto a "Nuova" apre sempre a sinistra
+    expect(appSource).toMatch(/newEditorTab\(undefined, DEFAULT_SQL, undefined, false, null, undefined, 'start'\)/)
+    // e il menu della tab permette di rendere la scelta permanente
+    expect(appSource).toContain('Nuove tab a sinistra')
+    expect(appSource).toContain('setNewTabPosition')
   })
 })

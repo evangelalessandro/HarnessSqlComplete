@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { BookOpen, Database as DbIcon, FilePlus2, Pin, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { BookOpen, Check, ChevronLeft, Database as DbIcon, FilePlus2, Pin, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
@@ -9,8 +9,8 @@ import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
-import { buildTabClosePlan, countClosableTabs, insertTabAfterActive } from './tabOps'
-import type { TabCloseMode } from './tabOps'
+import { buildTabClosePlan, countClosableTabs, insertTabAt } from './tabOps'
+import type { NewTabPosition, TabCloseMode } from './tabOps'
 import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryResult, RoutineCallGraph } from './types'
 import { chooseResultTab } from './queryTabs'
 import {
@@ -283,6 +283,22 @@ export default function App() {
     })
   }, [])
 
+  /**
+   * Dove aprire le nuove tab. Il valore vive in un ref perché `newEditorTab` è una callback
+   * stabile (usata anche da fuori): cambiare la preferenza non deve ricrearla.
+   */
+  const newTabPositionRef = useRef<NewTabPosition>(settings.newTabPosition)
+  newTabPositionRef.current = settings.newTabPosition
+
+  /** Cambia (e salva) la posizione delle nuove tab: a sinistra oppure dopo quella attiva. */
+  const setNewTabPosition = useCallback((position: NewTabPosition) => {
+    setSettings(prev => {
+      const next: EditorSettings = { ...prev, newTabPosition: position }
+      saveSettings(next)
+      return next
+    })
+  }, [])
+
   // Applica il tema all'intera pagina (html.theme-light) e all'editor Monaco
   useEffect(() => {
     document.documentElement.classList.toggle('theme-light', settings.theme === 'vs')
@@ -423,6 +439,8 @@ export default function App() {
       fromFile = false,
       fileHandle: FileSystemFileHandle | null = null,
       fileName?: string,
+      /** Dove mettere la nuova tab; se non indicato si usa la preferenza dell'utente. */
+      position?: NewTabPosition,
     ) => {
       // il progressivo si azzera quando non c'è nessuna tab
       if (editorTabs.length === 0) tabCounter.current = 1
@@ -437,7 +455,8 @@ export default function App() {
         fileHandle,
         fileName: fileName ?? (fromFile ? title : undefined),
       }
-      setEditorTabs(prev => insertTabAfterActive(prev, tab, activeEditorTab))
+      const dove = position ?? newTabPositionRef.current
+      setEditorTabs(prev => insertTabAt(prev, tab, activeEditorTab, dove))
       setActiveEditorTab(tab.id)
     },
     [editorTabs.length, activeEditorTab, connection],
@@ -1194,11 +1213,23 @@ export default function App() {
               </div>
             )}
             <button
-              onClick={() => newEditorTab()}
+              onClick={e => newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, e.shiftKey ? 'start' : undefined)}
+              onAuxClick={e => {
+                // tasto centrale: nuova tab a sinistra
+                if (e.button === 1) newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, 'start')
+              }}
               className="ml-1 inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-              title="Nuova query"
+              title="Nuova query — Shift+clic o clic col tasto centrale per aprirla a sinistra"
             >
               <FilePlus2 className="h-3.5 w-3.5" /> Nuova
+            </button>
+            <button
+              onClick={() => newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, 'start')}
+              className="inline-flex shrink-0 items-center rounded px-1.5 py-1 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+              title="Nuova query come PRIMA tab (a sinistra)"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              <FilePlus2 className="h-3.5 w-3.5" />
             </button>
           </div>
 
@@ -1495,6 +1526,24 @@ export default function App() {
                   }}
                 >
                   Icona / titolo / descrizione…
+                </button>
+                <div className="my-1 h-px bg-zinc-800" />
+                {/* Dove aprire le nuove tab: è una preferenza, resta salvata */}
+                <button
+                  className={itemCls}
+                  onClick={() => setNewTabPosition(settings.newTabPosition === 'start' ? 'afterActive' : 'start')}
+                  title="Dove aprire le nuove tab: a sinistra (prima tab) oppure subito dopo quella attiva"
+                >
+                  <span className="flex-1">Nuove tab a sinistra</span>
+                  {settings.newTabPosition === 'start' && <Check className="h-3.5 w-3.5 text-sky-400" />}
+                </button>
+                <button
+                  className={itemCls}
+                  onClick={() => setNewTabPosition('end')}
+                  title="Dove aprire le nuove tab: in fondo, tutto a destra"
+                >
+                  <span className="flex-1">Nuove tab in fondo</span>
+                  {settings.newTabPosition === 'end' && <Check className="h-3.5 w-3.5 text-sky-400" />}
                 </button>
                 <div className="my-1 h-px bg-zinc-800" />
                 {item('Chiudi tutte le altre', n('others'), 'others')}

@@ -53,6 +53,11 @@ export const HELP_SECTIONS: HelpSection[] = [
           'Tasto destro su una tab per chiudere in blocco come in SSMS: tutte le altre, quelle a destra, quelle a sinistra, o tutte le non appuntate (le appuntate sono protette). Quando le tab non stanno in una riga vanno a capo su una seconda riga; se non bastano nemmeno due righe compare il pulsante "»" che elenca tutte le tab aperte.',
       },
       {
+        title: 'Dove si aprono le nuove tab',
+        detail:
+          'Il pulsante col segno "<" accanto a "Nuova" apre la query come PRIMA tab, cioè a sinistra; lo stesso vale per Shift+clic o clic col tasto centrale su "Nuova". Nel tasto destro su una tab scegli dove aprire le nuove tab — a sinistra, dopo quella attiva o in fondo — e la scelta resta salvata.',
+      },
+      {
         title: 'Esegui query',
         detail:
           'F5 o Ctrl+Invio esegue lo statement corrente. Supporta più batch separati da GO, cattura i PRINT e mostra più result set (limite 5000 righe per griglia).',
