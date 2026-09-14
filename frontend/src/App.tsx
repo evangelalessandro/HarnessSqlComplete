@@ -73,6 +73,13 @@ export default function App() {
    * (es. "Procedura ws_X, Riga 42"): la consuma l'effetto che carica il testo della tab.
    */
   const pendingRevealRef = useRef<{ tabId: string; line: number } | null>(null)
+  /**
+   * Posizione del cursore (e scorrimento) di ogni tab: riaprendo una tab si torna dove si era,
+   * invece di saltare all'inizio del testo.
+   */
+  const tabCursorsRef = useRef<
+    Record<string, { selection: monaco.Selection | null; scrollTop: number; scrollLeft: number }>
+  >({})
   // Overflow delle tab: a capo su 2 righe; oltre compare il pulsante "»" con l'elenco
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const [tabOverflow, setTabOverflow] = useState(false)
@@ -388,7 +395,8 @@ export default function App() {
   // Quando cambia la tab attiva (o arriva l'editor), mostra il contenuto della tab
   useEffect(() => {
     if (!editor) return
-    const tab = editorTabs.find(t => t.id === activeEditorTab)
+    const tabId = activeEditorTab
+    const tab = editorTabs.find(t => t.id === tabId)
     if (tab && editor.getValue() !== tab.sql) editor.setValue(tab.sql)
     // Apertura di un oggetto DA UN ERRORE: il cursore va sulla riga indicata da SQL Server,
     // così si vede subito dove ha fallito ("Procedura X, Riga N").
@@ -399,6 +407,26 @@ export default function App() {
       editor.setPosition({ lineNumber: line, column: 1 })
       editor.revealLineInCenter(line)
       editor.focus()
+    } else {
+      // Riaprendo una tab il cursore NON deve tornare all'inizio: si rimette dove era
+      // (posizione, eventuale selezione e scorrimento salvati uscendo da quella tab).
+      const salvato = tabCursorsRef.current[tabId]
+      if (salvato) {
+        if (salvato.selection) editor.setSelection(salvato.selection)
+        editor.setScrollTop(salvato.scrollTop, monaco.editor.ScrollType.Immediate)
+        editor.setScrollLeft(salvato.scrollLeft, monaco.editor.ScrollType.Immediate)
+      }
+    }
+    return () => {
+      // si sta lasciando questa tab: si ricorda dov'era il cursore
+      const pos = editor.getPosition()
+      if (pos) {
+        tabCursorsRef.current[tabId] = {
+          selection: editor.getSelection(),
+          scrollTop: editor.getScrollTop(),
+          scrollLeft: editor.getScrollLeft(),
+        }
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, activeEditorTab])

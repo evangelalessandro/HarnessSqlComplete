@@ -45,7 +45,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Multi-tab',
         detail:
-          'Apri più query in tab separate: trascina per riordinarle, clicca la puntina per appuntarle (non chiudibili, restano in testa), chiudi con la X. Le tab vengono ripristinate al riavvio. Con l\'icona nota (o tasto destro → "Icona / titolo / descrizione…") puoi dare a ogni tab un simbolo/emoji (⭐ 🐞 ⚠️ …) che resta visibile nella barra.',
+          'Apri più query in tab separate: trascina per riordinarle, clicca la puntina per appuntarle (non chiudibili, restano in testa), chiudi con la X. Le tab vengono ripristinate al riavvio. Riaprendo una tab il cursore resta dov\'era (posizione e scorrimento sono ricordati per ogni tab), quindi non si torna mai all\'inizio del testo per sbaglio. Con l\'icona nota (o tasto destro → "Icona / titolo / descrizione…") puoi dare a ogni tab un simbolo/emoji (⭐ 🐞 ⚠️ …) che resta visibile nella barra.',
       },
       {
         title: 'Tante tab? Tasto destro e "»"',

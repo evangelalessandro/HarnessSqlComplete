@@ -21,6 +21,7 @@ const PORT = 9222
 const DUMP = process.argv.includes('--dump')
 const VERIFY_TABS = process.argv.includes('--verify-tabs')
 const VERIFY_ERRORS = process.argv.includes('--verify-errors')
+const VERIFY_TAB_CURSOR = process.argv.includes('--verify-tab-cursor')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -67,6 +68,9 @@ const BATCH_OBJECT_ERROR =
 const BATCH_ERROR_AND_RESULTS =
   process.env.SHOT_ERROR_RESULTS_SQL ??
   'SELECT TOP 3 COR_CORRIDOIO, COR_AREA FROM dbo.MAG_CORRIDOI;\nEXEC dbo.ws_L2_RotazioneCelle_SetPause @pCorridor = -999999;'
+
+/** Query a più righe usata dalla verifica della posizione del cursore. */
+const TAB1_SQL = 'SELECT 1 AS uno;\nSELECT 2 AS due;\nSELECT 3 AS tre;\nSELECT 4 AS quattro;'
 
 /**
  * Rettangolo dell'area di testo dell'editor: serve a cliccare "dentro" l'editor con un
@@ -164,14 +168,25 @@ class Session {
     this.ws = ws
     this.id = 0
     this.pending = new Map()
+    /** Eventi ricevuti dal browser (es. la console della pagina), per la diagnostica. */
+    this.events = []
     ws.addEventListener('message', ev => {
       const msg = JSON.parse(ev.data)
       if (msg.id && this.pending.has(msg.id)) {
         const { resolve, reject } = this.pending.get(msg.id)
         this.pending.delete(msg.id)
         msg.error ? reject(new Error(JSON.stringify(msg.error))) : resolve(msg.result)
+        return
       }
+      if (msg.method) this.events.push(msg)
     })
+  }
+  /** Testo dei messaggi di console raccolti finora (per capire cosa fa la pagina). */
+  consoleLogs(needle = '') {
+    return this.events
+      .filter(e => e.method === 'Runtime.consoleAPICalled')
+      .map(e => (e.params?.args ?? []).map(a => a.value ?? a.description ?? '').join(' '))
+      .filter(t => t.includes(needle))
   }
   send(method, params = {}) {
     const id = ++this.id
@@ -549,6 +564,76 @@ async function verifyErrorWithResults(page) {
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
 }
 
+/**
+ * VERIFICA (--verify-tab-cursor): riaprendo una tab il cursore deve restare dov'era.
+ * Si sposta il cursore su una riga, si passa a un'altra tab e si torna indietro: la riga
+ * sotto il cursore deve essere la stessa (e non la prima).
+ */
+async function verifyTabCursor(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await sleep(2000)
+
+  /** Testo della riga su cui sta il cursore di Monaco (posizione ricavata dalla "top"). */
+  const rigaCursore = () =>
+    page.eval(`(() => {
+      const c = document.querySelector('.monaco-editor .cursors-layer .cursor');
+      const top = c ? c.style.top : null;
+      if (top === null) return null;
+      const righe = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')];
+      const r = righe.find(l => l.style.top === top) || righe.find(l => l.style.top >= top);
+      // Monaco usa spazi insecabili nella resa: si normalizzano per poterli confrontare
+      return r ? (r.textContent || '').replace(/\\u00a0/g, ' ').trim() : null;
+    })()`)
+
+  const rect = await editorRect(page)
+  const altezzaRiga = await page.eval(
+    `(() => { const l = document.querySelector('.monaco-editor .view-lines .view-line'); return l ? l.getBoundingClientRect().height : 18 })()`,
+  )
+  // tab 1 con un testo riconoscibile, poi cursore sulla TERZA riga
+  await page.clickPoint(rect.x + 120, rect.y + altezzaRiga * 1.5)
+  await sleep(300)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(TAB1_SQL)
+  await sleep(600)
+  await page.clickPoint(rect.x + 60, rect.y + altezzaRiga * 2.5)
+  await sleep(400)
+  const prima = await rigaCursore()
+  console.log(`  cursore sulla riga: ${JSON.stringify(prima)}`)
+
+  // nuova tab (testo diverso) e ritorno alla prima
+  await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').startsWith('Nuova query'))`)
+  await sleep(1500)
+  const inAltraTab = await rigaCursore()
+  const tornato = await page.clickWhere(`(() => {
+    const wrap = [...document.querySelectorAll('[title]')].find(e => (e.getAttribute('title') || '').startsWith('Query 1 '));
+    return wrap ? (wrap.querySelector('button') || wrap) : null;
+  })()`)
+  await sleep(1500)
+  const dopo = await rigaCursore()
+  console.log(`  nell'altra tab: ${JSON.stringify(inAltraTab)}`)
+  console.log(`  tornando nella prima: ${JSON.stringify(dopo)}`)
+
+  const esiti = []
+  const check = (name, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}`)
+  }
+  check('il cursore era su una riga centrale (non la prima)', /^SELECT [2-4] AS /.test(prima || ''))
+  check("la nuova tab parte dall'inizio (testo diverso)", inAltraTab !== prima)
+  check('tornando nella tab il cursore è rimasto sulla stessa riga', dopo === prima)
+  check('il clic sulla tab è andato a segno', tornato === true)
+  const log = page.consoleLogs('[cursore]')
+  console.log(`  log della pagina:\n${log.map(l => `    ${l}`).join('\n')}`)
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
 async function main() {
   const { proc, profileDir } = launchBrowser()
   let page
@@ -575,6 +660,11 @@ async function main() {
 
     if (VERIFY_ERRORS) {
       await verifyErrorMessages(page)
+      return
+    }
+
+    if (VERIFY_TAB_CURSOR) {
+      await verifyTabCursor(page)
       return
     }
 
