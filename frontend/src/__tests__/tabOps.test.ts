@@ -164,10 +164,11 @@ describe('TAB: dove aprire una tab nuova (le tre posizioni)', () => {
   it('l app usa la preferenza salvata e il pulsante "a sinistra" forza la prima posizione', () => {
     expect(appSource).toContain('insertTabAt(prev, tab, activeEditorTab, dove)')
     expect(appSource).toMatch(/const dove = position \?\? newTabPositionRef\.current/)
-    // il pulsante accanto a "Nuova" apre sempre a sinistra
-    expect(appSource).toMatch(/newEditorTab\(undefined, DEFAULT_SQL, undefined, false, null, undefined, 'start'\)/)
-    // e il menu della tab permette di rendere la scelta permanente
-    expect(appSource).toContain('Nuove tab a sinistra')
-    expect(appSource).toContain('setNewTabPosition')
+    // UN solo pulsante nella barra: apre a destra (dopo quella attiva)
+    expect(appSource).toMatch(/e\.shiftKey \? 'start' : 'afterActive'/)
+    expect(appSource).toContain('Nuova query (a destra, dopo quella attiva)')
+    // il secondo pulsante "a sinistra" è stato tolto e non deve tornare
+    expect(appSource).not.toContain('PRIMA tab (a sinistra)')
+    expect(appSource).not.toContain('Nuove tab a sinistra')
   })
 })

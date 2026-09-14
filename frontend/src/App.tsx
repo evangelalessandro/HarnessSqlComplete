@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { BookOpen, Check, ChevronLeft, Database as DbIcon, FilePlus2, Pin, Plus, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { BookOpen, Database as DbIcon, FilePlus2, Pin, Plus, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
@@ -298,20 +298,11 @@ export default function App() {
   }, [])
 
   /**
-   * Dove aprire le nuove tab. Il valore vive in un ref perché `newEditorTab` è una callback
-   * stabile (usata anche da fuori): cambiare la preferenza non deve ricrearla.
+   * Dove aprire le nuove tab diverse da quella creata col pulsante "+": il valore vive in un
+   * ref perché `newEditorTab` è una callback stabile (usata anche da fuori).
    */
   const newTabPositionRef = useRef<NewTabPosition>(settings.newTabPosition)
   newTabPositionRef.current = settings.newTabPosition
-
-  /** Cambia (e salva) la posizione delle nuove tab: a sinistra oppure dopo quella attiva. */
-  const setNewTabPosition = useCallback((position: NewTabPosition) => {
-    setSettings(prev => {
-      const next: EditorSettings = { ...prev, newTabPosition: position }
-      saveSettings(next)
-      return next
-    })
-  }, [])
 
   // Applica il tema all'intera pagina (html.theme-light) e all'editor Monaco
   useEffect(() => {
@@ -1240,28 +1231,29 @@ export default function App() {
                 )}
               </div>
             ))}
-            {/* I pulsanti per la nuova tab stanno DENTRO la barra, attaccati all'ultima tab:
-                con la barra vuota restano a sinistra, altrimenti seguono l'ultima tab invece
-                di finire tutto a destra. */}
+            {/* UN solo pulsante per la nuova tab: apre a DESTRA, subito dopo quella attiva.
+                (Shift+clic o clic col tasto centrale la aprono a sinistra, come prima tab:
+                è una scorciatoia, non un secondo pulsante.) */}
             <button
-              onClick={e => newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, e.shiftKey ? 'start' : undefined)}
+              onClick={e =>
+                newEditorTab(
+                  undefined,
+                  DEFAULT_SQL,
+                  undefined,
+                  false,
+                  null,
+                  undefined,
+                  e.shiftKey ? 'start' : 'afterActive',
+                )
+              }
               onAuxClick={e => {
-                // tasto centrale: nuova tab a sinistra
                 if (e.button === 1) newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, 'start')
               }}
               className="inline-flex h-7 shrink-0 items-center gap-1 rounded px-2 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-              title="Nuova query — Shift+clic o clic col tasto centrale per aprirla a sinistra"
+              title="Nuova query (a destra, dopo quella attiva) — Shift+clic o clic col tasto centrale per aprirla a sinistra"
             >
               <Plus className="h-3.5 w-3.5" />
               Nuova
-            </button>
-            <button
-              onClick={() => newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, 'start')}
-              className="inline-flex h-7 shrink-0 items-center rounded px-1.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-              title="Nuova query come PRIMA tab (a sinistra)"
-            >
-              <ChevronLeft className="h-3.5 w-3.5" />
-              <Plus className="h-3.5 w-3.5" />
             </button>
             </div>
             {tabOverflow && (
@@ -1613,24 +1605,6 @@ export default function App() {
                   }}
                 >
                   Icona / titolo / descrizione…
-                </button>
-                <div className="my-1 h-px bg-zinc-800" />
-                {/* Dove aprire le nuove tab: è una preferenza, resta salvata */}
-                <button
-                  className={itemCls}
-                  onClick={() => setNewTabPosition(settings.newTabPosition === 'start' ? 'afterActive' : 'start')}
-                  title="Dove aprire le nuove tab: a sinistra (prima tab) oppure subito dopo quella attiva"
-                >
-                  <span className="flex-1">Nuove tab a sinistra</span>
-                  {settings.newTabPosition === 'start' && <Check className="h-3.5 w-3.5 text-sky-400" />}
-                </button>
-                <button
-                  className={itemCls}
-                  onClick={() => setNewTabPosition('end')}
-                  title="Dove aprire le nuove tab: in fondo, tutto a destra"
-                >
-                  <span className="flex-1">Nuove tab in fondo</span>
-                  {settings.newTabPosition === 'end' && <Check className="h-3.5 w-3.5 text-sky-400" />}
                 </button>
                 <div className="my-1 h-px bg-zinc-800" />
                 {item('Chiudi tutte le altre', n('others'), 'others')}

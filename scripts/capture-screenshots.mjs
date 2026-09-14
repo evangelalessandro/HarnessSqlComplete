@@ -707,16 +707,19 @@ async function dumpTabbar(page) {
   const misura = () =>
     page.eval(`(() => {
       const tabs = [...document.querySelectorAll('[title*="\\u00b7 db:"]')].map(e => {
-        const r = e.getBoundingClientRect(); return { t: (e.getAttribute('title') || '').split(' ')[0], x: Math.round(r.left), w: Math.round(r.width) };
+        const r = e.getBoundingClientRect(); return { t: (e.getAttribute('title') || '').split(' \\u00b7 ')[0], x: Math.round(r.left), w: Math.round(r.width) };
       });
-      const nuovo = [...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').startsWith('Nuova query —'));
-      const aSinistra = [...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('PRIMA tab'));
+      const nuovi = [...document.querySelectorAll('button')].filter(b => {
+        const t = b.getAttribute('title') || '';
+        return t.startsWith('Nuova query');
+      });
+      const nuovo = nuovi[0];
       const r = nuovo ? nuovo.getBoundingClientRect() : null;
-      const r2 = aSinistra ? aSinistra.getBoundingClientRect() : null;
       return {
         tabs,
+        quantiPulsanti: nuovi.length,
+        etichette: nuovi.map(b => b.getAttribute('title')),
         nuovo: r ? { x: Math.round(r.left), w: Math.round(r.width), y: Math.round(r.top) } : null,
-        aSinistra: r2 ? { x: Math.round(r2.left), w: Math.round(r2.width), y: Math.round(r2.top) } : null,
         barra: (() => { const b = nuovo ? nuovo.closest('div')?.parentElement : null; const rb = b ? b.getBoundingClientRect() : null; return rb ? { x: Math.round(rb.left), w: Math.round(rb.width) } : null })(),
       };
     })()`)
@@ -735,20 +738,39 @@ async function dumpTabbar(page) {
     await sleep(500)
   }
   const vuota = await misura()
-  console.log(`  barra vuota: tab=${JSON.stringify(vuota.tabs)} nuovo=${JSON.stringify(vuota.nuovo)} barra=${JSON.stringify(vuota.barra)}`)
+  console.log(`  barra vuota: tab=${JSON.stringify(vuota.tabs)} pulsanti=${vuota.quantiPulsanti} nuovo=${JSON.stringify(vuota.nuovo)}`)
+  check('c\'è UN SOLO pulsante per la nuova tab', vuota.quantiPulsanti === 1, `trovati ${vuota.quantiPulsanti}`)
   check('senza tab il "+" sta a sinistra, subito dopo il selettore database', !!vuota.nuovo && !!vuota.barra && vuota.nuovo.x - vuota.barra.x < 250)
 
-  // 2. con due tab: il "+" è attaccato all'ultima tab (stessa riga, subito dopo)
-  await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').startsWith('Nuova query —'))`)
+  // 2. con tab: il "+" è attaccato all'ultima tab e la nuova tab si apre A DESTRA (dopo l'attiva)
+  await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').startsWith('Nuova query'))`)
   await sleep(800)
-  await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').startsWith('Nuova query —'))`)
+  await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').startsWith('Nuova query'))`)
   await sleep(800)
   const piena = await misura()
   const ultima = piena.tabs[piena.tabs.length - 1]
   console.log(`  con tab: ${JSON.stringify(piena.tabs)} nuovo=${JSON.stringify(piena.nuovo)}`)
   check('il "+" è attaccato all\'ultima tab (subito dopo)', !!ultima && !!piena.nuovo && piena.nuovo.x - (ultima.x + ultima.w) < 12, `ultima finisce a ${ultima ? ultima.x + ultima.w : '?'}, "+" a ${piena.nuovo?.x}`)
-  check('il "+" è sulla stessa riga dell\'ultima tab', !!ultima && !!piena.nuovo && Math.abs(piena.nuovo.y - (piena.tabs[0].y ?? piena.nuovo.y)) < 40)
   check('non è spinto all\'estremità destra della barra', !!piena.nuovo && !!piena.barra && piena.nuovo.x + piena.nuovo.w < piena.barra.x + piena.barra.w - 100)
+
+  // 3. con una tab centrale attiva, il "+" apre A DESTRA (subito dopo quella attiva)
+  await page.clickWhere(`(() => {
+    const wrap = [...document.querySelectorAll('[title]')].find(e => (e.getAttribute('title') || '').startsWith('Query 1 '));
+    return wrap ? (wrap.querySelector('button') || wrap) : null;
+  })()`)
+  await sleep(700)
+  await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').startsWith('Nuova query'))`)
+  await sleep(900)
+  const dopo = await misura()
+  const ordine = dopo.tabs.map(t => t.t)
+  const primaOrdine = piena.tabs.map(t => t.t)
+  const nuova = ordine.find(t => !primaOrdine.includes(t))
+  console.log(`  ordine dopo il "+" con la prima tab attiva: ${JSON.stringify(ordine)} (nuova: ${nuova})`)
+  check(
+    'la nuova tab si apre a DESTRA, subito dopo quella attiva',
+    !!nuova && ordine.indexOf(nuova) === 1 && ordine[0] === primaOrdine[0],
+    ordine.join(' | '),
+  )
 
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
