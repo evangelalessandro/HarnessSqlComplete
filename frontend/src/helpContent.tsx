@@ -184,6 +184,11 @@ export const HELP_SECTIONS: HelpSection[] = [
           'La tab "Stampa" mostra una versione pronta per la stampa dei risultati (griglia e messaggi), con pulsante di stampa del browser.',
       },
       {
+        title: 'Errori: quale procedura ha fallito',
+        detail:
+          'Nei Messaggi ogni errore riporta gli stessi dati di SSMS: numero, livello, stato, la PROCEDURA che lo ha sollevato e la riga (es. "Msg 50000, Livello 16, Stato 1 · Procedura ws_X · Riga 42"). Quando una query richiama più stored procedure si vede subito quale ha fallito; il nome della procedura è cliccabile per aprirne la definizione in una nuova tab, e il contatore sulla tab dei messaggi si evidenzia in rosso.',
+      },
+      {
         title: 'Anteprima tabelle',
         detail:
           'Passando sopra una tabella nella sidebar (o usando il menu contestuale "Seleziona le prime 1000 righe") si apre una query di anteprima dati.',

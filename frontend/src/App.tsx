@@ -23,6 +23,7 @@ import {
   type QueryStats,
 } from './gamification'
 import { QueryStatsBadge, QueryStatsModal } from './components/QueryStatsPanel'
+import { hasErrorMessage } from './sqlMessages'
 import CallGraphModal from './components/CallGraphModal'
 import type { CallGraphTarget } from './components/CallGraphModal'
 import LoginScreen from './components/LoginScreen'
@@ -875,6 +876,20 @@ export default function App() {
     [loadCallGraph],
   )
 
+  /**
+   * Apre una routine citata in un messaggio di errore (SQL Server dà il nome SENZA schema):
+   * lo schema si ricava dallo schema caricato, con "dbo" come ripiego.
+   */
+  const openProcedureByName = useCallback(
+    (name: string) => {
+      const proc = summary?.procedures.find(p => p.name.toLowerCase() === name.toLowerCase())
+      const fn = summary?.functions.find(f => f.name.toLowerCase() === name.toLowerCase())
+      if (fn && !proc) void handleOpenObject('function', fn.schema, fn.name, 'alter')
+      else void handleOpenObject('procedure', proc?.schema ?? 'dbo', name, 'alter')
+    },
+    [summary, handleOpenObject],
+  )
+
   /** Apre i file SQL trascinati (drag & drop) in nuove tab (nome = file, sovrascrittura via picker). */  const handleOpenFiles = useCallback(
     (files: { name: string; content: string }[]) => {
       for (const f of files) {
@@ -1323,13 +1338,14 @@ export default function App() {
                   icon={<TerminalSquare className="h-4 w-4" />}
                   label="Messaggi / PRINT"
                   count={activeResult?.messages.length}
+                  error={hasErrorMessage(activeResult?.errors)}
                 />
               </div>
               <div className="min-h-0 flex-1">
                 {activeResultTab === 'results' ? (
                   <ResultsPanel result={activeResult} executing={activeExecuting} sourceSql={activeSql} />
                 ) : (
-                  <PrintPanel result={activeResult} />
+                  <PrintPanel result={activeResult} onOpenProcedure={openProcedureByName} />
                 )}
               </div>
             </div>
@@ -1565,12 +1581,15 @@ function TabButton({
   icon,
   label,
   count,
+  error,
 }: {
   active: boolean
   onClick: () => void
   icon: ReactNode
   label: string
   count?: number
+  /** Evidenzia in rosso il contatore (es. errori nei messaggi). */
+  error?: boolean
 }) {
   return (
     <button
@@ -1578,13 +1597,21 @@ function TabButton({
       className={`inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors ${
         active
           ? 'border-sky-500 text-zinc-100'
-          : 'border-transparent text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'
+          : error
+            ? 'border-transparent text-rose-400 hover:border-rose-800'
+            : 'border-transparent text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'
       }`}
     >
       {icon}
       {label}
       {count !== undefined && count > 0 && (
-        <span className="rounded-full bg-zinc-800 px-1.5 text-[10px] text-zinc-400">{count}</span>
+        <span
+          className={`rounded-full px-1.5 text-[10px] ${
+            error ? 'bg-rose-900/70 text-rose-200' : 'bg-zinc-800 text-zinc-400'
+          }`}
+        >
+          {count}
+        </span>
       )}
     </button>
   )

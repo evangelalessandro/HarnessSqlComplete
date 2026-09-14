@@ -20,6 +20,7 @@ const APP_URL = process.env.APP_URL ?? 'http://localhost:5173/'
 const PORT = 9222
 const DUMP = process.argv.includes('--dump')
 const VERIFY_TABS = process.argv.includes('--verify-tabs')
+const VERIFY_ERRORS = process.argv.includes('--verify-errors')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -39,6 +40,15 @@ const EXEC_LINE = process.env.SHOT_EXEC ?? 'EXEC dbo.ws_L2_SetCorridoioMiss @idM
 const ROUTINE_NAME = process.env.SHOT_ROUTINE ?? 'ws_L2_SetCorridoioMiss'
 /** Quanti caratteri spostare il cursore per finire DENTRO il nome della routine ("EXEC dbo." = 9). */
 const EXEC_NAME_OFFSET = Number(process.env.SHOT_EXEC_OFFSET ?? 13)
+
+/**
+ * Batch usato dalla verifica degli errori: crea una procedura TEMPORANEA (vive solo nella
+ * sessione) che solleva un errore, poi la chiama. Serve a controllare che i messaggi dicano
+ * quale procedura ha fallito, come fa SSMS.
+ */
+const BATCH_WITH_ERROR =
+  process.env.SHOT_ERROR_SQL ??
+  "CREATE PROCEDURE #prova_err AS BEGIN RAISERROR('Errore di prova dentro la procedura', 16, 1); END;\nGO\nPRINT 'prima della chiamata';\nEXEC #prova_err;"
 
 /**
  * Rettangolo dell'area di testo dell'editor: serve a cliccare "dentro" l'editor con un
@@ -350,6 +360,60 @@ async function verifyTabPositions(page) {
   if (failed.length > 0) throw new Error(`${failed.length} controlli falliti`)
 }
 
+/**
+ * VERIFICA (--verify-errors): eseguendo una query che chiama una procedura che fallisce,
+ * i Messaggi devono dire QUALe procedura ha dato errore (come fa SSMS).
+ * La procedura è temporanea (#prova_err): vive solo nella sessione e sparisce da sola.
+ */
+async function verifyErrorMessages(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await sleep(1500)
+
+  const rect = await editorRect(page)
+  await page.clickPoint(rect.x + 160, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(BATCH_WITH_ERROR)
+  await sleep(500)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(4000)
+
+  const testo = await page.eval(
+    `(() => { const p = document.querySelector('.min-h-0.flex-1.overflow-auto.bg-zinc-950'); return (p ? p.innerText : document.body.innerText) })()`,
+  )
+  // diagnostica: cosa c'è nell'editor, quale tab è attiva, cosa dice la pagina
+  const stato = await page.eval(`(() => ({
+    editor: [...document.querySelectorAll('.monaco-editor .view-line')].map(l => l.textContent).join(' / '),
+    tabAttiva: (document.body.innerText.match(/Risultati|Messaggi \\/ PRINT/g) || []).join(','),
+    anteprima: document.body.innerText.replace(/\\n+/g, ' | ').slice(0, 500),
+  }))()`)
+  console.log(`  editor: ${stato.editor.slice(0, 200)}`)
+  console.log(`  pagina: ${stato.anteprima}`)
+  const results = []
+  const check = (name, ok) => {
+    results.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}`)
+  }
+  console.log(`  --- messaggi mostrati ---\n${testo.split('\n').map(l => `  | ${l}`).join('\n')}`)
+  check('dice QUALE procedura ha dato errore', /Procedura\s+#prova_err/.test(testo))
+  check('mostra numero e livello del messaggio', /Msg\s+50000,\s*Livello\s+16/.test(testo))
+  check('mostra la riga', /Riga\s+\d+/.test(testo))
+  check('mostra il testo del RAISERROR', /Errore di prova dentro la procedura/.test(testo))
+  check('i PRINT precedenti restano visibili', /prima della chiamata/.test(testo))
+  // il conteggio degli errori sta nell'intestazione del pannello (e sulla tab dei messaggi)
+  const pagina = await page.eval(`document.body.innerText`)
+  check('segnala il numero di errori', /1 errore/.test(pagina))
+
+  const failed = results.filter(r => !r).length
+  console.log(`\nesito: ${results.length - failed}/${results.length} controlli superati`)
+  if (failed > 0) throw new Error(`${failed} controlli falliti`)
+}
+
 async function main() {
   const { proc, profileDir } = launchBrowser()
   let page
@@ -371,6 +435,11 @@ async function main() {
 
     if (VERIFY_TABS) {
       await verifyTabPositions(page)
+      return
+    }
+
+    if (VERIFY_ERRORS) {
+      await verifyErrorMessages(page)
       return
     }
 
