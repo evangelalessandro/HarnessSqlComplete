@@ -76,20 +76,17 @@ export default function ResultDataTable({
 
   const headBase = 'border-b border-r border-zinc-600 bg-zinc-800 px-3 py-1.5'
   const cellBase = 'border-b border-r border-zinc-700/70 px-3 py-1'
+  // Con la selezione delle righe, la colonna delle check è la PRIMA: il numero di riga le sta
+  // dietro e le due restano ferme a sinistra mentre si scorre (offset "sticky" coerenti con
+  // la larghezza della colonna che le precede: check w-10 = 2.5rem = left-10).
+  const sceltaLeft = rowSelection ? 'left-10' : 'left-0'
 
   return (
     <table className="w-full border-collapse text-left text-[13px]">
       <thead className="sticky top-0 z-10">
         <tr>
-          {/* Numero di riga: prima colonna, resta fermo durante lo scorrimento orizzontale */}
-          <th
-            className="sticky left-0 z-20 w-12 border-b border-r border-zinc-600 bg-zinc-800 px-2 py-1.5 text-right font-semibold text-zinc-400"
-            title="Numero di riga"
-          >
-            #
-          </th>
           {rowSelection && (
-            <th className="sticky left-12 z-20 w-10 border-b border-r border-zinc-600 bg-zinc-800 px-2 py-1.5">
+            <th className="sticky left-0 z-20 w-10 border-b border-r border-zinc-600 bg-zinc-800 px-2 py-1.5">
               <input
                 type="checkbox"
                 checked={rows.length > 0 && rowSelection.selected.size === rows.length}
@@ -99,6 +96,13 @@ export default function ResultDataTable({
               />
             </th>
           )}
+          {/* Numero di riga: resta fermo durante lo scorrimento orizzontale */}
+          <th
+            className={`sticky ${sceltaLeft} z-20 w-12 border-b border-r border-zinc-600 bg-zinc-800 px-2 py-1.5 text-right font-semibold text-zinc-400`}
+            title="Numero di riga"
+          >
+            #
+          </th>
           {order.map(ci => {
             const c = columns[ci]
             if (!c) return null
@@ -162,13 +166,8 @@ export default function ResultDataTable({
               className={`${bg} ${rowSelection ? 'cursor-pointer transition-colors' : ''}`}
               onClick={rowSelection ? () => rowSelection.onToggle(ri) : undefined}
             >
-              <td
-                className={`sticky left-0 z-10 border-b border-r border-zinc-700/70 px-2 py-1 text-right font-mono text-xs tabular-nums text-zinc-500 ${bg}`}
-              >
-                {firstRowNumber + ri}
-              </td>
               {rowSelection && (
-                <td className={`sticky left-12 z-10 border-b border-r border-zinc-700/70 px-2 py-1 ${bg}`}>
+                <td className={`sticky left-0 z-10 border-b border-r border-zinc-700/70 px-2 py-1 ${bg}`}>
                   <input
                     type="checkbox"
                     checked={selected}
@@ -178,6 +177,11 @@ export default function ResultDataTable({
                   />
                 </td>
               )}
+              <td
+                className={`sticky ${sceltaLeft} z-10 border-b border-r border-zinc-700/70 px-2 py-1 text-right font-mono text-xs tabular-nums text-zinc-500 ${bg}`}
+              >
+                {firstRowNumber + ri}
+              </td>
               {order.map(ci =>
                 ci < row.length ? (
                   <Cell key={ci} value={row[ci]} />

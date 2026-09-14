@@ -22,6 +22,7 @@ const DUMP = process.argv.includes('--dump')
 const VERIFY_TABS = process.argv.includes('--verify-tabs')
 const VERIFY_ERRORS = process.argv.includes('--verify-errors')
 const VERIFY_TAB_CURSOR = process.argv.includes('--verify-tab-cursor')
+const DUMP_GENERATOR = process.argv.includes('--dump-generator')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -634,6 +635,61 @@ async function verifyTabCursor(page) {
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
 }
 
+/**
+ * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
+ * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
+ */
+async function dumpGenerator(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Tabelle')`, 30000, 'schema caricato')
+  await sleep(2000)
+  const rect = await editorRect(page)
+  await page.clickPoint(rect.x + 160, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText('SELECT TOP 3 COR_CORRIDOIO, COR_AREA, COR_ABIPREN FROM dbo.MAG_CORRIDOI;')
+  await sleep(400)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await page.waitFor(`document.body.textContent.includes('per pagina')`, 30000, 'risultati')
+  await sleep(1200)
+  const attivato = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Genera SQL'))`,
+  )
+  await sleep(1500)
+  console.log(`  'Genera SQL' attivato: ${attivato}`)
+  const struttura = await page.eval(`(() => {
+    const tab = [...document.querySelectorAll('table')].pop();
+    if (!tab) return null;
+    const celle = (tr) => tr ? [...tr.children].map(c => {
+      const r = c.getBoundingClientRect()
+      return {
+        tag: c.tagName,
+        testo: (c.textContent || '').trim().slice(0, 22),
+        check: c.querySelectorAll('input[type=checkbox]').length,
+        x: Math.round(r.left),
+        w: Math.round(r.width),
+      }
+    }) : null;
+    return {
+      intestazioni: celle(tab.querySelector('thead tr')),
+      primaRiga: celle(tab.querySelector('tbody tr')),
+    };
+  })()`)
+  console.log('  intestazioni:')
+  for (const c of struttura?.intestazioni ?? []) {
+    console.log(`    ${c.tag} | check=${c.check} | x=${c.x} w=${c.w} | "${c.testo}"`)
+  }
+  console.log('  prima riga:')
+  for (const c of struttura?.primaRiga ?? []) {
+    console.log(`    ${c.tag} | check=${c.check} | x=${c.x} w=${c.w} | "${c.testo}"`)
+  }
+}
+
 async function main() {
   const { proc, profileDir } = launchBrowser()
   let page
@@ -665,6 +721,11 @@ async function main() {
 
     if (VERIFY_TAB_CURSOR) {
       await verifyTabCursor(page)
+      return
+    }
+
+    if (DUMP_GENERATOR) {
+      await dumpGenerator(page)
       return
     }
 

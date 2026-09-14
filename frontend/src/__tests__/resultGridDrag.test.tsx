@@ -57,9 +57,9 @@ function firstRowValues(el: HTMLElement): string[] {
   return tds.slice(2).map(td => td.textContent?.trim() ?? '')
 }
 
-/** Numeri di riga mostrati. */
+/** Numeri di riga mostrati: la prima cella è la casella di selezione, il numero è la seconda. */
 function rowNumbers(el: HTMLElement): string[] {
-  return [...el.querySelectorAll('tbody tr')].map(tr => tr.querySelector('td')?.textContent?.trim() ?? '')
+  return [...el.querySelectorAll('tbody tr')].map(tr => tr.querySelectorAll('td')[1]?.textContent?.trim() ?? '')
 }
 
 /** Simula il trascinamento di un header su un altro (come fa il browser). */
