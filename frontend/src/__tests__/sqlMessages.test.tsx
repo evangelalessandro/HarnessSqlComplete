@@ -8,10 +8,12 @@ import QueryErrorBanner from '../components/QueryErrorBanner'
 import {
   errorMessagesByDisplay,
   errorObjectAction,
+  errorObjectButtonLabel,
   errorObjectKindLabel,
   errorObjectsFor,
   errorProcedureNames,
   hasErrorMessage,
+  hasQueryError,
   messageHeader,
   objectsInErrorText,
 } from '../sqlMessages'
@@ -82,6 +84,14 @@ describe('riconoscere gli errori fra i messaggi', () => {
     expect(hasErrorMessage(undefined)).toBe(false)
   })
 
+  it('hasQueryError: errore nel campo error o fra i messaggi', () => {
+    expect(hasQueryError({ error: 'Msg 50000' })).toBe(true)
+    expect(hasQueryError({ error: null, errors: [err()] })).toBe(true)
+    expect(hasQueryError({ error: null, errors: [print('solo un print')] })).toBe(false)
+    expect(hasQueryError({ error: null, errors: [] })).toBe(false)
+    expect(hasQueryError({ error: '' })).toBe(false)
+  })
+
   it('elenca le procedure coinvolte senza duplicati', () => {
     expect(errorProcedureNames([err(), err(), err({ procedure: 'ws_Altra' }), print('x')])).toEqual([
       'zzz_test_proc',
@@ -136,19 +146,28 @@ describe('oggetti del database citati negli errori', () => {
 })
 
 describe('oggetti da proporre per un errore', () => {
-  it('mette per prima la procedura che ha sollevato l errore', () => {
+  it('mette per prima la procedura che ha sollevato l errore, con la sua riga', () => {
     const refs = errorObjectsFor(err(), summary)
-    expect(refs[0]).toEqual({ kind: 'procedure', schema: 'dbo', name: 'zzz_test_proc' })
+    expect(refs[0]).toEqual({ kind: 'procedure', schema: 'dbo', name: 'zzz_test_proc', line: 42 })
   })
 
-  it('aggiunge anche gli oggetti citati nel testo', () => {
+  it('aggiunge anche gli oggetti citati nel testo, senza riga (la riga è della procedura)', () => {
     const refs = errorObjectsFor(err({ text: "Inserimento non riuscito nella tabella 'dbo.DAT_UDC'" }), summary)
     expect(refs.map(r => r.name)).toEqual(['zzz_test_proc', 'DAT_UDC'])
+    expect(refs[1].line).toBeUndefined()
   })
 
   it('una procedura temporanea (non nello schema) non produce pulsanti inutili', () => {
     const refs = errorObjectsFor(err({ procedure: '#prova_err', text: 'Errore di prova' }), summary)
     expect(refs).toEqual([])
+  })
+
+  it('il pulsante dice anche la riga, quando si sa', () => {
+    expect(errorObjectButtonLabel({ kind: 'procedure', schema: 'dbo', name: 'ws_X', line: 42 })).toBe(
+      'Modifica dbo.ws_X (riga 42)',
+    )
+    expect(errorObjectButtonLabel({ kind: 'table', schema: 'dbo', name: 'DAT_UDC' })).toBe('Apri CREATE dbo.DAT_UDC')
+    expect(errorObjectButtonLabel({ kind: 'procedure', schema: 'dbo', name: 'ws_X', line: 0 })).toBe('Modifica dbo.ws_X')
   })
 })
 

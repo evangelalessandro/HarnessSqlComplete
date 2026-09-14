@@ -186,7 +186,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Errori: quale procedura ha fallito e apri l oggetto',
         detail:
-          'Nei Messaggi ogni errore riporta gli stessi dati di SSMS: numero, livello, stato, la PROCEDURA che lo ha sollevato e la riga (es. "Msg 50000, Livello 16, Stato 1 · Procedura ws_X · Riga 42"), con il contatore in rosso sulla tab. Sotto il messaggio compaiono i pulsanti degli oggetti del database CITATI nell\'errore (es. "Invalid object name \'dbo.X\'"): "Modifica" apre la definizione CREATE OR ALTER di procedure, funzioni, viste e trigger, "Apri CREATE" apre lo script della tabella — gli stessi script del tasto destro nell\'albero. Solo gli oggetti che esistono davvero hanno il pulsante.',
+          'Se la query dà errore, il risultato si apre sui MESSAGGI (come in SSMS) anche quando restituisce delle righe: l\'errore si vede per primo, i risultati restano nella loro tab a un clic. Ogni errore riporta numero, livello, stato, la PROCEDURA che lo ha sollevato e la riga (es. "Msg 50000, Livello 16, Stato 1 · Procedura ws_X · Riga 42"). Sotto il messaggio compaiono i pulsanti degli oggetti CITATI nell\'errore (es. "Invalid object name \'dbo.X\'"): "Modifica" apre la definizione CREATE OR ALTER di procedure, funzioni, viste e trigger, "Apri CREATE" lo script della tabella; per la procedura che ha fallito il pulsante dice anche la riga e aprendola il cursore va DIRETTAMENTE su quella riga. Solo gli oggetti che esistono davvero hanno il pulsante.',
       },
       {
         title: 'Anteprima tabelle',

@@ -7,7 +7,7 @@
 // script che si ottengono col tasto destro nell'albero.
 import { AlertTriangle, ExternalLink } from 'lucide-react'
 import type { DatabaseSummary } from '../types'
-import { errorObjectAction, errorObjectKindLabel, objectsInErrorText } from '../sqlMessages'
+import { errorObjectAction, errorObjectButtonLabel, errorObjectKindLabel, objectsInErrorText } from '../sqlMessages'
 import type { ErrorObjectRef } from '../sqlMessages'
 
 interface Props {
@@ -37,7 +37,7 @@ export default function QueryErrorBanner({ error, summary, onOpenObject }: Props
                 className="inline-flex items-center gap-1 rounded border border-rose-700 bg-rose-900/40 px-2 py-0.5 text-[11px] text-rose-100 transition-colors hover:bg-rose-800/60"
               >
                 <ExternalLink className="h-3 w-3" />
-                {errorObjectAction(o)} {o.schema}.{o.name}
+                {errorObjectButtonLabel(o)}
               </button>
             ))}
           </div>

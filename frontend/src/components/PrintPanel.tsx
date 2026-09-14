@@ -3,6 +3,7 @@ import type { DatabaseSummary, QueryResult } from '../types'
 import {
   errorMessagesByDisplay,
   errorObjectAction,
+  errorObjectButtonLabel,
   errorObjectKindLabel,
   errorObjectsFor,
   messageHeader,
@@ -81,7 +82,7 @@ export default function PrintPanel({ result, summary, onOpenObject }: Props) {
                           className="inline-flex items-center gap-1 rounded border border-rose-800 px-1.5 py-0.5 text-[11px] text-rose-300 transition-colors hover:bg-rose-900/40"
                         >
                           <ExternalLink className="h-3 w-3" />
-                          {errorObjectAction(o)} {o.schema}.{o.name}
+                          {errorObjectButtonLabel(o)}
                         </button>
                       ))}
                     </span>

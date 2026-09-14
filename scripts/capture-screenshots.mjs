@@ -60,6 +60,15 @@ const BATCH_OBJECT_ERROR =
   "CREATE PROCEDURE #prova_obj AS BEGIN RAISERROR('Inserimento non riuscito nella tabella ''dbo.DAT_UDC''', 16, 1); END;\nGO\nEXEC #prova_obj;"
 
 /**
+ * Batch usato per "errore + risultato insieme" e per il salto alla riga: una SELECT che
+ * restituisce righe e poi una procedura REALE che fallisce alla riga 34. Il corridoio
+ * -999999 non esiste, quindi l'UPDATE interno tocca 0 righe: nessun dato viene modificato.
+ */
+const BATCH_ERROR_AND_RESULTS =
+  process.env.SHOT_ERROR_RESULTS_SQL ??
+  'SELECT TOP 3 COR_CORRIDOIO, COR_AREA FROM dbo.MAG_CORRIDOI;\nEXEC dbo.ws_L2_RotazioneCelle_SetPause @pCorridor = -999999;'
+
+/**
  * Rettangolo dell'area di testo dell'editor: serve a cliccare "dentro" l'editor con un
  * evento del mouse vero (l'app non espone window.monaco, quindi niente API interna).
  */
@@ -462,9 +471,82 @@ async function verifyErrorMessages(page) {
   check('si apre una tab dedicata all oggetto', dopoClick.tab.some(t => t.includes('DAT_UDC')))
   check('la tab contiene lo script CREATE TABLE', /CREATE\s+TABLE/i.test(dopoClick.editor))
 
+  // ---- terza parte: errore + risultati, e apertura dell'oggetto ALLA RIGA dell'errore ----
+  await verifyErrorWithResults(page)
+
   const failed2 = results.filter(r => !r).length
   console.log(`\nesito: ${results.length - failed2}/${results.length} controlli superati`)
   if (failed2 > 0) throw new Error(`${failed2} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-errors, terza parte): errore + result set insieme, e apertura dell'oggetto
+ * ALLA RIGA dell'errore. Usa una procedura REALE del database che fallisce quando il corridoio
+ * non esiste: l'UPDATE tocca 0 righe, quindi nessun dato viene modificato.
+ */
+async function verifyErrorWithResults(page) {
+  const esiti = []
+  const check = (name, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${extra ? ` — ${extra}` : ''}`)
+  }
+
+  const rect = await editorRect(page)
+  await page.clickPoint(rect.x + 160, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(BATCH_ERROR_AND_RESULTS)
+  await sleep(500)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(5000)
+
+  // (A) con errore e risultati, la tab attiva deve essere quella dei messaggi (l'errore per primo)
+  const tabs = await page.eval(`(() => {
+    const b = [...document.querySelectorAll('button')].filter(x => /^(Risultati|Messaggi)/.test((x.textContent || '').trim()));
+    return b.map(x => ({ label: (x.textContent || '').trim().split(' ')[0], attiva: x.className.includes('border-sky-500') }));
+  })()`)
+  console.log(`  tab dei risultati: ${JSON.stringify(tabs)}`)
+  const messaggi = tabs.find(t => t.label.startsWith('Messaggi'))
+  const risultati = tabs.find(t => t.label.startsWith('Risultati'))
+  check("c'è sia la tab Risultati sia quella dei Messaggi", !!messaggi && !!risultati)
+  check("con l'errore si apre per prima la tab dei Messaggi", !!messaggi?.attiva)
+  check('i risultati restano disponibili nell\'altra tab', !!risultati && !risultati.attiva)
+
+  // (B) il pulsante porta in tab l'oggetto E alla riga indicata dall'errore
+  const bottoni = await page.eval(
+    `[...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()).filter(t => t.startsWith('Modifica'))`,
+  )
+  console.log(`  pulsanti: ${JSON.stringify(bottoni)}`)
+  const conRiga = bottoni.find(b => /\(riga \d+\)/.test(b))
+  check("il pulsante dice anche la riga dell'errore", !!conRiga, conRiga || '')
+  const rigaAttesa = conRiga ? Number((conRiga.match(/\(riga (\d+)\)/) || [])[1]) : 0
+
+  const cliccato = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => /^Modifica /.test((b.textContent || '').trim()))`,
+  )
+  await sleep(3500)
+  const stato = await page.eval(`(() => {
+    // il cursore di Monaco sta in .cursors-layer: la sua "top" identifica la riga su cui è
+    const cursori = [...document.querySelectorAll('.monaco-editor .cursors-layer .cursor')].map(c => ({ top: c.style.top, h: c.style.height, cls: c.className }));
+    const righe = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].map(l => ({ top: l.style.top, testo: (l.textContent || '').slice(0, 60) }));
+    const topCursore = cursori[0]?.top ?? null
+    const rigaCursore = topCursore ? righe.find(r => r.top === topCursore) : undefined
+    return {
+      tab: [...document.querySelectorAll('[title*="\\u00b7 db:"]')].map(b => (b.getAttribute('title') || '').split(' \\u00b7 db: ')[0].trim()).slice(-1)[0],
+      cursori,
+      topCursore,
+      testoRiga: rigaCursore ? rigaCursore.testo : (righe.find(r => /RAISERROR/i.test(r.testo))?.testo ?? null),
+    };
+  })()`)
+  console.log(`  cursori: ${JSON.stringify(stato.cursori)}  riga del cursore: ${JSON.stringify(stato.testoRiga)}`)
+  console.log(`  dopo il clic → tab: ${JSON.stringify(stato.tab)}  riga corrente: ${JSON.stringify(stato.testoRiga)} (attesa ${rigaAttesa})`)
+  check("il clic apre l'oggetto in una tab", cliccato === true)
+  check('la tab aperta è quella della procedura', /ws_L2_RotazioneCelle_SetPause/.test(stato.tab || ''))
+  check('il cursore è finito sulla riga indicata dall\'errore', /RAISERROR/i.test(stato.testoRiga || ''))
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito (errore+risultati e riga): ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
 }
 
 async function main() {

@@ -12,6 +12,19 @@ export interface ErrorObjectRef {
   kind: 'table' | 'view' | 'procedure' | 'function' | 'trigger'
   schema: string
   name: string
+  /**
+   * Riga da mostrare aprendo l'oggetto: è la riga DELLA PROCEDURA che ha sollevato l'errore
+   * (SQL Server la conta dall'inizio della sua definizione), quindi vale solo per quell'oggetto.
+   */
+  line?: number
+}
+
+/** true se il risultato contiene un errore (campo error oppure un messaggio marcato come errore). */
+export function hasQueryError(result: {
+  error?: string | null
+  errors?: QueryMessage[] | null
+}): boolean {
+  return !!result.error || (result.errors ?? []).some(m => m.isError)
 }
 
 /** Ordine di preferenza quando lo stesso nome esiste come più tipi di oggetto. */
@@ -99,10 +112,15 @@ export function errorObjectsFor(
   const parts = m.procedure.split('.')
   const name = parts[parts.length - 1]
   const schema = parts.length > 1 ? parts[0] : 'dbo'
-  if (refs.some(r => r.name.toLowerCase() === name.toLowerCase())) return refs
-  // chi ha sollevato l'errore si mette per primo, ma solo se esiste davvero nello schema
-  const esiste = objectsInErrorText(`${schema}.${name}`, summary)[0]
-  return esiste ? [esiste, ...refs] : refs
+  // la riga dell'errore vale SOLO per chi l'ha sollevato: si associa a quell'oggetto e lo si
+  // porta in testa (esiste già nell'elenco quando il suo nome compare nel testo)
+  const line = m.line > 0 ? m.line : undefined
+  const stesso = (r: ErrorObjectRef) => r.name.toLowerCase() === name.toLowerCase()
+  const idx = refs.findIndex(stesso)
+  if (idx >= 0) return [{ ...refs[idx], line }, ...refs.filter((_, i) => i !== idx)]
+  // se lo schema lo conosce, la procedura che ha fallito va comunque proposta per prima
+  const esistente = objectsInErrorText(`${schema}.${name}`, summary)[0]
+  return esistente ? [{ ...esistente, line }, ...refs] : refs
 }
 
 /** Etichetta del pulsante che apre un oggetto citato nell'errore. */
@@ -116,6 +134,12 @@ export function errorObjectAction(o: ErrorObjectRef): string {
     case 'trigger':
       return 'Modifica'
   }
+}
+
+/** Descrizione del pulsante, con la riga quando si sa (es. "Modifica dbo.ws_X (riga 42)"). */
+export function errorObjectButtonLabel(o: ErrorObjectRef): string {
+  const nome = `${o.schema}.${o.name}`
+  return o.line && o.line > 0 ? `${errorObjectAction(o)} ${nome} (riga ${o.line})` : `${errorObjectAction(o)} ${nome}`
 }
 
 /** Nome del tipo di oggetto, per il testo del pulsante. */

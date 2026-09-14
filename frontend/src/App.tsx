@@ -68,6 +68,11 @@ export default function App() {
   const [iconDraft, setIconDraft] = useState('')
   // Menu contestuale della tab (tasto destro): chiusure multiple in stile SSMS
   const [tabMenu, setTabMenu] = useState<{ id: string; x: number; y: number } | null>(null)
+  /**
+   * Riga su cui portare il cursore quando si apre un oggetto da un errore
+   * (es. "Procedura ws_X, Riga 42"): la consuma l'effetto che carica il testo della tab.
+   */
+  const pendingRevealRef = useRef<{ tabId: string; line: number } | null>(null)
   // Overflow delle tab: a capo su 2 righe; oltre compare il pulsante "»" con l'elenco
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const [tabOverflow, setTabOverflow] = useState(false)
@@ -385,6 +390,16 @@ export default function App() {
     if (!editor) return
     const tab = editorTabs.find(t => t.id === activeEditorTab)
     if (tab && editor.getValue() !== tab.sql) editor.setValue(tab.sql)
+    // Apertura di un oggetto DA UN ERRORE: il cursore va sulla riga indicata da SQL Server,
+    // così si vede subito dove ha fallito ("Procedura X, Riga N").
+    const pending = pendingRevealRef.current
+    if (tab && pending && pending.tabId === tab.id) {
+      pendingRevealRef.current = null
+      const line = Math.min(Math.max(1, pending.line), editor.getModel()?.getLineCount() ?? pending.line)
+      editor.setPosition({ lineNumber: line, column: 1 })
+      editor.revealLineInCenter(line)
+      editor.focus()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, activeEditorTab])
 
@@ -460,6 +475,7 @@ export default function App() {
       const dove = position ?? newTabPositionRef.current
       setEditorTabs(prev => insertTabAt(prev, tab, activeEditorTab, dove))
       setActiveEditorTab(tab.id)
+      return tab.id
     },
     [editorTabs.length, activeEditorTab, connection],
   )
@@ -830,16 +846,28 @@ export default function App() {
     [newEditorTab, connection],
   )
 
-  /** Apre una stored procedure / funzione / vista / trigger: 'alter' genera CREATE OR ALTER, 'open' la definizione CREATE. */
+  /**
+   * Apre una stored procedure / funzione / vista / trigger: 'alter' genera CREATE OR ALTER,
+   * 'open' la definizione CREATE. Con `revealLine` il cursore va subito su quella riga della
+   * definizione (serve agli errori: "Procedura X, Riga N").
+   */
   const handleOpenObject = useCallback(
-    async (_kind: 'procedure' | 'function' | 'view' | 'trigger', schema: string, name: string, mode: 'alter' | 'open') => {
+    async (
+      _kind: 'procedure' | 'function' | 'view' | 'trigger',
+      schema: string,
+      name: string,
+      mode: 'alter' | 'open',
+      revealLine?: number,
+    ) => {
       if (!connection) return
       setBanner(null)
       try {
         const { definition } = await api.getObjectDefinition(connection.connectionId, schema, name)
         const sql = mode === 'alter' ? toCreateOrAlterStatement(definition) : definition
         const title = `${mode === 'alter' ? 'CREATE OR ALTER ' : ''}${schema === 'dbo' ? name : `${schema}.${name}`}`
-        newEditorTab(title, sql, connection?.database)
+        const tabId = newEditorTab(title, sql, connection?.database)
+        // la riga si applica DOPO che la tab è attiva: l'effetto che carica il testo la usa
+        if (revealLine && revealLine > 0) pendingRevealRef.current = { tabId, line: revealLine }
       } catch (e) {
         setBanner(e instanceof Error ? e.message : String(e))
       }
@@ -889,7 +917,8 @@ export default function App() {
         if (t) handleOpenScript(`CREATE ${o.schema}.${o.name}`, scriptCreateTable(t))
         return
       }
-      void handleOpenObject(o.kind, o.schema, o.name, 'alter')
+      // la riga dell'errore è quella interna alla procedura: aprendola si va direttamente lì
+      void handleOpenObject(o.kind, o.schema, o.name, 'alter', o.line)
     },
     [summary, handleOpenScript, handleOpenObject],
   )

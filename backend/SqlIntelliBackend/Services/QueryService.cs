@@ -158,6 +158,9 @@ public class QueryService
                 var detail = DescribeError(err, line, isError: true);
                 details.Add(detail);
                 parts.Add(detail.Display);
+                // anche nell'elenco dei messaggi: la schermata Messaggi è quella che si apre
+                // per prima quando c'è un errore, quindi deve contenerlo
+                messages.Add(detail.Display);
             }
             error = string.Join(Environment.NewLine, parts);
         }
