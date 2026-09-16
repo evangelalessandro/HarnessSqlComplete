@@ -1743,12 +1743,12 @@ export interface QualifiedColumnSuggestion {
  * Restituisce l'elenco qualificato con il prefisso digitato.
  */
 /**
- * Qualificatore (alias o nome tabella) che precede il punto finale: "pippo.", "[pippo].",
- * "#tmp.", "@tab.". Il '#'/'@' e le parentesi quadre servono per le tabelle temporanee e
- * per gli alias scritti con le parentesi.
+ * Qualificatore (alias o nome tabella) che precede il punto: "pippo.", "[pippo].", "#tmp.",
+ * "@tab.", e anche mentre si digita il campo ("pippo.X"). Il '#'/'@' e le parentesi quadre
+ * servono per le tabelle temporanee e per gli alias scritti con le parentesi.
  */
 export function qualifierBeforeDot(prefix: string): string | null {
-  const m = /(?:\[([^\]]+)\]|([#@]?[A-Za-z_][A-Za-z0-9_]*))\s*\.\s*$/.exec(prefix)
+  const m = /(?:\[([^\]]+)\]|([#@]?[A-Za-z_][A-Za-z0-9_]*))\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)?$/.exec(prefix)
   if (!m) return null
   return m[1] ?? m[2] ?? null
 }

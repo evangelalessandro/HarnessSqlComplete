@@ -686,6 +686,29 @@ export function provideSqlCompletions({
               return { suggestions }
             }
 
+            // Colonne qualificate con alias/tabella: dopo "r." o "RUN_MISSIONI." suggerisce
+            // le colonne di quella tabella (es. "FROM RUN_MISSIONI r WHERE r."). Sta PRIMA dei
+            // rami per contesto perché vale ovunque: nella select-list il ramo dedicato ritorna
+            // subito e l'alias non veniva mai considerato (segnalato dall'utente: "nella select
+            // non torna per primi i campi della tabella" dopo "from #tmpMission dd").
+            {
+              const qualified = buildQualifiedColumnSuggestions(stmtText, textBefore, st.summary)
+              if (qualified.length > 0) {
+                for (const col of qualified) {
+                  push({
+                    label: col.name,
+                    detail: [columnTypeText(col.dataType, col.isNullable), 'colonna qualificata'].filter(Boolean).join(' · '),
+                    documentation: col.documentation,
+                    kind: monaco.languages.CompletionItemKind.Field,
+                    insertText: col.insertText,
+                    range,
+                    filterText: col.name,
+                  })
+                }
+                return { suggestions }
+              }
+            }
+
             // Aiuto SELECT: se il cursore è nella select-list (tra SELECT e FROM dello statement),
             // suggerisce le colonne delle tabelle referenziate in tutto lo statement (anche dopo il cursore)
             if (inSelectList) {
@@ -803,26 +826,6 @@ export function provideSqlCompletions({
                 })
               }
               return { suggestions }
-            }
-
-            // Colonne qualificate con alias/tabella: dopo "r." o "RUN_MISSIONI." suggerisce
-            // le colonne di quella tabella (es. "FROM RUN_MISSIONI r WHERE r.")
-            {
-              const qualified = buildQualifiedColumnSuggestions(stmtText, textBefore, st.summary)
-              if (qualified.length > 0) {
-                for (const col of qualified) {
-                  push({
-                    label: col.name,
-                    detail: [columnTypeText(col.dataType, col.isNullable), 'colonna qualificata'].filter(Boolean).join(' · '),
-                    documentation: col.documentation,
-                    kind: monaco.languages.CompletionItemKind.Field,
-                    insertText: col.insertText,
-                    range,
-                    filterText: col.name,
-                  })
-                }
-                return { suggestions }
-              }
             }
 
             // Contesti di colonne (WHERE/ON/HAVING/GROUP BY/SET/AND/OR/=):

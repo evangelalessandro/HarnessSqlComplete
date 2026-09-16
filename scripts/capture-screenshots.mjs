@@ -1185,6 +1185,38 @@ async function verifyAlias(page) {
   console.log(`  alias con parentesi: ${JSON.stringify(vociQuadre.slice(0, 6))}`)
   check('alias con parentesi quadre [pippo].', normali(vociQuadre).some(v => v.startsWith('udc_')))
 
+  // 5) nella SELECT-list (caso segnalato): "dd." deve proporre i campi della temporanea
+  await scrivi(
+    [
+      'select X_SCO, X_UDC_SOURCE into #tmpSel from dbo.DAT_UDC',
+      'select top 1',
+      '   UDC_UDC',
+      '  ,dd.',
+      'into #tmpNewDest',
+      'from #tmpSel dd',
+      '  inner join DAT_UDC on UDC_ARTICOLO = X_SCO',
+    ].join('\n'),
+  )
+  const puntoDD = await page.eval(`(() => {
+    const linea = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].find(l => (l.textContent || '').includes('dd.'));
+    if (!linea) return null;
+    const spans = [...linea.querySelectorAll('span')];
+    const ultimo = spans[spans.length - 1];
+    if (!ultimo) return null;
+    const r = ultimo.getBoundingClientRect();
+    return { x: r.right - 1, y: r.top + r.height / 2 };
+  })()`)
+  if (puntoDD) await page.clickPoint(puntoDD.x, puntoDD.y)
+  await sleep(400)
+  await page.typeText('X')
+  await sleep(1600)
+  const vociSelect = await vociPopup()
+  console.log(`  alias nella SELECT-list: ${JSON.stringify(vociSelect.slice(0, 6))}`)
+  check(
+    'nella SELECT-list "dd." propone i campi della temporanea',
+    normali(vociSelect).includes('x_sco') && normali(vociSelect).includes('x_udc_source'),
+  )
+
   await page.press('Escape', { code: 'Escape', vk: 27 })
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)

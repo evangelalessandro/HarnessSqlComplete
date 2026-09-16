@@ -129,7 +129,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Alias delle tabelle',
         detail:
-          'Dando un alias a una tabella, scrivendo "alias." vengono proposti i suoi campi: vale anche per le tabelle temporanee (#tmp.) e per le CTE definite nel documento ("with c as (...) select * from c pippo where pippo."), anche con le parentesi quadre ([pippo].).',
+          'Dando un alias a una tabella, scrivendo "alias." vengono proposti i suoi campi (anche nella select-list): vale anche per le tabelle temporanee (#tmp.) e per le CTE definite nel documento ("with c as (...) select * from c pippo where pippo."), anche con le parentesi quadre ([pippo].).',
       },
       {
         title: 'Label di GOTO',

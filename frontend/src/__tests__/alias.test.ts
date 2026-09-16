@@ -4,14 +4,33 @@
 // scrivo pippo. mi faccia comparire i campi della tabella". Funzionava per le tabelle dello
 // schema, NON per: alias con parentesi quadre ([pippo].), tabelle temporanee (#tmp.) e CTE
 // (with c as (…) select * from c pippo where pippo.).
+// Secondo caso segnalato: nella SELECT-list l'alias non veniva considerato affatto (il ramo
+// della select-list ritornava prima del controllo "alias.").
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
+import * as monaco from 'monaco-editor'
 import { buildQualifiedColumnSuggestions, qualifierBeforeDot } from '../helpers'
+import { provideSqlCompletions } from '../sqlCompletions'
 import { extractCteTables, extractLocalTables } from '../localTables'
 import type { DatabaseSummary } from '../types'
 import { wsbritvicLikeSummary } from './schema'
 import kittingReturn from './fixtures/routine_ws_CUSTOM_Handheld_KittingReturn_St1_GetList.sql?raw'
 
 const base = wsbritvicLikeSummary()
+
+/** Esegue il provider vero (quello dell'editor) alla posizione indicata. */
+function suggest(sql: string, offset: number, summary: DatabaseSummary = base) {
+  const model = monaco.editor.createModel(sql, 'sql')
+  try {
+    return provideSqlCompletions({
+      model,
+      position: model.getPositionAt(offset),
+      state: { connectionId: 'test', summary, aiEnabled: true, onExecute: () => {} },
+    })
+  } finally {
+    model.dispose()
+  }
+}
 
 /** Come fa il provider: temporanee e CTE del testo entrano nel sommario (le CTE per prime). */
 function conLocali(stmt: string, full = stmt): DatabaseSummary {
@@ -36,6 +55,12 @@ describe('qualifierBeforeDot', () => {
     expect(qualifierBeforeDot('where dbo.')).toBe('dbo')
     expect(qualifierBeforeDot('where pippo')).toBeNull()
     expect(qualifierBeforeDot('where 1 = ')).toBeNull()
+  })
+
+  it('riconosce il qualificatore anche mentre si digita il campo (pippo.X)', () => {
+    expect(qualifierBeforeDot('where pippo.X')).toBe('pippo')
+    expect(qualifierBeforeDot('select #t.X_SCO')).toBe('#t')
+    expect(qualifierBeforeDot('select 1.5')).toBeNull()
   })
 })
 
@@ -86,8 +111,38 @@ select * from #tmpMission where #tmpMission.`
   })
 })
 
-describe('store reale: alias della #tmpMission', () => {
-  it('scrivendo "t." compaiono le colonne della temporanea (comprese quelle della CTE)', () => {
+describe('alias nella SELECT-list (caso segnalato)', () => {
+  const SQL = `select X_SCO, X_UDC_SOURCE into #tmpMission from dbo.DAT_UDC
+select top 1
+   UDC_UDC
+  ,dd.
+into #tmpNewDest
+from #tmpMission dd
+  inner join DAT_UDC on UDC_ARTICOLO = X_SKU`
+
+  it('scrivendo "dd." nella select-list propone i campi della TEMPORANEA (non tutte le colonne)', () => {
+    const res = suggest(SQL, SQL.indexOf(',dd.') + ',dd.'.length)
+    const nomi = res!.suggestions.map(s => String(s.label))
+    expect(nomi).toEqual(['X_SCO', 'X_UDC_SOURCE'])
+  })
+
+  it('anche a metà parola ("dd.X") restano i campi della temporanea', () => {
+    const sql = SQL.replace('dd.', 'dd.X')
+    const res = suggest(sql, sql.indexOf('dd.X') + 'dd.X'.length)
+    const nomi = res!.suggestions.map(s => String(s.label))
+    expect(nomi).toEqual(['X_SCO', 'X_UDC_SOURCE'])
+  })
+
+  it('alias di una tabella dello schema: stessi campi della tabella', () => {
+    const sql = 'select * from dbo.DAT_UDC pippo\nselect top 1\n  pip.\ninto #x\nfrom dbo.DAT_UDC pippo'
+    const res = suggest(sql, sql.indexOf('pip.') + 'pip.'.length)
+    const nomi = res!.suggestions.map(s => String(s.label))
+    expect(nomi).toContain('UDC_UDC')
+    expect(nomi).not.toContain('UDC_SSCC_DEST')
+  })
+})
+
+describe('store reale: alias della #tmpMission', () => {  it('scrivendo "t." compaiono le colonne della temporanea (comprese quelle della CTE)', () => {
     const locali = extractLocalTables(kittingReturn)
     const merged: DatabaseSummary = { ...base, tables: [...extractCteTables(kittingReturn), ...base.tables, ...locali] }
     const stmt = 'select * from #tmpMission t where t.'

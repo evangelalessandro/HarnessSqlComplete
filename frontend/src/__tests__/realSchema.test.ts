@@ -138,7 +138,9 @@ describe('schema reale: il provider non si spacca su query vere', () => {
     'SELECT * FROM dbo.MAG_CELLE ORDER BY ',
   ]
 
-  it('nessuna eccezione e mai popup vuoto, a ogni offset', () => {
+  // timeout ampio: il provider viene eseguito a OGNI offset di diverse query vere e, con la
+  // suite in parallelo, supera i 5s di default (falliva a intermittenza per il tempo, non per il codice)
+  it('nessuna eccezione e mai popup vuoto, a ogni offset', { timeout: 60000 }, () => {
     for (const sql of QUERIES) {
       for (let offset = 0; offset <= sql.length; offset++) {
         if (inCommentOrString(sql, offset)) continue
