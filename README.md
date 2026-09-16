@@ -90,7 +90,10 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
 - **Snippet di statement**: `ins`/`sel`/`upd`/`del`/`mer` a inizio statement aprono il template con tab-stop.
 - **Parentesi intelligenti**: gli identificatori si inseriscono senza `[parentesi]` quando non servono.
 - **Tabella temporanee e variabili tabella**: `#tmp` e `@tab` definite nel documento entrano nell'ambito
-  (da `CREATE TABLE #t`, `DECLARE @t TABLE`, `SELECT ... INTO #t`, `INSERT INTO #t`).
+  (da `CREATE TABLE #t`, `DECLARE @t TABLE`, `SELECT ... INTO #t`, `INSERT INTO #t`). Per `SELECT … INTO #t`
+  le colonne si ricavano dalla select-list (anche con `TOP n *`, alias di funzione e alias per posizione tipo
+  `SCO_GIAC + SCO_VER X_GIAC`) e, con `*`, dalla sorgente: tabella dello schema, altra temporanea o **CTE**
+  definita nel testo.
 - **Cronologia d'uso**: tabelle e colonne che usi di più pesano di più nel ranking.
 - **Diagnostica in tempo reale**: parentesi/apici non bilanciati e colonne qualificate inesistenti
   vengono sottolineati mentre scrivi (senza eseguire nulla).
@@ -346,7 +349,9 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
 - **Statement snippets**: `ins`/`sel`/`upd`/`del`/`mer` at statement start open a template with tab stops.
 - **Smart brackets**: identifiers are inserted without `[brackets]` when they are not needed.
 - **Temp tables and table variables** defined in the document are in scope (`CREATE TABLE #t`,
-  `DECLARE @t TABLE`, `SELECT ... INTO #t`, `INSERT INTO #t`).
+  `DECLARE @t TABLE`, `SELECT ... INTO #t`, `INSERT INTO #t`). For `SELECT … INTO #t` the columns come from
+  the select list (including `TOP n *`, function aliases and positional aliases like `SCO_GIAC + SCO_VER
+  X_GIAC`) and, with `*`, from the source: a schema table, another temp table or a **CTE** defined in the text.
 - **Usage history**: tables and columns you use most rank higher.
 - **Live diagnostics**: unbalanced brackets/quotes and unknown qualified columns are underlined as you
   type, without running anything.

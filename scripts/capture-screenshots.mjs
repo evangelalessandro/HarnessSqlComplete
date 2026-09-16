@@ -9,6 +9,7 @@
 //   node scripts/capture-screenshots.mjs --verify-format   (stesso SELECT dentro/fuori una store)
 //   node scripts/capture-screenshots.mjs --verify-schema-refresh  (pulsante + Ctrl+Shift+R)
 //   node scripts/capture-screenshots.mjs --verify-pair-highlight  (MERGE: campo corrispondente)
+//   node scripts/capture-screenshots.mjs --verify-local-tables    (colonne delle #temporanee)
 //
 // Prerequisiti: backend su :5213 e dev server su :5173 attivi.
 
@@ -30,6 +31,7 @@ const DUMP_TABBAR = process.argv.includes('--dump-tabbar')
 const VERIFY_FORMAT = process.argv.includes('--verify-format')
 const VERIFY_SCHEMA_REFRESH = process.argv.includes('--verify-schema-refresh')
 const VERIFY_PAIR_HIGHLIGHT = process.argv.includes('--verify-pair-highlight')
+const VERIFY_LOCAL_TABLES = process.argv.includes('--verify-local-tables')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -987,6 +989,106 @@ WHEN NOT MATCHED THEN INSERT ([CAUM_CAUSMISS], [CAUM_DES])
 }
 
 /**
+ * VERIFICA (--verify-local-tables): le tabelle temporanee definite nel testo devono entrare
+ * nell'intellisense con le LORO colonne, anche quando nascono da una CTE
+ * ("select top 1 * , cast(…) as X into #t from <cte>"): era il caso segnalato dall'utente
+ * ("l'intellisense non mi aiuta con le tabelle temporanee, tipo la #tmpMission").
+ */
+async function verifyLocalTables(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const SQL = [
+    'with tbl as (select top 1 SCO_SCOMPARTO X_SCO, UDC_SSCC X_SSCC from DAT_UDC)',
+    "select top 1 * , cast('' as nvarchar(50)) as X_EXTRA into #tmpMission from tbl",
+    'select * from #tmpMission where ',
+  ].join('\n')
+
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(SQL)
+  await sleep(1200)
+  const righe = await page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+    .map(l => (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, ''))`)
+  console.log('  testo nell editor:')
+  righe.forEach(r => console.log(`    |${r}`))
+
+  // cursore in fondo all'ultima riga: si clicca sullo SPAN del testo (il bordo destro della
+  // riga può cadere sulla minimappa e il clic non darebbe il fuoco all'editor)
+  const puntoFine = await page.eval(`(() => {
+    const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].filter(l => (l.textContent || '').includes('where'));
+    const ultima = linee[linee.length - 1];
+    if (!ultima) return null;
+    const spans = [...ultima.querySelectorAll('span')];
+    const s = spans[spans.length - 1];
+    if (!s) return null;
+    const r = s.getBoundingClientRect();
+    return { x: r.right - 1, y: r.top + r.height / 2 };
+  })()`)
+  if (puntoFine) await page.clickPoint(puntoFine.x, puntoFine.y)
+  await sleep(400)
+  const statoPopup = async () =>
+    await page.eval(`(() => {
+      const w = document.querySelector('.suggest-widget');
+      const righe = [...document.querySelectorAll('.suggest-widget .monaco-list-row')];
+      const c = document.querySelector('.monaco-editor .cursors-layer .cursor');
+      const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')];
+      const rigaCursore = c ? linee.find(l => l.style.top === c.style.top) : null;
+      return {
+        widget: !!w,
+        visibile: !!w && w.getBoundingClientRect().height > 0,
+        righe: righe.length,
+        prime: righe.slice(0, 8).map(r => ((r.querySelector('.label-name') || r).textContent || '').trim()),
+        cursoreSu: rigaCursore ? (rigaCursore.textContent || '').replace(/\\u00a0/g, ' ').trim() : null,
+      };
+    })()`)
+  // digitare un carattere apre il popup e prova anche che l'editor abbia il fuoco
+  await page.typeText('X')
+  await sleep(1800)
+  console.log(`  popup dopo aver digitato "X": ${JSON.stringify(await statoPopup())}`)
+  const voci = await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+    .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+  console.log(`  suggerimenti proposti: ${JSON.stringify(voci.slice(0, 25))}`)
+
+  // controllo deterministico sul modulo servito all'app, con la STORE REALE (nessuna digitazione)
+  const colonneStore = await page.eval(`(async () => {
+    const sql = (await import('/src/__tests__/fixtures/routine_ws_CUSTOM_Handheld_KittingReturn_St1_GetList.sql?raw')).default;
+    const mod = await import('/src/localTables.ts');
+    return mod.extractLocalTables(sql).map(t => ({ nome: t.name, colonne: (t.columns || []).map(c => c.name) }));
+  })()`)
+  console.log(`  tabelle locali della store reale: ${JSON.stringify(colonneStore)}`)
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+  const normali = voci.map(v => v.toLowerCase())
+  check('la temporanea entra nell intellisense', normali.length > 0)
+  check('propone la colonna della CTE (X_SCO)', normali.some(v => v.includes('x_sco')))
+  check('propone la colonna della CTE (X_SSCC)', normali.some(v => v.includes('x_sscc')))
+  check('propone la colonna esplicita (X_EXTRA)', normali.some(v => v.includes('x_extra')))
+  check('NON propone i tipi di dato al posto dei nomi (nvarchar/decimal)', !normali.some(v => /^(nvarchar|decimal|int)$/.test(v)))
+  const attese = ['X_SSCC_DEST', 'X_CORRIDOIO', 'X_CELLA', 'X_UDC_DEST', 'X_SCO', 'X_UDC_SOURCE', 'X_SSCC', 'X_SKU', 'X_SKU_DESC', 'X_GIAC', 'UDC_USER_TASK']
+  const mission = (colonneStore || []).find(t => t.nome === '#tmpMission')
+  check('store reale: #tmpMission riconosciuta', !!mission)
+  check('store reale: #tmpMission ha TUTTE le colonne (CTE comprese)', JSON.stringify(mission?.colonne) === JSON.stringify(attese))
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -1173,6 +1275,11 @@ async function main() {
 
     if (VERIFY_PAIR_HIGHLIGHT) {
       await verifyPairHighlight(page)
+      return
+    }
+
+    if (VERIFY_LOCAL_TABLES) {
+      await verifyLocalTables(page)
       return
     }
 

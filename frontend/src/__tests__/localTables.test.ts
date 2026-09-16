@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { buildColumnContextSuggestions } from '../helpers'
-import { extractLocalTables, parseColumnDefs } from '../localTables'
+import { extractLocalTables, parseColumnDefs, selectListInfo } from '../localTables'
 import type { DatabaseSummary } from '../types'
 import { wsbritvicLikeSummary } from './schema'
+import kittingReturn from './fixtures/routine_ws_CUSTOM_Handheld_KittingReturn_St1_GetList.sql?raw'
 
 describe('extractLocalTables: tabelle temporanee definite nel testo', () => {
   it('legge nome tabella e colonne con il tipo (parentesi comprese)', () => {
@@ -93,5 +94,88 @@ WHERE `
     const stmtText = sql.slice(sql.lastIndexOf('SELECT @txtError'))
     const res = buildColumnContextSuggestions(stmtText, stmtText, '', base)
     expect(res.map(r => r.name)).not.toContain('X_SSCC')
+  })
+})
+
+// Casi segnalati dall'utente ("l'intellisense non mi aiuta con le tabelle temporanee,
+// tipo la #tmpMission"): una "SELECT TOP 1 * … INTO #t FROM <CTE>" non dava le colonne.
+describe('SELECT … INTO #t: alias, TOP, * e colonne delle CTE', () => {
+  it('alias dopo una funzione (il CAST ha un suo "as" interno)', () => {
+    const info = selectListInfo(`CAST('' as nvarchar(50)) as X_SSCC_DEST, CAST(0 as decimal(15,0)) X_UDC_DEST`)
+    expect(info.names).toEqual(['X_SSCC_DEST', 'X_UDC_DEST'])
+    expect(info.star).toBe(false)
+  })
+
+  it('"espressione alias" senza AS, e nessun alias inventato dalle espressioni', () => {
+    expect(selectListInfo('SCO_GIAC + SCO_VER X_GIAC').names).toEqual(['X_GIAC'])
+    expect(selectListInfo('0 X_CORRIDOIO').names).toEqual(['X_CORRIDOIO'])
+    // espressioni senza alias: nessun nome (SQL Server non lo assegna)
+    expect(selectListInfo('SCO_GIAC + SCO_VER').names).toEqual([])
+    expect(selectListInfo('CAST(x as int)').names).toEqual([])
+    expect(selectListInfo('ISNULL(a, 0)').names).toEqual([])
+    expect(selectListInfo('CASE WHEN a = 1 THEN 1 ELSE 0 END').names).toEqual([])
+  })
+
+  it('TOP n e DISTINCT non fanno parte della lista; "*" viene riconosciuto', () => {
+    expect(selectListInfo('top 1 *')).toEqual({ names: [], star: true })
+    expect(selectListInfo('DISTINCT top 10 a, b')).toEqual({ names: ['a', 'b'], star: false })
+    expect(selectListInfo('t.*')).toEqual({ names: [], star: true })
+  })
+
+  it('le colonne della CTE arrivano nella temporanea', () => {
+    const sql = `;with tbl as (select top 1 SCO_SCOMPARTO X_SCO, UDC_SSCC X_SSCC from DAT_UDC)
+select top 1 * , cast('' as nvarchar(50)) as X_SSCC_DEST into #tmpMission from tbl`
+    const t = extractLocalTables(sql)[0]
+    expect(t.name).toBe('#tmpMission')
+    expect(t.columns!.map(c => c.name)).toEqual(['X_SSCC_DEST', 'X_SCO', 'X_SSCC'])
+  })
+
+  it('CTE annidate fra loro e "SELECT * FROM tabella nota"', () => {
+    const known = wsbritvicLikeSummary()
+    const sql = `with a as (select * from ${known.tables[0].name}), b as (select * from a)
+select * into #t from b`
+    const t = extractLocalTables(sql, known.tables)[0]
+    expect(t.columns!.map(c => c.name)).toEqual(known.tables[0].columns!.map(c => c.name))
+  })
+
+  it('"*" da un altra temporanea definita prima', () => {
+    const sql = `select a, b into #prima from dbo.T
+select * into #seconda from #prima`
+    const t = extractLocalTables(sql).find(x => x.name === '#seconda')
+    expect(t?.columns?.map(c => c.name)).toEqual(['a', 'b'])
+  })
+})
+
+describe('store reale: #tmpMission nell intellisense', () => {
+  const locali = extractLocalTables(kittingReturn)
+
+  it('riconosce le temporanee della store', () => {
+    expect(locali.map(t => t.name)).toEqual(['#tmpMission', '#tmpNewDest'])
+  })
+
+  it('#tmpMission ha le colonne della CTE oltre a quelle esplicite (niente tipi al posto dei nomi)', () => {
+    const mission = locali[0]
+    expect(mission.columns!.map(c => c.name)).toEqual([
+      'X_SSCC_DEST',
+      'X_CORRIDOIO',
+      'X_CELLA',
+      'X_UDC_DEST',
+      'X_SCO',
+      'X_UDC_SOURCE',
+      'X_SSCC',
+      'X_SKU',
+      'X_SKU_DESC',
+      'X_GIAC',
+      'UDC_USER_TASK',
+    ])
+  })
+
+  it('nel JOIN la sua colonna viene proposta (era il problema segnalato)', () => {
+    const base: DatabaseSummary = wsbritvicLikeSummary()
+    const merged: DatabaseSummary = { ...base, tables: [...base.tables, ...locali] }
+    const stmt = 'select * from DAT_UDC inner join #tmpMission on '
+    const res = buildColumnContextSuggestions(stmt, stmt, '', merged)
+    expect(res.map(r => r.name)).toContain('X_UDC_SOURCE')
+    expect(res.map(r => r.name)).toContain('X_UDC_DEST')
   })
 })
