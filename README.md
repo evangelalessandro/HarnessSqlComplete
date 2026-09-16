@@ -81,6 +81,10 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   quelli già scritti; dal menu contestuale genera l'`EXEC` con i valori di default reali.
 - **INSERT**: dentro `INSERT INTO tab (` suggerisce le colonne (con "tutte le colonne"); dentro `VALUES`
   propone i valori di default per la colonna corrente, **evidenziando la coppia colonna↔valore**.
+- **Campo corrispondente**: con il cursore su un campo si illumina quello abbinato — colonna ↔ valore negli
+  `INSERT`, colonna ↔ espressione nella `SET` di un `UPDATE`, e in una `MERGE` i valori della `USING` ↔ le
+  colonne di `src`, le coppie `a = b` della `SET` (ramo `MATCHED`) e della `ON`, e colonne ↔ valori
+  dell'`INSERT` del ramo `NOT MATCHED`.
 - **Espansione `*`**: il suggerimento "— tutti i campi (N) —" sostituisce l'asterisco con l'elenco completo
   delle colonne (campi univoci senza prefisso, condivisi qualificati).
 - **Snippet di statement**: `ins`/`sel`/`upd`/`del`/`mer` a inizio statement aprono il template con tab-stop.
@@ -333,6 +337,10 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
   skips the ones you already typed; the context menu generates `EXEC` with the real default values.
 - **INSERT**: inside `INSERT INTO tab (` it suggests the columns (plus "all columns"); inside `VALUES` it
   offers default values for the current column and **highlights the column↔value pair**.
+- **Matching field highlight**: with the cursor on a field the paired one lights up — column ↔ value in
+  `INSERT`s, column ↔ expression in an `UPDATE`'s `SET`, and inside a `MERGE` the `USING` values ↔ the `src`
+  columns, the `a = b` pairs of the `SET` (`MATCHED` branch) and of the `ON`, and columns ↔ values of the
+  `NOT MATCHED` `INSERT`.
 - **`*` expansion**: the "— all fields (N) —" entry replaces the star with the full column list (unique
   fields unqualified, shared fields qualified).
 - **Statement snippets**: `ins`/`sel`/`upd`/`del`/`mer` at statement start open a template with tab stops.

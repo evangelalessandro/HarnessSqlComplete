@@ -157,6 +157,11 @@ export const HELP_SECTIONS: HelpSection[] = [
           'Dentro "INSERT INTO tab (" suggerisce le colonne (con "tutte le colonne"); dentro i VALUES suggerisce i valori di default per la colonna corrente, con evidenziazione della coppia colonna↔valore.',
       },
       {
+        title: 'Campo corrispondente',
+        detail:
+          'Con il cursore su un campo si illumina quello abbinato: colonna ↔ valore negli INSERT, colonna ↔ espressione nella SET di un UPDATE e, in una MERGE, i valori della USING ↔ le colonne di src, le coppie "a = b" della SET (ramo MATCHED) e della ON, e colonne ↔ valori dell INSERT del ramo NOT MATCHED.',
+      },
+      {
         title: 'Cronologia',
         detail:
           'Le tabelle e colonne che usi di frequente nelle query eseguite pesano di più nel ranking dei suggerimenti.',

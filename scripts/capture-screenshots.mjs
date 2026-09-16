@@ -8,6 +8,7 @@
 //   node scripts/capture-screenshots.mjs --dump     (elenca i comandi visibili nella pagina)
 //   node scripts/capture-screenshots.mjs --verify-format   (stesso SELECT dentro/fuori una store)
 //   node scripts/capture-screenshots.mjs --verify-schema-refresh  (pulsante + Ctrl+Shift+R)
+//   node scripts/capture-screenshots.mjs --verify-pair-highlight  (MERGE: campo corrispondente)
 //
 // Prerequisiti: backend su :5213 e dev server su :5173 attivi.
 
@@ -28,6 +29,7 @@ const DUMP_GENERATOR = process.argv.includes('--dump-generator')
 const DUMP_TABBAR = process.argv.includes('--dump-tabbar')
 const VERIFY_FORMAT = process.argv.includes('--verify-format')
 const VERIFY_SCHEMA_REFRESH = process.argv.includes('--verify-schema-refresh')
+const VERIFY_PAIR_HIGHLIGHT = process.argv.includes('--verify-pair-highlight')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -847,6 +849,118 @@ async function verifySchemaRefresh(page) {
 }
 
 /**
+ * VERIFICA (--verify-pair-highlight): in una MERGE il cursore su un valore deve illuminare il
+ * campo corrispondente, come per INSERT e UPDATE.
+ *  - cablaggio: la decorazione dell'editor compare quando il cursore è su un valore;
+ *  - logica: si chiama il modulo servito all'app (import dinamico dello stesso file) sulla
+ *    MERGE reale dell'utente, con offset esatti: niente geometria di Monaco, esito deterministico.
+ */
+async function verifyPairHighlight(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await sleep(2000)
+  const rect = await editorRect(page)
+
+  // --- 1. cablaggio: cursore su un valore → l'editor deve disegnare la decorazione
+  const corta = ['MERGE dbo.T AS tgt', "USING (VALUES ('a', 'b', 'c')) AS src (c1, c2, c3)", 'ON tgt.c1 = src.c1;'].join(
+    '\n',
+  )
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(corta)
+  await sleep(1000)
+  const cursoreSu = async testo => {
+    const punto = await page.eval(`(() => {
+      const needle = ${JSON.stringify(testo)};
+      for (const l of document.querySelectorAll('.monaco-editor .view-lines .view-line')) {
+        const t = (l.textContent || '').replace(/\\u00a0/g, ' ');
+        const at = t.indexOf(needle);
+        if (at === -1) continue;
+        let acc = 0;
+        for (const s of l.querySelectorAll('span')) {
+          const st = (s.textContent || '').replace(/\\u00a0/g, ' ');
+          if (acc + st.length > at) {
+            const r = s.getBoundingClientRect();
+            const charW = r.width / Math.max(1, st.length);
+            return { x: r.left + charW * Math.min(at - acc + 1, st.length - 1) + 1, y: r.top + r.height / 2 };
+          }
+          acc += st.length;
+        }
+      }
+      return null;
+    })()`)
+    if (!punto) return false
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(800)
+    return true
+  }
+  const cliccato = await cursoreSu("'b'")
+  const decorazione = await page.eval(`(() => {
+    const e = document.querySelector('.monaco-editor .sql-pair-highlight');
+    if (!e) return { esiste: false };
+    const r = e.getBoundingClientRect();
+    return { esiste: true, larghezza: Math.round(r.width), sinistra: Math.round(r.left) };
+  })()`)
+  console.log(`  decorazione dopo il clic sul valore: ${JSON.stringify(decorazione)}`)
+
+  // --- 2. logica del modulo servito all'app, sulla MERGE reale dell'utente
+  const MERGE = `MERGE INTO TIPI_CAUSALI_MISSIONI AS tgt
+USING (VALUES
+    ('RETRN', 'Return in kitting', ' ', 1, 0)) AS src
+     ([CAUM_CAUSMISS], [CAUM_DES], [CAUM_SCA_CAUSMISS], [CAUM_ESE_IF_OK], [CAUM_ESE_IF_FF])
+ON tgt.[CAUM_CAUSMISS] = src.[CAUM_CAUSMISS]
+WHEN MATCHED THEN UPDATE SET
+    tgt.[CAUM_CAUSMISS] = src.[CAUM_CAUSMISS],
+    tgt.[CAUM_DES] = src.[CAUM_DES]
+WHEN NOT MATCHED THEN INSERT ([CAUM_CAUSMISS], [CAUM_DES])
+    VALUES (src.[CAUM_CAUSMISS], src.[CAUM_DES]);`
+  const risultati = await page.eval(`(async () => {
+    const mod = await import('/src/helpers.ts');
+    const SQL = ${JSON.stringify(MERGE)};
+    const dopo = (testo, da) => SQL.indexOf(testo, da);
+    const casi = [];
+    const aggiungi = (nome, offset, atteso) => {
+      const t = mod.pairHighlightTarget(SQL, offset);
+      casi.push({ nome, atteso, ottenuto: t ? SQL.slice(t.start, t.end) : null });
+    };
+    aggiungi('valore USING 1 → colonna', SQL.indexOf("'RETRN'") + 2, '[CAUM_CAUSMISS]');
+    aggiungi('valore USING 2 → colonna', SQL.indexOf("'Return in kitting'") + 3, '[CAUM_DES]');
+    aggiungi('colonna di src → valore', SQL.indexOf('([CAUM_CAUSMISS]') + 3, "'RETRN'");
+    aggiungi('colonna ON di sinistra → destra', SQL.indexOf('ON tgt.[CAUM_CAUSMISS]') + 5, 'src.[CAUM_CAUSMISS]');
+    aggiungi('colonna ON di destra → sinistra', SQL.indexOf('= src.[CAUM_CAUSMISS]') + 8, 'tgt.[CAUM_CAUSMISS]');
+    const set = SQL.indexOf('tgt.[CAUM_DES] = src.[CAUM_DES]');
+    aggiungi('SET: colonna → valore', set + 6, 'src.[CAUM_DES]');
+    aggiungi('SET: valore → colonna', set + 22, 'tgt.[CAUM_DES]');
+    const ins = SQL.indexOf('INSERT ([CAUM_CAUSMISS], [CAUM_DES])');
+    aggiungi('INSERT NOT MATCHED: colonna → valore', SQL.indexOf('[CAUM_DES]', ins) + 3, 'src.[CAUM_DES]');
+    const val = SQL.indexOf('VALUES (src.[CAUM_CAUSMISS]');
+    aggiungi('INSERT NOT MATCHED: valore → colonna', dopo('src.[CAUM_DES]', val) + 5, '[CAUM_DES]');
+    return casi;
+  })()`)
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+  check('il clic sul valore è andato a segno', cliccato === true)
+  check('l editor evidenzia il campo (decorazione disegnata)', decorazione.esiste === true && decorazione.larghezza > 3)
+  for (const r of risultati) {
+    console.log(`  ${r.ottenuto === r.atteso ? 'PASS' : 'FAIL'}  ${r.nome}: ${JSON.stringify(r.ottenuto)}`)
+    esiti.push(r.ottenuto === r.atteso)
+  }
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -1028,6 +1142,11 @@ async function main() {
 
     if (VERIFY_SCHEMA_REFRESH) {
       await verifySchemaRefresh(page)
+      return
+    }
+
+    if (VERIFY_PAIR_HIGHLIGHT) {
+      await verifyPairHighlight(page)
       return
     }
 

@@ -8,7 +8,7 @@ import type { DatabaseSummary } from '../types'
 
 import { resolveTokenAt } from '../helpers'
 import DataPreviewModal from './DataPreviewModal'
-import { registerInsertHighlight } from '../sqlInsertHighlight'
+import { registerPairHighlight } from '../sqlPairHighlight'
 import { positionAt, runSqlDiagnostics } from '../sqlDiagnostics'
 import { computeBlockGuides } from '../sqlBlockGuides'
 import { computeFoldingRanges } from '../sqlFolding'
@@ -364,7 +364,7 @@ export default function SqlEditor({
     registerSqlDiagnostics()
     registerBlockGuides()
     registerFolding()
-    disposablesRef.current.push(...registerInsertHighlight(editor))
+    disposablesRef.current.push(...registerPairHighlight(editor))
     disposablesRef.current.push(
       registerSqlHover(() => ({
         summary: stateRef.current.summary,
