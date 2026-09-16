@@ -728,7 +728,11 @@ export function mergeCorrespondingTarget(text: string, cursorOffset: number): Hi
     if (colSlots.length === 0) return null
     const inCols = pos >= regionFrom + openRel && (closeRel === null || pos <= regionFrom + closeRel)
     if (inCols) {
-      const idx = insertSlotIndexAt(colSlots, cursorOffset)
+      // ATTENZIONE agli offset: colSlots sono relativi allo statement, quindi va usata `pos`
+      // (relativa) e non cursorOffset (assoluta). Con l'offset assoluto l'indice veniva
+      // risolto male per ogni MERGE che non fosse la PRIMA del file (l'utente: "nella seconda
+      // non funziona").
+      const idx = insertSlotIndexAt(colSlots, pos)
       const target = tuples[0].slots[idx]
       return target
         ? toAbs({ start: regionFrom + target.start, end: regionFrom + target.end })
@@ -739,7 +743,7 @@ export function mergeCorrespondingTarget(text: string, cursorOffset: number): Hi
       const tupleEnd = regionFrom + (tuple.close ?? region.length)
       if (pos < tupleStart || pos > tupleEnd) continue
       const slots = tuple.slots.map(s => ({ ...s, start: regionFrom + s.start, end: regionFrom + s.end }))
-      const idx = insertSlotIndexAt(slots, cursorOffset)
+      const idx = insertSlotIndexAt(slots, pos)
       const target = colSlots[idx]
       return target ? toAbs({ start: target.start, end: target.end }) : null
     }
@@ -788,13 +792,13 @@ export function mergeCorrespondingTarget(text: string, cursorOffset: number): Hi
       if (valSlots.length === 0) return null
       const inCols = pos >= openRel && (closeRel === null || pos <= closeRel)
       if (inCols) {
-        const idx = insertSlotIndexAt(colSlots, cursorOffset)
+        const idx = insertSlotIndexAt(colSlots, pos)
         const target = valSlots[idx]
         return target ? toAbs({ start: target.start, end: target.end }) : null
       }
       const inValues = pos >= tupleOpen && (tupleClose === null || pos <= tupleClose)
       if (inValues) {
-        const idx = insertSlotIndexAt(valSlots, cursorOffset)
+        const idx = insertSlotIndexAt(valSlots, pos)
         const target = colSlots[idx]
         return target ? toAbs({ start: target.start, end: target.end }) : null
       }

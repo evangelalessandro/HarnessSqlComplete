@@ -904,12 +904,24 @@ async function verifyPairHighlight(page) {
     const e = document.querySelector('.monaco-editor .sql-pair-highlight');
     if (!e) return { esiste: false };
     const r = e.getBoundingClientRect();
-    return { esiste: true, larghezza: Math.round(r.width), sinistra: Math.round(r.left) };
+    const cs = getComputedStyle(e);
+    return {
+      esiste: true,
+      larghezza: Math.round(r.width),
+      sinistra: Math.round(r.left),
+      sfondo: cs.backgroundColor,
+      visibile: cs.visibility !== 'hidden' && cs.display !== 'none' && Number(cs.opacity) > 0,
+    };
   })()`)
   console.log(`  decorazione dopo il clic sul valore: ${JSON.stringify(decorazione)}`)
 
-  // --- 2. logica del modulo servito all'app, sulla MERGE reale dell'utente
-  const MERGE = `MERGE INTO TIPI_CAUSALI_MISSIONI AS tgt
+  // --- 2. logica del modulo servito all'app, sulla MERGE reale dell'utente.
+  //      La MERGE è la SECONDA istruzione: così il controllo copre anche il caso segnalato
+  //      ("con altre query la seconda MERGE non evidenzia"), che con lo statement in prima
+  //      posizione passava per caso (gli offset relativi coincidevano con quelli assoluti).
+  const MERGE = `SELECT 1 AS prima_query;
+
+MERGE INTO TIPI_CAUSALI_MISSIONI AS tgt
 USING (VALUES
     ('RETRN', 'Return in kitting', ' ', 1, 0)) AS src
      ([CAUM_CAUSMISS], [CAUM_DES], [CAUM_SCA_CAUSMISS], [CAUM_ESE_IF_OK], [CAUM_ESE_IF_FF])
@@ -918,28 +930,38 @@ WHEN MATCHED THEN UPDATE SET
     tgt.[CAUM_CAUSMISS] = src.[CAUM_CAUSMISS],
     tgt.[CAUM_DES] = src.[CAUM_DES]
 WHEN NOT MATCHED THEN INSERT ([CAUM_CAUSMISS], [CAUM_DES])
+    VALUES (src.[CAUM_CAUSMISS], src.[CAUM_DES]);
+
+MERGE INTO TIPI_CAUSALI_MISSIONI AS tgt
+USING (VALUES
+    ('RETRN', 'Return in kitting', ' ', 1, 0)) AS src
+     ([CAUM_CAUSMISS], [CAUM_DES], [CAUM_SCA_CAUSMISS], [CAUM_ESE_IF_OK], [CAUM_ESE_IF_FF])
+ON tgt.[CAUM_CAUSMISS] = src.[CAUM_CAUSMISS]
+WHEN MATCHED THEN UPDATE SET tgt.[CAUM_DES] = src.[CAUM_DES]
+WHEN NOT MATCHED THEN INSERT ([CAUM_CAUSMISS], [CAUM_DES])
     VALUES (src.[CAUM_CAUSMISS], src.[CAUM_DES]);`
   const risultati = await page.eval(`(async () => {
     const mod = await import('/src/helpers.ts');
     const SQL = ${JSON.stringify(MERGE)};
+    const seconda = SQL.lastIndexOf('MERGE INTO');
     const dopo = (testo, da) => SQL.indexOf(testo, da);
     const casi = [];
     const aggiungi = (nome, offset, atteso) => {
       const t = mod.pairHighlightTarget(SQL, offset);
       casi.push({ nome, atteso, ottenuto: t ? SQL.slice(t.start, t.end) : null });
     };
-    aggiungi('valore USING 1 → colonna', SQL.indexOf("'RETRN'") + 2, '[CAUM_CAUSMISS]');
-    aggiungi('valore USING 2 → colonna', SQL.indexOf("'Return in kitting'") + 3, '[CAUM_DES]');
-    aggiungi('colonna di src → valore', SQL.indexOf('([CAUM_CAUSMISS]') + 3, "'RETRN'");
-    aggiungi('colonna ON di sinistra → destra', SQL.indexOf('ON tgt.[CAUM_CAUSMISS]') + 5, 'src.[CAUM_CAUSMISS]');
-    aggiungi('colonna ON di destra → sinistra', SQL.indexOf('= src.[CAUM_CAUSMISS]') + 8, 'tgt.[CAUM_CAUSMISS]');
-    const set = SQL.indexOf('tgt.[CAUM_DES] = src.[CAUM_DES]');
-    aggiungi('SET: colonna → valore', set + 6, 'src.[CAUM_DES]');
-    aggiungi('SET: valore → colonna', set + 22, 'tgt.[CAUM_DES]');
-    const ins = SQL.indexOf('INSERT ([CAUM_CAUSMISS], [CAUM_DES])');
-    aggiungi('INSERT NOT MATCHED: colonna → valore', SQL.indexOf('[CAUM_DES]', ins) + 3, 'src.[CAUM_DES]');
-    const val = SQL.indexOf('VALUES (src.[CAUM_CAUSMISS]');
-    aggiungi('INSERT NOT MATCHED: valore → colonna', dopo('src.[CAUM_DES]', val) + 5, '[CAUM_DES]');
+    // 1ª MERGE (dopo una SELECT: non è in prima posizione) e 2ª MERGE in coda
+    for (const [quale, base] of [['1ª', 0], ['2ª', seconda]]) {
+      aggiungi(quale + ' valore USING 2 → colonna', SQL.indexOf("'Return in kitting'", base) + 3, '[CAUM_DES]');
+      aggiungi(quale + ' colonna src 3 → valore', SQL.indexOf('[CAUM_SCA_CAUSMISS]', base) + 3, "' '");
+      aggiungi(quale + ' ON: sinistra → destra', SQL.indexOf('ON tgt.[CAUM_CAUSMISS]', base) + 5, 'src.[CAUM_CAUSMISS]');
+    }
+    const set = SQL.indexOf('tgt.[CAUM_DES] = src.[CAUM_DES]', seconda);
+    aggiungi('2ª SET: colonna → valore', set + 6, 'src.[CAUM_DES]');
+    const ins = SQL.indexOf('INSERT ([CAUM_CAUSMISS], [CAUM_DES])', seconda);
+    aggiungi('2ª INSERT NOT MATCHED: colonna → valore', SQL.indexOf('[CAUM_DES]', ins) + 3, 'src.[CAUM_DES]');
+    const val = SQL.indexOf('VALUES (src.[CAUM_CAUSMISS]', ins);
+    aggiungi('2ª INSERT NOT MATCHED: valore → colonna', dopo('src.[CAUM_DES]', val) + 5, '[CAUM_DES]');
     return casi;
   })()`)
 
@@ -950,6 +972,10 @@ WHEN NOT MATCHED THEN INSERT ([CAUM_CAUSMISS], [CAUM_DES])
   }
   check('il clic sul valore è andato a segno', cliccato === true)
   check('l editor evidenzia il campo (decorazione disegnata)', decorazione.esiste === true && decorazione.larghezza > 3)
+  check(
+    'l evidenziazione è VISIBILE (sfondo non trasparente)',
+    decorazione.visibile === true && decorazione.sfondo !== 'rgba(0, 0, 0, 0)' && decorazione.sfondo !== 'transparent',
+  )
   for (const r of risultati) {
     console.log(`  ${r.ottenuto === r.atteso ? 'PASS' : 'FAIL'}  ${r.nome}: ${JSON.stringify(r.ottenuto)}`)
     esiti.push(r.ottenuto === r.atteso)

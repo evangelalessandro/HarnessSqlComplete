@@ -111,6 +111,36 @@ WHERE RIG_RIGA = 1;`
   })
 })
 
+describe('MERGE non in prima posizione (bug segnalato: "nella seconda non funziona")', () => {
+  // Con più MERGE/query nel file, gli offset delle liste vanno confrontati con la posizione
+  // RELATIVA allo statement: usando quella assoluta l'indice finiva sull'ULTIMO campo.
+  const M = `MERGE INTO TIPI_CAUSALI_MISSIONI AS tgt
+USING (VALUES ('RETRN', 'Return in kitting', 'X3', 'X4', 'X5')) AS src ([CAUM_CAUSMISS], [CAUM_DES], [C3], [C4], [C5])
+ON tgt.[CAUM_CAUSMISS] = src.[CAUM_CAUSMISS]
+WHEN MATCHED THEN UPDATE SET tgt.[C3] = src.[C3]
+WHEN NOT MATCHED THEN INSERT ([CAUM_CAUSMISS], [CAUM_DES], [C3], [C4], [C5]) VALUES (src.[CAUM_CAUSMISS], src.[CAUM_DES], src.[C3], src.[C4], src.[C5])`
+
+  const posizioni: [string, string][] = [
+    ['da sola', M],
+    ['dopo un altra query', `SELECT 1 AS x\n${M}`],
+    ['seconda di due MERGE (senza ;)', `${M}\n${M}`],
+    ['seconda di due MERGE (con ;)', `${M};\n${M};`],
+  ]
+
+  for (const [nome, testo] of posizioni) {
+    it(`${nome}: evidenzia il campo giusto (non l ultimo)`, () => {
+      const base = testo.lastIndexOf('MERGE INTO')
+      // 3º valore della USING → 3ª colonna; 4ª colonna → 4º valore
+      expect(evidenziato(testo, testo.indexOf("'X3'", base) + 1)).toBe('[C3]')
+      const colonne = testo.indexOf('([CAUM_CAUSMISS]', base)
+      expect(evidenziato(testo, testo.indexOf('[C4]', colonne) + 2)).toBe("'X4'")
+      // ramo NOT MATCHED: 3ª colonna → 3º valore
+      const insert = testo.indexOf('INSERT (', base)
+      expect(evidenziato(testo, testo.indexOf('[C3]', insert) + 2)).toBe('src.[C3]')
+    })
+  }
+})
+
 describe('pairHighlightTarget: comportamento invariato per INSERT', () => {
   it('un INSERT continua a evidenziare colonna ↔ valore', () => {
     const sql = "INSERT INTO dbo.Clienti (id, nome) VALUES (1, 'Mario');"
