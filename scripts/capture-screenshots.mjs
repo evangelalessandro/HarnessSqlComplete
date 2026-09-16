@@ -1219,6 +1219,18 @@ async function verifyAlias(page) {
     normali(vociSelect).includes('x_sco') && normali(vociSelect).includes('x_udc_source'),
   )
 
+  // 6) CONFERMA di un suggerimento: non deve uscire "p.p.campo"
+  await scrivi('select * from dbo.DAT_UDC p where p.')
+  await sleep(1600) // il popup si apre da solo mentre si digita
+  const popupPrima = await vociPopup()
+  await page.press('Enter', { code: 'Enter', vk: 13 })
+  await sleep(900)
+  const rigaConfermata = (await righeEditor()).map(r => r.trim()).filter(Boolean).pop() ?? ''
+  console.log(`  popup prima di confermare: ${JSON.stringify(popupPrima.slice(0, 3))}`)
+  console.log(`  riga dopo la conferma: ${JSON.stringify(rigaConfermata)}`)
+  check('confermando il suggerimento non si ottiene "p.p."', !rigaConfermata.includes('p.p.'))
+  check('il campo è qualificato una sola volta (p.CAMPO)', /p\.UDC_/i.test(rigaConfermata))
+
   await page.press('Escape', { code: 'Escape', vk: 27 })
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)

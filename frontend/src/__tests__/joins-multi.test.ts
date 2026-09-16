@@ -356,11 +356,12 @@ describe('B3: alias automatici e colonne qualificate', () => {
     expect(items[0].insertText).toBe('MAG_CELLE ON (MIS_D_CELLA = CEL_CELLA)')
   })
 
-  it('buildQualifiedColumnSuggestions: dopo "r." propone r.colonna', () => {
+  it('buildQualifiedColumnSuggestions: dopo "r." propone le colonne senza ripetere l alias', () => {
     const stmt = 'SELECT * FROM RUN_MISSIONI r WHERE r.'
     const res = buildQualifiedColumnSuggestions(stmt, 'SELECT * FROM RUN_MISSIONI r WHERE r.', aliasSummary)
-    expect(res.some(c => c.insertText === 'r.MIS_D_CELLA')).toBe(true)
-    expect(res.every(c => c.insertText.startsWith('r.'))).toBe(true)
+    expect(res.some(c => c.name === 'MIS_D_CELLA')).toBe(true)
+    // insertText = SOLO il nome: il "r." è già nel testo (altrimenti uscirebbe "r.r.MIS_D_CELLA")
+    expect(res.every(c => !c.insertText.includes('.'))).toBe(true)
   })
 
   it('buildQualifiedColumnSuggestions: qualificatore sconosciuto → vuoto', () => {

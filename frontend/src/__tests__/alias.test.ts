@@ -133,6 +133,18 @@ from #tmpMission dd
     expect(nomi).toEqual(['X_SCO', 'X_UDC_SOURCE'])
   })
 
+  it('confermando un suggerimento NON si ottiene "p.p.campo"', () => {
+    // il qualificatore è già nel testo: insertText deve essere il solo nome della colonna
+    const sql = 'select * from dbo.DAT_UDC p where p.'
+    const res = suggest(sql, sql.length)
+    const voce = res!.suggestions.find(s => s.label === 'UDC_UDC')
+    expect(voce).toBeDefined()
+    expect(String(voce!.insertText)).toBe('UDC_UDC')
+    const dopoInserimento = sql + String(voce!.insertText)
+    expect(dopoInserimento).toContain('p.UDC_UDC')
+    expect(dopoInserimento).not.toContain('p.p.')
+  })
+
   it('alias di una tabella dello schema: stessi campi della tabella', () => {
     const sql = 'select * from dbo.DAT_UDC pippo\nselect top 1\n  pip.\ninto #x\nfrom dbo.DAT_UDC pippo'
     const res = suggest(sql, sql.indexOf('pip.') + 'pip.'.length)

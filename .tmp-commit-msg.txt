@@ -1,0 +1,16 @@
+fix(intellisense): confermando un campo dopo l'alias non esce piu' 'p.p.campo'
+
+Segnalato dall'utente: scrivendo "p." i suggerimenti erano giusti, ma confermandone uno il
+testo diventava "p.p.X_SCO".
+
+Causa: buildQualifiedColumnSuggestions metteva il qualificatore anche nell'insertText
+("p.X_SCO") mentre il "p." e' gia' nel testo e il range del suggerimento copre solo la parola
+in corso. Ora l'insertText e' il SOLO nome della colonna: il qualificatore resta quello
+digitato. Il bug valeva per qualsiasi campo qualificato (r. in WHERE/ON, [alias]., #tmp.),
+non solo per questa query.
+
+Verifiche: 1010 test verdi (nuovo controllo in alias.test.ts che simula l'inserimento:
+prefisso "p." + insertText -> "p.UDC_UDC" e mai "p.p."; aggiornato il test di joins-multi che
+asseriva il comportamento sbagliato), build/type-check OK, controllo nell'app vera
+(scripts/capture-screenshots.mjs --verify-alias, 7/7: popup, conferma con Invio e riga
+risultante "select * from dbo.DAT_UDC p where p.UDC_UDC").

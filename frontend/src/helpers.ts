@@ -1770,10 +1770,11 @@ export function buildQualifiedColumnSuggestions(
   const table = refs.find(({ r }) => (r.alias ?? r.tableName).toLowerCase() === qualifier.toLowerCase())?.table
   if (!table?.columns) return []
 
-  const qual = sqlIdent(qualifier)
+  // insertText = SOLO il nome della colonna: il qualificatore (e il punto) sono già nel testo
+  // ("p." + "X_SCO"), altrimenti confermando il suggerimento si otterrebbe "p.p.X_SCO".
   return table.columns.map(c => ({
     name: c.name,
-    insertText: `${qual}.${sqlIdent(c.name)}`,
+    insertText: sqlIdent(c.name),
     dataType: c.dataType,
     isNullable: c.isNullable,
     documentation: columnInfoMarkdown(table, c),
