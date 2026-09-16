@@ -11,6 +11,7 @@ export type SuggestionCategory =
   | 'joinTables' // tabelle proposte in posizione JOIN (con ON)
   | 'views'
   | 'procedures'
+  | 'labels' // label di GOTO definite nel documento
   | 'functions' // funzioni SQL di sistema + utente
   | 'keywords' // parole chiave SQL
   | 'snippets' // template statement (INSERT/SELECT/...)
@@ -31,6 +32,7 @@ export interface IntellisenseContext {
     | 'joinPosition'
     | 'afterTableName'
     | 'execPosition'
+    | 'gotoPosition'
     | 'selectList'
     | 'columnContext'
     | 'orderBy'
@@ -40,6 +42,8 @@ export interface IntellisenseContext {
   isTablePosition: boolean
   isJoinPosition: boolean
   isExecPosition: boolean
+  /** True dopo "GOTO " (o "GOTO" parziale): si propongono le label del documento. */
+  isGotoPosition: boolean
   isColumnContext: boolean
   inSelectList: boolean
   /** True quando il cursore è dentro la ORDER BY (… ORDER BY a, b ▮): solo colonne + ASC/DESC. */
@@ -69,6 +73,8 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
   const isTablePosition = /(?:FROM|JOIN|UPDATE|INTO|TABLE)\s*$/i.test(prefix)
   const isJoinPosition = /(?:(?:LEFT|RIGHT|INNER|OUTER|CROSS|FULL)\s+)?JOIN\s*$/i.test(prefix)
   const isExecPosition = /(?:^|\s)EXEC(?:UTE)?\s*$/i.test(prefix)
+  // "GOTO " (anche con la parola in corso: "goto lb") → label del documento
+  const isGotoPosition = /(?:^|[\s;])GOTO\s*$/i.test(prefix)
   // dopo una virgola che CONTINUA una lista di colonne (es. "GROUP BY a, ",
   // "ORDER BY a, b, ", "WHERE x IN (1, ", "ON a = b, "): il contesto resta di colonne.
   // Il testo prima dell'ultima virgola deve appartenere a una clausola di colonne,
@@ -128,6 +134,10 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
   if (isExecPosition) {
     kind = 'execPosition'
     allowed = ['procedures']
+  } else if (isGotoPosition) {
+    // dopo GOTO servono SOLO le label del documento
+    kind = 'gotoPosition'
+    allowed = ['labels']
   } else if (isJoinPosition) {
     kind = 'joinPosition'
     allowed = ['joinTables', 'tables', 'views']
@@ -162,6 +172,7 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
     isTablePosition,
     isJoinPosition,
     isExecPosition,
+    isGotoPosition,
     isColumnContext,
     inSelectList,
     inOrderBy,

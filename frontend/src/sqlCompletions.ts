@@ -9,6 +9,7 @@ import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
 import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, extractDeclaredVariables, extractRoutineParameters, systemVariablePrefixLen, variablePrefixLen } from './tsqlSnippets'
 import { extractCteTables, extractLocalTables } from './localTables'
+import { extractLabels } from './labels'
 import { ORDER_DIRECTIONS } from './intellisenseContext'
 import { classifyContext, filterKeywordsForContext, isAfterOrderKeyword, isOrderWordTyped, shouldSuggestJoinConditions } from './intellisenseContext'
 
@@ -151,6 +152,27 @@ export function provideSqlCompletions({
           const push = (item: monaco.languages.CompletionItem) => {
             suggestions.push({ ...item, sortText: completionSortText(rank) })
             rank++
+          }
+
+          // GOTO: si propongono TUTTE le label definite nel documento, anche quelle scritte
+          // più sotto (è il caso normale: "goto lblExit" e la label in fondo alla procedura).
+          // Se il documento non ha label si prosegue con i suggerimenti normali: il popup non
+          // deve mai restare vuoto.
+          if (ctx.allowed.includes('labels')) {
+            const nomiLabel = extractLabels(fullText)
+            if (nomiLabel.length > 0) {
+              for (const nome of nomiLabel) {
+                push({
+                  label: nome,
+                  detail: 'label',
+                  kind: monaco.languages.CompletionItemKind.Reference,
+                  insertText: nome,
+                  range,
+                  filterText: nome,
+                })
+              }
+              return { suggestions }
+            }
           }
 
           // Funzioni T-SQL (aggregati, window, stringhe…) + funzioni utente SCALARI del database.

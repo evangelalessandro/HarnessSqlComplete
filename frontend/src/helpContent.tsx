@@ -132,6 +132,11 @@ export const HELP_SECTIONS: HelpSection[] = [
           'Dando un alias a una tabella, scrivendo "alias." vengono proposti i suoi campi: vale anche per le tabelle temporanee (#tmp.) e per le CTE definite nel documento ("with c as (...) select * from c pippo where pippo."), anche con le parentesi quadre ([pippo].).',
       },
       {
+        title: 'Label di GOTO',
+        detail:
+          'Dopo "GOTO " vengono proposte tutte le label del documento, comprese quelle definite più sotto (il caso normale: si salta a "lblExit:" scritta in fondo). Quelle dentro il codice commentato vengono ignorate.',
+      },
+      {
         title: 'Affinità mentre digiti',
         detail:
           'Digitando mis_corr vengono proposti in testa i campi più simili (mis_d_corridoio, mis_s_corridoio) grazie al matching per token.',

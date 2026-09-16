@@ -95,6 +95,8 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   le colonne si ricavano dalla select-list (anche con `TOP n *`, alias di funzione e alias per posizione tipo
   `SCO_GIAC + SCO_VER X_GIAC`) e, con `*`, dalla sorgente: tabella dello schema, altra temporanea o **CTE**
   definita nel testo.
+- **Alias delle tabelle** e **label di GOTO**: dopo `GOTO ` vengono proposte tutte le label del
+  documento (anche quelle definite più sotto, ignorando quelle nel codice commentato).
 - **Cronologia d'uso**: tabelle e colonne che usi di più pesano di più nel ranking.
 - **Diagnostica in tempo reale**: parentesi/apici non bilanciati e colonne qualificate inesistenti
   vengono sottolineati mentre scrivi (senza eseguire nulla).
@@ -354,6 +356,8 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
   `DECLARE @t TABLE`, `SELECT ... INTO #t`, `INSERT INTO #t`). For `SELECT … INTO #t` the columns come from
   the select list (including `TOP n *`, function aliases and positional aliases like `SCO_GIAC + SCO_VER
   X_GIAC`) and, with `*`, from the source: a schema table, another temp table or a **CTE** defined in the text.
+- **Table aliases** and **GOTO labels**: after `GOTO ` every label in the document is offered (including
+  the ones defined further down; labels inside commented-out code are ignored).
 - **Usage history**: tables and columns you use most rank higher.
 - **Live diagnostics**: unbalanced brackets/quotes and unknown qualified columns are underlined as you
   type, without running anything.

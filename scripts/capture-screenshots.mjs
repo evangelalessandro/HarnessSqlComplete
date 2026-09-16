@@ -11,6 +11,7 @@
 //   node scripts/capture-screenshots.mjs --verify-pair-highlight  (MERGE: campo corrispondente)
 //   node scripts/capture-screenshots.mjs --verify-local-tables    (colonne delle #temporanee)
 //   node scripts/capture-screenshots.mjs --verify-alias           (alias. → campi della tabella)
+//   node scripts/capture-screenshots.mjs --verify-labels          (GOTO → label del documento)
 //
 // Prerequisiti: backend su :5213 e dev server su :5173 attivi.
 
@@ -34,6 +35,7 @@ const VERIFY_SCHEMA_REFRESH = process.argv.includes('--verify-schema-refresh')
 const VERIFY_PAIR_HIGHLIGHT = process.argv.includes('--verify-pair-highlight')
 const VERIFY_LOCAL_TABLES = process.argv.includes('--verify-local-tables')
 const VERIFY_ALIAS = process.argv.includes('--verify-alias')
+const VERIFY_LABELS = process.argv.includes('--verify-labels')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -1190,6 +1192,87 @@ async function verifyAlias(page) {
 }
 
 /**
+ * VERIFICA (--verify-labels): dopo "GOTO " devono comparire TUTTE le label del documento,
+ * anche quelle definite più sotto; quelle nel codice commentato no.
+ */
+async function verifyLabels(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const PROC = [
+    'CREATE PROCEDURE p AS',
+    'BEGIN',
+    '  -- lbFinta: non deve comparire',
+    '  IF 1 = 1',
+    '    GOTO ',
+    '  SELECT 1',
+    '  lblExit:',
+    '  RETURN 0',
+    '  fine:',
+    '  RETURN 1',
+    'END',
+  ].join('\n')
+
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1000)
+  }
+  /** Cursore alla fine della riga "GOTO ", poi si digita la lettera per aprire il popup. */
+  const popupDopoGoto = async lettera => {
+    const punto = await page.eval(`(() => {
+      const linea = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].find(l => (l.textContent || '').trim().startsWith('GOTO'));
+      if (!linea) return null;
+      const spans = [...linea.querySelectorAll('span')];
+      const ultimo = spans[spans.length - 1];
+      if (!ultimo) return null;
+      const r = ultimo.getBoundingClientRect();
+      return { x: r.right - 1, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) return null
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(400)
+    await page.typeText(lettera)
+    await sleep(1600)
+    return await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+  }
+
+  await scrivi(PROC)
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+  const normali = v => (v ?? []).map(x => x.toLowerCase())
+
+  const conL = await popupDopoGoto('l')
+  console.log(`  dopo "GOTO l": ${JSON.stringify(conL)}`)
+  check('propone la label definita più sotto (lblExit)', normali(conL).includes('lblexit'))
+  check('NON propone la label nel commento (lbFinta)', !normali(conL).some(v => v.includes('lbfinta')))
+
+  // nuovo giro: "GOTO f" → la label "fine"
+  await scrivi(PROC)
+  const conF = await popupDopoGoto('f')
+  console.log(`  dopo "GOTO f": ${JSON.stringify(conF)}`)
+  check('propone anche l altra label (fine)', normali(conF).includes('fine'))
+
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -1386,6 +1469,11 @@ async function main() {
 
     if (VERIFY_ALIAS) {
       await verifyAlias(page)
+      return
+    }
+
+    if (VERIFY_LABELS) {
+      await verifyLabels(page)
       return
     }
 
