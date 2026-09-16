@@ -67,6 +67,10 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   funzioni; dopo un alias (`r.`) le colonne qualificate di quella tabella.
 - **Mai popup vuoto** in posizione di codice: se lo schema non è disponibile (sessione scaduta) propone
   comunque snippet, funzioni e keyword, e ricarica i metadati da solo.
+- **Aggiorna schema** (pulsante in alto o **Ctrl+Shift+R**, come il *Refresh* di SSMS): rilegge tabelle,
+  colonne, viste e routine dal database saltando la cache del backend, così dopo aver creato o modificato
+  oggetti altrove l'intellisense e l'albero laterale usano subito la versione nuova (e il diagramma delle
+  chiamate viene ricaricato).
 - **JOIN intelligenti**: dopo `FROM t JOIN ` propone le tabelle collegate da **foreign key** con la clausola
   `ON` già compilata (una voce per vincolo, con alias brevi se la query usa alias). Le altre sono ordinate
   per **utilizzo reale** nel database (FK entrante/uscente, dipendenze, righe stimate) e per co-occorrenza
@@ -136,7 +140,7 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
 ### Aiuto integrato
 
 - Guida in-app con tutte le funzioni e l'elenco delle scorciatoie (F5/Ctrl+Invio, Ctrl+S, Ctrl+Shift+S,
-  Ctrl+Shift+F, Ctrl+Spazio, Ctrl+rotella).
+  Ctrl+Shift+F, Ctrl+Shift+R, Ctrl+R, Ctrl+Spazio, Ctrl+rotella).
 
 ---
 
@@ -226,6 +230,7 @@ I fixture dei database reali si rigenerano con gli script in `frontend/scripts/`
 | `DELETE` | `/api/connections/{id}` | Elimina una login salvata |
 | `POST` | `/api/connections/{connectionId}/switch-database` | Cambia il database della sessione |
 | `GET` | `/api/metadata/{connectionId}/summary` | Metadati completi (cache 2 min): tabelle, colonne, viste, procedure con parametri, trigger, funzioni, vincoli CHECK, FK, metriche d'uso, proprietà estese |
+| `GET` | `/api/metadata/{connectionId}/summary?refresh=true` | Come sopra, ma **ignora la cache** e rilegge tutto dal database (pulsante "Aggiorna schema" / Ctrl+Shift+R); invalida anche il grafo delle chiamate |
 | `GET` | `/api/metadata/{connectionId}/tables/{schema}/{table}/columns` | Colonne di una tabella |
 | `GET` | `/api/metadata/{connectionId}/tables/{schema}/{table}/preview?top=30` | Anteprima dati (`SELECT TOP n *`) |
 | `GET` | `/api/metadata/{connectionId}/objects/{schema}/{name}/definition` | Definizione (testo) di proc/funzione/vista/trigger |
@@ -314,6 +319,10 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
   columns and functions; after an alias (`r.`) the qualified columns of that table.
 - **Never an empty popup** in a code position: with no schema available (expired session) it still offers
   snippets, functions and keywords, and reloads metadata on its own.
+- **Refresh schema** (button in the header or **Ctrl+Shift+R**, like SSMS *Refresh*): re-reads tables,
+  columns, views and routines from the database, bypassing the backend cache, so after creating or changing
+  objects elsewhere the intellisense and the sidebar tree use the new version immediately (the call graph is
+  reloaded too).
 - **Smart JOINs**: after `FROM t JOIN ` it suggests tables linked by **foreign keys** with the `ON` clause
   already filled in (one entry per constraint, short aliases when the query uses aliases). Other tables are
   ranked by **real database usage** (incoming/outgoing FKs, dependencies, estimated rows) and by
@@ -381,7 +390,7 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
 ### Built-in help
 
 - In-app guide covering every feature and all keyboard shortcuts (F5/Ctrl+Enter, Ctrl+S, Ctrl+Shift+S,
-  Ctrl+Shift+F, Ctrl+Space, Ctrl+wheel).
+  Ctrl+Shift+F, Ctrl+Shift+R, Ctrl+R, Ctrl+Space, Ctrl+wheel).
 
 ## Architecture
 
@@ -462,6 +471,7 @@ Fixture files built from real databases are regenerated with the scripts in `fro
 | `DELETE` | `/api/connections/{id}` | Delete a saved login |
 | `POST` | `/api/connections/{connectionId}/switch-database` | Switch the session database |
 | `GET` | `/api/metadata/{connectionId}/summary` | Full metadata (2-minute cache): tables, columns, views, procedures with parameters, triggers, functions, CHECK constraints, FKs, usage metrics, extended properties |
+| `GET` | `/api/metadata/{connectionId}/summary?refresh=true` | Same as above but **skips the cache** and re-reads everything from the database ("Refresh schema" button / Ctrl+Shift+R); it also invalidates the call graph |
 | `GET` | `/api/metadata/{connectionId}/tables/{schema}/{table}/columns` | Columns of a table |
 | `GET` | `/api/metadata/{connectionId}/tables/{schema}/{table}/preview?top=30` | Data preview (`SELECT TOP n *`) |
 | `GET` | `/api/metadata/{connectionId}/objects/{schema}/{name}/definition` | Definition text of a procedure/function/view/trigger |

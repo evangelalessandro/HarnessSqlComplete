@@ -7,6 +7,7 @@
 //   node scripts/capture-screenshots.mjs            (cattura tutta la sequenza)
 //   node scripts/capture-screenshots.mjs --dump     (elenca i comandi visibili nella pagina)
 //   node scripts/capture-screenshots.mjs --verify-format   (stesso SELECT dentro/fuori una store)
+//   node scripts/capture-screenshots.mjs --verify-schema-refresh  (pulsante + Ctrl+Shift+R)
 //
 // Prerequisiti: backend su :5213 e dev server su :5173 attivi.
 
@@ -26,6 +27,7 @@ const VERIFY_TAB_CURSOR = process.argv.includes('--verify-tab-cursor')
 const DUMP_GENERATOR = process.argv.includes('--dump-generator')
 const DUMP_TABBAR = process.argv.includes('--dump-tabbar')
 const VERIFY_FORMAT = process.argv.includes('--verify-format')
+const VERIFY_SCHEMA_REFRESH = process.argv.includes('--verify-schema-refresh')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -754,6 +756,97 @@ async function verifyFormat(page) {
 }
 
 /**
+ * VERIFICA (--verify-schema-refresh): il pulsante "Aggiorna schema" e Ctrl+Shift+R devono
+ * rileggere i metadati dal database (come il Refresh di SSMS) SENZA ricaricare la pagina.
+ * Nel browser Ctrl+Shift+R è "ricarica ignorando la cache": qui deve finire annullata
+ * (preventDefault) e la pagina deve restare viva (marcatore su window).
+ */
+async function verifySchemaRefresh(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+
+  await page.eval(`window.__schemaMarker = 'vivo'`)
+  const logSchema = async () => await page.consoleLogs('[schema]')
+  const ultimoLog = async () => (await logSchema()).slice(-1)[0] ?? null
+  /** I messaggi di console arrivano via CDP con un ritardo: si aspetta il conteggio atteso
+   *  invece di leggere subito (altrimenti i controlli sono "a gara"). */
+  const attendiLog = async (atteso, timeoutMs = 6000) => {
+    const inizio = Date.now()
+    while (Date.now() - inizio < timeoutMs) {
+      if ((await logSchema()).length >= atteso) return true
+      await sleep(300)
+    }
+    return false
+  }
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+
+  const bottone = await page.eval(`(() => {
+    const b = [...document.querySelectorAll('button')].find(x => (x.textContent || '').trim().includes('Aggiorna schema'));
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { visibile: r.width > 0 && r.height > 0, titolo: b.getAttribute('title') || '' };
+  })()`)
+  console.log(`  pulsante: ${JSON.stringify(bottone)}`)
+  check('il pulsante "Aggiorna schema" è visibile anche con lo schema caricato', !!bottone?.visibile)
+  check('il tooltip del pulsante cita la scorciatoia Ctrl+Shift+R', /Ctrl\+Shift\+R/.test(bottone?.titolo ?? ''))
+
+  // clic sul pulsante: i metadati vengono riletti
+  const cliccato = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim().includes('Aggiorna schema'))`,
+  )
+  const primoLog = await attendiLog(1)
+  console.log(`  log dopo il clic: ${JSON.stringify(await ultimoLog())}`)
+  check('il clic sul pulsante ha funzionato', cliccato === true)
+  check('il clic rilegge lo schema ("[schema] aggiornato")', primoLog && /\[schema\] aggiornato/.test((await ultimoLog()) ?? ''))
+  check('il clic non ricarica la pagina', (await page.eval(`window.__schemaMarker`)) === 'vivo')
+
+  // Ctrl+Shift+R (2 = Ctrl, 8 = Shift)
+  await page.eval(`(() => {
+    window.__keys = [];
+    window.addEventListener('keydown', e => window.__keys.push([e.key, e.ctrlKey, e.shiftKey, e.altKey, (document.activeElement || {}).tagName].join('|')));
+    return true;
+  })()`)
+  const logPrima = (await logSchema()).length
+  await page.press('R', { code: 'KeyR', vk: 82, modifiers: 2 | 8 })
+  const arrivato = await attendiLog(logPrima + 1)
+  console.log(`  eventi di tastiera visti dalla pagina: ${JSON.stringify(await page.eval('window.__keys'))}`)
+  console.log(`  log dopo Ctrl+Shift+R: ${JSON.stringify(await ultimoLog())}`)
+  check('Ctrl+Shift+R rilegge lo schema', arrivato && /\[schema\] aggiornato/.test((await ultimoLog()) ?? ''))
+  check('Ctrl+Shift+R non ricarica la pagina (preventDefault efficace)', (await page.eval(`window.__schemaMarker`)) === 'vivo')
+
+  // Ctrl+R deve restare il mostra/nascondi dei risultati, NON il refresh dello schema
+  const primaDiCtrlR = (await logSchema()).length
+  await page.press('r', { code: 'KeyR', vk: 82, modifiers: 2 })
+  await sleep(1500)
+  check('Ctrl+R non aggiorna lo schema (resta il pannello dei risultati)', (await logSchema()).length === primaDiCtrlR)
+
+  // caso reale: il fuoco è NELL'EDITOR (Monaco) mentre si preme Ctrl+Shift+R
+  const rectEditor = await editorRect(page)
+  await page.clickPoint(rectEditor.x + 120, rectEditor.y + 18)
+  await sleep(500)
+  const primaInEditor = (await logSchema()).length
+  await page.press('R', { code: 'KeyR', vk: 82, modifiers: 2 | 8 })
+  const inEditor = await attendiLog(primaInEditor + 1)
+  console.log(`  fuoco nell'editor: ${JSON.stringify(await page.eval('(document.activeElement || {}).className'))}`)
+  check("Ctrl+Shift+R funziona anche con il fuoco nell'editor", inEditor)
+  check('neanche con il fuoco nell editor la pagina si ricarica', (await page.eval(`window.__schemaMarker`)) === 'vivo')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -930,6 +1023,11 @@ async function main() {
 
     if (VERIFY_FORMAT) {
       await verifyFormat(page)
+      return
+    }
+
+    if (VERIFY_SCHEMA_REFRESH) {
+      await verifySchemaRefresh(page)
       return
     }
 

@@ -12,7 +12,8 @@ public class MetadataController(
     ConnectionHub hub,
     MetadataService metadata,
     MetadataCache cache,
-    QueryService query) : ControllerBase
+    QueryService query,
+    ILogger<MetadataController> logger) : ControllerBase
 {
     private bool TryGetConnectionString(string connectionId, out string cs)
     {
@@ -21,14 +22,32 @@ public class MetadataController(
     }
 
     [HttpGet("summary")]
-    public async Task<ActionResult<DatabaseSummary>> Summary([FromRoute] string connectionId, CancellationToken ct)
+    public async Task<ActionResult<DatabaseSummary>> Summary(
+        [FromRoute] string connectionId,
+        CancellationToken ct,
+        [FromQuery] bool refresh = false)
     {
         if (!TryGetConnectionString(connectionId, out var cs))
             return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
 
-        var cached = cache.Get(connectionId);
-        if (cached is not null)
-            return Ok(cached);
+        // refresh=true (pulsante "Aggiorna schema" / Ctrl+Shift+R): si BUTTA VIA la cache,
+        // sommario e grafo delle chiamate compresi, così i metadati e il diagramma vengono
+        // riletti dal database invece di restituire la copia di due minuti prima.
+        if (refresh)
+        {
+            cache.Invalidate(connectionId);
+            logger.LogInformation("Metadati di {ConnectionId}: riletti dal database (refresh richiesto)", connectionId);
+        }
+        else
+        {
+            var cached = cache.Get(connectionId);
+            if (cached is not null)
+            {
+                logger.LogInformation("Metadati di {ConnectionId}: dalla cache", connectionId);
+                return Ok(cached);
+            }
+            logger.LogInformation("Metadati di {ConnectionId}: prima lettura, dal database", connectionId);
+        }
 
         var summary = await metadata.GetSummaryAsync(cs, ct);
         cache.Set(connectionId, summary);

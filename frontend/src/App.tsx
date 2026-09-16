@@ -13,6 +13,7 @@ import { buildTabClosePlan, countClosableTabs, insertTabAt } from './tabOps'
 import type { NewTabPosition, TabCloseMode } from './tabOps'
 import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryResult, RoutineCallGraph } from './types'
 import { chooseResultTab } from './queryTabs'
+import { isRefreshSchemaShortcut, isToggleResultsShortcut } from './shortcuts'
 import {
   clearQueryStats,
   emptyQueryStats,
@@ -180,7 +181,7 @@ export default function App() {
   // Ctrl+R (o Cmd+R): nasconde/mostra il pannello dei risultati (evita il refresh del browser)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+      if (isToggleResultsShortcut(e)) {
         e.preventDefault()
         setResultsVisible(v => !v)
       }
@@ -779,21 +780,39 @@ export default function App() {
   const [summaryRetryTick, setSummaryRetryTick] = useState(0)
   const [summaryReloading, setSummaryReloading] = useState(false)
 
-  /** Ricarica manuale dei metadati (pulsante nell'header quando lo schema manca). */
+  /** Aggiorna lo schema: rilegge i metadati dal database (pulsante o Ctrl+Shift+R).
+   *  Forza il backend a buttare via la sua cache e azzera il grafo delle chiamate, così
+   *  l'albero laterale e il diagramma non restano quelli di prima. */
   const reloadSummary = useCallback(async () => {
     if (!connection) return
     setSummaryReloading(true)
     setBanner(null)
     try {
-      const s = await api.getSummary(connection.connectionId)
+      const s = await api.getSummary(connection.connectionId, true)
       setSummary(s)
+      setCallGraph(null) // il diagramma va riletto: nel frattempo le routine possono essere cambiate
       summaryRetries.current = 0
+      console.log(`[schema] aggiornato: ${s.tables.length} tabelle, ${s.views.length} viste, ${s.procedures.length} routine`)
     } catch (e) {
-      setBanner(`Schema non caricato: ${e instanceof Error ? e.message : String(e)}`)
+      setBanner(`Schema non aggiornato: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setSummaryReloading(false)
     }
   }, [connection])
+
+  // Ctrl+Shift+R (o Cmd+Shift+R): aggiorna lo schema, come il "Refresh Local Cache" di SSMS.
+  // Nel browser la stessa combinazione ricaricherebbe la pagina ignorando la cache: il
+  // preventDefault è quello che la rende utilizzabile qui (verificato: la pagina non si ricarica).
+  // L'effetto sta DOPO la definizione di reloadSummary (prima sarebbe in TDZ → pagina bianca).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!isRefreshSchemaShortcut(e)) return
+      e.preventDefault()
+      void reloadSummary()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [reloadSummary])
 
   useEffect(() => {
     if (!connection || summary) return
@@ -1062,18 +1081,16 @@ export default function App() {
         {summary ? (
           <Badge tone="emerald">Schema: {summary.tables.length} tabelle</Badge>
         ) : (
-          <span className="flex items-center gap-1">
-            <Badge tone="rose">Schema non caricato</Badge>
-            <button
-              onClick={() => void reloadSummary()}
-              disabled={summaryReloading}
-              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-rose-200 transition-colors hover:bg-rose-950/60 disabled:opacity-50"
-              title="Ricarica i metadati (tabelle, colonne, viste…) dal database"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${summaryReloading ? 'animate-spin' : ''}`} /> Ricarica schema
-            </button>
-          </span>
+          <Badge tone="rose">Schema non caricato</Badge>
         )}
+        <button
+          onClick={() => void reloadSummary()}
+          disabled={summaryReloading}
+          className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
+          title="Aggiorna lo schema dal database (Ctrl+Shift+R) — rilegge tabelle, colonne, viste e routine"
+        >
+          <RefreshCw className={`h-4 w-4 ${summaryReloading ? 'animate-spin' : ''}`} /> Aggiorna schema
+        </button>
         <button
           onClick={() => setHelpOpen(true)}
           className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"

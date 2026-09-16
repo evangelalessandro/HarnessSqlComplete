@@ -68,8 +68,13 @@ export const api = {
       body: JSON.stringify({ sql, timeoutSeconds: 10, checkSyntax: true }),
     }),
 
-  getSummary: (connectionId: string) =>
-    http<DatabaseSummary>(`/metadata/${connectionId}/summary`),
+  /**
+   * Metadati del database. Con `refresh` il backend butta via la sua cache (sommario e grafo
+   * delle chiamate) e li rilegge da SQL Server: è quello che fa il pulsante "Aggiorna schema"
+   * e la scorciatoia Ctrl+Shift+R.
+   */
+  getSummary: (connectionId: string, refresh = false) =>
+    http<DatabaseSummary>(`/metadata/${connectionId}/summary${refresh ? '?refresh=true' : ''}`),
 
   /** Anteprima dati di una tabella (SELECT TOP n *). */
   previewTable: (connectionId: string, schema: string, table: string, top = 30) =>
