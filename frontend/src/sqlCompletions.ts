@@ -1,4 +1,4 @@
-﻿// Provider di completamento SQL, ESTRATTO da SqlEditor per poter essere eseguito dai test.
+// Provider di completamento SQL, ESTRATTO da SqlEditor per poter essere eseguito dai test.
 // Se questo codice lancia un'eccezione l'intellisense si "spacca" (popup vuoto):
 // il test src/__tests__/completionSmoke.test.ts esegue il provider su molti contesti
 // reali e fallisce se lancia un errore o se non propone nulla nel codice.
@@ -8,7 +8,7 @@ import { isTextOffsetInComment } from './helpers'
 import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from './helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
 import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, extractDeclaredVariables, extractRoutineParameters, systemVariablePrefixLen, variablePrefixLen } from './tsqlSnippets'
-import { extractLocalTables } from './localTables'
+import { extractCteTables, extractLocalTables } from './localTables'
 import { ORDER_DIRECTIONS } from './intellisenseContext'
 import { classifyContext, filterKeywordsForContext, isAfterOrderKeyword, isOrderWordTyped, shouldSuggestJoinConditions } from './intellisenseContext'
 
@@ -115,18 +115,30 @@ export function provideSqlCompletions({
           const cursorOffset = model.getOffsetAt(position)
           // dentro un commento non si propone alcun suggerimento
           if (isTextOffsetInComment(fullText, cursorOffset)) return { suggestions: [] }
-          // Tabelle TEMPORANEE definite nel testo (#t): senza aggiungerle al sommario
-          // le loro colonne non sarebbero proponibili ("... LEFT JOIN #t ON 1 = 1 WHERE ")
+          // Tabelle TEMPORANEE (#t) e CTE definite nel testo: senza aggiungerle al sommario
+          // le loro colonne non sarebbero proponibili ("... LEFT JOIN #t ON 1 = 1 WHERE ",
+          // "from c pippo where pippo."). Le CTE stanno PRIMA delle tabelle dello schema:
+          // se una CTE ha il nome di una tabella, vince la CTE (come fa SQL Server).
           // (qualsiasi errore del parser locale non deve mai svuotare il popup)
           let localTables: TableInfo[] = []
+          let cteTables: TableInfo[] = []
           try {
-            localTables = extractLocalTables(fullText, baseSt.summary?.tables ?? [])
+            const note = baseSt.summary?.tables ?? []
+            localTables = extractLocalTables(fullText, note)
+            cteTables = extractCteTables(fullText, note)
           } catch {
             localTables = []
+            cteTables = []
           }
           const st =
-            baseSt.summary && localTables.length > 0
-              ? { ...baseSt, summary: { ...baseSt.summary, tables: [...baseSt.summary.tables, ...localTables] } }
+            baseSt.summary && localTables.length + cteTables.length > 0
+              ? {
+                  ...baseSt,
+                  summary: {
+                    ...baseSt.summary,
+                    tables: [...cteTables, ...baseSt.summary.tables, ...localTables],
+                  },
+                }
               : baseSt
           const stmtRange = statementRangeAt(fullText, cursorOffset)
           const stmtText = fullText.slice(stmtRange.start, stmtRange.end)

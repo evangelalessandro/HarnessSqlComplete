@@ -10,6 +10,7 @@
 //   node scripts/capture-screenshots.mjs --verify-schema-refresh  (pulsante + Ctrl+Shift+R)
 //   node scripts/capture-screenshots.mjs --verify-pair-highlight  (MERGE: campo corrispondente)
 //   node scripts/capture-screenshots.mjs --verify-local-tables    (colonne delle #temporanee)
+//   node scripts/capture-screenshots.mjs --verify-alias           (alias. → campi della tabella)
 //
 // Prerequisiti: backend su :5213 e dev server su :5173 attivi.
 
@@ -32,6 +33,7 @@ const VERIFY_FORMAT = process.argv.includes('--verify-format')
 const VERIFY_SCHEMA_REFRESH = process.argv.includes('--verify-schema-refresh')
 const VERIFY_PAIR_HIGHLIGHT = process.argv.includes('--verify-pair-highlight')
 const VERIFY_LOCAL_TABLES = process.argv.includes('--verify-local-tables')
+const VERIFY_ALIAS = process.argv.includes('--verify-alias')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -1089,6 +1091,105 @@ async function verifyLocalTables(page) {
 }
 
 /**
+ * VERIFICA (--verify-alias): dando un alias a una tabella, scrivendo "alias." devono comparire
+ * i suoi campi — anche per le tabelle TEMPORANEE (#t.) e per le CTE (from c pippo where pippo.).
+ * Il popup si legge dal DOM: si digita l'inizio di un campo e si controllano le voci proposte.
+ */
+async function verifyAlias(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const righeEditor = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, ''))`)
+  /** Voci del popup di completamento. */
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+  /** Scrive il testo nell'editor (sostituendo tutto). */
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1000)
+  }
+  /** Porta il cursore in fondo all'ultima riga e digita un carattere per aprire il popup. */
+  const apriPopupInFondo = async (lettera = 'U') => {
+    const punto = await page.eval(`(() => {
+      const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')];
+      const ultima = linee[linee.length - 1];
+      if (!ultima) return null;
+      const spans = [...ultima.querySelectorAll('span')];
+      const s = spans[spans.length - 1];
+      if (!s) return null;
+      const r = s.getBoundingClientRect();
+      return { x: r.right - 1, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) return []
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(400)
+    await page.typeText(lettera)
+    await sleep(1600)
+    return await vociPopup()
+  }
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+  const normali = v => v.map(x => x.toLowerCase())
+
+  // 1) tabella dello schema con alias
+  await scrivi('select * from dbo.DAT_UDC pippo where pippo.U')
+  const vociTabella = await apriPopupInFondo('D')
+  console.log(`  alias di tabella: ${JSON.stringify(vociTabella.slice(0, 6))}`)
+  check('alias di tabella: propone i campi della tabella', normali(vociTabella).some(v => v.startsWith('udc_')))
+
+  // 2) temporanea con alias
+  await scrivi(
+    ['select UDC_UDC, UDC_CORRIDOIO into #tmpAlias from dbo.DAT_UDC', 'select * from #tmpAlias t where t.U'].join('\n'),
+  )
+  console.log('  testo (temporanea):')
+  ;(await righeEditor()).forEach(r => console.log(`    |${r}`))
+  const vociTemp = await apriPopupInFondo('D')
+  console.log(`  alias di temporanea: ${JSON.stringify(vociTemp.slice(0, 6))}`)
+  check('alias di TEMPORANEA: propone i campi della temporanea', normali(vociTemp).some(v => v.startsWith('udc_')))
+
+  // 3) CTE con alias
+  await scrivi(
+    [
+      'with c as (select UDC_UDC, UDC_CORRIDOIO from dbo.DAT_UDC)',
+      'select * from c pippo where pippo.U',
+    ].join('\n'),
+  )
+  console.log('  testo (CTE):')
+  ;(await righeEditor()).forEach(r => console.log(`    |${r}`))
+  const vociCte = await apriPopupInFondo('D')
+  console.log(`  alias di CTE: ${JSON.stringify(vociCte.slice(0, 6))}`)
+  check('alias di CTE: propone i campi della CTE', normali(vociCte).some(v => v.startsWith('udc_')))
+
+  // 4) parentesi quadre: [pippo].
+  await scrivi('select * from dbo.DAT_UDC as pippo where [pippo].U')
+  const vociQuadre = await apriPopupInFondo('D')
+  console.log(`  alias con parentesi: ${JSON.stringify(vociQuadre.slice(0, 6))}`)
+  check('alias con parentesi quadre [pippo].', normali(vociQuadre).some(v => v.startsWith('udc_')))
+
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -1280,6 +1381,11 @@ async function main() {
 
     if (VERIFY_LOCAL_TABLES) {
       await verifyLocalTables(page)
+      return
+    }
+
+    if (VERIFY_ALIAS) {
+      await verifyAlias(page)
       return
     }
 

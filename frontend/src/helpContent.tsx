@@ -127,6 +127,11 @@ export const HELP_SECTIONS: HelpSection[] = [
           'I suggerimenti dipendono dalla posizione: dopo FROM/JOIN solo tabelle e viste, dopo EXEC solo stored procedure, nella select-list e in WHERE/ON/GROUP/ORDER solo colonne e funzioni, dopo un alias (r.) le colonne qualificate di quella tabella.',
       },
       {
+        title: 'Alias delle tabelle',
+        detail:
+          'Dando un alias a una tabella, scrivendo "alias." vengono proposti i suoi campi: vale anche per le tabelle temporanee (#tmp.) e per le CTE definite nel documento ("with c as (...) select * from c pippo where pippo."), anche con le parentesi quadre ([pippo].).',
+      },
+      {
         title: 'Affinità mentre digiti',
         detail:
           'Digitando mis_corr vengono proposti in testa i campi più simili (mis_d_corridoio, mis_s_corridoio) grazie al matching per token.',

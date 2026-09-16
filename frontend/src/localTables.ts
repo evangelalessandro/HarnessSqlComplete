@@ -153,6 +153,19 @@ function makeColumn(name: string, dataType: string): ColumnInfo {
   }
 }
 
+/** TableInfo "locale" (temporanea, variabile tabella o CTE) con le colonne note. */
+function makeLocalTable(name: string, columns: ColumnInfo[]): TableInfo {
+  return {
+    schema: 'dbo',
+    name,
+    columnCount: columns.length,
+    createDate: null,
+    columns,
+    usage: null,
+    extendedProperties: null,
+  }
+}
+
 /**
  * Indice della parola 'as' a livello 0 nell'elemento (quello di alias), o -1.
  * Serve a NON scambiare per alias l'`as` interno di una funzione:
@@ -271,14 +284,18 @@ function columnListOf(text: string, nameTokEnd: number): ColumnInfo[] {
  * sono alias: "SCO_SCOMPARTO X_SCO") non arrivano all'intellisense.
  * La risoluzione dello '*' dentro una CTE usa le tabelle note e le altre CTE.
  */
-function extractCteColumns(text: string, tokens: SqlToken[], knownTables: TableInfo[]): Map<string, ColumnInfo[]> {
-  const map = new Map<string, ColumnInfo[]>()
+function extractCteColumns(
+  text: string,
+  tokens: SqlToken[],
+  knownTables: TableInfo[],
+): Map<string, { name: string; columns: ColumnInfo[] }> {
+  const map = new Map<string, { name: string; columns: ColumnInfo[] }>()
 
   /** Colonne di una sorgente risolvibile: CTE o tabella nota. */
   const columnsOf = (name: string, depth = 0): ColumnInfo[] => {
     if (depth > 4 || !name) return []
     const cte = map.get(name.toLowerCase())
-    if (cte) return cte
+    if (cte) return cte.columns
     const known = knownTables.find(t => t.name.toLowerCase() === name.toLowerCase())
     return known?.columns ?? []
   }
@@ -344,9 +361,21 @@ function extractCteColumns(text: string, tokens: SqlToken[], knownTables: TableI
     if (!/^select\b/i.test(dopoParen)) continue
     const close = matchParen(text, open)
     if (close === -1) continue
-    map.set(nameTok.lower, bodyColumns(open, close, 0))
+    map.set(nameTok.lower, { name: nameTok.text, columns: bodyColumns(open, close, 0) })
   }
   return map
+}
+
+/**
+ * CTE del testo come "tabelle" locali (nome della CTE + colonne della sua select-list).
+ * Servono all'intellisense per "from c where c." / "from c pippo where pippo." e per le
+ * colonne non qualificate: le CTE, come le temporanee, non sono nello schema del database.
+ */
+export function extractCteTables(text: string, knownTables: TableInfo[] = []): TableInfo[] {
+  const tokens = tokenizeSql(text)
+  return [...extractCteColumns(text, tokens, knownTables).values()]
+    .filter(cte => cte.columns.length > 0)
+    .map(cte => makeLocalTable(cte.name, cte.columns))
 }
 
 /**
@@ -453,7 +482,7 @@ export function extractLocalTables(text: string, knownTables: TableInfo[] = []):
             const srcTok = fromTok ? tokens[tokens.indexOf(fromTok) + 1] : undefined
             const srcName = srcTok ? nameAt(text, srcTok) : ''
             const srcCols =
-              cteColumns.get(srcName.toLowerCase()) ??
+              cteColumns.get(srcName.toLowerCase())?.columns ??
               byName.get(srcName.toLowerCase())?.columns ??
               findByLower(srcName)?.columns ??
               []

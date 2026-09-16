@@ -1742,15 +1742,25 @@ export interface QualifiedColumnSuggestion {
  * con "alias." o "tabella." (es. "FROM RUN_MISSIONI r WHERE r.").
  * Restituisce l'elenco qualificato con il prefisso digitato.
  */
+/**
+ * Qualificatore (alias o nome tabella) che precede il punto finale: "pippo.", "[pippo].",
+ * "#tmp.", "@tab.". Il '#'/'@' e le parentesi quadre servono per le tabelle temporanee e
+ * per gli alias scritti con le parentesi.
+ */
+export function qualifierBeforeDot(prefix: string): string | null {
+  const m = /(?:\[([^\]]+)\]|([#@]?[A-Za-z_][A-Za-z0-9_]*))\s*\.\s*$/.exec(prefix)
+  if (!m) return null
+  return m[1] ?? m[2] ?? null
+}
+
 export function buildQualifiedColumnSuggestions(
   stmtText: string,
   prefix: string,
   summary: DatabaseSummary,
 ): QualifiedColumnSuggestion[] {
-  // estrae l'identificatore prima del punto finale (es. "r." → "r")
-  const m = /([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*$/i.exec(prefix)
-  if (!m) return []
-  const qualifier = m[1]
+  // identificatore prima del punto finale (es. "r." / "[r]." / "#tmp.")
+  const qualifier = qualifierBeforeDot(prefix)
+  if (!qualifier) return []
 
   // mappa alias/tabella → TableInfo per lo statement
   const refs = extractStatementTableRefs(stmtText)
