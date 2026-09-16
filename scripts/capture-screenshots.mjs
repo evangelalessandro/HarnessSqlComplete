@@ -6,6 +6,7 @@
 // Uso:
 //   node scripts/capture-screenshots.mjs            (cattura tutta la sequenza)
 //   node scripts/capture-screenshots.mjs --dump     (elenca i comandi visibili nella pagina)
+//   node scripts/capture-screenshots.mjs --verify-format   (stesso SELECT dentro/fuori una store)
 //
 // Prerequisiti: backend su :5213 e dev server su :5173 attivi.
 
@@ -24,6 +25,7 @@ const VERIFY_ERRORS = process.argv.includes('--verify-errors')
 const VERIFY_TAB_CURSOR = process.argv.includes('--verify-tab-cursor')
 const DUMP_GENERATOR = process.argv.includes('--dump-generator')
 const DUMP_TABBAR = process.argv.includes('--dump-tabbar')
+const VERIFY_FORMAT = process.argv.includes('--verify-format')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -637,6 +639,77 @@ async function verifyTabCursor(page) {
 }
 
 /**
+ * VERIFICA (--verify-format): lo STESSO statement formattato "da solo" e dentro una store
+ * deve venire impaginato allo stesso modo (select-list a colonna, INTO su riga propria).
+ * È la segnalazione dell'utente: fuori dalla store la lista si impilava, dentro no.
+ */
+async function verifyFormat(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await sleep(2000)
+  const rect = await editorRect(page)
+
+  /** Righe VISIBILI dell'editor (Monaco usa spazi insecabili: si normalizzano). */
+  const righeEditor = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, ''))`)
+
+  /** Scrive il testo nell'editor (sostituendo tutto) e preme "Formatta". */
+  const scriviEFormatta = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(700)
+    const premuto = await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Formatta')`,
+    )
+    await sleep(1500)
+    return { premuto, righe: await righeEditor() }
+  }
+
+  const sole = `SELECT MIS_MISSIONE, MIS_UDC, MIS_BEG_L1, MIS_S_BAIA INTO #t FROM dbo.RUN_MISSIONI WHERE MIS_MISSIONE <> @idMissione`
+  const dentro = `CREATE PROCEDURE p AS\nBEGIN\n  ${sole}\nEND`
+
+  const a = await scriviEFormatta(sole)
+  console.log('  da sola:')
+  a.righe.forEach(r => console.log(`    |${r}`))
+  const b = await scriviEFormatta(dentro)
+  console.log('  dentro una store:')
+  b.righe.forEach(r => console.log(`    |${r}`))
+
+  const trim = rs => rs.map(r => r.trim()).filter(Boolean)
+  const daSola = trim(a.righe)
+  const inStore = trim(b.righe)
+  // sequenza dello statement dentro la store (dalla SELECT alla WHERE)
+  const inizio = inStore.findIndex(r => r === 'SELECT MIS_MISSIONE')
+  const fine = inStore.findIndex(r => r.startsWith('WHERE MIS_MISSIONE'))
+  const sequenzaStore = inizio >= 0 && fine > inizio ? inStore.slice(inizio, fine + 1) : []
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+  check('il pulsante "Formatta" è stato premuto (da sola)', a.premuto === true)
+  check('il pulsante "Formatta" è stato premuto (dentro la store)', b.premuto === true)
+  check('da sola: la lista è a colonna (SELECT + campi con la virgola in testa)', daSola[0] === 'SELECT MIS_MISSIONE' && daSola[1] === ',MIS_UDC, MIS_BEG_L1')
+  check('da sola: INTO su riga propria', daSola.includes('INTO #t'))
+  check('dentro la store: nessuna riga con la lista intera su una riga', !inStore.some(r => /SELECT MIS_MISSIONE,/.test(r)))
+  check(
+    'dentro la store: stesso identico impaginato ("SELECT … INTO … WHERE")',
+    JSON.stringify(sequenzaStore) === JSON.stringify(daSola.slice(0, sequenzaStore.length)) && sequenzaStore.length >= 5,
+  )
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -808,6 +881,11 @@ async function main() {
 
     if (VERIFY_TAB_CURSOR) {
       await verifyTabCursor(page)
+      return
+    }
+
+    if (VERIFY_FORMAT) {
+      await verifyFormat(page)
       return
     }
 
