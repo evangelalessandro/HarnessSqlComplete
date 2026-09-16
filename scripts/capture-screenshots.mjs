@@ -665,11 +665,16 @@ async function verifyFormat(page) {
     await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
     await page.typeText(sql)
     await sleep(700)
+    const righePrima = await righeEditor()
+    // un clic dentro l'editor toglie l'eventuale selezione residua: "Formatta" con una
+    // selezione formatta SOLO quella parte, e il controllo guarderebbe il testo sbagliato
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(400)
     const premuto = await page.clickWhere(
       `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Formatta')`,
     )
     await sleep(1500)
-    return { premuto, righe: await righeEditor() }
+    return { premuto, righe: await righeEditor(), righePrima }
   }
 
   const sole = `SELECT MIS_MISSIONE, MIS_UDC, MIS_BEG_L1, MIS_S_BAIA INTO #t FROM dbo.RUN_MISSIONI WHERE MIS_MISSIONE <> @idMissione`
@@ -683,7 +688,7 @@ async function verifyFormat(page) {
   b.righe.forEach(r => console.log(`    |${r}`))
 
   // INSERT: campi e valori uno per riga, allineati sotto il primo
-  const insertSql = `INSERT INTO dbo.DAT_ORDINI_RIGHE (RIG_ORDINE, RIG_ARTICOLO, RIG_SUB1)\nVALUES (@ordine, @pRIG_ARTICOLO, isnull (@pRIG_SUB1, ''))`
+  const insertSql = `INSERT INTO dbo.DAT_ORDINI_RIGHE (RIG_ORDINE, RIG_ARTICOLO, RIG_SUB1) VALUES (@ordine, @pRIG_ARTICOLO, isnull (@pRIG_SUB1, ''))`
   const c = await scriviEFormatta(`CREATE PROCEDURE p AS\nBEGIN\n  ${insertSql}\nEND`)
   console.log('  INSERT dentro una store:')
   c.righe.forEach(r => console.log(`    |${r}`))
@@ -697,6 +702,19 @@ async function verifyFormat(page) {
     const rigaTrovata = righeGrezze.find(r => r.trim().startsWith(testo))
     return !!rigaTrovata && rigaTrovata.indexOf(testo) === colonna
   }
+
+  // firma della routine: parametri uno per riga con il TIPO DI DATO incolonnato
+  // (testo su una riga: la digitazione con l'auto-chiusura delle parentesi di Monaco
+  // lascerebbe una ")" di troppo andando a capo)
+  const sigSql = `CREATE PROCEDURE p (@a INT, @pNomeMoltoLungo NVARCHAR(50) = NULL, @b DECIMAL(11, 3) OUTPUT) AS SELECT 1`
+  const d = await scriviEFormatta(sigSql)
+  console.log('  firma con parametri:')
+  d.righe.forEach(r => console.log(`    |${r}`))
+  console.log('  (testo digitato, prima di formattare)')
+  d.righePrima.forEach(r => console.log(`    >${r}`))
+  const righeFirma = d.righe.filter(r => /^\s*,?@\w/.test(r))
+  const colonneTipo = righeFirma.map(r => r.search(/\b(NVARCHAR|INT|DECIMAL)\b/i)).filter(c => c >= 0)
+  if (righeFirma.length === 0) console.log('  (righe della firma non visibili)')
 
   const trim = rs => rs.map(r => r.trim()).filter(Boolean)
   const daSola = trim(a.righe)
@@ -727,6 +745,9 @@ async function verifyFormat(page) {
   )
   check('INSERT: i campi sono allineati sotto il primo', allineati(righeGrezze, ',RIG_ARTICOLO', colCampi) && allineati(righeGrezze, ',RIG_SUB1)', colCampi))
   check('INSERT: i valori uno per riga, allineati sotto il primo', allineati(righeGrezze, ',@pRIG_ARTICOLO', colValori) && allineati(righeGrezze, ",isnull (@pRIG_SUB1, ''))", colValori))
+  check('firma: i tipi dei parametri partono tutti dalla stessa colonna', colonneTipo.length >= 3 && new Set(colonneTipo).size === 1)
+  check('firma: nome e tipo mai incollati', !righeFirma.some(r => /@\w+(NVARCHAR|INT|DECIMAL)/i.test(r)))
+  check('firma: un parametro per riga con la virgola in testa', righeFirma.filter(r => r.trim().startsWith(',')).length === 2)
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

@@ -856,38 +856,70 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     if (k < headerTokens.length && headerTokens[k].type === 'punct' && headerTokens[k].text === '(') {
       pushLine('(', 0)
       k++
-      // parametri: una riga per parametro con virgola iniziale
-      const paramLines: string[] = []
-      let currentParam: string[] = []
+      // parametri: una riga per parametro con virgola iniziale e TIPO INCOLONNATO
+      // (stessa impaginazione del DECLARE: "@nome" allineato, tipo sempre dalla stessa colonna)
+      const paramTokens: Token[][] = []
+      let currentParam: Token[] = []
       let parDepth = 1
       const isParamSeparator = (tok: Token) => tok.type === 'punct' && tok.text === ',' && parDepth === 1
       for (; k < headerTokens.length; k++) {
         const t = headerTokens[k]
         if (t.type === 'punct' && t.text === '(') {
           parDepth++
-          currentParam.push(up(t))
+          currentParam.push(t)
           continue
         }
         if (t.type === 'punct' && t.text === ')') {
           parDepth--
           if (parDepth === 0) {
-            if (currentParam.length > 0) paramLines.push(currentParam.join(' '))
+            if (currentParam.length > 0) paramTokens.push(currentParam)
             break
           }
-          currentParam.push(up(t))
+          currentParam.push(t)
           continue
         }
         if (isParamSeparator(t)) {
-          if (currentParam.length > 0) paramLines.push(currentParam.join(' '))
+          if (currentParam.length > 0) paramTokens.push(currentParam)
           currentParam = []
           continue
         }
-        currentParam.push(up(t))
+        currentParam.push(t)
       }
       const PARAM_INDENT = 4
-      paramLines.forEach((p, idx) => {
-        // la prima riga senza virgola iniziale, le altre con ','
-        pushLine(idx === 0 ? p : `,${p}`, PARAM_INDENT)
+      const unitP = profile.tabSize || 2
+      const basePadP = ' '.repeat(PARAM_INDENT * unitP)
+      const nomeParam = (it: Token[]) => (it[0]?.type === 'word' ? it[0].text : '')
+      const maxNome = Math.max(0, ...paramTokens.map(it => nomeParam(it).length))
+      paramTokens.forEach((it, idx) => {
+        const nome = nomeParam(it)
+        const resto = it.slice(1)
+        // il TIPO finisce dove inizia il valore di default ("=") o un commento
+        let fine = resto.length
+        let depth = 0
+        for (let q = 0; q < resto.length; q++) {
+          const t = resto[q]
+          if (t.type === 'comment') {
+            fine = q
+            break
+          }
+          if (t.type === 'punct') {
+            if (t.text === '(') depth++
+            else if (t.text === ')') depth = Math.max(0, depth - 1)
+            else if (t.text === '=' && depth === 0) {
+              fine = q
+              break
+            }
+          }
+        }
+        const tipo = cleanInline(resto.slice(0, fine).map(up).join(' '))
+        const coda = cleanInline(resto.slice(fine).map(up).join(' '))
+        // la virgola iniziale delle righe successive occupa una colonna: il tipo deve cadere
+        // nella stessa colonna della prima riga (dove la virgola non c'è). Il minimo di uno
+        // spazio evita che nome e tipo si incollino sul parametro dal nome più lungo.
+        const gap = paramTokens.length > 1 ? Math.max(1, maxNome - nome.length + (idx === 0 ? 2 : 1)) : 1
+        const tail = `${tipo}${coda ? ` ${coda}` : ''}`
+        // pushRawLine: gli spazi di allineamento non vanno persi con la pulizia inline
+        pushRawLine(`${basePadP}${idx === 0 ? '' : ','}${nome}${' '.repeat(gap)}${tail}`)
       })
       // parentesi chiusa su riga propria
       pushLine(')', 0)

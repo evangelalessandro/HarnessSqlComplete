@@ -69,7 +69,14 @@ GO`
     expect(lines[1].trim()).toBe('(')
     expect(out).toContain('@pComponente')
     expect(out).toContain(',@pGestore')
-    expect(out).toContain(",@pOperatore NVARCHAR(max) = 'SYSTEM'")
+    expect(out).toContain(',@pOperatore')
+    expect(out).toContain("= 'SYSTEM'")
+    // i TIPI di dato dei parametri partono tutti dalla stessa colonna (come nel DECLARE)
+    const colonneTipo = lines
+      .filter(l => /^\s*,?@p\w/.test(l))
+      .map(l => l.search(/(NVARCHAR|INT)\b/i))
+    expect(colonneTipo.length).toBeGreaterThanOrEqual(4)
+    expect(new Set(colonneTipo).size).toBe(1)
     expect(lines.some(l => l.trim() === 'AS')).toBe(true)
   })
 
