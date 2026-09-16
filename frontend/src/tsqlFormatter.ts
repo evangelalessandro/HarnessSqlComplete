@@ -403,6 +403,21 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
     return formatRoutineWithProfile(sql, profile)
   }
 
+  // INSERT … [(campi)] [VALUES (valori)]: un campo/valore per riga, allineati sotto il primo
+  // (stesse regole dentro e fuori le store)
+  {
+    const insertLayout = insertRows(tokens, up, profile.tabSize || 2, '')
+    if (insertLayout) {
+      const rows = [...insertLayout.rows]
+      if (insertLayout.rest.length > 0) {
+        // resto dello statement (es. lo SELECT di "INSERT … (campi) SELECT …"): formattato
+        // con le stesse regole, su righe proprie
+        rows.push(...formatSqlWithProfile(insertLayout.rest.map(up).join(' '), profile).trimEnd().split('\n'))
+      }
+      return rows.join('\n').trimEnd() + '\n'
+    }
+  }
+
   const words = tokens.filter(t => t.type === 'word').length
   const chars = tokens.reduce((acc, t) => acc + t.text.length, 0)
   // La regola "query corta su una riga" NON deve scavalcare le opzioni del profilo:
@@ -1310,6 +1325,18 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     {
       const unit = profile.tabSize || 2
       const basePad = ' '.repeat(lineIndent * unit)
+      // INSERT … [(campi)] [VALUES (valori)]: un campo/valore per riga, allineati sotto il primo
+      if (firstUpper === 'INSERT') {
+        const insertLayout = insertRows(segment, up, unit, basePad)
+        if (insertLayout) {
+          flushLine()
+          insertLayout.rows.forEach(pushRawLine)
+          if (insertLayout.rest.length > 0) {
+            rowsNoDashEat(insertLayout.rest, up).forEach(r => pushLine(r, lineIndent))
+          }
+          continue
+        }
+      }
       const detailedRows = detailedSelectRows(segment, up, unit, basePad, profile.setIndent, profile)
       if (detailedRows) {
         flushLine()
@@ -1460,7 +1487,6 @@ function detailedSelectRows(
   profile?: FormatProfile,
 ): string[] | null {
   const groups = splitStatementClauses(segment, up)
-  if (groups.length < 2) return null
   const head = groups[0].tokens
   if (head.some(t => t.type === 'word' && t.text.toUpperCase() === 'CASE')) return null
   // commenti "--" nella testata: niente layout a colonna (il codice dopo il commento
@@ -1469,8 +1495,9 @@ function detailedSelectRows(
 
   const out: string[] = []
   const varStart = head.findIndex(t => t.type === 'word' && t.text.startsWith('@'))
-  if (varStart > 0) {
-    // lista di assegnazioni "@var = …" separate da virgole a livello top
+  /** Elementi della lista di assegnazioni "@var = …" (virgole di primo livello). */
+  const assignItems = (() => {
+    if (varStart <= 0) return [] as Token[][]
     let depth = 0
     const items: Token[][] = []
     let cur: Token[] = []
@@ -1493,12 +1520,21 @@ function detailedSelectRows(
       cur.push(t)
     }
     flushItem()
-    const isAssign = (toks: Token[]) =>
-      toks.length > 1 &&
-      toks[0].type === 'word' &&
-      toks[0].text.startsWith('@') &&
-      toks.some(x => x.type === 'punct' && x.text === '=')
-    if (items.length >= 2 && items.every(isAssign)) {
+    return items
+  })()
+  const isAssign = (toks: Token[]) =>
+    toks.length > 1 &&
+    toks[0].type === 'word' &&
+    toks[0].text.startsWith('@') &&
+    toks.some(x => x.type === 'punct' && x.text === '=')
+  const listaAssegnazioni = assignItems.length >= 2 && assignItems.every(isAssign)
+  // Senza clausole (nessun FROM/JOIN) c'è comunque qualcosa da impaginare se la testata è
+  // una lista di assegnazioni "@var = …": "SELECT @a = …, @b = …" va a capo come le altre liste
+  if (groups.length < 2 && !listaAssegnazioni) return null
+
+  if (varStart > 0) {
+    const items = assignItems
+    if (listaAssegnazioni) {
       out.push(`${basePad}${cleanInline(head.slice(0, varStart).map(up).join(' '))}`)
       const maxVar = Math.max(...items.map(it => it[0].text.length))
       items.forEach((it, idx) => {
@@ -1635,6 +1671,206 @@ function stackSelectList(
   }
   push()
   return out
+}
+
+/** Layout di un INSERT: le righe da stampare e i token che restano dopo (es. lo SELECT di
+ *  un "INSERT … (campi) SELECT …"): il chiamante li formatta a parte, mai persi. */
+interface InsertLayout {
+  rows: string[]
+  rest: Token[]
+}
+
+/**
+ * INSERT … [(campi)] [VALUES (valori)…]: campi e valori vanno UNO PER RIGA, allineati sotto
+ * il primo campo / primo valore (l'utente: "quando fa le insert deve mettere a capo e
+ * allineati tutti i campi e i valori").
+ *   INSERT INTO dbo.T (COL1
+ *                     ,COL2)
+ *   VALUES (@a
+ *          ,@b)
+ * Restituisce null se lo statement non ha nulla da impilare (nessun campo/valore oltre il
+ * primo) o se la forma non è riconosciuta: in quel caso resta il percorso normale.
+ */
+function insertRows(
+  segment: Token[],
+  up: (t: Token) => string,
+  unit: number,
+  basePad: string,
+): InsertLayout | null {
+  let start = 0
+  while (segment[start]?.type === 'comment') start++
+  if (!(segment[start]?.type === 'word' && segment[start].text.toUpperCase() === 'INSERT')) return null
+  // un commento "--" chiuderebbe la riga a metà lista: si lascia fare al percorso normale
+  if (segment.some(t => t.type === 'comment' && t.text.startsWith('--'))) return null
+
+  /** "(" di primo livello a partire da `from` (-1 se non c'è). */
+  const openParenAfter = (from: number): number => {
+    let depth = 0
+    for (let k = from; k < segment.length; k++) {
+      const t = segment[k]
+      if (t.type !== 'punct') continue
+      if (t.text === '(') {
+        if (depth === 0) return k
+        depth++
+      } else if (t.text === ')') depth = Math.max(0, depth - 1)
+    }
+    return -1
+  }
+  /** ")" che chiude la "(" all'indice `open` (-1 se non c'è). */
+  const closeParenOf = (open: number): number => {
+    let depth = 0
+    for (let k = open; k < segment.length; k++) {
+      const t = segment[k]
+      if (t.type !== 'punct') continue
+      if (t.text === '(') depth++
+      else if (t.text === ')') {
+        depth--
+        if (depth === 0) return k
+      }
+    }
+    return -1
+  }
+  /** Divide i token in elementi separati dalle virgole di primo livello. */
+  const splitItems = (tokens: Token[]): Token[][] => {
+    const items: Token[][] = []
+    let depth = 0
+    let cur: Token[] = []
+    for (const t of tokens) {
+      if (t.type === 'punct') {
+        if (t.text === '(') depth++
+        else if (t.text === ')') depth = Math.max(0, depth - 1)
+        if (t.text === ',' && depth === 0) {
+          items.push(cur)
+          cur = []
+          continue
+        }
+      }
+      cur.push(t)
+    }
+    items.push(cur)
+    return items.filter(it => it.length > 0)
+  }
+  const inline = (tokens: Token[]) => cleanInline(tokens.map(up).join(' '))
+
+  // Primo "(" di primo livello dopo INSERT: la lista dei campi. Se la parentesi appartiene a
+  // un'altra parola chiave (TOP (…), DEFAULT (…)) la forma non è prevista.
+  const colsOpen = openParenAfter(start + 1)
+  let columns: Token[][] = []
+  let afterColumns = -1
+  if (colsOpen !== -1) {
+    let prev: Token | undefined
+    for (let k = colsOpen - 1; k > start; k--) {
+      if (segment[k].type !== 'comment') {
+        prev = segment[k]
+        break
+      }
+    }
+    if (prev?.type === 'word' && ['VALUES', 'TOP', 'DEFAULT'].includes(prev.text.toUpperCase())) return null
+    const colsClose = closeParenOf(colsOpen)
+    if (colsClose === -1) return null
+    columns = splitItems(segment.slice(colsOpen + 1, colsClose))
+    if (columns.length === 0) return null
+    afterColumns = colsClose + 1
+  }
+
+  // VALUES dopo la lista dei campi (o subito dopo il nome della tabella)
+  let valuesAt = -1
+  const afterTarget = afterColumns === -1 ? start + 1 : afterColumns
+  for (let k = afterTarget; k < segment.length; k++) {
+    const t = segment[k]
+    if (t.type === 'comment') continue
+    if (t.type === 'word' && t.text.toUpperCase() === 'VALUES') {
+      valuesAt = k
+      break
+    }
+    // altra forma (OUTPUT…, EXEC…, SELECT di un INSERT…SELECT già spezzato a parte): qui si
+    // impagina solo la lista dei campi e il resto lo formatta il chiamante
+    break
+  }
+
+  const targetEnd = colsOpen === -1 ? valuesAt === -1 ? segment.length : valuesAt : colsOpen
+  const targetText = inline(segment.slice(0, targetEnd))
+
+  /** Righe di un elemento della lista (espande il CASE su più righe se c'è). */
+  const itemRows = (item: Token[], indice: number, apreRiga: string, pad: string): string[] => {
+    const testa = indice === 0 ? apreRiga : `${pad},`
+    const cases = splitCaseLines(item, up)
+    if (cases.length === 1) return [`${testa}${inline(item)}`]
+    // item con CASE: le righe del CASE rientrano dalla colonna di allineamento
+    return cases.map((cl, i) =>
+      i === 0 ? `${testa}${cleanInline(cl.text)}` : `${pad}${' '.repeat(cl.delta * unit)}${cleanInline(cl.text)}`,
+    )
+  }
+
+  const rows: string[] = []
+  // lista dei campi (una per riga) — solo se ce n'è più d'uno
+  if (columns.length > 1) {
+    const apreRiga = `${basePad}${targetText} (`
+    const pad = ' '.repeat(apreRiga.length)
+    columns.forEach((col, idx) => rows.push(...itemRows(col, idx, apreRiga, pad)))
+    rows[rows.length - 1] += ')'
+  } else if (columns.length === 1) {
+    rows.push(`${basePad}${targetText} (${inline(columns[0])})`)
+  } else {
+    rows.push(`${basePad}${targetText}`)
+  }
+
+  let rest: Token[] = []
+  let valoriDaImpilare = false
+  if (valuesAt !== -1) {
+    // gruppi di valori: uno o più "( … )"
+    const tuples: Token[][] = []
+    let p = valuesAt + 1
+    while (p < segment.length) {
+      const t = segment[p]
+      if (t.type === 'comment') {
+        p++
+        continue
+      }
+      if (t.type === 'punct' && t.text === '(') {
+        const close = closeParenOf(p)
+        if (close === -1) return null
+        tuples.push(segment.slice(p + 1, close))
+        p = close + 1
+        if (segment[p]?.type === 'punct' && segment[p].text === ',') {
+          p++
+          continue
+        }
+        break
+      }
+      return null
+    }
+    if (tuples.length === 0) return null
+    // resta solo la ";" finale (altro codice non previsto → percorso normale)
+    const coda = segment.slice(p)
+    for (const t of coda) {
+      if (t.type === 'comment' && !t.text.startsWith('--')) continue
+      if (t.type === 'punct' && t.text === ';') continue
+      return null
+    }
+    const apreRiga = `${basePad}VALUES (`
+    const pad = ' '.repeat(apreRiga.length)
+    if (tuples.length > 1) {
+      // più righe di valori: un gruppo per riga
+      valoriDaImpilare = true
+      tuples.forEach((tuple, idx) => {
+        rows.push(idx === 0 ? `${apreRiga}${inline(tuple)})` : `${pad},(${inline(tuple)})`)
+      })
+    } else {
+      const values = splitItems(tuples[0])
+      if (values.length > 1) valoriDaImpilare = true
+      values.forEach((val, idx) => rows.push(...itemRows(val, idx, apreRiga, pad)))
+      rows[rows.length - 1] += ')'
+    }
+    rows[rows.length - 1] += inline(coda)
+  } else if (afterColumns !== -1) {
+    rest = segment.slice(afterColumns)
+  }
+
+  // Niente da impilare (un solo campo e un solo valore): lascia fare al percorso normale
+  if (columns.length <= 1 && !valoriDaImpilare) return null
+  if (rows.length === 0) return null
+  return { rows, rest }
 }
 
 /**

@@ -33,7 +33,10 @@ describe('formattazione SELECT INTO con IIF e condizioni', () => {
       "insert into ordini (id, cliente_id, codice, descrizione, data) values (1, 2, 'ABC', 'una descrizione molto lunga per superare la soglia', getdate())",
       profile,
     )
-    expect(out).toMatch(/INSERT INTO ordini \(id, cliente_id, codice, descrizione, data\)\nVALUES \(1, 2/)
+    // la lista dei campi va a capo (uno per riga) ma "INSERT INTO ordini (" resta in testa
+    expect(out.split('\n')[0]).toBe('INSERT INTO ordini (id')
+    expect(out).not.toMatch(/^INTO$/m)
+    expect(out).toMatch(/^VALUES \(1$/m)
   })
 
   it('AND/OR dentro le parentesi non vanno a capo, quelli a livello top sì', () => {

@@ -100,17 +100,17 @@ describe('tsqlFormatter: formatta secondo il profilo', () => {
     expect(out).toContain('@x')
   })
 
-  it('INSERT INTO breve resta su una riga con spazi corretti', () => {
+  it('INSERT: campi e valori uno per riga, allineati sotto il primo', () => {
     const out = formatSqlWithProfile('insert into ordini (id, cliente_id) values (1, 2)', profile)
-    expect(out).toBe('INSERT INTO ordini (id, cliente_id) VALUES (1, 2)')
+    expect(out).toBe('INSERT INTO ordini (id\n                    ,cliente_id)\nVALUES (1\n        ,2)\n')
   })
 
-  it('INSERT lungo: VALUES su riga propria', () => {
+  it('INSERT lungo: la lista dei campi va a capo una per riga', () => {
     const out = formatSqlWithProfile(
       "insert into ordini (id, cliente_id, codice, descrizione, data) values (1, 2, 'ABC', 'una descrizione molto lunga per superare la soglia', getdate())",
       profile,
     )
-    expect(out).toMatch(/INSERT INTO ordini \(id, cliente_id, codice, descrizione, data\)\nVALUES \(1, 2/)
+    expect(out).toMatch(/INSERT INTO ordini \(id\n\s+,cliente_id\n\s+,codice\n\s+,descrizione\n\s+,data\)\nVALUES \(1\n\s+,2\n/)
   })
 
   it('UPDATE: SET e WHERE a capo (anche se l\'UPDATE è corto)', () => {

@@ -682,6 +682,22 @@ async function verifyFormat(page) {
   console.log('  dentro una store:')
   b.righe.forEach(r => console.log(`    |${r}`))
 
+  // INSERT: campi e valori uno per riga, allineati sotto il primo
+  const insertSql = `INSERT INTO dbo.DAT_ORDINI_RIGHE (RIG_ORDINE, RIG_ARTICOLO, RIG_SUB1)\nVALUES (@ordine, @pRIG_ARTICOLO, isnull (@pRIG_SUB1, ''))`
+  const c = await scriviEFormatta(`CREATE PROCEDURE p AS\nBEGIN\n  ${insertSql}\nEND`)
+  console.log('  INSERT dentro una store:')
+  c.righe.forEach(r => console.log(`    |${r}`))
+  const righeInsert = c.righe.map(r => r.trim()).filter(Boolean)
+  const righeGrezze = c.righe.filter(r => r.trim())
+  const rigaCampi = righeGrezze.find(r => r.trim().startsWith('INSERT INTO') && r.includes('DAT_ORDINI_RIGHE'))
+  const rigaValori = righeGrezze.find(r => r.trim().startsWith('VALUES ('))
+  const colCampi = rigaCampi ? rigaCampi.indexOf('RIG_ORDINE') : -1
+  const colValori = rigaValori ? rigaValori.indexOf('@ordine') : -1
+  const allineati = (riga, testo, colonna) => {
+    const rigaTrovata = righeGrezze.find(r => r.trim().startsWith(testo))
+    return !!rigaTrovata && rigaTrovata.indexOf(testo) === colonna
+  }
+
   const trim = rs => rs.map(r => r.trim()).filter(Boolean)
   const daSola = trim(a.righe)
   const inStore = trim(b.righe)
@@ -704,6 +720,13 @@ async function verifyFormat(page) {
     'dentro la store: stesso identico impaginato ("SELECT … INTO … WHERE")',
     JSON.stringify(sequenzaStore) === JSON.stringify(daSola.slice(0, sequenzaStore.length)) && sequenzaStore.length >= 5,
   )
+  check('INSERT: la lista dei campi va una per riga', righeInsert.some(r => r.endsWith('(RIG_ORDINE')))
+  check(
+    'INSERT: nessuna riga con più campi insieme',
+    !righeGrezze.some(r => /RIG_ORDINE, RIG_ARTICOLO/.test(r)) && righeInsert.includes(',RIG_ARTICOLO') && righeInsert.includes(',RIG_SUB1)'),
+  )
+  check('INSERT: i campi sono allineati sotto il primo', allineati(righeGrezze, ',RIG_ARTICOLO', colCampi) && allineati(righeGrezze, ',RIG_SUB1)', colCampi))
+  check('INSERT: i valori uno per riga, allineati sotto il primo', allineati(righeGrezze, ',@pRIG_ARTICOLO', colValori) && allineati(righeGrezze, ",isnull (@pRIG_SUB1, ''))", colValori))
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
