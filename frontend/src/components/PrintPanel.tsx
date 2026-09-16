@@ -1,11 +1,12 @@
 import { Printer, ExternalLink } from 'lucide-react'
-import type { DatabaseSummary, QueryResult } from '../types'
+import type { DatabaseSummary, QueryMessage, QueryResult } from '../types'
 import {
   errorMessagesByDisplay,
   errorObjectAction,
   errorObjectButtonLabel,
   errorObjectKindLabel,
   errorObjectsFor,
+  firstErrorMessage,
   messageHeader,
 } from '../sqlMessages'
 import type { ErrorObjectRef } from '../sqlMessages'
@@ -18,9 +19,11 @@ interface Props {
   summary?: DatabaseSummary | null
   /** Apre un oggetto citato nell'errore in una nuova tab (Modifica / CREATE). */
   onOpenObject?: (o: ErrorObjectRef) => void
+  /** Doppio clic su un errore: porta il cursore sulla riga indicata da SQL Server. */
+  onJumpToLine?: (m: QueryMessage) => void
 }
 
-export default function PrintPanel({ result, summary, onOpenObject }: Props) {
+export default function PrintPanel({ result, summary, onOpenObject, onJumpToLine }: Props) {
   if (!result) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-zinc-600">
@@ -29,7 +32,15 @@ export default function PrintPanel({ result, summary, onOpenObject }: Props) {
     )
   }
   if (result.error) {
-    return <QueryErrorBanner error={result.error} summary={summary} onOpenObject={onOpenObject} />
+    return (
+      <QueryErrorBanner
+        error={result.error}
+        summary={summary}
+        onOpenObject={onOpenObject}
+        message={firstErrorMessage(result)}
+        onJumpToLine={onJumpToLine}
+      />
+    )
   }
   // messaggi che sono errori: si riconoscono dal testo già composto dal backend
   const errorByDisplay = errorMessagesByDisplay(result.errors)
@@ -64,10 +75,16 @@ export default function PrintPanel({ result, summary, onOpenObject }: Props) {
                 </div>
               )
             }
-            // errore: intestazione in stile SSMS + pulsanti per gli oggetti citati
+            // errore: intestazione in stile SSMS + pulsanti per gli oggetti citati; doppio clic
+            // sulla riga → si va alla riga indicata (mappata sulla definizione nella tab)
             const oggetti = errorObjectsFor(err, summary)
             return (
-              <div key={i} className="flex gap-3 border-b border-zinc-900 bg-rose-950/30 py-1">
+              <div
+                key={i}
+                onDoubleClick={() => onJumpToLine?.(err)}
+                title={onJumpToLine ? 'Doppio clic: vai alla riga indicata da SQL Server' : undefined}
+                className={`flex gap-3 border-b border-zinc-900 bg-rose-950/30 py-1 ${onJumpToLine ? 'cursor-pointer hover:bg-rose-950/50' : ''}`}
+              >
                 <span className="select-none text-rose-700">{String(i + 1).padStart(3, '0')}</span>
                 <span className="min-w-0 flex-1">
                   <span className="block text-rose-400">{messageHeader(err)}</span>

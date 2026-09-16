@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, Code2, Table2 } from 'lucide-react'
-import type { CellValue, DatabaseSummary, QueryResult } from '../types'
+import type { CellValue, DatabaseSummary, QueryMessage, QueryResult } from '../types'
 import { suggestTargetTables } from '../sqlGen'
 import { Badge, Button, Spinner } from './ui'
 import SelectableResultGrid from './SelectableResultGrid'
 import ResultDataTable from './ResultDataTable'
 import QueryErrorBanner from './QueryErrorBanner'
+import { firstErrorMessage } from '../sqlMessages'
 import type { ErrorObjectRef } from '../sqlMessages'
 
 interface Props {
@@ -17,9 +18,18 @@ interface Props {
   summary?: DatabaseSummary | null
   /** Apre un oggetto citato nell'errore in una nuova tab (Modifica / CREATE). */
   onOpenObject?: (o: ErrorObjectRef) => void
+  /** Doppio clic sull'errore: porta il cursore sulla riga indicata da SQL Server. */
+  onJumpToLine?: (m: QueryMessage) => void
 }
 
-export default function ResultsPanel({ result, executing, sourceSql, summary, onOpenObject }: Props) {
+export default function ResultsPanel({
+  result,
+  executing,
+  sourceSql,
+  summary,
+  onOpenObject,
+  onJumpToLine,
+}: Props) {
   const [setIndex, setSetIndex] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
@@ -51,7 +61,15 @@ export default function ResultsPanel({ result, executing, sourceSql, summary, on
     )
   }
   if (result.error) {
-    return <QueryErrorBanner error={result.error} summary={summary} onOpenObject={onOpenObject} />
+    return (
+      <QueryErrorBanner
+        error={result.error}
+        summary={summary}
+        onOpenObject={onOpenObject}
+        message={firstErrorMessage(result)}
+        onJumpToLine={onJumpToLine}
+      />
+    )
   }
 
   const activeSet = result.resultSets[Math.min(setIndex, Math.max(result.resultSets.length - 1, 0))]

@@ -97,6 +97,9 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   definita nel testo.
 - **Alias delle tabelle** e **label di GOTO**: dopo `GOTO ` vengono proposte tutte le label del
   documento (anche quelle definite più sotto, ignorando quelle nel codice commentato).
+- **Errori in stile SSMS**: numero/livello/stato, procedura e riga; doppio clic sul messaggio →
+  il cursore va sulla riga che ha fallito (per gli errori dentro una procedura la riga viene
+  riportata sulla definizione aperta nella tab), e i pulsanti aprono gli oggetti citati.
 - **Cronologia d'uso**: tabelle e colonne che usi di più pesano di più nel ranking.
 - **Diagnostica in tempo reale**: parentesi/apici non bilanciati e colonne qualificate inesistenti
   vengono sottolineati mentre scrivi (senza eseguire nulla).
@@ -358,6 +361,9 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
   X_GIAC`) and, with `*`, from the source: a schema table, another temp table or a **CTE** defined in the text.
 - **Table aliases** and **GOTO labels**: after `GOTO ` every label in the document is offered (including
   the ones defined further down; labels inside commented-out code are ignored).
+- **SSMS-style errors**: number/level/state, procedure and line; double-clicking a message moves the
+  cursor to the failing line (for errors inside a procedure the line is mapped onto the definition open
+  in the tab), and the buttons open the objects named in the message.
 - **Usage history**: tables and columns you use most rank higher.
 - **Live diagnostics**: unbalanced brackets/quotes and unknown qualified columns are underlined as you
   type, without running anything.

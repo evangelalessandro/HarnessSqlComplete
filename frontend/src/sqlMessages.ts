@@ -27,6 +27,72 @@ export function hasQueryError(result: {
   return !!result.error || (result.errors ?? []).some(m => m.isError)
 }
 
+/** Primo messaggio di errore strutturato del risultato (procedura/riga per il salto alla riga). */
+export function firstErrorMessage(result: {
+  errors?: QueryMessage[] | null
+}): QueryMessage | null {
+  return (result.errors ?? []).find(m => m.isError) ?? null
+}
+
+/**
+ * Intervallo di righe (1-based, estremi inclusi) della definizione della routine `name` nel
+ * testo: dalla CREATE fino alla riga prima del `GO` successivo (o alla fine del testo), che è
+ * il batch in cui la routine viene creata. Null se la definizione non c'è.
+ */
+export function routineDefinitionRange(text: string, name: string): { start: number; end: number } | null {
+  if (!text || !name) return null
+  const righe = text.split(/\r?\n/)
+  const IDENT = '(?:\\[[^\\]]+\\]|[A-Za-z_#@][\\w#@$]*)'
+  const re = new RegExp(
+    `\\b(?:CREATE|ALTER)\\s+(?:OR\\s+ALTER\\s+)?(?:PROCEDURE|PROC|FUNCTION|TRIGGER|VIEW)\\s+` +
+      `(?:${IDENT}\\s*\\.\\s*)?(${IDENT})`,
+    'i',
+  )
+  const atteso = name.replace(/^\[|\]$/g, '').toLowerCase()
+  for (let i = 0; i < righe.length; i++) {
+    const m = re.exec(righe[i])
+    if (!m) continue
+    const trovato = (m[1] ?? '').replace(/^\[|\]$/g, '').toLowerCase()
+    if (trovato !== atteso) continue
+    // fine del batch: la riga del prossimo "GO" (o la fine del testo)
+    let fine = righe.length
+    for (let k = i + 1; k < righe.length; k++) {
+      if (/^\s*GO\s*;?\s*$/i.test(righe[k])) {
+        fine = k
+        break
+      }
+    }
+    return { start: i + 1, end: fine }
+  }
+  return null
+}
+
+/** Riga (1-based) in cui inizia la definizione della routine `name` nel testo, o null. */
+export function routineStartLine(text: string, name: string): number | null {
+  return routineDefinitionRange(text, name)?.start ?? null
+}
+
+/**
+ * Riga dell'editor su cui portare il cursore per un messaggio di errore.
+ *
+ * SQL Server numera le righe in due modi diversi:
+ *  - procedura creata in un ALTRO momento (nel database) e chiamata da un batch → la riga è
+ *    quella DENTRO la definizione: con la CREATE alla riga 101 della tab, "Riga 64" è la 164;
+ *  - procedura creata NELLO STESSO batch → la riga è già quella dello script, quindi va usata
+ *    così com'è (è dentro l'intervallo della definizione presente nella tab).
+ * Negli altri casi (errori di script, batch) la riga è quella del testo.
+ */
+export function messageRevealLine(message: Pick<QueryMessage, 'procedure' | 'line'>, tabText: string): number | null {
+  const line = message.line ?? null
+  if (!line || line < 1) return null
+  if (!message.procedure) return line
+  const range = routineDefinitionRange(tabText, message.procedure)
+  if (!range) return line
+  // già dentro la definizione della tab → SQL Server conta dallo script
+  if (line >= range.start && line <= range.end) return line
+  return range.start + line - 1
+}
+
 /** Ordine di preferenza quando lo stesso nome esiste come più tipi di oggetto. */
 const KIND_PRIORITY: ErrorObjectRef['kind'][] = ['procedure', 'function', 'view', 'trigger', 'table']
 

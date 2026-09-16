@@ -11,7 +11,7 @@ import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
 import { buildTabClosePlan, countClosableTabs, insertTabAt } from './tabOps'
 import type { NewTabPosition, TabCloseMode } from './tabOps'
-import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryResult, RoutineCallGraph } from './types'
+import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryMessage, QueryResult, RoutineCallGraph } from './types'
 import { chooseResultTab } from './queryTabs'
 import { isRefreshSchemaShortcut, isToggleResultsShortcut } from './shortcuts'
 import {
@@ -24,7 +24,7 @@ import {
   type QueryStats,
 } from './gamification'
 import { QueryStatsBadge, QueryStatsModal } from './components/QueryStatsPanel'
-import { hasErrorMessage } from './sqlMessages'
+import { hasErrorMessage, messageRevealLine, errorObjectsFor, routineStartLine } from './sqlMessages'
 import type { ErrorObjectRef } from './sqlMessages'
 import CallGraphModal from './components/CallGraphModal'
 import type { CallGraphTarget } from './components/CallGraphModal'
@@ -961,6 +961,49 @@ export default function App() {
     [summary, handleOpenScript, handleOpenObject],
   )
 
+  /**
+   * ERRORE: doppio clic sul messaggio → il cursore va sulla riga indicata da SQL Server.
+   *
+   * Se l'errore arriva da una procedura, SQL Server conta le righe DENTRO la sua definizione
+   * ("Procedura X, Riga 64"), mentre la tab dell'editor può contenere altro testo prima:
+   * si cerca dove inizia la definizione e si somma lo scostamento (CREATE alla riga 101 →
+   * "Riga 64" è la riga 164 della tab). Se la definizione è in un'altra tab aperta si passa
+   * a quella; se non è aperta da nessuna parte si apre l'oggetto citato dal database.
+   */
+  const revealErrorLine = useCallback(
+    (m: QueryMessage) => {
+      const tab = editorTabs.find(t => t.id === activeEditorTab) ?? null
+      const line = messageRevealLine(m, tab?.sql ?? '')
+      console.log(
+        `[errore] doppio clic: procedura=${m.procedure ?? '-'} riga=${m.line ?? '-'} → riga della tab ${line ?? '-'}`,
+      )
+      if (!line) return
+      const nelTesto = !m.procedure || routineStartLine(tab?.sql ?? '', m.procedure) !== null
+      if (editor && tab && nelTesto) {
+        const max = editor.getModel()?.getLineCount() ?? line
+        const target = Math.min(Math.max(1, line), max)
+        editor.setPosition({ lineNumber: target, column: 1 })
+        editor.revealLineInCenter(target)
+        editor.focus()
+        return
+      }
+      if (m.procedure) {
+        const altra = editorTabs.find(
+          t => t.id !== activeEditorTab && routineStartLine(t.sql, m.procedure ?? '') !== null,
+        )
+        if (altra) {
+          pendingRevealRef.current = { tabId: altra.id, line }
+          setActiveEditorTab(altra.id)
+          return
+        }
+      }
+      // non è aperta in nessuna tab: si apre l'oggetto citato (definizione dal database)
+      const ref = errorObjectsFor(m, summary)[0]
+      if (ref) openObjectFromError(ref)
+    },
+    [editor, editorTabs, activeEditorTab, summary, openObjectFromError],
+  )
+
   /** Apre i file SQL trascinati (drag & drop) in nuove tab (nome = file, sovrascrittura via picker). */  const handleOpenFiles = useCallback(
     (files: { name: string; content: string }[]) => {
       for (const f of files) {
@@ -1423,9 +1466,15 @@ export default function App() {
                     sourceSql={activeSql}
                     summary={summary}
                     onOpenObject={openObjectFromError}
+                    onJumpToLine={revealErrorLine}
                   />
                 ) : (
-                  <PrintPanel result={activeResult} summary={summary} onOpenObject={openObjectFromError} />
+                  <PrintPanel
+                    result={activeResult}
+                    summary={summary}
+                    onOpenObject={openObjectFromError}
+                    onJumpToLine={revealErrorLine}
+                  />
                 )}
               </div>
             </div>

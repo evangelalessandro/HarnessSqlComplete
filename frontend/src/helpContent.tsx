@@ -177,6 +177,11 @@ export const HELP_SECTIONS: HelpSection[] = [
           'Le tabelle e colonne che usi di frequente nelle query eseguite pesano di più nel ranking dei suggerimenti.',
       },
       {
+        title: 'Errori: vai alla riga',
+        detail:
+          'Doppio clic su un messaggio di errore (o sulla barra rossa): il cursore va sulla riga indicata da SQL Server. Se l\'errore arriva da una procedura, la riga viene riportata sulla definizione aperta nella tab ("Procedura X, Riga 64" con la CREATE alla riga 101 → riga 164).',
+      },
+      {
         title: 'Diagnostica in tempo reale',
         detail:
           'Parentesi o apici non bilanciati e colonne qualificate inesistenti vengono sottolineati mentre scrivi (senza eseguire la query).',

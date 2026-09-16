@@ -12,6 +12,7 @@
 //   node scripts/capture-screenshots.mjs --verify-local-tables    (colonne delle #temporanee)
 //   node scripts/capture-screenshots.mjs --verify-alias           (alias. → campi della tabella)
 //   node scripts/capture-screenshots.mjs --verify-labels          (GOTO → label del documento)
+//   node scripts/capture-screenshots.mjs --verify-error-line      (doppio clic sull'errore → riga)
 //
 // Prerequisiti: backend su :5213 e dev server su :5173 attivi.
 
@@ -36,6 +37,7 @@ const VERIFY_PAIR_HIGHLIGHT = process.argv.includes('--verify-pair-highlight')
 const VERIFY_LOCAL_TABLES = process.argv.includes('--verify-local-tables')
 const VERIFY_ALIAS = process.argv.includes('--verify-alias')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
+const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -1305,6 +1307,95 @@ async function verifyLabels(page) {
 }
 
 /**
+ * VERIFICA (--verify-error-line): doppio clic su un errore → il cursore va sulla riga indicata
+ * da SQL Server, MAPPATA sulla tab. Con la procedura che inizia alla riga 3 della tab e
+ * l'errore alla riga 4 della definizione ("Riga 4"), ci si aspetta la riga 6 (3 + 4 - 1).
+ * La procedura è temporanea (#prova_riga): vive solo nella sessione, nessuna scrittura sul DB.
+ */
+async function verifyErrorLine(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await sleep(2000)
+  const rect = await editorRect(page)
+
+  const BATCH = [
+    '-- commento di intestazione',
+    '-- seconda riga di commento',
+    'CREATE PROCEDURE #prova_riga AS',
+    'BEGIN',
+    '  DECLARE @a int = 1',
+    '  SELECT 1 / (@a - 1) AS rottura',
+    'END',
+    'GO',
+    'EXEC #prova_riga',
+  ].join('\n')
+
+  const righeEditor = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, ''))`)
+  const rigaCursore = () =>
+    page.eval(`(() => {
+      const c = document.querySelector('.monaco-editor .cursors-layer .cursor');
+      const top = c ? c.style.top : null;
+      if (top === null) return null;
+      const r = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].find(l => l.style.top === top)
+        || [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].find(l => l.style.top >= top);
+      return r ? (r.textContent || '').replace(/\\u00a0/g, ' ').trim() : null;
+    })()`)
+
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(BATCH)
+  await sleep(700)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(4000)
+  console.log('  testo nell editor:')
+  ;(await righeEditor()).forEach(r => console.log(`    |${r}`))
+
+  // messaggio di errore (intestazione in stile SSMS) e riga indicata
+  const info = await page.eval(`(() => {
+    const testo = document.body.innerText || '';
+    const m = /Procedura\\s+(\\S+?)\\s*·\\s*Riga\\s+(\\d+)/.exec(testo);
+    const riga = [...document.querySelectorAll('div')].find(d => (d.textContent || '').includes('Procedura') && (d.textContent || '').includes('Riga'));
+    return { procedura: m ? m[1] : null, rigaSql: m ? Number(m[2]) : null, avevaRiga: !!riga };
+  })()`)
+  console.log(`  errore riportato: procedura=${info.procedura} riga=${info.rigaSql}`)
+
+  // doppio clic sulla riga del messaggio (React ascolta l'evento "dblclick")
+  const doppioClic = await page.eval(`(() => {
+    // si clicca sull'elemento PIÙ INTERNO che contiene il messaggio (banner o riga dei Messaggi)
+    const nodi = [...document.querySelectorAll('div, span, pre')]
+      .filter(e => /Procedura\\s+\\S+\\s*·\\s*Riga\\s+\\d+/.test(e.textContent || ''));
+    const nodo = nodi.sort((a, b) => a.textContent.length - b.textContent.length)[0];
+    if (!nodo) return false;
+    nodo.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }));
+    return true;
+  })()`)
+  await sleep(1200)
+  const rigaDopo = await rigaCursore()
+  console.log(`  log della pagina: ${JSON.stringify(page.consoleLogs('[errore]'))}`)
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+  check('l errore riporta la procedura e la riga', !!info.procedura && !!info.rigaSql)
+  check('il doppio clic è stato inviato al messaggio', doppioClic === true)
+  console.log(`  riga di SQL Server: ${info.rigaSql}; cursore dopo il doppio clic: ${JSON.stringify(rigaDopo)}`)
+  check('il cursore è finito sulla riga che ha fallito', /SELECT 1 \/ \(@a - 1\)/.test(rigaDopo ?? ''))
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -1506,6 +1597,11 @@ async function main() {
 
     if (VERIFY_LABELS) {
       await verifyLabels(page)
+      return
+    }
+
+    if (VERIFY_ERROR_LINE) {
+      await verifyErrorLine(page)
       return
     }
 
