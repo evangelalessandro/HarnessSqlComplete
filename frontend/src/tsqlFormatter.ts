@@ -116,9 +116,14 @@ export function tokenizeSqlText(text: string): Token[] {
       pendingBlank = blank
       continue
     }
-    // punteggiatura/operatori (max 2 caratteri)
+    // punteggiatura/operatori (max 2 caratteri). NEGLI operatori composti di assegnazione
+    // ("@x += 1", "@y -= 2") i due caratteri sono UN SOLO operatore: senza questa fusione il
+    // layout li univa con uno spazio e usciva "@x + = 1" (segnalato dall'utente).
     const two = text.slice(i, i + 2)
-    if (['>=', '<=', '<>', '!=', '||', '::', '->', '=>'].includes(two)) {
+    if (
+      ['>=', '<=', '<>', '!=', '||', '::', '->', '=>',
+        '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^='].includes(two)
+    ) {
       pushToken({ type: 'punct', text: two })
       atLineStart = false
       i += 2
@@ -218,6 +223,9 @@ export function isRoutineText(sql: string): boolean {
 // del database cambiava pur essendo "solo" una formattazione.
 const cleanInlineCode = (text: string) =>
   text
+    // operatori composti già separati da uno spazio ("+ ="): si riuniscono. Serve anche a
+    // RIPARARE il testo formattato da una versione precedente ("@x + = 1" → "@x += 1").
+    .replace(/([+\-*/%&|^])\s+=(?!=)/g, '$1=')
     .replace(/\s*\.\s*/g, '.')
     .replace(/\s*,/g, ',')
     .replace(/\s+;/g, ';')
@@ -695,6 +703,10 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
 
   const cleanLine = (s: string) =>
     s
+      // operatori composti separati ("+ =") riuniti, ma NON dentro le stringhe
+      .replace(/('(?:[^']|'')*')|([+\-*/%&|^])\s+=(?!=)/g, (_m, str: string, op: string) =>
+        str ? str : `${op}=`,
+      )
       .replace(/\s*\.\s*/g, '.')
       .replace(/\s*,/g, ',')
       .replace(/\s+;/g, ';')
@@ -2603,5 +2615,9 @@ function joinTokensInline(tokens: Token[], up: (t: Token) => string, profile: Fo
     }
     out += (out.endsWith(' ') || out.endsWith('(') || out.endsWith('.') || out.length === 0 ? '' : ' ') + text
   }
+  // operatori composti già separati ("+ =") riuniti, senza toccare le stringhe
+  return out.replace(/('(?:[^']|'')*')|([+\-*/%&|^])\s+=(?!=)/g, (_m, str: string, op: string) =>
+    str ? str : `${op}=`,
+  )
   return out.replace(/\s+/g, ' ').trim()
 }

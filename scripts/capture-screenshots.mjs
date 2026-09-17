@@ -762,6 +762,17 @@ async function verifyFormat(page) {
   check('firma: i tipi dei parametri partono tutti dalla stessa colonna', colonneTipo.length >= 3 && new Set(colonneTipo).size === 1)
   check('firma: nome e tipo mai incollati', !righeFirma.some(r => /@\w+(NVARCHAR|INT|DECIMAL)/i.test(r)))
   check('firma: un parametro per riga con la virgola in testa', righeFirma.filter(r => r.trim().startsWith(',')).length === 2)
+
+  // operatori composti: "+=" e "-=" non devono MAI diventare "+ =" e "- ="
+  const op = await scriviEFormatta('select @tot += RIG_QTAR, @n -= 1 from dbo.T')
+  const righeOp = op.righe.map(r => r.trim()).filter(Boolean)
+  console.log(`  operatori composti: ${JSON.stringify(righeOp.slice(0, 4))}`)
+  check(
+    '"+=" e "-=" restano attaccati dopo la formattazione',
+    righeOp.some(r => r.includes('@tot += RIG_QTAR')) &&
+      righeOp.some(r => r.includes('@n -= 1')) &&
+      !righeOp.some(r => /[+\-]\s+=/.test(r)),
+  )
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
