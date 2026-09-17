@@ -14,12 +14,13 @@ function ctxFor(prefix: string) {
 }
 
 describe('ORDER BY: contesto e categorie ammesse', () => {
-  it('dentro la ORDER BY: solo colonne + ASC/DESC', () => {
+  it('subito dopo "ORDER BY " (nessun campo): solo colonne, NIENTE ASC/DESC', () => {
     const ctx = ctxFor('SELECT MIS_UDC FROM dbo.RUN_MISSIONI ORDER BY ')
     expect(ctx.kind).toBe('orderBy')
     expect(ctx.inOrderBy).toBe(true)
     expect(allows(ctx, 'columns')).toBe(true)
-    expect(allows(ctx, 'orderDirections')).toBe(true)
+    // richiesta dell'utente: le direzioni solo DOPO aver messo un campo
+    expect(allows(ctx, 'orderDirections')).toBe(false)
     expect(allows(ctx, 'functions')).toBe(false)
     expect(allows(ctx, 'tables')).toBe(false)
     expect(allows(ctx, 'views')).toBe(false)
@@ -28,7 +29,18 @@ describe('ORDER BY: contesto e categorie ammesse', () => {
     expect(allows(ctx, 'snippets')).toBe(false)
   })
 
-  it('ASC/DESC proposte anche dopo una colonna già scritta', () => {
+  it('ASC/DESC proposte solo dopo un campo (e non dopo la virgola)', () => {
+    const q = 'SELECT MIS_UDC FROM dbo.RUN_MISSIONI ORDER BY '
+    expect(allows(ctxFor(`${q}MIS_UDC `), 'orderDirections')).toBe(true)
+    expect(allows(ctxFor(`${q}MIS_UDC ASC `), 'orderDirections')).toBe(true)
+    // voce nuova dopo la virgola: prima si sceglie il campo
+    expect(allows(ctxFor(`${q}MIS_UDC, `), 'orderDirections')).toBe(false)
+    expect(allows(ctxFor(`${q}MIS_UDC, MIS_D_CELLA `), 'orderDirections')).toBe(true)
+    // la virgola dentro una funzione non conta come separatore di voce
+    expect(allows(ctxFor(`${q}IIF(MIS_UDC, '', 1), `), 'orderDirections')).toBe(false)
+  })
+
+  it('dentro la ORDER BY resta orderBy anche con un campo scritto', () => {
     expect(ctxFor('SELECT MIS_UDC FROM dbo.RUN_MISSIONI ORDER BY MIS_UDC ').kind).toBe('orderBy')
     expect(ctxFor('SELECT MIS_UDC FROM dbo.RUN_MISSIONI ORDER BY MIS_UDC ASC, ').inOrderBy).toBe(true)
     expect(ctxFor('SELECT a FROM t ORDER BY a DESC ').inOrderBy).toBe(true)
@@ -89,12 +101,17 @@ FROM (SELECT 1 TT) a
     return { ctx: classifyContext({ prefix, stmtBefore }), stmtText, stmtBefore }
   }
 
-  it('dopo "ORDER BY X_SSCC" (parola in corso e dopo lo spazio) NON propone tabelle', () => {
-    for (const word of ['X_SSCC', '']) {
-      const { ctx } = providerContext(word)
-      expect(ctx.kind).toBe('orderBy')
+  it('dopo "ORDER BY X_SSCC" NON propone tabelle (ASC/DESC solo a campo scritto)', () => {
+    // parola in corso ("… ORDER BY X_SSCC▮"): si sta scegliendo il campo → niente ASC/DESC
+    const inCorso = providerContext('X_SSCC').ctx
+    expect(inCorso.kind).toBe('orderBy')
+    expect(allows(inCorso, 'orderDirections')).toBe(false)
+    // campo completo ("… ORDER BY X_SSCC ▮"): ora le direzioni servono
+    const completo = providerContext('').ctx
+    expect(completo.kind).toBe('orderBy')
+    expect(allows(completo, 'orderDirections')).toBe(true)
+    for (const ctx of [inCorso, completo]) {
       expect(ctx.inOrderBy).toBe(true)
-      expect(allows(ctx, 'orderDirections')).toBe(true)
       expect(allows(ctx, 'columns')).toBe(true)
       expect(allows(ctx, 'tables')).toBe(false)
       expect(allows(ctx, 'views')).toBe(false)

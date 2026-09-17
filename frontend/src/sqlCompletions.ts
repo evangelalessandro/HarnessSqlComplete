@@ -655,16 +655,24 @@ export function provideSqlCompletions({
                   filterText: 'by',
                 })
               }
-              for (const dir of ORDER_DIRECTIONS) {
-                push({
-                  label: dir,
-                  detail: 'direzione di ordinamento',
-                  kind: monaco.languages.CompletionItemKind.Keyword,
-                  insertText: dir,
-                  range,
-                  filterText: dir.toLowerCase(),
-                })
+              // ASC/DESC solo quando la voce corrente ha già un campo ("ORDER BY col ▮"):
+              // subito dopo "ORDER BY " (o dopo una virgola) si sceglie prima il campo.
+              // Se però non c'è nessun campo da proporre (tabella non risolta) si mostrano
+              // comunque le direzioni: il popup non deve mai restare vuoto.
+              const directions = () => {
+                for (const dir of ORDER_DIRECTIONS) {
+                  push({
+                    label: dir,
+                    detail: 'direzione di ordinamento',
+                    kind: monaco.languages.CompletionItemKind.Keyword,
+                    insertText: dir,
+                    range,
+                    filterText: dir.toLowerCase(),
+                  })
+                }
               }
+              const mostraSubito = ctx.allowed.includes('orderDirections')
+              if (mostraSubito) directions()
               const orderCols = buildColumnContextSuggestions(
                 stmtText,
                 stmtBefore,
@@ -683,6 +691,8 @@ export function provideSqlCompletions({
                   filterText: completionFilterText(col.name),
                 })
               }
+              // ripiego: nessun campo da proporre → almeno le direzioni (mai popup vuoto)
+              if (!mostraSubito && suggestions.length === 0) directions()
               return { suggestions }
             }
 

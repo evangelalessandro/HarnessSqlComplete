@@ -108,7 +108,7 @@ const REQUIRED: Partial<Record<IntellisenseContext['kind'], SuggestionCategory[]
   tablePosition: ['tables'],
   joinPosition: ['joinTables', 'tables'],
   execPosition: ['procedures'],
-  orderBy: ['columns', 'orderDirections'],
+  orderBy: ['columns'],
   selectList: ['columns'],
   columnContext: ['columns'],
   statementStart: ['snippets'],
@@ -303,7 +303,7 @@ describe('intellisense: nessuna categoria incoerente nei contesti chiave', () =>
     expect(items.some(i => i.filterText.toLowerCase().startsWith('run'))).toBe(true)
   })
 
-  it('ORDER BY: solo colonne + ASC/DESC (mai tabelle/procedure/funzioni)', () => {
+  it('ORDER BY: solo colonne + ASC/DESC dopo il campo (mai tabelle/procedure/funzioni)', () => {
     for (const prefix of [
       'SELECT a FROM t ORDER BY ',
       'SELECT a FROM t ORDER BY a ',
@@ -312,11 +312,15 @@ describe('intellisense: nessuna categoria incoerente nei contesti chiave', () =>
     ]) {
       const ctx = ctxFor(prefix)
       expect(ctx.inOrderBy, prefix).toBe(true)
-      expect(allows(ctx, 'orderDirections'), prefix).toBe(true)
       expect(allows(ctx, 'tables'), prefix).toBe(false)
       expect(allows(ctx, 'procedures'), prefix).toBe(false)
       expect(allows(ctx, 'functions'), prefix).toBe(false)
     }
+    // le direzioni compaiono solo quando la voce corrente ha già un campo
+    expect(allows(ctxFor('SELECT a FROM t ORDER BY '), 'orderDirections')).toBe(false)
+    expect(allows(ctxFor('SELECT a FROM t ORDER BY a '), 'orderDirections')).toBe(true)
+    expect(allows(ctxFor('SELECT a FROM t ORDER BY a ASC, '), 'orderDirections')).toBe(false)
+    expect(allows(ctxFor('SELECT a FROM t ORDER BY a, b '), 'orderDirections')).toBe(true)
   })
 
   it('FROM/JOIN: mai colonne; EXEC: mai tabelle; dopo tabella: mai colonne', () => {

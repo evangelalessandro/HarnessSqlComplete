@@ -64,7 +64,7 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
 
 - **Suggerimenti per contesto**: dopo `FROM`/`JOIN` solo tabelle, viste e **funzioni tabellari**; dopo
   `EXEC` solo stored procedure; nella select-list e in `WHERE`/`ON`/`GROUP BY`/`ORDER BY` solo colonne e
-  funzioni; dopo un alias (`r.`, `[r].`, `#tmp.`) le colonne qualificate di quella tabella — alias di
+  funzioni (nella `ORDER BY` le direzioni `ASC`/`DESC` compaiono solo dopo aver scelto un campo); dopo un alias (`r.`, `[r].`, `#tmp.`) le colonne qualificate di quella tabella — alias di
   tabelle, **temporanee** e **CTE** definite nel documento (`with c as (…) select * from c pippo where pippo.`).
 - **Mai popup vuoto** in posizione di codice: se lo schema non è disponibile (sessione scaduta) propone
   comunque snippet, funzioni e keyword, e ricarica i metadati da solo.
@@ -329,7 +329,7 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
 
 - **Context-aware suggestions**: after `FROM`/`JOIN` only tables, views and **table-valued functions**;
   after `EXEC` only stored procedures; in the select list and in `WHERE`/`ON`/`GROUP BY`/`ORDER BY` only
-  columns and functions; after an alias (`r.`, `[r].`, `#tmp.`) the qualified columns of that table — aliases
+  columns and functions (in `ORDER BY` the `ASC`/`DESC` directions appear only after a field is chosen); after an alias (`r.`, `[r].`, `#tmp.`) the qualified columns of that table — aliases
   of tables, **temp tables** and **CTEs** defined in the document (`with c as (…) select * from c pippo where pippo.`).
 - **Never an empty popup** in a code position: with no schema available (expired session) it still offers
   snippets, functions and keywords, and reloads metadata on its own.

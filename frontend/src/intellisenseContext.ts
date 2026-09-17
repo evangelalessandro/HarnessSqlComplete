@@ -122,6 +122,44 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
     return last.startsWith('ORDER')
   })()
 
+  /**
+   * True se la voce corrente della ORDER BY ha già un campo ("ORDER BY col ▮"): solo allora
+   * ha senso proporre ASC/DESC. Subito dopo "ORDER BY " o dopo una virgola si sceglie il campo.
+   */
+  const orderFieldTyped = (() => {
+    const m = /(?:\bORDER\s+BY\b)([\s\S]*)$/i.exec(prefix)
+    if (!m) return false
+    const testo = m[1]
+    // ultima voce della lista = testo dopo l'ultima virgola di PRIMO livello
+    let depth = 0
+    let quote: string | null = null
+    let ultimaVirgola = -1
+    for (let i = 0; i < testo.length; i++) {
+      const ch = testo[i]
+      if (quote) {
+        if (ch === quote) quote = null
+        continue
+      }
+      if (ch === "'" || ch === '"') {
+        quote = ch
+        continue
+      }
+      if (ch === '[') {
+        quote = ']'
+        continue
+      }
+      if (ch === ']') {
+        quote = null
+        continue
+      }
+      if (ch === '(') depth += 1
+      else if (ch === ')') depth = Math.max(0, depth - 1)
+      else if (ch === ',' && depth === 0) ultimaVirgola = i
+    }
+    const voce = testo.slice(ultimaVirgola + 1)
+    return /[A-Za-z0-9_\]\[@#]/.test(voce.replace(/\b(ASC|DESC)\b/gi, ''))
+  })()
+
   // dopo "FROM t " / "JOIN t " (spazio dopo il nome tabella): la clausola successiva
   const afterTableName =
     /(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+[^\s,;()]+\s*$/i.test(prefix) &&
@@ -145,9 +183,9 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
     kind = 'tablePosition'
     allowed = ['tables', 'views']
   } else if (inOrderBy) {
-    // dentro la ORDER BY: colonne dello statement + ASC/DESC (niente funzioni/procedure/tabelle)
+    // dentro la ORDER BY: colonne dello statement + ASC/DESC (solo dopo un campo)
     kind = 'orderBy'
-    allowed = ['columns', 'orderDirections']
+    allowed = orderFieldTyped ? ['columns', 'orderDirections'] : ['columns']
   } else if (inSelectList) {
     kind = 'selectList'
     allowed = ['columns', 'functions', 'snippets']

@@ -98,6 +98,24 @@ describe('intellisense: il provider NON si spacca (smoke test)', () => {
     }
   })
 
+  it('subito dopo "ORDER BY " NON propone ASC/DESC (prima si sceglie il campo)', () => {
+    const sql = 'SELECT MIS_UDC FROM dbo.RUN_MISSIONI ORDER BY '
+    const res = suggest(sql, sql.length)
+    const labels = res.suggestions.map(s => String(s.label))
+    expect(labels).not.toContain('ASC')
+    expect(labels).not.toContain('DESC')
+    // le colonne invece ci sono
+    expect(labels).toContain('MIS_UDC')
+  })
+
+  it('dopo la virgola nella ORDER BY le direzioni tornano solo con un altro campo', () => {
+    const sql = 'SELECT MIS_UDC FROM dbo.RUN_MISSIONI ORDER BY MIS_UDC, '
+    const res = suggest(sql, sql.length)
+    const labels = res.suggestions.map(s => String(s.label))
+    expect(labels).not.toContain('ASC')
+    expect(labels).not.toContain('DESC')
+  })
+
   it('dopo EXEC propone le stored procedure', () => {
     const sql = 'EXEC dbo.'
     const res = suggest(sql, sql.length)

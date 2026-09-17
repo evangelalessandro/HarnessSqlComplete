@@ -1231,6 +1231,24 @@ async function verifyAlias(page) {
   check('confermando il suggerimento non si ottiene "p.p."', !rigaConfermata.includes('p.p.'))
   check('il campo è qualificato una sola volta (p.CAMPO)', /p\.UDC_/i.test(rigaConfermata))
 
+  // 7) ORDER BY: ASC/DESC solo dopo aver messo un campo
+  await scrivi('select UDC_UDC from dbo.DAT_UDC order by ')
+  await sleep(1600)
+  const vociOrderByVuoto = await vociPopup()
+  await scrivi('select UDC_UDC from dbo.DAT_UDC order by UDC_UDC ')
+  await sleep(1600)
+  const vociOrderByPieno = await vociPopup()
+  console.log(`  ORDER BY senza campo: ${JSON.stringify(vociOrderByVuoto.slice(0, 6))}`)
+  console.log(`  ORDER BY con campo: ${JSON.stringify(vociOrderByPieno.slice(0, 6))}`)
+  check(
+    'ORDER BY senza campo: niente ASC/DESC',
+    !normali(vociOrderByVuoto).includes('asc') && !normali(vociOrderByVuoto).includes('desc'),
+  )
+  check(
+    'ORDER BY con campo: ASC/DESC proposte',
+    normali(vociOrderByPieno).includes('asc') && normali(vociOrderByPieno).includes('desc'),
+  )
+
   await page.press('Escape', { code: 'Escape', vk: 27 })
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
