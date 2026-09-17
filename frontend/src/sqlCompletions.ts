@@ -8,7 +8,7 @@ import { isTextOffsetInComment } from './helpers'
 import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from './helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
 import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, extractDeclaredVariables, extractRoutineParameters, systemVariablePrefixLen, variablePrefixLen } from './tsqlSnippets'
-import { extractCteTables, extractLocalTables } from './localTables'
+import { extractCteTables, extractDerivedTables, extractLocalTables } from './localTables'
 import { extractLabels } from './labels'
 import { ORDER_DIRECTIONS } from './intellisenseContext'
 import { classifyContext, filterKeywordsForContext, isAfterOrderKeyword, isOrderWordTyped, shouldSuggestJoinConditions } from './intellisenseContext'
@@ -123,21 +123,26 @@ export function provideSqlCompletions({
           // (qualsiasi errore del parser locale non deve mai svuotare il popup)
           let localTables: TableInfo[] = []
           let cteTables: TableInfo[] = []
+          let derivedTables: TableInfo[] = []
           try {
             const note = baseSt.summary?.tables ?? []
             localTables = extractLocalTables(fullText, note)
             cteTables = extractCteTables(fullText, note)
+            // tabelle derivate "(select …) t": lo "*" dentro la sottoquery si risolve anche
+            // con le temporanee e le CTE del testo, non solo con lo schema
+            derivedTables = extractDerivedTables(fullText, [...cteTables, ...note, ...localTables])
           } catch {
             localTables = []
             cteTables = []
+            derivedTables = []
           }
           const st =
-            baseSt.summary && localTables.length + cteTables.length > 0
+            baseSt.summary && localTables.length + cteTables.length + derivedTables.length > 0
               ? {
                   ...baseSt,
                   summary: {
                     ...baseSt.summary,
-                    tables: [...cteTables, ...baseSt.summary.tables, ...localTables],
+                    tables: [...cteTables, ...baseSt.summary.tables, ...localTables, ...derivedTables],
                   },
                 }
               : baseSt

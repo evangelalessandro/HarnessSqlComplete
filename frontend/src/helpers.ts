@@ -1767,7 +1767,12 @@ export function buildQualifiedColumnSuggestions(
     .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
     .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined)
 
-  const table = refs.find(({ r }) => (r.alias ?? r.tableName).toLowerCase() === qualifier.toLowerCase())?.table
+  const table =
+    refs.find(({ r }) => (r.alias ?? r.tableName).toLowerCase() === qualifier.toLowerCase())?.table ??
+    // tabelle locali note solo per nome: le tabelle DERIVATE "(select …) t" e le temporanee
+    // senza alias non compaiono fra i riferimenti FROM/JOIN, ma il sommario le porta con il
+    // nome con cui si qualificano le loro colonne (per la derivata è l'alias stesso).
+    summary.tables.find(t => t.name.toLowerCase() === qualifier.toLowerCase())
   if (!table?.columns) return []
 
   // insertText = SOLO il nome della colonna: il qualificatore (e il punto) sono già nel testo

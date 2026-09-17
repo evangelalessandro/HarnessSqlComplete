@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildColumnContextSuggestions } from '../helpers'
-import { extractCteTables, extractLocalTables, parseColumnDefs, selectListInfo } from '../localTables'
+import { extractCteTables, extractDerivedTables, extractLocalTables, parseColumnDefs, selectListInfo } from '../localTables'
 import type { DatabaseSummary } from '../types'
 import { demoStoreLikeSummary } from './schema'
 import kittingReturn from './fixtures/routine_ws_CIDEDO_HUSOBUME_KIPEVUBEGUSEV_St1_GIVOSEB.sql?raw'
@@ -157,8 +157,11 @@ describe('store reale: #tmpMission nell intellisense', () => {
     const t = Date.now()
     const trovate = extractLocalTables(kittingReturn)
     const cte = extractCteTables(kittingReturn)
+    const derivate = extractDerivedTables(kittingReturn)
     expect(trovate.length).toBeGreaterThan(0)
     expect(cte.map(x => x.name.toLowerCase())).toContain('tbl')
+    // anche le tabelle derivate (chiamate a ogni lettera dal provider) restano veloci
+    expect(Array.isArray(derivate)).toBe(true)
     // limite largo: senza la correzione si superavano i 30 secondi (test in timeout)
     expect(Date.now() - t).toBeLessThan(3000)
   })

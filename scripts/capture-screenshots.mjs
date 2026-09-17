@@ -1278,6 +1278,37 @@ async function verifyAlias(page) {
     normali(vociOrderByPieno).includes('asc') && normali(vociOrderByPieno).includes('desc'),
   )
 
+  // 8) tabella DERIVATA con alias (caso segnalato): "inner join (select dbo.fn_X() X_BAIA) t
+  // on 1 = 1 … where t." deve proporre la colonna X_BAIA della sottoquery. Prima comparivano
+  // solo i suggerimenti generici (l'alias della derivata non era risolto).
+  await scrivi(
+    [
+      'select UDC_UDC',
+      'from dbo.DAT_UDC',
+      '  inner join (select dbo.fn_Prova_Baia() X_BAIA) t on 1 = 1',
+      'where t.',
+    ].join('\n'),
+  )
+  console.log('  testo (derivata):')
+  ;(await righeEditor()).forEach(r => console.log(`    |${r}`))
+  const vociDerivata = await apriPopupInFondo('X')
+  console.log(`  alias di tabella derivata: ${JSON.stringify(vociDerivata.slice(0, 6))}`)
+  check(
+    'alias di una tabella DERIVATA "(select …) t": propone la colonna della sottoquery',
+    normali(vociDerivata).includes('x_baia'),
+  )
+
+  // 9) derivata con "*": le colonne arrivano dalla tabella dello schema
+  await scrivi(['select UDC_UDC', 'from (select * from dbo.DAT_UDC) t', 'where t.'].join('\n'))
+  console.log('  testo (derivata con "*"):')
+  ;(await righeEditor()).forEach(r => console.log(`    |${r}`))
+  const vociDerivataStar = await apriPopupInFondo('U')
+  console.log(`  alias di derivata con "*": ${JSON.stringify(vociDerivataStar.slice(0, 6))}`)
+  check(
+    'alias di una derivata con "*": propone i campi della tabella sorgente',
+    normali(vociDerivataStar).some(v => v.startsWith('udc_')),
+  )
+
   await page.press('Escape', { code: 'Escape', vk: 27 })
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
