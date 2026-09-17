@@ -745,6 +745,16 @@ export default function SqlEditor({
             quickSuggestions: { other: 'on', comments: false, strings: false },
             wordBasedSuggestions: 'off',
             inlineSuggest: { enabled: true, showToolbar: 'onHover' },
+            // scrollbar: canale largo e cursore arrotondato (12px su 16), comodo da afferrare
+            // col mouse; niente ombre e la rotella non viene "catturata" ai bordi
+            scrollbar: {
+              verticalScrollbarSize: 16,
+              horizontalScrollbarSize: 16,
+              verticalSliderSize: 12,
+              horizontalSliderSize: 12,
+              useShadows: false,
+              alwaysConsumeMouseWheel: false,
+            },
           }}
         />
       </div>

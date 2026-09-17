@@ -40,6 +40,7 @@ const VERIFY_ALIAS = process.argv.includes('--verify-alias')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
+const VERIFY_SCROLLBARS = process.argv.includes('--verify-scrollbars')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -1534,6 +1535,76 @@ async function measureTyping(page) {
 }
 
 /**
+ * VERIFICA (--verify-scrollbars): i cursori delle scrollbar devono essere tondi e grandi,
+ * così si afferrano col mouse: canale di 14px sui pannelli (con maniglia arrotondata) e
+ * slider da 12px su canale 16px nell'editor Monaco.
+ */
+async function verifyScrollbars(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(2000)
+
+  const misure = await page.eval(`(() => {
+    // canale della scrollbar di un pannello scrollabile (0 se il browser usa scrollbar overlay)
+    const pannelli = [...document.querySelectorAll('div')].filter(d => d.scrollHeight > d.clientHeight + 50 && d.clientWidth > 100);
+    const pannello = pannelli[0] || null;
+    const canale = pannello ? pannello.offsetWidth - pannello.clientWidth : null;
+    // slider verticale di Monaco
+    const slider = document.querySelector('.monaco-editor .scrollbar.vertical .slider');
+    const sr = slider ? slider.getBoundingClientRect() : null;
+    const cs = slider ? getComputedStyle(slider) : null;
+    const barra = document.querySelector('.monaco-editor .scrollbar.vertical');
+    const br = barra ? barra.getBoundingClientRect() : null;
+    // regole CSS in vigore per le scrollbar dei pannelli (::-webkit-scrollbar*)
+    let larghezzaRegola = null;
+    let raggioRegola = null;
+    for (const foglio of document.styleSheets) {
+      let regole = [];
+      try { regole = [...foglio.cssRules]; } catch { continue }
+      for (const r of regole) {
+        const sel = r.selectorText || '';
+        if (!sel.includes('-webkit-scrollbar')) continue;
+        if (!larghezzaRegola && sel.includes('::-webkit-scrollbar') && !sel.includes('thumb') && !sel.includes('track')) {
+          larghezzaRegola = (r.style && r.style.width) || null;
+        }
+        if (!raggioRegola && sel.includes('thumb')) raggioRegola = (r.style && r.style.borderRadius) || null;
+      }
+    }
+    return {
+      canalePannello: canale,
+      larghezzaRegolaPannelli: larghezzaRegola,
+      raggioRegolaPannelli: raggioRegola,
+      sliderLarghezza: sr ? Math.round(sr.width) : null,
+      sliderRaggio: cs ? cs.borderRadius : null,
+      canaleMonaco: br ? Math.round(br.width) : null,
+      cursoreVisibile: !!slider && sr.width > 0,
+    };
+  })()`)
+  console.log(`  misure: ${JSON.stringify(misure)}`)
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+  check('pannelli: canale della scrollbar di 14px (regola CSS in vigore)', misure.larghezzaRegolaPannelli === '14px')
+  check('pannelli: cursore tondo (border-radius 9999px)', misure.raggioRegolaPannelli === '9999px')
+  check('pannelli: canale largo (o scrollbar overlay del browser)', (misure.canalePannello ?? 0) >= 12 || misure.canalePannello === 0)
+  check('editor: slider di Monaco largo almeno 10px', (misure.sliderLarghezza ?? 0) >= 10)
+  check('editor: canale di Monaco di 16px', misure.canaleMonaco === 16)
+  check('editor: slider arrotondato (border-radius grande)', /9999px|(\d{2,})px/.test(misure.sliderRaggio ?? ''))
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -1745,6 +1816,11 @@ async function main() {
 
     if (MEASURE_TYPING) {
       await measureTyping(page)
+      return
+    }
+
+    if (VERIFY_SCROLLBARS) {
+      await verifyScrollbars(page)
       return
     }
 
