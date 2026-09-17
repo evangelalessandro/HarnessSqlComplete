@@ -23,9 +23,9 @@ import { allows, classifyContext } from '../intellisenseContext'
 import type { IntellisenseContext, SuggestionCategory } from '../intellisenseContext'
 import { extractLocalTables } from '../localTables'
 import type { DatabaseSummary } from '../types'
-import { wsbritvicLikeSummary } from './schema'
+import { demoStoreLikeSummary } from './schema'
 
-const baseSummary = wsbritvicLikeSummary()
+const baseSummary = demoStoreLikeSummary()
 
 /** Query di riferimento: coprono select-list, FROM/JOIN/ON, WHERE, GROUP/ORDER, UPDATE, INSERT/VALUES, EXEC, CASE, CTE, temporanee, blocco IF/BEGIN. */
 const QUERIES: string[] = [
@@ -43,7 +43,7 @@ const QUERIES: string[] = [
   'SELECT CASE WHEN MIS_UDC IS NULL THEN 1 ELSE 2 END AS X, MIS_MISSIONE FROM dbo.RUN_MISSIONI',
   // procedura utente: SET/DECLARE/IF/BEGIN TRANSACTION + commento a blocco con apostrofi
   // + "SELECT * FROM run" (bug segnalato: dopo "FROM run" non proponeva nulla)
-  `CREATE PROCEDURE [dbo].[ws_CUSTOM_StoredProcedureName]
+  `CREATE PROCEDURE [dbo].[ws_CIDEDO_SEVEDODEPIMAVUMUPAD]
 (
         @pPar1 NVARCHAR(max)
         ,@pPar2 INT
@@ -108,7 +108,7 @@ const REQUIRED: Partial<Record<IntellisenseContext['kind'], SuggestionCategory[]
   tablePosition: ['tables'],
   joinPosition: ['joinTables', 'tables'],
   execPosition: ['procedures'],
-  orderBy: ['columns', 'orderDirections'],
+  orderBy: ['columns'],
   selectList: ['columns'],
   columnContext: ['columns'],
   statementStart: ['snippets'],
@@ -282,7 +282,7 @@ describe('intellisense: nessuna categoria incoerente nei contesti chiave', () =>
   const ctxFor = (prefix: string) => classifyContext({ prefix, stmtBefore: prefix })
 
   it('dopo "FROM run" (bug utente nella procedura) il contesto è di tabelle e RUN_MISSIONI è proposto', () => {
-    const summary = wsbritvicLikeSummary()
+    const summary = demoStoreLikeSummary()
     const proc = QUERIES[QUERIES.length - 1]
     const base = proc.indexOf('FROM run')
     expect(base).toBeGreaterThan(0)
@@ -303,7 +303,7 @@ describe('intellisense: nessuna categoria incoerente nei contesti chiave', () =>
     expect(items.some(i => i.filterText.toLowerCase().startsWith('run'))).toBe(true)
   })
 
-  it('ORDER BY: solo colonne + ASC/DESC (mai tabelle/procedure/funzioni)', () => {
+  it('ORDER BY: solo colonne + ASC/DESC dopo il campo (mai tabelle/procedure/funzioni)', () => {
     for (const prefix of [
       'SELECT a FROM t ORDER BY ',
       'SELECT a FROM t ORDER BY a ',
@@ -312,11 +312,15 @@ describe('intellisense: nessuna categoria incoerente nei contesti chiave', () =>
     ]) {
       const ctx = ctxFor(prefix)
       expect(ctx.inOrderBy, prefix).toBe(true)
-      expect(allows(ctx, 'orderDirections'), prefix).toBe(true)
       expect(allows(ctx, 'tables'), prefix).toBe(false)
       expect(allows(ctx, 'procedures'), prefix).toBe(false)
       expect(allows(ctx, 'functions'), prefix).toBe(false)
     }
+    // le direzioni compaiono solo quando la voce corrente ha già un campo
+    expect(allows(ctxFor('SELECT a FROM t ORDER BY '), 'orderDirections')).toBe(false)
+    expect(allows(ctxFor('SELECT a FROM t ORDER BY a '), 'orderDirections')).toBe(true)
+    expect(allows(ctxFor('SELECT a FROM t ORDER BY a ASC, '), 'orderDirections')).toBe(false)
+    expect(allows(ctxFor('SELECT a FROM t ORDER BY a, b '), 'orderDirections')).toBe(true)
   })
 
   it('FROM/JOIN: mai colonne; EXEC: mai tabelle; dopo tabella: mai colonne', () => {

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { columnInfoMarkdown, resolveTokenAt, rowsToMarkdown } from '../helpers'
-import { wsbritvicLikeSummary } from './schema'
+import { demoStoreLikeSummary } from './schema'
 
-const summary = wsbritvicLikeSummary()
+const summary = demoStoreLikeSummary()
 
 describe('resolveTokenAt: hover sui campi della query', () => {
   it('colonna qualificata con alias → tabella + colonna con proprietà estese', () => {

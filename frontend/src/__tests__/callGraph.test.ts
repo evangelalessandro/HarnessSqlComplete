@@ -2,7 +2,7 @@
 //
 // Il punto critico è la PROTEZIONE DAI CICLI: nel database reale ci sono routine che
 // chiamano se stesse e catene che si richiudono. Questi test usano sia grafi costruiti a
-// mano (casi limite) sia il grafo VERO di WSBRITVIC (1696 legami, 4 routine ricorsive),
+// mano (casi limite) sia il grafo VERO di DEMOSTORE (1696 legami, 4 routine ricorsive),
 // e verificano che l'esplorazione termini sempre e non perda né duplichi nodi.
 import { describe, expect, it } from 'vitest'
 import {
@@ -133,7 +133,7 @@ describe('esplorazione verso i chiamanti (chi la chiama)', () => {
 
 describe('PROTEZIONE DAI CICLI (loop infiniti)', () => {
   it('routine che chiama SE STESSA: termina e segnala il ciclo', () => {
-    // caso reale: dbo.fn_tabUdcFront chiama se stessa
+    // caso reale: dbo.fn_TOSOGIPEDAP chiama se stessa
     const idx = graphOf(edge('dbo.RICORSIVA', 'dbo.RICORSIVA', 'FN', 'FN'))
     const view = expandsWithin(idx, 'dbo.RICORSIVA')
     expect(view.nodes).toHaveLength(1)
@@ -301,7 +301,7 @@ describe('disposizione a livelli', () => {
   })
 })
 
-describe('GRAFO REALE di WSBRITVIC (1696 legami)', () => {
+describe('GRAFO REALE di DEMOSTORE (1696 legami)', () => {
   const index = buildRoutineIndex(realCallEdges)
 
   it('il fixture è completo e contiene le routine ricorsive reali', () => {
@@ -309,24 +309,24 @@ describe('GRAFO REALE di WSBRITVIC (1696 legami)', () => {
     expect(index.edgeCount).toBe(realCallEdges.length)
     const selfLoops = realCallEdges.filter(e => e.callerName === e.calleeName && e.callerSchema === e.calleeSchema)
     expect(selfLoops.length).toBeGreaterThan(0)
-    expect(selfLoops.map(e => e.callerName)).toContain('fn_tabUdcFront')
+    expect(selfLoops.map(e => e.callerName)).toContain('fn_TOSOGIPEDAP')
   })
 
   it('contiene anche i legami da CHIAMATE NON QUALIFICATE (risolte per nome dal backend)', () => {
     // Quando il codice fa "EXEC nomeproc" senza schema, SQL Server lascia referenced_id a
-    // NULL (is_caller_dependent = 1) e il legame va risolto per nome: in WSBRITVIC erano
+    // NULL (is_caller_dependent = 1) e il legame va risolto per nome: in DEMOSTORE erano
     // 524 legami invisibili al diagramma. Se il backend tornasse a scartarli, questo
     // fixture (rigenerato) perderebbe questi legami e il test lo segnalerebbe.
     expect(realCallEdges.length).toBeGreaterThan(2000)
     const selfLoops = realCallEdges.filter(e => e.callerName === e.calleeName && e.callerSchema === e.calleeSchema)
     // due ricorsioni vengono fuori solo grazie alla risoluzione per nome
-    expect(selfLoops.map(e => e.callerName)).toContain('ws_L1_Azt_05')
-    expect(selfLoops.map(e => e.callerName)).toContain('ws_L2_ORD_Export')
+    expect(selfLoops.map(e => e.callerName)).toContain('ws_L1_AAS_05')
+    expect(selfLoops.map(e => e.callerName)).toContain('ws_L2_OIV_EUMOBU')
   })
 
   it('salendo dai chiamanti di una funzione molto usata si termina in fretta', () => {
     const started = Date.now()
-    const view = walkCallGraph(index, { schema: 'dbo', name: 'fn_InsFromString' }, 'callers', {
+    const view = walkCallGraph(index, { schema: 'dbo', name: 'fn_IADOVODASISID' }, 'callers', {
       maxDepth: 6,
       maxNodes: 140,
     })
@@ -361,12 +361,12 @@ describe('GRAFO REALE di WSBRITVIC (1696 legami)', () => {
     }
   })
 
-  it('la routine ricorsiva reale fn_tabUdcFront si esplora senza blocchi', () => {
-    const view = walkCallGraph(index, { schema: 'dbo', name: 'fn_tabUdcFront' }, 'callers', {
+  it('la routine ricorsiva reale fn_TOSOGIPEDAP si esplora senza blocchi', () => {
+    const view = walkCallGraph(index, { schema: 'dbo', name: 'fn_TOSOGIPEDAP' }, 'callers', {
       maxDepth: 6,
       maxNodes: 140,
     })
     expect(view.nodes.length).toBeGreaterThan(0)
-    expect(view.nodes.map(n => n.name)).toContain('fn_tabUdcFront')
+    expect(view.nodes.map(n => n.name)).toContain('fn_TOSOGIPEDAP')
   })
 })

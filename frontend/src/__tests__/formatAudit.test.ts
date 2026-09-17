@@ -94,11 +94,11 @@ describe('audit formattatore: layout delle clausole secondo il profilo', () => {
     expect(out).toMatch(/^UPDATE dbo\.T\n {2}SET a = 1\n {6},b = 2\nWHERE id = 3\n$/)
   })
 
-  it('INSERT lungo: VALUES su riga propria', () => {
+  it('INSERT lungo: campi e valori uno per riga', () => {
     const out = fmt(
       "insert into dbo.T (a, b, c, d, e) values (1, 2, 3, 'una descrizione lunga per superare la soglia impostata', 5)",
     )
-    expect(out).toMatch(/INSERT INTO dbo\.T \(a, b, c, d, e\)\nVALUES \(1, 2, 3,/)
+    expect(out).toMatch(/INSERT INTO dbo\.T \(a\n\s+,b\n\s+,c\n\s+,d\n\s+,e\)\nVALUES \(1\n\s+,2\n\s+,3\n/)
   })
 
   it('CREATE TABLE: una colonna per riga, indentata', () => {

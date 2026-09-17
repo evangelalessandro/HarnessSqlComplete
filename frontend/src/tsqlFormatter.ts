@@ -116,9 +116,14 @@ export function tokenizeSqlText(text: string): Token[] {
       pendingBlank = blank
       continue
     }
-    // punteggiatura/operatori (max 2 caratteri)
+    // punteggiatura/operatori (max 2 caratteri). NEGLI operatori composti di assegnazione
+    // ("@x += 1", "@y -= 2") i due caratteri sono UN SOLO operatore: senza questa fusione il
+    // layout li univa con uno spazio e usciva "@x + = 1" (segnalato dall'utente).
     const two = text.slice(i, i + 2)
-    if (['>=', '<=', '<>', '!=', '||', '::', '->', '=>'].includes(two)) {
+    if (
+      ['>=', '<=', '<>', '!=', '||', '::', '->', '=>',
+        '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^='].includes(two)
+    ) {
       pushToken({ type: 'punct', text: two })
       atLineStart = false
       i += 2
@@ -212,8 +217,15 @@ export function isRoutineText(sql: string): boolean {
 }
 
 // Pulizia di una riga/porzione "inline": spaziature attorno a punteggiatura e tipi.
-const cleanInline = (text: string) =>
+// Le regole valgono SOLO per il codice: stringhe, commenti e identificatori fra parentesi
+// quadre vanno copiati alla lettera. Senza questa distinzione il testo dentro le stringhe
+// veniva riscritto ('by p. rate' → 'by p.rate', 'a  b' → 'a b'): il confronto con i dati
+// del database cambiava pur essendo "solo" una formattazione.
+const cleanInlineCode = (text: string) =>
   text
+    // operatori composti già separati da uno spazio ("+ ="): si riuniscono. Serve anche a
+    // RIPARARE il testo formattato da una versione precedente ("@x + = 1" → "@x += 1").
+    .replace(/([+\-*/%&|^])\s+=(?!=)/g, '$1=')
     .replace(/\s*\.\s*/g, '.')
     .replace(/\s*,/g, ',')
     .replace(/\s+;/g, ';')
@@ -222,7 +234,68 @@ const cleanInline = (text: string) =>
     // niente spazio tra tipo e parentesi: NVARCHAR(max), DECIMAL(18,2)
     .replace(/\b(NVARCHAR|VARCHAR|NCHAR|CHAR|DECIMAL|NUMERIC|BINARY|VARBINARY|DATETIME2|DATETIMEOFFSET)\s*\(/gi, '$1(')
     .replace(/\s+/g, ' ')
-    .trim()
+
+const cleanInline = (text: string): string => {
+  let out = ''
+  let code = ''
+  const flushCode = () => {
+    if (code) {
+      out += cleanInlineCode(code)
+      code = ''
+    }
+  }
+  let i = 0
+  while (i < text.length) {
+    const c = text[i]
+    if (c === "'") {
+      // stringa: fino all'apostrofo di chiusura ('' è un apostrofo dentro la stringa)
+      flushCode()
+      let j = i + 1
+      while (j < text.length) {
+        if (text[j] === "'") {
+          if (text[j + 1] === "'") {
+            j += 2
+            continue
+          }
+          j++
+          break
+        }
+        j++
+      }
+      out += text.slice(i, j)
+      i = j
+      continue
+    }
+    if (c === '[') {
+      // identificatore delimitato: dentro non si tocca nulla
+      flushCode()
+      const end = text.indexOf(']', i + 1)
+      const j = end === -1 ? text.length : end + 1
+      out += text.slice(i, j)
+      i = j
+      continue
+    }
+    if (c === '-' && text[i + 1] === '-') {
+      // commento di riga: il resto del testo è commento
+      flushCode()
+      out += text.slice(i)
+      i = text.length
+      continue
+    }
+    if (c === '/' && text[i + 1] === '*') {
+      flushCode()
+      const end = text.indexOf('*/', i + 2)
+      const j = end === -1 ? text.length : end + 2
+      out += text.slice(i, j)
+      i = j
+      continue
+    }
+    code += c
+    i++
+  }
+  flushCode()
+  return out.trim()
+}
 
 /**
  * True se i token contengono UNA sola istruzione (usato per i layout speciali che
@@ -336,6 +409,21 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
   // motore routine, che spezza gli statement e protegge i commenti.
   if (!singleStatementTokens(tokens)) {
     return formatRoutineWithProfile(sql, profile)
+  }
+
+  // INSERT … [(campi)] [VALUES (valori)]: un campo/valore per riga, allineati sotto il primo
+  // (stesse regole dentro e fuori le store)
+  {
+    const insertLayout = insertRows(tokens, up, profile.tabSize || 2, '')
+    if (insertLayout) {
+      const rows = [...insertLayout.rows]
+      if (insertLayout.rest.length > 0) {
+        // resto dello statement (es. lo SELECT di "INSERT … (campi) SELECT …"): formattato
+        // con le stesse regole, su righe proprie
+        rows.push(...formatSqlWithProfile(insertLayout.rest.map(up).join(' '), profile).trimEnd().split('\n'))
+      }
+      return rows.join('\n').trimEnd() + '\n'
+    }
   }
 
   const words = tokens.filter(t => t.type === 'word').length
@@ -615,6 +703,10 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
 
   const cleanLine = (s: string) =>
     s
+      // operatori composti separati ("+ =") riuniti, ma NON dentro le stringhe
+      .replace(/('(?:[^']|'')*')|([+\-*/%&|^])\s+=(?!=)/g, (_m, str: string, op: string) =>
+        str ? str : `${op}=`,
+      )
       .replace(/\s*\.\s*/g, '.')
       .replace(/\s*,/g, ',')
       .replace(/\s+;/g, ';')
@@ -649,15 +741,18 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
   const lines: Row[] = []
   let indent = 0
 
-  const pushLine = (text: string, ind?: number) => {
+  const pushLine = (text: string, ind?: number, keepIndent = false) => {
     const indN = ind ?? indent
     // commento a blocco multilinea: preserva le righe interne (niente pulizia/spazi)
     if (text.startsWith('/*') && text.includes('\n')) {
       lines.push({ indent: indN, text })
       return
     }
+    // keepIndent: la riga porta già i suoi spazi di allineamento (select-list impilata),
+    // che la pulizia inline toglierebbe con il trim finale
+    const lead = keepIndent ? text.length - text.trimStart().length : 0
     const clean = cleanInline(text)
-    if (clean.length > 0) lines.push({ indent: indN, text: clean })
+    if (clean.length > 0) lines.push({ indent: indN, text: ' '.repeat(lead) + clean })
   }
 
   // Riga già formattata con spaziature significative (allineamenti a colonna):
@@ -670,15 +765,33 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
   // Passo 1: separa la firma (CREATE/ALTER ... fino alla parentesi di chiusura + AS) dal corpo
   let depth = 0
   let asIndex = -1
-  // cerca la prima '(' della firma
+  // cerca la '(' dei parametri. La ricerca NON deve scavalcare l'inizio del corpo:
+  // in "CREATE PROCEDURE p AS BEGIN INSERT INTO @t (a) SELECT …" la prima '(' del testo
+  // è quella della tabella, non dei parametri (la procedura non ne ha): prenderla per
+  // la firma spezzava lo statement e faceva sparire la SELECT.
+  const SIG_STOP = new Set([
+    'BEGIN', 'AS', 'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'DECLARE', 'SET', 'IF',
+    'WHILE', 'RETURN', 'EXEC', 'EXECUTE', 'PRINT', 'GOTO', 'RAISERROR', 'THROW', 'END',
+    'ELSE', 'COMMIT', 'ROLLBACK', 'TRUNCATE', 'GO',
+  ])
   let sigOpen = -1
   for (let k = 0; k < tokens.length; k++) {
     if (tokens[k].type === 'word' && /^(CREATE|ALTER)$/i.test(tokens[k].text)) {
-      // salta fino alla '('
-      for (let m = k; m < tokens.length; m++) {
-        if (tokens[m].type === 'punct' && tokens[m].text === '(') {
+      for (let m = k + 1; m < tokens.length; m++) {
+        const t = tokens[m]
+        if (t.type === 'comment' || t.type === 'string') continue
+        if (t.type === 'punct' && t.text === '(') {
           sigOpen = m
           break
+        }
+        if (t.type === 'word') {
+          const u = t.text.toUpperCase()
+          // firma senza elenco parametri: "CREATE PROCEDURE p AS" → l'AS è quello della firma
+          if (u === 'AS') {
+            asIndex = m
+            break
+          }
+          if (SIG_STOP.has(u)) break // è già iniziato il corpo: nessuna firma da separare
         }
       }
       break
@@ -701,7 +814,7 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       }
     }
     if (sigClose !== -1) {
-      // trova AS dopo sigClose a livello top
+      // trova AS dopo sigClose a livello top (senza scavalcare l'inizio del corpo)
       depth = 0
       for (let k = sigClose + 1; k < tokens.length; k++) {
         const t = tokens[k]
@@ -710,9 +823,14 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
           else if (t.text === ')') depth = Math.max(0, depth - 1)
           continue
         }
-        if (depth === 0 && t.type === 'word' && t.text.toUpperCase() === 'AS') {
-          asIndex = k
-          break
+        if (t.type === 'comment' || t.type === 'string') continue
+        if (depth === 0 && t.type === 'word') {
+          const u = t.text.toUpperCase()
+          if (u === 'AS') {
+            asIndex = k
+            break
+          }
+          if (SIG_STOP.has(u)) break
         }
       }
     }
@@ -750,38 +868,70 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     if (k < headerTokens.length && headerTokens[k].type === 'punct' && headerTokens[k].text === '(') {
       pushLine('(', 0)
       k++
-      // parametri: una riga per parametro con virgola iniziale
-      const paramLines: string[] = []
-      let currentParam: string[] = []
+      // parametri: una riga per parametro con virgola iniziale e TIPO INCOLONNATO
+      // (stessa impaginazione del DECLARE: "@nome" allineato, tipo sempre dalla stessa colonna)
+      const paramTokens: Token[][] = []
+      let currentParam: Token[] = []
       let parDepth = 1
       const isParamSeparator = (tok: Token) => tok.type === 'punct' && tok.text === ',' && parDepth === 1
       for (; k < headerTokens.length; k++) {
         const t = headerTokens[k]
         if (t.type === 'punct' && t.text === '(') {
           parDepth++
-          currentParam.push(up(t))
+          currentParam.push(t)
           continue
         }
         if (t.type === 'punct' && t.text === ')') {
           parDepth--
           if (parDepth === 0) {
-            if (currentParam.length > 0) paramLines.push(currentParam.join(' '))
+            if (currentParam.length > 0) paramTokens.push(currentParam)
             break
           }
-          currentParam.push(up(t))
+          currentParam.push(t)
           continue
         }
         if (isParamSeparator(t)) {
-          if (currentParam.length > 0) paramLines.push(currentParam.join(' '))
+          if (currentParam.length > 0) paramTokens.push(currentParam)
           currentParam = []
           continue
         }
-        currentParam.push(up(t))
+        currentParam.push(t)
       }
       const PARAM_INDENT = 4
-      paramLines.forEach((p, idx) => {
-        // la prima riga senza virgola iniziale, le altre con ','
-        pushLine(idx === 0 ? p : `,${p}`, PARAM_INDENT)
+      const unitP = profile.tabSize || 2
+      const basePadP = ' '.repeat(PARAM_INDENT * unitP)
+      const nomeParam = (it: Token[]) => (it[0]?.type === 'word' ? it[0].text : '')
+      const maxNome = Math.max(0, ...paramTokens.map(it => nomeParam(it).length))
+      paramTokens.forEach((it, idx) => {
+        const nome = nomeParam(it)
+        const resto = it.slice(1)
+        // il TIPO finisce dove inizia il valore di default ("=") o un commento
+        let fine = resto.length
+        let depth = 0
+        for (let q = 0; q < resto.length; q++) {
+          const t = resto[q]
+          if (t.type === 'comment') {
+            fine = q
+            break
+          }
+          if (t.type === 'punct') {
+            if (t.text === '(') depth++
+            else if (t.text === ')') depth = Math.max(0, depth - 1)
+            else if (t.text === '=' && depth === 0) {
+              fine = q
+              break
+            }
+          }
+        }
+        const tipo = cleanInline(resto.slice(0, fine).map(up).join(' '))
+        const coda = cleanInline(resto.slice(fine).map(up).join(' '))
+        // la virgola iniziale delle righe successive occupa una colonna: il tipo deve cadere
+        // nella stessa colonna della prima riga (dove la virgola non c'è). Il minimo di uno
+        // spazio evita che nome e tipo si incollino sul parametro dal nome più lungo.
+        const gap = paramTokens.length > 1 ? Math.max(1, maxNome - nome.length + (idx === 0 ? 2 : 1)) : 1
+        const tail = `${tipo}${coda ? ` ${coda}` : ''}`
+        // pushRawLine: gli spazi di allineamento non vanno persi con la pulizia inline
+        pushRawLine(`${basePadP}${idx === 0 ? '' : ','}${nome}${' '.repeat(gap)}${tail}`)
       })
       // parentesi chiusa su riga propria
       pushLine(')', 0)
@@ -1189,10 +1339,17 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
 
     // ; WITH <nome> AS ( SELECT … ) — CTE: apre su righe proprie con la parentesi
     // prima della SELECT interna, e spezza le clausole della subquery (FROM/JOIN/WHERE).
-    const cteLayout = layoutCteSegment(segment, up)
+    const cteLayout = layoutCteSegment(segment, up, profile)
     if (cteLayout) {
       flushLine()
-      for (const r of cteLayout) pushLine(r.text, lineIndent + r.ind)
+      for (const r of cteLayout.rows) pushLine(r.text, lineIndent + r.ind, true)
+      // codice dopo l'elenco delle CTE (es. lo statement principale se lo spezzatore non
+      // l'ha separato): va stampato comunque, mai perso
+      if (cteLayout.rest.length > 0) {
+        const resto = rowsNoDashEat(cteLayout.rest, up)
+        if (resto.length === 0) pushLine(cteLayout.rest.map(up).join(' '), lineIndent)
+        else resto.forEach(r => pushLine(r, lineIndent))
+      }
       continue
     }
 
@@ -1212,7 +1369,19 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     {
       const unit = profile.tabSize || 2
       const basePad = ' '.repeat(lineIndent * unit)
-      const detailedRows = detailedSelectRows(segment, up, unit, basePad, profile.setIndent)
+      // INSERT … [(campi)] [VALUES (valori)]: un campo/valore per riga, allineati sotto il primo
+      if (firstUpper === 'INSERT') {
+        const insertLayout = insertRows(segment, up, unit, basePad)
+        if (insertLayout) {
+          flushLine()
+          insertLayout.rows.forEach(pushRawLine)
+          if (insertLayout.rest.length > 0) {
+            rowsNoDashEat(insertLayout.rest, up).forEach(r => pushLine(r, lineIndent))
+          }
+          continue
+        }
+      }
+      const detailedRows = detailedSelectRows(segment, up, unit, basePad, profile.setIndent, profile)
       if (detailedRows) {
         flushLine()
         for (const row of detailedRows) pushRawLine(row)
@@ -1359,9 +1528,9 @@ function detailedSelectRows(
   unit: number,
   basePad: string,
   setIndent: number = unit,
+  profile?: FormatProfile,
 ): string[] | null {
   const groups = splitStatementClauses(segment, up)
-  if (groups.length < 2) return null
   const head = groups[0].tokens
   if (head.some(t => t.type === 'word' && t.text.toUpperCase() === 'CASE')) return null
   // commenti "--" nella testata: niente layout a colonna (il codice dopo il commento
@@ -1370,8 +1539,9 @@ function detailedSelectRows(
 
   const out: string[] = []
   const varStart = head.findIndex(t => t.type === 'word' && t.text.startsWith('@'))
-  if (varStart > 0) {
-    // lista di assegnazioni "@var = …" separate da virgole a livello top
+  /** Elementi della lista di assegnazioni "@var = …" (virgole di primo livello). */
+  const assignItems = (() => {
+    if (varStart <= 0) return [] as Token[][]
     let depth = 0
     const items: Token[][] = []
     let cur: Token[] = []
@@ -1394,12 +1564,21 @@ function detailedSelectRows(
       cur.push(t)
     }
     flushItem()
-    const isAssign = (toks: Token[]) =>
-      toks.length > 1 &&
-      toks[0].type === 'word' &&
-      toks[0].text.startsWith('@') &&
-      toks.some(x => x.type === 'punct' && x.text === '=')
-    if (items.length >= 2 && items.every(isAssign)) {
+    return items
+  })()
+  const isAssign = (toks: Token[]) =>
+    toks.length > 1 &&
+    toks[0].type === 'word' &&
+    toks[0].text.startsWith('@') &&
+    toks.some(x => x.type === 'punct' && x.text === '=')
+  const listaAssegnazioni = assignItems.length >= 2 && assignItems.every(isAssign)
+  // Senza clausole (nessun FROM/JOIN) c'è comunque qualcosa da impaginare se la testata è
+  // una lista di assegnazioni "@var = …": "SELECT @a = …, @b = …" va a capo come le altre liste
+  if (groups.length < 2 && !listaAssegnazioni) return null
+
+  if (varStart > 0) {
+    const items = assignItems
+    if (listaAssegnazioni) {
       out.push(`${basePad}${cleanInline(head.slice(0, varStart).map(up).join(' '))}`)
       const maxVar = Math.max(...items.map(it => it[0].text.length))
       items.forEach((it, idx) => {
@@ -1414,8 +1593,16 @@ function detailedSelectRows(
       if (r) out.push(`${basePad}${cleanInline(r)}`)
     }
   } else {
-    const r = rowsNoDashEat(head, up)[0]
-    if (r) out.push(`${basePad}${cleanInline(r)}`)
+    // SELECT "normale" (nessuna assegnazione @var = …): con l'opzione attiva la select-list
+    // si impila come nel formattatore delle query — virgole in testa e INTO su riga propria.
+    // Serve soprattutto DENTRO procedure e blocchi, dove prima la lista restava tutta su
+    // una riga mentre da sola veniva impilata: due risultati diversi per lo stesso testo.
+    if (profile?.stackSelectColumns) {
+      out.push(...stackSelectList(head, up, basePad, profile))
+    } else {
+      const r = rowsNoDashEat(head, up)[0]
+      if (r) out.push(`${basePad}${cleanInline(r)}`)
+    }
   }
 
   // clausole successive: FROM / JOIN / WHERE / GROUP / HAVING / ORDER / UNION / OUTPUT
@@ -1424,22 +1611,313 @@ function detailedSelectRows(
     const first = tokens[0]
     const kw = first.type === 'word' ? first.text.toUpperCase() : ''
     if (kw === 'FROM' || kw === 'OUTPUT' || kw === 'UNION') {
-      const r = rowsNoDashEat(tokens, up)[0]
-      if (r) out.push(`${basePad}${cleanInline(r)}`)
+      // tutte le righe: se la clausola porta un commento "--" in coda, rowsNoDashEat ne
+      // restituisce più di una e prenderne solo la prima perderebbe il commento
+      for (const r of rowsNoDashEat(tokens, up)) out.push(`${basePad}${cleanInline(r)}`)
     } else if (kw === 'INNER' || kw === 'LEFT' || kw === 'RIGHT' || kw === 'FULL' || kw === 'CROSS' || kw === 'JOIN' || kw === 'APPLY') {
-      const r = rowsNoDashEat(tokens, up)[0]
-      if (r) out.push(`${basePad}${' '.repeat(unit)}${cleanInline(r)}`)
+      for (const r of rowsNoDashEat(tokens, up)) out.push(`${basePad}${' '.repeat(unit)}${cleanInline(r)}`)
     } else if (kw === 'WHERE' || kw === 'HAVING') {
       out.push(...conditionRows(basePad, tokens, up, unit))
     } else if (kw === 'SET') {
       out.push(...setClauseRows(basePad, tokens, up, setIndent))
     } else if (kw === 'ORDER' || kw === 'GROUP') {
       out.push(...listRows(basePad, tokens, up, `${kw} BY `))
+    } else if (kw === 'SELECT') {
+      // select-list di un ramo UNION o di un INSERT…SELECT: si impila come la prima
+      if (profile?.stackSelectColumns) {
+        out.push(...stackSelectList(tokens, up, basePad, profile))
+      } else {
+        const r = rowsNoDashEat(tokens, up)[0]
+        if (r) out.push(`${basePad}${cleanInline(r)}`)
+      }
+    } else {
+      // clausola non prevista: la si stampa comunque — nessun gruppo può andare perso
+      for (const r of rowsNoDashEat(tokens, up)) out.push(`${basePad}${cleanInline(r)}`)
     }
   }
   return out.filter(Boolean)
 }
 
+/**
+ * Select-list impilata (usata dal formattatore delle routine, che non ha il ciclo del
+ * formattatore query): la virgola va IN TESTA alla riga successiva, così la query resta
+ * valida e riformattare non la cambia. Le regole sono le stesse del formattatore query:
+ * - si va a capo solo quando la riga corrente ha già più di un token (i primi campi restano
+ *   raggruppati allo stesso modo nei due motori);
+ * - `INTO #tabella` finisce su una riga propria;
+ * - le virgole dentro le parentesi (funzioni, IN (…)) NON si toccano.
+ */
+function stackSelectList(
+  head: Token[],
+  up: (t: Token) => string,
+  basePad: string,
+  profile: FormatProfile,
+): string[] {
+  const indent = profile.selectColumnIndent
+  // "SELECT … INTO #t": l'INTO va su riga propria. L'INTO di un "INSERT INTO …" invece
+  // appartiene alla testata dell'INSERT e non si spezza.
+  const isSelectHead = head[0]?.type === 'word' && head[0].text.toUpperCase() === 'SELECT'
+  const out: string[] = []
+  let depth = 0
+  let cur: string[] = []
+  /** True dopo un a-capo della lista: la virgola si attacca al campo successivo (",campo"). */
+  let commaPending = false
+  /** False per le righe di clausola (INTO): restano allineate alla SELECT, non rientrano. */
+  let indentLine = true
+  const push = () => {
+    if (cur.length === 0) return
+    const testo = cleanInline(cur.join(' '))
+    if (!testo) return
+    // la prima riga resta allineata alla clausola, le successive rientrano di `indent`
+    const rientro = out.length === 0 || !indentLine ? '' : ' '.repeat(indent)
+    out.push(`${basePad}${rientro}${testo}`)
+    cur = []
+    indentLine = true
+  }
+  for (const t of head) {
+    if (t.type === 'punct') {
+      if (t.text === '(') depth++
+      else if (t.text === ')') depth = Math.max(0, depth - 1)
+    }
+    // commento "--": chiude la riga, il codice successivo riparte sotto (mai codice
+    // "inghiottito" dal commento). La virgola resta in testa al campo seguente.
+    if (t.type === 'comment' && t.text.startsWith('--')) {
+      const testo = up(t)
+      if (cur.length === 0 && out.length > 0) out[out.length - 1] += ` ${testo}`
+      else {
+        cur.push(testo)
+        push()
+      }
+      continue
+    }
+    // INTO della SELECT ... INTO #tmp: riga propria, allineata alla SELECT (come nel formato query)
+    if (
+      depth === 0 &&
+      t.type === 'word' &&
+      t.text.toUpperCase() === 'INTO' &&
+      cur.length > 0 &&
+      isSelectHead &&
+      profile.breakBeforeInto
+    ) {
+      push()
+      cur = [up(t)]
+      commaPending = false
+      indentLine = false
+      continue
+    }
+    if (t.type === 'punct' && t.text === ',' && depth === 0 && cur.length > 1) {
+      push()
+      commaPending = true
+      continue
+    }
+    cur.push((commaPending ? ',' : '') + up(t))
+    commaPending = false
+  }
+  push()
+  return out
+}
+
+/** Layout di un INSERT: le righe da stampare e i token che restano dopo (es. lo SELECT di
+ *  un "INSERT … (campi) SELECT …"): il chiamante li formatta a parte, mai persi. */
+interface InsertLayout {
+  rows: string[]
+  rest: Token[]
+}
+
+/**
+ * INSERT … [(campi)] [VALUES (valori)…]: campi e valori vanno UNO PER RIGA, allineati sotto
+ * il primo campo / primo valore (l'utente: "quando fa le insert deve mettere a capo e
+ * allineati tutti i campi e i valori").
+ *   INSERT INTO dbo.T (COL1
+ *                     ,COL2)
+ *   VALUES (@a
+ *          ,@b)
+ * Restituisce null se lo statement non ha nulla da impilare (nessun campo/valore oltre il
+ * primo) o se la forma non è riconosciuta: in quel caso resta il percorso normale.
+ */
+function insertRows(
+  segment: Token[],
+  up: (t: Token) => string,
+  unit: number,
+  basePad: string,
+): InsertLayout | null {
+  let start = 0
+  while (segment[start]?.type === 'comment') start++
+  if (!(segment[start]?.type === 'word' && segment[start].text.toUpperCase() === 'INSERT')) return null
+  // un commento "--" chiuderebbe la riga a metà lista: si lascia fare al percorso normale
+  if (segment.some(t => t.type === 'comment' && t.text.startsWith('--'))) return null
+
+  /** "(" di primo livello a partire da `from` (-1 se non c'è). */
+  const openParenAfter = (from: number): number => {
+    let depth = 0
+    for (let k = from; k < segment.length; k++) {
+      const t = segment[k]
+      if (t.type !== 'punct') continue
+      if (t.text === '(') {
+        if (depth === 0) return k
+        depth++
+      } else if (t.text === ')') depth = Math.max(0, depth - 1)
+    }
+    return -1
+  }
+  /** ")" che chiude la "(" all'indice `open` (-1 se non c'è). */
+  const closeParenOf = (open: number): number => {
+    let depth = 0
+    for (let k = open; k < segment.length; k++) {
+      const t = segment[k]
+      if (t.type !== 'punct') continue
+      if (t.text === '(') depth++
+      else if (t.text === ')') {
+        depth--
+        if (depth === 0) return k
+      }
+    }
+    return -1
+  }
+  /** Divide i token in elementi separati dalle virgole di primo livello. */
+  const splitItems = (tokens: Token[]): Token[][] => {
+    const items: Token[][] = []
+    let depth = 0
+    let cur: Token[] = []
+    for (const t of tokens) {
+      if (t.type === 'punct') {
+        if (t.text === '(') depth++
+        else if (t.text === ')') depth = Math.max(0, depth - 1)
+        if (t.text === ',' && depth === 0) {
+          items.push(cur)
+          cur = []
+          continue
+        }
+      }
+      cur.push(t)
+    }
+    items.push(cur)
+    return items.filter(it => it.length > 0)
+  }
+  const inline = (tokens: Token[]) => cleanInline(tokens.map(up).join(' '))
+
+  // Primo "(" di primo livello dopo INSERT: la lista dei campi. Se la parentesi appartiene a
+  // un'altra parola chiave (TOP (…), DEFAULT (…)) la forma non è prevista.
+  const colsOpen = openParenAfter(start + 1)
+  let columns: Token[][] = []
+  let afterColumns = -1
+  if (colsOpen !== -1) {
+    let prev: Token | undefined
+    for (let k = colsOpen - 1; k > start; k--) {
+      if (segment[k].type !== 'comment') {
+        prev = segment[k]
+        break
+      }
+    }
+    if (prev?.type === 'word' && ['VALUES', 'TOP', 'DEFAULT'].includes(prev.text.toUpperCase())) return null
+    const colsClose = closeParenOf(colsOpen)
+    if (colsClose === -1) return null
+    columns = splitItems(segment.slice(colsOpen + 1, colsClose))
+    if (columns.length === 0) return null
+    afterColumns = colsClose + 1
+  }
+
+  // VALUES dopo la lista dei campi (o subito dopo il nome della tabella)
+  let valuesAt = -1
+  const afterTarget = afterColumns === -1 ? start + 1 : afterColumns
+  for (let k = afterTarget; k < segment.length; k++) {
+    const t = segment[k]
+    if (t.type === 'comment') continue
+    if (t.type === 'word' && t.text.toUpperCase() === 'VALUES') {
+      valuesAt = k
+      break
+    }
+    // altra forma (OUTPUT…, EXEC…, SELECT di un INSERT…SELECT già spezzato a parte): qui si
+    // impagina solo la lista dei campi e il resto lo formatta il chiamante
+    break
+  }
+
+  const targetEnd = colsOpen === -1 ? valuesAt === -1 ? segment.length : valuesAt : colsOpen
+  const targetText = inline(segment.slice(0, targetEnd))
+
+  /** Righe di un elemento della lista (espande il CASE su più righe se c'è). */
+  const itemRows = (item: Token[], indice: number, apreRiga: string, pad: string): string[] => {
+    const testa = indice === 0 ? apreRiga : `${pad},`
+    const cases = splitCaseLines(item, up)
+    if (cases.length === 1) return [`${testa}${inline(item)}`]
+    // item con CASE: le righe del CASE rientrano dalla colonna di allineamento
+    return cases.map((cl, i) =>
+      i === 0 ? `${testa}${cleanInline(cl.text)}` : `${pad}${' '.repeat(cl.delta * unit)}${cleanInline(cl.text)}`,
+    )
+  }
+
+  const rows: string[] = []
+  // lista dei campi (una per riga) — solo se ce n'è più d'uno
+  if (columns.length > 1) {
+    const apreRiga = `${basePad}${targetText} (`
+    const pad = ' '.repeat(apreRiga.length)
+    columns.forEach((col, idx) => rows.push(...itemRows(col, idx, apreRiga, pad)))
+    rows[rows.length - 1] += ')'
+  } else if (columns.length === 1) {
+    rows.push(`${basePad}${targetText} (${inline(columns[0])})`)
+  } else {
+    rows.push(`${basePad}${targetText}`)
+  }
+
+  let rest: Token[] = []
+  let valoriDaImpilare = false
+  if (valuesAt !== -1) {
+    // gruppi di valori: uno o più "( … )"
+    const tuples: Token[][] = []
+    let p = valuesAt + 1
+    while (p < segment.length) {
+      const t = segment[p]
+      if (t.type === 'comment') {
+        p++
+        continue
+      }
+      if (t.type === 'punct' && t.text === '(') {
+        const close = closeParenOf(p)
+        if (close === -1) return null
+        tuples.push(segment.slice(p + 1, close))
+        p = close + 1
+        if (segment[p]?.type === 'punct' && segment[p].text === ',') {
+          p++
+          continue
+        }
+        break
+      }
+      return null
+    }
+    if (tuples.length === 0) return null
+    // resta solo la ";" finale (altro codice non previsto → percorso normale)
+    const coda = segment.slice(p)
+    for (const t of coda) {
+      if (t.type === 'comment' && !t.text.startsWith('--')) continue
+      if (t.type === 'punct' && t.text === ';') continue
+      return null
+    }
+    const apreRiga = `${basePad}VALUES (`
+    const pad = ' '.repeat(apreRiga.length)
+    if (tuples.length > 1) {
+      // più righe di valori: un gruppo per riga
+      valoriDaImpilare = true
+      tuples.forEach((tuple, idx) => {
+        rows.push(idx === 0 ? `${apreRiga}${inline(tuple)})` : `${pad},(${inline(tuple)})`)
+      })
+    } else {
+      const values = splitItems(tuples[0])
+      if (values.length > 1) valoriDaImpilare = true
+      values.forEach((val, idx) => rows.push(...itemRows(val, idx, apreRiga, pad)))
+      rows[rows.length - 1] += ')'
+    }
+    rows[rows.length - 1] += inline(coda)
+  } else if (afterColumns !== -1) {
+    rest = segment.slice(afterColumns)
+  }
+
+  // Niente da impilare (un solo campo e un solo valore): lascia fare al percorso normale
+  if (columns.length <= 1 && !valoriDaImpilare) return null
+  if (rows.length === 0) return null
+  return { rows, rest }
+}
+
+/**
 /**
  * Rende una lista di token in righe "sicure" rispetto ai commenti "--": il commento
  * chiude la riga e il codice che segue riparte su una riga nuova (mai codice dopo "--").
@@ -1907,6 +2385,20 @@ interface CteRow {
   text: string
 }
 
+/** Layout di un elenco di CTE: le righe da stampare e i token che restano dopo l'ultima
+ *  CTE (che il chiamante DEVE comunque stampare: nulla può andare perso). */
+interface CteLayout {
+  rows: CteRow[]
+  rest: Token[]
+}
+
+/** Parole che non possono comparire fra il nome di una CTE e il suo AS: se ne incontro una
+ *  vuol dire che l'elenco delle CTE è finito (es. ", x" di un GROUP BY). */
+const CTE_HEADER_STOP = new Set([
+  'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'EXEC', 'EXECUTE', 'SET', 'DECLARE',
+  'IF', 'WHILE', 'BEGIN', 'END', 'PRINT', 'RETURN', 'GOTO', 'UNION', 'EXCEPT', 'INTERSECT',
+])
+
 /**
  * Riconosce un segmento "; WITH … AS (SELECT …)" (una o più CTE) e lo impagina su più
  * righe con la parentesi PRIMA della SELECT interna:
@@ -1916,90 +2408,106 @@ interface CteRow {
  *       FROM …
  *       INNER JOIN …
  *   )
+ *   , NOME2 AS
+ *   (
+ *       …
+ *   )
  * Restituisce null se il segmento non è un CTE (così lo statement prosegue normalmente).
  */
-function layoutCteSegment(segment: Token[], up: (t: Token) => string): CteRow[] | null {
-  let i = 0
-  if (segment[i]?.type === 'punct' && segment[i].text === ';') i++
-  if (!(segment[i]?.type === 'word' && segment[i].text.toUpperCase() === 'WITH')) return null
-  if (i === segment.length - 1) return null
+function layoutCteSegment(segment: Token[], up: (t: Token) => string, profile: FormatProfile): CteLayout | null {
+  let start = 0
+  if (segment[start]?.type === 'punct' && segment[start].text === ';') start++
+  if (!(segment[start]?.type === 'word' && segment[start].text.toUpperCase() === 'WITH')) return null
+  if (start === segment.length - 1) return null
 
-  const out: CteRow[] = []
-  let depth = 0
-  // trova l'indice di AS a profondità 0 (salta l'eventuale elenco colonne "nome (a, b)")
-  let asIdx = -1
-  for (let k = i + 1; k < segment.length; k++) {
-    const t = segment[k]
-    if (t.type === 'punct') {
-      if (t.text === '(') depth++
-      else if (t.text === ')') depth = Math.max(0, depth - 1)
-      continue
+  const rows: CteRow[] = []
+  /** Inizio dell'intestazione da stampare: 0 (include "; WITH") per la prima CTE,
+   *  l'indice della virgola per le successive. */
+  let headerStart = 0
+  let p = start + 1
+  let consumedEnd = -1
+
+  while (p < segment.length) {
+    // intestazione: nome [(colonne)] AS — la "(" delle colonne non deve confondere la
+    // ricerca dell'AS; un'altra virgola a livello 0 chiude l'elenco.
+    let par = 0
+    let asIdx = -1
+    for (let k = p; k < segment.length; k++) {
+      const t = segment[k]
+      if (t.type === 'comment') continue
+      if (t.type === 'punct') {
+        if (t.text === ',' && par === 0) break
+        if (t.text === '(') par++
+        else if (t.text === ')') par = Math.max(0, par - 1)
+        continue
+      }
+      if (par === 0 && t.type === 'word') {
+        const u = t.text.toUpperCase()
+        if (u === 'AS') {
+          asIdx = k
+          break
+        }
+        if (CTE_HEADER_STOP.has(u)) break
+      }
     }
-    if (depth === 0 && t.type === 'word' && t.text.toUpperCase() === 'AS') {
-      asIdx = k
+    if (asIdx === -1) break
+
+    // "(" subito dopo AS (eventuali commenti in mezzo sono ammessi)
+    let openIdx = -1
+    for (let k = asIdx + 1; k < segment.length; k++) {
+      const t = segment[k]
+      if (t.type === 'comment') continue
+      if (t.type === 'punct' && t.text === '(') openIdx = k
       break
     }
-  }
-  if (asIdx === -1) return null
+    if (openIdx === -1) break
 
-  // header: "; WITH nome [AS]" (+ eventuali commenti prima della "(")
-  let openIdx = -1
-  for (let k = asIdx + 1; k < segment.length; k++) {
-    const t = segment[k]
-    if (t.type === 'comment') continue
-    if (t.type === 'punct' && t.text === '(') {
-      openIdx = k
-      break
-    }
-    return null // ci si aspetta "(" subito dopo AS
-  }
-  if (openIdx === -1) return null
-
-  const headerTokens = segment.slice(0, openIdx)
-  out.push({ ind: 0, text: headerTokens.map(up).join(' ').replace(/\s+/g, ' ').trim() })
-  out.push({ ind: 0, text: '(' })
-
-  // corpo: fino alla ")" bilanciata
-  let par = 0
-  let closeIdx = -1
-  for (let k = openIdx; k < segment.length; k++) {
-    const t = segment[k]
-    if (t.type === 'punct') {
-      if (t.text === '(') par++
+    // corpo: fino alla ")" bilanciata
+    let par2 = 0
+    let closeIdx = -1
+    for (let k = openIdx; k < segment.length; k++) {
+      const t = segment[k]
+      if (t.type !== 'punct') continue
+      if (t.text === '(') par2++
       else if (t.text === ')') {
-        par--
-        if (par === 0) {
+        par2--
+        if (par2 === 0) {
           closeIdx = k
           break
         }
       }
     }
-  }
-  if (closeIdx === -1) return null
-  const bodyTokens = segment.slice(openIdx + 1, closeIdx)
+    if (closeIdx === -1) break
 
-  // impagina il corpo come uno statement a clausole (SELECT … FROM … WHERE …)
-  const groups = splitStatementClauses(bodyTokens, up)
-  let any = false
-  for (const g of groups) {
-    for (const row of rowsNoDashEat(g.tokens, up)) {
-      out.push({ ind: 1, text: row })
-      any = true
-    }
-  }
-  if (!any) return null
-  out.push({ ind: 0, text: ')' })
+    const headerTokens = segment.slice(headerStart, openIdx)
+    rows.push({ ind: 0, text: headerTokens.map(up).join(' ').replace(/\s+/g, ' ').trim() })
+    rows.push({ ind: 0, text: '(' })
 
-  // CTE successive: ", NOME2 AS ( … )" — gestite ricorsivamente dopo la virgola a livello 0
-  const rest = segment.slice(closeIdx + 1)
-  const commaAt = rest.findIndex(t => t.type === 'punct' && t.text === ',')
-  if (commaAt !== -1) {
-    const next = layoutCteSegment(rest.slice(commaAt + 1), up)
-    if (next) {
-      for (const r of next) out.push(r)
+    // impagina il corpo come uno statement a clausole (SELECT … FROM … WHERE …), con la
+    // stessa select-list impilata usata fuori dalle routine (formattazione coerente)
+    const bodyTokens = segment.slice(openIdx + 1, closeIdx)
+    const unit = profile.tabSize || 2
+    const detailedBody = detailedSelectRows(bodyTokens, up, unit, '', profile.setIndent, profile)
+    const bodyRows: string[] = detailedBody
+      ? [...detailedBody]
+      : splitStatementClauses(bodyTokens, up).flatMap(g => rowsNoDashEat(g.tokens, up))
+    if (bodyRows.length === 0) return null
+    for (const row of bodyRows) rows.push({ ind: 1, text: row })
+    rows.push({ ind: 0, text: ')' })
+    consumedEnd = closeIdx + 1
+
+    // CTE successiva: una virgola a livello 0 seguita da "nome [(colonne)] AS (…)"
+    const comma = segment[consumedEnd]
+    if (comma?.type === 'punct' && comma.text === ',') {
+      headerStart = consumedEnd
+      p = consumedEnd + 1
+      continue
     }
+    break
   }
-  return out
+
+  if (rows.length === 0 || consumedEnd === -1) return null
+  return { rows, rest: segment.slice(consumedEnd) }
 }
 
 /**
@@ -2107,5 +2615,9 @@ function joinTokensInline(tokens: Token[], up: (t: Token) => string, profile: Fo
     }
     out += (out.endsWith(' ') || out.endsWith('(') || out.endsWith('.') || out.length === 0 ? '' : ' ') + text
   }
+  // operatori composti già separati ("+ =") riuniti, senza toccare le stringhe
+  return out.replace(/('(?:[^']|'')*')|([+\-*/%&|^])\s+=(?!=)/g, (_m, str: string, op: string) =>
+    str ? str : `${op}=`,
+  )
   return out.replace(/\s+/g, ' ').trim()
 }

@@ -6,8 +6,8 @@ statement dai risultati, **diagramma delle chiamate fra routine** e assistente I
 - **Backend**: ASP.NET Core Web API (.NET 10) + `Microsoft.Data.SqlClient`
 - **Frontend**: React + Vite + TypeScript, Tailwind CSS 4, Monaco Editor (bundle locale, nessun CDN)
 - **IA**: completamento inline con API **DeepSeek** (opzionale), con lo schema del database come contesto
-- **Database**: SQL Server (testato su database reali di produzione, es. `WSBRITVIC` con 286 tabelle e
-  598 stored procedure, e `WSGSDMALTA` con oltre 1500 routine)
+- **Database**: SQL Server (testato su database reali di produzione, con centinaia di tabelle e
+  oltre un migliaio di stored procedure per database)
 
 **🇮🇹 Italiano** · [🇬🇧 English](#-english)
 
@@ -64,9 +64,14 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
 
 - **Suggerimenti per contesto**: dopo `FROM`/`JOIN` solo tabelle, viste e **funzioni tabellari**; dopo
   `EXEC` solo stored procedure; nella select-list e in `WHERE`/`ON`/`GROUP BY`/`ORDER BY` solo colonne e
-  funzioni; dopo un alias (`r.`) le colonne qualificate di quella tabella.
+  funzioni (nella `ORDER BY` le direzioni `ASC`/`DESC` compaiono solo dopo aver scelto un campo); dopo un alias (`r.`, `[r].`, `#tmp.`) le colonne qualificate di quella tabella — alias di
+  tabelle, **temporanee** e **CTE** definite nel documento (`with c as (…) select * from c pippo where pippo.`).
 - **Mai popup vuoto** in posizione di codice: se lo schema non è disponibile (sessione scaduta) propone
   comunque snippet, funzioni e keyword, e ricarica i metadati da solo.
+- **Aggiorna schema** (pulsante in alto o **Ctrl+Shift+R**, come il *Refresh* di SSMS): rilegge tabelle,
+  colonne, viste e routine dal database saltando la cache del backend, così dopo aver creato o modificato
+  oggetti altrove l'intellisense e l'albero laterale usano subito la versione nuova (e il diagramma delle
+  chiamate viene ricaricato).
 - **JOIN intelligenti**: dopo `FROM t JOIN ` propone le tabelle collegate da **foreign key** con la clausola
   `ON` già compilata (una voce per vincolo, con alias brevi se la query usa alias). Le altre sono ordinate
   per **utilizzo reale** nel database (FK entrante/uscente, dipendenze, righe stimate) e per co-occorrenza
@@ -77,12 +82,24 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   quelli già scritti; dal menu contestuale genera l'`EXEC` con i valori di default reali.
 - **INSERT**: dentro `INSERT INTO tab (` suggerisce le colonne (con "tutte le colonne"); dentro `VALUES`
   propone i valori di default per la colonna corrente, **evidenziando la coppia colonna↔valore**.
+- **Campo corrispondente**: con il cursore su un campo si illumina quello abbinato — colonna ↔ valore negli
+  `INSERT`, colonna ↔ espressione nella `SET` di un `UPDATE`, e in una `MERGE` i valori della `USING` ↔ le
+  colonne di `src`, le coppie `a = b` della `SET` (ramo `MATCHED`) e della `ON`, e colonne ↔ valori
+  dell'`INSERT` del ramo `NOT MATCHED`.
 - **Espansione `*`**: il suggerimento "— tutti i campi (N) —" sostituisce l'asterisco con l'elenco completo
   delle colonne (campi univoci senza prefisso, condivisi qualificati).
 - **Snippet di statement**: `ins`/`sel`/`upd`/`del`/`mer` a inizio statement aprono il template con tab-stop.
 - **Parentesi intelligenti**: gli identificatori si inseriscono senza `[parentesi]` quando non servono.
 - **Tabella temporanee e variabili tabella**: `#tmp` e `@tab` definite nel documento entrano nell'ambito
-  (da `CREATE TABLE #t`, `DECLARE @t TABLE`, `SELECT ... INTO #t`, `INSERT INTO #t`).
+  (da `CREATE TABLE #t`, `DECLARE @t TABLE`, `SELECT ... INTO #t`, `INSERT INTO #t`). Per `SELECT … INTO #t`
+  le colonne si ricavano dalla select-list (anche con `TOP n *`, alias di funzione e alias per posizione tipo
+  `SCO_GIAC + SCO_VER X_GIAC`) e, con `*`, dalla sorgente: tabella dello schema, altra temporanea o **CTE**
+  definita nel testo.
+- **Alias delle tabelle** e **label di GOTO**: dopo `GOTO ` vengono proposte tutte le label del
+  documento (anche quelle definite più sotto, ignorando quelle nel codice commentato).
+- **Errori in stile SSMS**: numero/livello/stato, procedura e riga; doppio clic sul messaggio →
+  il cursore va sulla riga che ha fallito (per gli errori dentro una procedura la riga viene
+  riportata sulla definizione aperta nella tab), e i pulsanti aprono gli oggetti citati.
 - **Cronologia d'uso**: tabelle e colonne che usi di più pesano di più nel ranking.
 - **Diagnostica in tempo reale**: parentesi/apici non bilanciati e colonne qualificate inesistenti
   vengono sottolineati mentre scrivi (senza eseguire nulla).
@@ -136,7 +153,7 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
 ### Aiuto integrato
 
 - Guida in-app con tutte le funzioni e l'elenco delle scorciatoie (F5/Ctrl+Invio, Ctrl+S, Ctrl+Shift+S,
-  Ctrl+Shift+F, Ctrl+Spazio, Ctrl+rotella).
+  Ctrl+Shift+F, Ctrl+Shift+R, Ctrl+R, Ctrl+Spazio, Ctrl+rotella).
 
 ---
 
@@ -226,6 +243,7 @@ I fixture dei database reali si rigenerano con gli script in `frontend/scripts/`
 | `DELETE` | `/api/connections/{id}` | Elimina una login salvata |
 | `POST` | `/api/connections/{connectionId}/switch-database` | Cambia il database della sessione |
 | `GET` | `/api/metadata/{connectionId}/summary` | Metadati completi (cache 2 min): tabelle, colonne, viste, procedure con parametri, trigger, funzioni, vincoli CHECK, FK, metriche d'uso, proprietà estese |
+| `GET` | `/api/metadata/{connectionId}/summary?refresh=true` | Come sopra, ma **ignora la cache** e rilegge tutto dal database (pulsante "Aggiorna schema" / Ctrl+Shift+R); invalida anche il grafo delle chiamate |
 | `GET` | `/api/metadata/{connectionId}/tables/{schema}/{table}/columns` | Colonne di una tabella |
 | `GET` | `/api/metadata/{connectionId}/tables/{schema}/{table}/preview?top=30` | Anteprima dati (`SELECT TOP n *`) |
 | `GET` | `/api/metadata/{connectionId}/objects/{schema}/{name}/definition` | Definizione (testo) di proc/funzione/vista/trigger |
@@ -264,8 +282,8 @@ query results, a **routine call graph** and an optional AI assistant.
 - **Backend**: ASP.NET Core Web API (.NET 10) + `Microsoft.Data.SqlClient`
 - **Frontend**: React + Vite + TypeScript, Tailwind CSS 4, Monaco Editor (local bundle, no CDN)
 - **AI**: inline completion through the **DeepSeek** API (optional), using the database schema as context
-- **Database**: SQL Server (developed against real production databases, e.g. `WSBRITVIC` with 286 tables
-  and 598 stored procedures, and `WSGSDMALTA` with more than 1500 routines)
+- **Database**: SQL Server (developed against real production databases with hundreds of tables and
+  more than a thousand stored procedures each)
 
 ## Screenshots
 
@@ -311,9 +329,14 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
 
 - **Context-aware suggestions**: after `FROM`/`JOIN` only tables, views and **table-valued functions**;
   after `EXEC` only stored procedures; in the select list and in `WHERE`/`ON`/`GROUP BY`/`ORDER BY` only
-  columns and functions; after an alias (`r.`) the qualified columns of that table.
+  columns and functions (in `ORDER BY` the `ASC`/`DESC` directions appear only after a field is chosen); after an alias (`r.`, `[r].`, `#tmp.`) the qualified columns of that table — aliases
+  of tables, **temp tables** and **CTEs** defined in the document (`with c as (…) select * from c pippo where pippo.`).
 - **Never an empty popup** in a code position: with no schema available (expired session) it still offers
   snippets, functions and keywords, and reloads metadata on its own.
+- **Refresh schema** (button in the header or **Ctrl+Shift+R**, like SSMS *Refresh*): re-reads tables,
+  columns, views and routines from the database, bypassing the backend cache, so after creating or changing
+  objects elsewhere the intellisense and the sidebar tree use the new version immediately (the call graph is
+  reloaded too).
 - **Smart JOINs**: after `FROM t JOIN ` it suggests tables linked by **foreign keys** with the `ON` clause
   already filled in (one entry per constraint, short aliases when the query uses aliases). Other tables are
   ranked by **real database usage** (incoming/outgoing FKs, dependencies, estimated rows) and by
@@ -324,12 +347,23 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
   skips the ones you already typed; the context menu generates `EXEC` with the real default values.
 - **INSERT**: inside `INSERT INTO tab (` it suggests the columns (plus "all columns"); inside `VALUES` it
   offers default values for the current column and **highlights the column↔value pair**.
+- **Matching field highlight**: with the cursor on a field the paired one lights up — column ↔ value in
+  `INSERT`s, column ↔ expression in an `UPDATE`'s `SET`, and inside a `MERGE` the `USING` values ↔ the `src`
+  columns, the `a = b` pairs of the `SET` (`MATCHED` branch) and of the `ON`, and columns ↔ values of the
+  `NOT MATCHED` `INSERT`.
 - **`*` expansion**: the "— all fields (N) —" entry replaces the star with the full column list (unique
   fields unqualified, shared fields qualified).
 - **Statement snippets**: `ins`/`sel`/`upd`/`del`/`mer` at statement start open a template with tab stops.
 - **Smart brackets**: identifiers are inserted without `[brackets]` when they are not needed.
 - **Temp tables and table variables** defined in the document are in scope (`CREATE TABLE #t`,
-  `DECLARE @t TABLE`, `SELECT ... INTO #t`, `INSERT INTO #t`).
+  `DECLARE @t TABLE`, `SELECT ... INTO #t`, `INSERT INTO #t`). For `SELECT … INTO #t` the columns come from
+  the select list (including `TOP n *`, function aliases and positional aliases like `SCO_GIAC + SCO_VER
+  X_GIAC`) and, with `*`, from the source: a schema table, another temp table or a **CTE** defined in the text.
+- **Table aliases** and **GOTO labels**: after `GOTO ` every label in the document is offered (including
+  the ones defined further down; labels inside commented-out code are ignored).
+- **SSMS-style errors**: number/level/state, procedure and line; double-clicking a message moves the
+  cursor to the failing line (for errors inside a procedure the line is mapped onto the definition open
+  in the tab), and the buttons open the objects named in the message.
 - **Usage history**: tables and columns you use most rank higher.
 - **Live diagnostics**: unbalanced brackets/quotes and unknown qualified columns are underlined as you
   type, without running anything.
@@ -381,7 +415,7 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
 ### Built-in help
 
 - In-app guide covering every feature and all keyboard shortcuts (F5/Ctrl+Enter, Ctrl+S, Ctrl+Shift+S,
-  Ctrl+Shift+F, Ctrl+Space, Ctrl+wheel).
+  Ctrl+Shift+F, Ctrl+Shift+R, Ctrl+R, Ctrl+Space, Ctrl+wheel).
 
 ## Architecture
 
@@ -462,6 +496,7 @@ Fixture files built from real databases are regenerated with the scripts in `fro
 | `DELETE` | `/api/connections/{id}` | Delete a saved login |
 | `POST` | `/api/connections/{connectionId}/switch-database` | Switch the session database |
 | `GET` | `/api/metadata/{connectionId}/summary` | Full metadata (2-minute cache): tables, columns, views, procedures with parameters, triggers, functions, CHECK constraints, FKs, usage metrics, extended properties |
+| `GET` | `/api/metadata/{connectionId}/summary?refresh=true` | Same as above but **skips the cache** and re-reads everything from the database ("Refresh schema" button / Ctrl+Shift+R); it also invalidates the call graph |
 | `GET` | `/api/metadata/{connectionId}/tables/{schema}/{table}/columns` | Columns of a table |
 | `GET` | `/api/metadata/{connectionId}/tables/{schema}/{table}/preview?top=30` | Data preview (`SELECT TOP n *`) |
 | `GET` | `/api/metadata/{connectionId}/objects/{schema}/{name}/definition` | Definition text of a procedure/function/view/trigger |

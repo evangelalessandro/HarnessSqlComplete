@@ -1,10 +1,13 @@
-// Evidenzia il campo corrispondente tra la lista colonne e i valori di un INSERT:
-// cursore su una colonna → si evidenzia il valore nella tupla VALUES (e viceversa).
+// Evidenzia il campo corrispondente alla posizione del cursore:
+//  - INSERT: lista colonne ↔ tupla VALUES (per indice);
+//  - UPDATE: colonna della SET ↔ espressione assegnata;
+//  - MERGE: valori della USING ↔ lista colonne di src, colonne ↔ valori dell'INSERT del ramo
+//    NOT MATCHED, e coppie "a = b" del SET (ramo MATCHED) e della condizione ON.
 // Nota: import diretto di monaco-editor (stessa istanza usata da monacoSetup) per essere testabile.
 import * as monaco from 'monaco-editor'
-import { insertCorrespondingTarget } from './helpers'
+import { pairHighlightTarget } from './helpers'
 
-export function registerInsertHighlight(editor: monaco.editor.IStandaloneCodeEditor): monaco.IDisposable[] {
+export function registerPairHighlight(editor: monaco.editor.IStandaloneCodeEditor): monaco.IDisposable[] {
   const disposables: monaco.IDisposable[] = []
   const collection = editor.createDecorationsCollection()
   let contentTimer: number | null = null
@@ -19,7 +22,7 @@ export function registerInsertHighlight(editor: monaco.editor.IStandaloneCodeEdi
     if (!model || !pos) return
     const text = model.getValue()
     const cursorOffset = model.getOffsetAt(pos)
-    const target = insertCorrespondingTarget(text, cursorOffset)
+    const target = pairHighlightTarget(text, cursorOffset)
     if (!target) {
       clear()
       return

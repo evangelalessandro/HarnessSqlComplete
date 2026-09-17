@@ -501,6 +501,354 @@ export function insertCorrespondingTarget(text: string, cursorOffset: number): {
   return null
 }
 
+// ---------- MERGE e UPDATE: campo corrispondente ----------
+
+/** Offset (assoluti) di una parola chiave a profondità 0, fuori da stringhe/commenti. */
+function topLevelWordOffsets(sql: string, words: Set<string>): { word: string; at: number }[] {
+  const found: { word: string; at: number }[] = []
+  let depth = 0
+  let quote: string | null = null
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i]
+    if (quote) {
+      if (ch === quote) {
+        if (sql[i + 1] === quote) {
+          i += 1
+          continue
+        }
+        quote = null
+      }
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+      continue
+    }
+    if (ch === '[') {
+      quote = ']'
+      continue
+    }
+    if (ch === ']') {
+      quote = null
+      continue
+    }
+    if (ch === '-' && sql[i + 1] === '-') {
+      const nl = sql.indexOf('\n', i)
+      i = nl === -1 ? sql.length : nl
+      continue
+    }
+    if (ch === '/' && sql[i + 1] === '*') {
+      const end = sql.indexOf('*/', i + 2)
+      i = end === -1 ? sql.length : end + 1
+      continue
+    }
+    if (ch === '(') {
+      depth += 1
+      continue
+    }
+    if (ch === ')') {
+      depth = Math.max(0, depth - 1)
+      continue
+    }
+    if (depth !== 0 || !/[A-Za-z_]/.test(ch)) continue
+    const m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(i))
+    if (!m) continue
+    const upper = m[0].toUpperCase()
+    if (words.has(upper)) found.push({ word: upper, at: i })
+    i += m[0].length - 1
+  }
+  return found
+}
+
+/** Prima occorrenza della parola (intera) a partire da un offset, -1 se assente. */
+function searchWordFrom(text: string, word: string, from: number): number {
+  const idx = text.slice(from).search(new RegExp(`\\b${word}\\b`, 'i'))
+  return idx === -1 ? -1 : from + idx
+}
+
+/** Trova l'istruzione MERGE che contiene l'offset (dall'ultimo MERGE fino al ';'). */
+export function findMergeStatementAt(text: string, offset: number): { start: number; end: number } | null {
+  const re = /\bMERGE\b/gi
+  let m: RegExpExecArray | null
+  let last = -1
+  while ((m = re.exec(text)) !== null) {
+    if (m.index <= offset) last = m.index
+    else break
+  }
+  if (last === -1) return null
+  const semi = text.indexOf(';', last)
+  const end = semi === -1 ? text.length : semi
+  return offset <= end ? { start: last, end } : null
+}
+
+/** Coppie "sinistra = destra" di un intervallo (SET di un UPDATE, condizione di ON). */
+function pairTargetsInRange(
+  sql: string,
+  from: number,
+  to: number,
+): { left: InsertSlot; right: InsertSlot }[] {
+  const pairs: { left: InsertSlot; right: InsertSlot }[] = []
+  const region = sql.slice(from, to)
+  /** Cerca l'uguaglianza "a = b" dentro un pezzo e registra i due lati. */
+  const addSegment = (segFrom: number, segTo: number) => {
+    const segment = region.slice(segFrom, segTo)
+    // "=" di uguaglianza/assegnazione (non <=, >=, <>, !=, += …)
+    let eq = -1
+    for (let k = 0; k < segment.length; k++) {
+      if (segment[k] !== '=') continue
+      const before = segment[k - 1] ?? ''
+      const after = segment[k + 1] ?? ''
+      if ('<>!=+-*/%'.includes(before) || after === '=') continue
+      eq = k
+      break
+    }
+    if (eq <= 0) return
+    const leftRaw = segment.slice(0, eq)
+    const rightRaw = segment.slice(eq + 1)
+    const leftTrim = leftRaw.trim()
+    const rightTrim = rightRaw.trim()
+    if (!leftTrim || !rightTrim) return
+    const leftLead = leftRaw.length - leftRaw.trimStart().length
+    const rightLead = rightRaw.length - rightRaw.trimStart().length
+    pairs.push({
+      left: {
+        start: from + segFrom + leftLead,
+        end: from + segFrom + leftLead + leftTrim.length,
+        text: leftTrim,
+      },
+      right: {
+        start: from + segFrom + eq + 1 + rightLead,
+        end: from + segFrom + eq + 1 + rightLead + rightTrim.length,
+        text: rightTrim,
+      },
+    })
+  }
+  // le voci sono separate dalle virgole di primo livello; dentro una voce le condizioni da AND/OR
+  for (const slot of splitTopLevel(region)) {
+    if (!slot.text) continue
+    const slotText = region.slice(slot.start, slot.end)
+    const cuts: number[] = [0]
+    for (const w of topLevelWordOffsets(slotText, new Set(['AND', 'OR']))) {
+      cuts.push(w.at, w.at + w.word.length)
+    }
+    cuts.push(slotText.length)
+    for (let i = 0; i + 1 < cuts.length; i += 2) addSegment(slot.start + cuts[i], slot.start + cuts[i + 1])
+  }
+  return pairs
+}
+
+/** Riquadro (offset assoluti) da evidenziare. */
+export interface HighlightRange {
+  start: number
+  end: number
+}
+
+/** Se il cursore è dentro uno dei due lati della coppia, restituisce l'altro lato. */
+function pairCounterpart(
+  pairs: { left: InsertSlot; right: InsertSlot }[],
+  cursor: number,
+): HighlightRange | null {
+  for (const p of pairs) {
+    if (cursor >= p.left.start && cursor <= p.left.end) return { start: p.right.start, end: p.right.end }
+    if (cursor >= p.right.start && cursor <= p.right.end) return { start: p.left.start, end: p.left.end }
+  }
+  return null
+}
+
+/**
+ * MERGE INTO … USING (VALUES …) AS src (colonne) ON … WHEN MATCHED THEN UPDATE SET a = b, …
+ * WHEN NOT MATCHED THEN INSERT (colonne) VALUES (valori): quale campo evidenziare quando il
+ * cursore sta su un valore (o su un campo).
+ *  - VALUES della USING / lista colonne di src → campo di pari indice (come un INSERT);
+ *  - "INSERT (colonne) VALUES (valori)" del ramo NOT MATCHED → come un INSERT;
+ *  - coppie "a = b" (SET del ramo MATCHED e condizione di ON) → l'altro lato della coppia.
+ */
+export function mergeCorrespondingTarget(text: string, cursorOffset: number): HighlightRange | null {
+  const stmt = findMergeStatementAt(text, cursorOffset)
+  if (!stmt) return null
+  const sql = text.slice(stmt.start, stmt.end)
+  const pos = cursorOffset - stmt.start
+  const keys = new Set(['USING', 'ON', 'WHEN', 'UPDATE', 'SET', 'INSERT', 'VALUES'])
+  const toks = topLevelWordOffsets(sql, keys)
+  const first = (word: string, from = 0) => toks.find(t => t.word === word && t.at >= from)?.at ?? -1
+  const usingAt = first('USING')
+  if (usingAt === -1) return null
+  const onAt = first('ON', usingAt)
+  const whens = toks.filter(t => t.word === 'WHEN' && (onAt === -1 || t.at > onAt))
+  const nextWhen = (from: number) => whens.find(w => w.at > from)?.at ?? sql.length
+
+  const toAbs = (r: HighlightRange | null): HighlightRange | null =>
+    r ? { start: r.start + stmt.start, end: r.end + stmt.start } : null
+
+  // 1) USING (VALUES …) AS src (colonne)
+  if (pos >= usingAt && (onAt === -1 || pos < onAt)) {
+    const limit = onAt === -1 ? sql.length : onAt
+    const regionFrom = usingAt
+    const region = sql.slice(regionFrom, limit)
+    const valuesRel = region.search(/\bVALUES\b/i)
+    if (valuesRel === -1) return null
+    // tuple di valori dopo VALUES (la USING può avvolgere tutto in una parentesi in più)
+    const tuples: InsertTuple[] = []
+    let i = valuesRel + 'VALUES'.length
+    while (i < region.length) {
+      if (region[i] === '(') {
+        const close = findMatchingParen(region, i)
+        const end = close ?? region.length
+        tuples.push({
+          open: i,
+          close,
+          slots: splitTopLevel(region.slice(i + 1, end)).map(s => ({
+            start: i + 1 + s.start,
+            end: i + 1 + s.end,
+            text: s.text,
+          })),
+        })
+        i = end + 1
+        continue
+      }
+      if (region[i] === ',' || /\s/.test(region[i])) {
+        i += 1
+        continue
+      }
+      break // altra chiusura (es. la ")" della USING): fine dei valori
+    }
+    if (tuples.length === 0) return null
+    // lista colonne di src: "AS alias (col, …)" dopo i valori
+    const afterTuples = (tuples[tuples.length - 1].close ?? region.length - 1) + 1
+    const asRel = searchWordFrom(region, 'AS', Math.max(0, afterTuples))
+    if (asRel === -1) return null
+    const openRel = region.indexOf('(', asRel)
+    if (openRel === -1) return null
+    const closeRel = findMatchingParen(region, openRel)
+    const colSlots = splitTopLevel(region.slice(openRel + 1, closeRel ?? region.length)).map(s => ({
+      start: regionFrom + openRel + 1 + s.start,
+      end: regionFrom + openRel + 1 + s.end,
+      text: s.text,
+    }))
+    if (colSlots.length === 0) return null
+    const inCols = pos >= regionFrom + openRel && (closeRel === null || pos <= regionFrom + closeRel)
+    if (inCols) {
+      // ATTENZIONE agli offset: colSlots sono relativi allo statement, quindi va usata `pos`
+      // (relativa) e non cursorOffset (assoluta). Con l'offset assoluto l'indice veniva
+      // risolto male per ogni MERGE che non fosse la PRIMA del file (l'utente: "nella seconda
+      // non funziona").
+      const idx = insertSlotIndexAt(colSlots, pos)
+      const target = tuples[0].slots[idx]
+      return target
+        ? toAbs({ start: regionFrom + target.start, end: regionFrom + target.end })
+        : null
+    }
+    for (const tuple of tuples) {
+      const tupleStart = regionFrom + tuple.open
+      const tupleEnd = regionFrom + (tuple.close ?? region.length)
+      if (pos < tupleStart || pos > tupleEnd) continue
+      const slots = tuple.slots.map(s => ({ ...s, start: regionFrom + s.start, end: regionFrom + s.end }))
+      const idx = insertSlotIndexAt(slots, pos)
+      const target = colSlots[idx]
+      return target ? toAbs({ start: target.start, end: target.end }) : null
+    }
+    return null
+  }
+
+  // 2) condizione di ON: coppie "tgt.col = src.col"
+  if (onAt !== -1 && pos >= onAt && (whens.length === 0 || pos < whens[0].at)) {
+    const limit = whens.length > 0 ? whens[0].at : sql.length
+    // il confronto parte DOPO la parola ON (altrimenti finirebbe nel lato sinistro)
+    return toAbs(pairCounterpart(pairTargetsInRange(sql, onAt + 'ON'.length, limit), pos))
+  }
+
+  // 3) rami WHEN …: SET dell'UPDATE (coppie) oppure INSERT … VALUES del NOT MATCHED
+  for (const w of whens) {
+    const limit = nextWhen(w.at)
+    if (pos < w.at || pos > limit) continue
+    const updateAt = first('UPDATE', w.at)
+    const insertAt = first('INSERT', w.at)
+    if (updateAt !== -1 && updateAt < limit && (insertAt === -1 || updateAt < insertAt)) {
+      const setAt = first('SET', updateAt)
+      if (setAt === -1 || setAt > limit) return null
+      const pairs = pairTargetsInRange(sql, setAt + 'SET'.length, limit)
+      return toAbs(pairCounterpart(pairs, pos))
+    }
+    if (insertAt !== -1 && insertAt < limit) {
+      const openRel = sql.indexOf('(', insertAt)
+      if (openRel === -1 || openRel > limit) return null
+      const closeRel = findMatchingParen(sql, openRel)
+      const colSlots = splitTopLevel(sql.slice(openRel + 1, closeRel ?? limit)).map(s => ({
+        start: openRel + 1 + s.start,
+        end: openRel + 1 + s.end,
+        text: s.text,
+      }))
+      if (colSlots.length === 0) return null
+      const valuesAt = first('VALUES', closeRel ?? insertAt)
+      if (valuesAt === -1 || valuesAt > limit) return null
+      const tupleOpen = sql.indexOf('(', valuesAt)
+      if (tupleOpen === -1 || tupleOpen > limit) return null
+      const tupleClose = findMatchingParen(sql, tupleOpen)
+      const valSlots = splitTopLevel(sql.slice(tupleOpen + 1, tupleClose ?? limit)).map(s => ({
+        start: tupleOpen + 1 + s.start,
+        end: tupleOpen + 1 + s.end,
+        text: s.text,
+      }))
+      if (valSlots.length === 0) return null
+      const inCols = pos >= openRel && (closeRel === null || pos <= closeRel)
+      if (inCols) {
+        const idx = insertSlotIndexAt(colSlots, pos)
+        const target = valSlots[idx]
+        return target ? toAbs({ start: target.start, end: target.end }) : null
+      }
+      const inValues = pos >= tupleOpen && (tupleClose === null || pos <= tupleClose)
+      if (inValues) {
+        const idx = insertSlotIndexAt(valSlots, pos)
+        const target = colSlots[idx]
+        return target ? toAbs({ start: target.start, end: target.end }) : null
+      }
+      return null
+    }
+    return null
+  }
+
+  return null
+}
+
+/**
+ * UPDATE … SET a = b, c = d …: cursore su un lato della coppia → si evidenzia l'altro
+ * (colonna → espressione e viceversa). Null fuori dalla SET.
+ */
+export function updateCorrespondingTarget(text: string, cursorOffset: number): HighlightRange | null {
+  const re = /\bUPDATE\b/gi
+  let m: RegExpExecArray | null
+  let last = -1
+  while ((m = re.exec(text)) !== null) {
+    if (m.index <= cursorOffset) last = m.index
+    else break
+  }
+  if (last === -1) return null
+  const semi = text.indexOf(';', last)
+  const end = semi === -1 ? text.length : semi
+  if (cursorOffset > end) return null
+  const keys = new Set(['SET', 'FROM', 'WHERE', 'OUTPUT', 'OPTION'])
+  const toks = topLevelWordOffsets(text.slice(last, end), keys)
+  const setTok = toks.find(t => t.word === 'SET')
+  if (!setTok) return null
+  const after = toks.find(t => t.at > setTok.at)
+  const limit = after ? last + after.at : end
+  if (cursorOffset < last + setTok.at || cursorOffset > limit) return null
+  const pairs = pairTargetsInRange(text, last + setTok.at + 'SET'.length, limit)
+  return pairCounterpart(pairs, cursorOffset)
+}
+
+/**
+ * Campo "corrispondente" da evidenziare, qualunque sia l'istruzione: MERGE (valori/colonne,
+ * coppie di SET e di ON), INSERT (colonne ↔ valori), UPDATE (colonne ↔ espressioni della SET).
+ */
+export function pairHighlightTarget(text: string, cursorOffset: number): HighlightRange | null {
+  return (
+    mergeCorrespondingTarget(text, cursorOffset) ??
+    insertCorrespondingTarget(text, cursorOffset) ??
+    updateCorrespondingTarget(text, cursorOffset)
+  )
+}
+
 // ---------- Valori di default per INSERT (aiuto sui VALUES) ----------
 
 /** Valore di default SQL per un tipo di colonna (NULL se nullable). */
@@ -1394,15 +1742,25 @@ export interface QualifiedColumnSuggestion {
  * con "alias." o "tabella." (es. "FROM RUN_MISSIONI r WHERE r.").
  * Restituisce l'elenco qualificato con il prefisso digitato.
  */
+/**
+ * Qualificatore (alias o nome tabella) che precede il punto: "pippo.", "[pippo].", "#tmp.",
+ * "@tab.", e anche mentre si digita il campo ("pippo.X"). Il '#'/'@' e le parentesi quadre
+ * servono per le tabelle temporanee e per gli alias scritti con le parentesi.
+ */
+export function qualifierBeforeDot(prefix: string): string | null {
+  const m = /(?:\[([^\]]+)\]|([#@]?[A-Za-z_][A-Za-z0-9_]*))\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)?$/.exec(prefix)
+  if (!m) return null
+  return m[1] ?? m[2] ?? null
+}
+
 export function buildQualifiedColumnSuggestions(
   stmtText: string,
   prefix: string,
   summary: DatabaseSummary,
 ): QualifiedColumnSuggestion[] {
-  // estrae l'identificatore prima del punto finale (es. "r." → "r")
-  const m = /([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*$/i.exec(prefix)
-  if (!m) return []
-  const qualifier = m[1]
+  // identificatore prima del punto finale (es. "r." / "[r]." / "#tmp.")
+  const qualifier = qualifierBeforeDot(prefix)
+  if (!qualifier) return []
 
   // mappa alias/tabella → TableInfo per lo statement
   const refs = extractStatementTableRefs(stmtText)
@@ -1412,10 +1770,11 @@ export function buildQualifiedColumnSuggestions(
   const table = refs.find(({ r }) => (r.alias ?? r.tableName).toLowerCase() === qualifier.toLowerCase())?.table
   if (!table?.columns) return []
 
-  const qual = sqlIdent(qualifier)
+  // insertText = SOLO il nome della colonna: il qualificatore (e il punto) sono già nel testo
+  // ("p." + "X_SCO"), altrimenti confermando il suggerimento si otterrebbe "p.p.X_SCO".
   return table.columns.map(c => ({
     name: c.name,
-    insertText: `${qual}.${sqlIdent(c.name)}`,
+    insertText: sqlIdent(c.name),
     dataType: c.dataType,
     isNullable: c.isNullable,
     documentation: columnInfoMarkdown(table, c),

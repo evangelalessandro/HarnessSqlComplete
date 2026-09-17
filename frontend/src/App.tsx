@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { BookOpen, Database as DbIcon, FilePlus2, Pin, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { BookOpen, Database as DbIcon, FilePlus2, Pin, Plus, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
-import { dbTabColor, detectPrintMagic, nextDragonLevel, normalizeTabIcon, TAB_ICON_PRESETS, toCreateOrAlterStatement } from './helpers'
+import { dbTabColor, detectPrintMagic, nextDragonLevel, normalizeTabIcon, scriptCreateTable, TAB_ICON_PRESETS, toCreateOrAlterStatement } from './helpers'
 import { openSqlFiles, saveSqlFile } from './fileSave'
 import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
-import { buildTabClosePlan, countClosableTabs, insertTabAfterActive } from './tabOps'
-import type { TabCloseMode } from './tabOps'
-import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryResult, RoutineCallGraph } from './types'
+import { buildTabClosePlan, countClosableTabs, insertTabAt } from './tabOps'
+import type { NewTabPosition, TabCloseMode } from './tabOps'
+import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryMessage, QueryResult, RoutineCallGraph } from './types'
 import { chooseResultTab } from './queryTabs'
+import { isRefreshSchemaShortcut, isToggleResultsShortcut } from './shortcuts'
 import {
   clearQueryStats,
   emptyQueryStats,
@@ -23,6 +24,8 @@ import {
   type QueryStats,
 } from './gamification'
 import { QueryStatsBadge, QueryStatsModal } from './components/QueryStatsPanel'
+import { hasErrorMessage, messageRevealLine, errorObjectsFor, routineStartLine } from './sqlMessages'
+import type { ErrorObjectRef } from './sqlMessages'
 import CallGraphModal from './components/CallGraphModal'
 import type { CallGraphTarget } from './components/CallGraphModal'
 import LoginScreen from './components/LoginScreen'
@@ -66,6 +69,18 @@ export default function App() {
   const [iconDraft, setIconDraft] = useState('')
   // Menu contestuale della tab (tasto destro): chiusure multiple in stile SSMS
   const [tabMenu, setTabMenu] = useState<{ id: string; x: number; y: number } | null>(null)
+  /**
+   * Riga su cui portare il cursore quando si apre un oggetto da un errore
+   * (es. "Procedura ws_X, Riga 42"): la consuma l'effetto che carica il testo della tab.
+   */
+  const pendingRevealRef = useRef<{ tabId: string; line: number } | null>(null)
+  /**
+   * Posizione del cursore (e scorrimento) di ogni tab: riaprendo una tab si torna dove si era,
+   * invece di saltare all'inizio del testo.
+   */
+  const tabCursorsRef = useRef<
+    Record<string, { selection: monaco.Selection | null; scrollTop: number; scrollLeft: number }>
+  >({})
   // Overflow delle tab: a capo su 2 righe; oltre compare il pulsante "»" con l'elenco
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const [tabOverflow, setTabOverflow] = useState(false)
@@ -166,7 +181,7 @@ export default function App() {
   // Ctrl+R (o Cmd+R): nasconde/mostra il pannello dei risultati (evita il refresh del browser)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+      if (isToggleResultsShortcut(e)) {
         e.preventDefault()
         setResultsVisible(v => !v)
       }
@@ -283,6 +298,13 @@ export default function App() {
     })
   }, [])
 
+  /**
+   * Dove aprire le nuove tab diverse da quella creata col pulsante "+": il valore vive in un
+   * ref perché `newEditorTab` è una callback stabile (usata anche da fuori).
+   */
+  const newTabPositionRef = useRef<NewTabPosition>(settings.newTabPosition)
+  newTabPositionRef.current = settings.newTabPosition
+
   // Applica il tema all'intera pagina (html.theme-light) e all'editor Monaco
   useEffect(() => {
     document.documentElement.classList.toggle('theme-light', settings.theme === 'vs')
@@ -365,8 +387,39 @@ export default function App() {
   // Quando cambia la tab attiva (o arriva l'editor), mostra il contenuto della tab
   useEffect(() => {
     if (!editor) return
-    const tab = editorTabs.find(t => t.id === activeEditorTab)
+    const tabId = activeEditorTab
+    const tab = editorTabs.find(t => t.id === tabId)
     if (tab && editor.getValue() !== tab.sql) editor.setValue(tab.sql)
+    // Apertura di un oggetto DA UN ERRORE: il cursore va sulla riga indicata da SQL Server,
+    // così si vede subito dove ha fallito ("Procedura X, Riga N").
+    const pending = pendingRevealRef.current
+    if (tab && pending && pending.tabId === tab.id) {
+      pendingRevealRef.current = null
+      const line = Math.min(Math.max(1, pending.line), editor.getModel()?.getLineCount() ?? pending.line)
+      editor.setPosition({ lineNumber: line, column: 1 })
+      editor.revealLineInCenter(line)
+      editor.focus()
+    } else {
+      // Riaprendo una tab il cursore NON deve tornare all'inizio: si rimette dove era
+      // (posizione, eventuale selezione e scorrimento salvati uscendo da quella tab).
+      const salvato = tabCursorsRef.current[tabId]
+      if (salvato) {
+        if (salvato.selection) editor.setSelection(salvato.selection)
+        editor.setScrollTop(salvato.scrollTop, monaco.editor.ScrollType.Immediate)
+        editor.setScrollLeft(salvato.scrollLeft, monaco.editor.ScrollType.Immediate)
+      }
+    }
+    return () => {
+      // si sta lasciando questa tab: si ricorda dov'era il cursore
+      const pos = editor.getPosition()
+      if (pos) {
+        tabCursorsRef.current[tabId] = {
+          selection: editor.getSelection(),
+          scrollTop: editor.getScrollTop(),
+          scrollLeft: editor.getScrollLeft(),
+        }
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, activeEditorTab])
 
@@ -423,6 +476,8 @@ export default function App() {
       fromFile = false,
       fileHandle: FileSystemFileHandle | null = null,
       fileName?: string,
+      /** Dove mettere la nuova tab; se non indicato si usa la preferenza dell'utente. */
+      position?: NewTabPosition,
     ) => {
       // il progressivo si azzera quando non c'è nessuna tab
       if (editorTabs.length === 0) tabCounter.current = 1
@@ -437,8 +492,10 @@ export default function App() {
         fileHandle,
         fileName: fileName ?? (fromFile ? title : undefined),
       }
-      setEditorTabs(prev => insertTabAfterActive(prev, tab, activeEditorTab))
+      const dove = position ?? newTabPositionRef.current
+      setEditorTabs(prev => insertTabAt(prev, tab, activeEditorTab, dove))
       setActiveEditorTab(tab.id)
+      return tab.id
     },
     [editorTabs.length, activeEditorTab, connection],
   )
@@ -723,21 +780,39 @@ export default function App() {
   const [summaryRetryTick, setSummaryRetryTick] = useState(0)
   const [summaryReloading, setSummaryReloading] = useState(false)
 
-  /** Ricarica manuale dei metadati (pulsante nell'header quando lo schema manca). */
+  /** Aggiorna lo schema: rilegge i metadati dal database (pulsante o Ctrl+Shift+R).
+   *  Forza il backend a buttare via la sua cache e azzera il grafo delle chiamate, così
+   *  l'albero laterale e il diagramma non restano quelli di prima. */
   const reloadSummary = useCallback(async () => {
     if (!connection) return
     setSummaryReloading(true)
     setBanner(null)
     try {
-      const s = await api.getSummary(connection.connectionId)
+      const s = await api.getSummary(connection.connectionId, true)
       setSummary(s)
+      setCallGraph(null) // il diagramma va riletto: nel frattempo le routine possono essere cambiate
       summaryRetries.current = 0
+      console.log(`[schema] aggiornato: ${s.tables.length} tabelle, ${s.views.length} viste, ${s.procedures.length} routine`)
     } catch (e) {
-      setBanner(`Schema non caricato: ${e instanceof Error ? e.message : String(e)}`)
+      setBanner(`Schema non aggiornato: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setSummaryReloading(false)
     }
   }, [connection])
+
+  // Ctrl+Shift+R (o Cmd+Shift+R): aggiorna lo schema, come il "Refresh Local Cache" di SSMS.
+  // Nel browser la stessa combinazione ricaricherebbe la pagina ignorando la cache: il
+  // preventDefault è quello che la rende utilizzabile qui (verificato: la pagina non si ricarica).
+  // L'effetto sta DOPO la definizione di reloadSummary (prima sarebbe in TDZ → pagina bianca).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!isRefreshSchemaShortcut(e)) return
+      e.preventDefault()
+      void reloadSummary()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [reloadSummary])
 
   useEffect(() => {
     if (!connection || summary) return
@@ -809,16 +884,28 @@ export default function App() {
     [newEditorTab, connection],
   )
 
-  /** Apre una stored procedure / funzione / vista / trigger: 'alter' genera CREATE OR ALTER, 'open' la definizione CREATE. */
+  /**
+   * Apre una stored procedure / funzione / vista / trigger: 'alter' genera CREATE OR ALTER,
+   * 'open' la definizione CREATE. Con `revealLine` il cursore va subito su quella riga della
+   * definizione (serve agli errori: "Procedura X, Riga N").
+   */
   const handleOpenObject = useCallback(
-    async (_kind: 'procedure' | 'function' | 'view' | 'trigger', schema: string, name: string, mode: 'alter' | 'open') => {
+    async (
+      _kind: 'procedure' | 'function' | 'view' | 'trigger',
+      schema: string,
+      name: string,
+      mode: 'alter' | 'open',
+      revealLine?: number,
+    ) => {
       if (!connection) return
       setBanner(null)
       try {
         const { definition } = await api.getObjectDefinition(connection.connectionId, schema, name)
         const sql = mode === 'alter' ? toCreateOrAlterStatement(definition) : definition
         const title = `${mode === 'alter' ? 'CREATE OR ALTER ' : ''}${schema === 'dbo' ? name : `${schema}.${name}`}`
-        newEditorTab(title, sql, connection?.database)
+        const tabId = newEditorTab(title, sql, connection?.database)
+        // la riga si applica DOPO che la tab è attiva: l'effetto che carica il testo la usa
+        if (revealLine && revealLine > 0) pendingRevealRef.current = { tabId, line: revealLine }
       } catch (e) {
         setBanner(e instanceof Error ? e.message : String(e))
       }
@@ -854,6 +941,67 @@ export default function App() {
       void loadCallGraph()
     },
     [loadCallGraph],
+  )
+
+  /**
+   * Apre un oggetto citato in un messaggio di errore, con lo stesso risultato del tasto destro
+   * nell'albero: "Modifica" (CREATE OR ALTER) per routine, viste e trigger; per le tabelle lo
+   * script CREATE, che è l'unico modo di "aprirne la definizione".
+   */
+  const openObjectFromError = useCallback(
+    (o: ErrorObjectRef) => {
+      if (o.kind === 'table') {
+        const t = summary?.tables.find(x => x.name.toLowerCase() === o.name.toLowerCase())
+        if (t) handleOpenScript(`CREATE ${o.schema}.${o.name}`, scriptCreateTable(t))
+        return
+      }
+      // la riga dell'errore è quella interna alla procedura: aprendola si va direttamente lì
+      void handleOpenObject(o.kind, o.schema, o.name, 'alter', o.line)
+    },
+    [summary, handleOpenScript, handleOpenObject],
+  )
+
+  /**
+   * ERRORE: doppio clic sul messaggio → il cursore va sulla riga indicata da SQL Server.
+   *
+   * Se l'errore arriva da una procedura, SQL Server conta le righe DENTRO la sua definizione
+   * ("Procedura X, Riga 64"), mentre la tab dell'editor può contenere altro testo prima:
+   * si cerca dove inizia la definizione e si somma lo scostamento (CREATE alla riga 101 →
+   * "Riga 64" è la riga 164 della tab). Se la definizione è in un'altra tab aperta si passa
+   * a quella; se non è aperta da nessuna parte si apre l'oggetto citato dal database.
+   */
+  const revealErrorLine = useCallback(
+    (m: QueryMessage) => {
+      const tab = editorTabs.find(t => t.id === activeEditorTab) ?? null
+      const line = messageRevealLine(m, tab?.sql ?? '')
+      console.log(
+        `[errore] doppio clic: procedura=${m.procedure ?? '-'} riga=${m.line ?? '-'} → riga della tab ${line ?? '-'}`,
+      )
+      if (!line) return
+      const nelTesto = !m.procedure || routineStartLine(tab?.sql ?? '', m.procedure) !== null
+      if (editor && tab && nelTesto) {
+        const max = editor.getModel()?.getLineCount() ?? line
+        const target = Math.min(Math.max(1, line), max)
+        editor.setPosition({ lineNumber: target, column: 1 })
+        editor.revealLineInCenter(target)
+        editor.focus()
+        return
+      }
+      if (m.procedure) {
+        const altra = editorTabs.find(
+          t => t.id !== activeEditorTab && routineStartLine(t.sql, m.procedure ?? '') !== null,
+        )
+        if (altra) {
+          pendingRevealRef.current = { tabId: altra.id, line }
+          setActiveEditorTab(altra.id)
+          return
+        }
+      }
+      // non è aperta in nessuna tab: si apre l'oggetto citato (definizione dal database)
+      const ref = errorObjectsFor(m, summary)[0]
+      if (ref) openObjectFromError(ref)
+    },
+    [editor, editorTabs, activeEditorTab, summary, openObjectFromError],
   )
 
   /** Apre i file SQL trascinati (drag & drop) in nuove tab (nome = file, sovrascrittura via picker). */  const handleOpenFiles = useCallback(
@@ -976,18 +1124,16 @@ export default function App() {
         {summary ? (
           <Badge tone="emerald">Schema: {summary.tables.length} tabelle</Badge>
         ) : (
-          <span className="flex items-center gap-1">
-            <Badge tone="rose">Schema non caricato</Badge>
-            <button
-              onClick={() => void reloadSummary()}
-              disabled={summaryReloading}
-              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-rose-200 transition-colors hover:bg-rose-950/60 disabled:opacity-50"
-              title="Ricarica i metadati (tabelle, colonne, viste…) dal database"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${summaryReloading ? 'animate-spin' : ''}`} /> Ricarica schema
-            </button>
-          </span>
+          <Badge tone="rose">Schema non caricato</Badge>
         )}
+        <button
+          onClick={() => void reloadSummary()}
+          disabled={summaryReloading}
+          className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
+          title="Aggiorna lo schema dal database (Ctrl+Shift+R) — rilegge tabelle, colonne, viste e routine"
+        >
+          <RefreshCw className={`h-4 w-4 ${summaryReloading ? 'animate-spin' : ''}`} /> Aggiorna schema
+        </button>
         <button
           onClick={() => setHelpOpen(true)}
           className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
@@ -1145,6 +1291,30 @@ export default function App() {
                 )}
               </div>
             ))}
+            {/* UN solo pulsante per la nuova tab: apre a DESTRA, subito dopo quella attiva.
+                (Shift+clic o clic col tasto centrale la aprono a sinistra, come prima tab:
+                è una scorciatoia, non un secondo pulsante.) */}
+            <button
+              onClick={e =>
+                newEditorTab(
+                  undefined,
+                  DEFAULT_SQL,
+                  undefined,
+                  false,
+                  null,
+                  undefined,
+                  e.shiftKey ? 'start' : 'afterActive',
+                )
+              }
+              onAuxClick={e => {
+                if (e.button === 1) newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, 'start')
+              }}
+              className="inline-flex h-7 shrink-0 items-center gap-1 rounded px-2 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+              title="Nuova query (a destra, dopo quella attiva) — Shift+clic o clic col tasto centrale per aprirla a sinistra"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Nuova
+            </button>
             </div>
             {tabOverflow && (
               <div className="relative shrink-0">
@@ -1193,13 +1363,6 @@ export default function App() {
                 )}
               </div>
             )}
-            <button
-              onClick={() => newEditorTab()}
-              className="ml-1 inline-flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-              title="Nuova query"
-            >
-              <FilePlus2 className="h-3.5 w-3.5" /> Nuova
-            </button>
           </div>
 
           {/* descrizione della tab attiva (nota libera) */}
@@ -1292,13 +1455,26 @@ export default function App() {
                   icon={<TerminalSquare className="h-4 w-4" />}
                   label="Messaggi / PRINT"
                   count={activeResult?.messages.length}
+                  error={hasErrorMessage(activeResult?.errors)}
                 />
               </div>
               <div className="min-h-0 flex-1">
                 {activeResultTab === 'results' ? (
-                  <ResultsPanel result={activeResult} executing={activeExecuting} sourceSql={activeSql} />
+                  <ResultsPanel
+                    result={activeResult}
+                    executing={activeExecuting}
+                    sourceSql={activeSql}
+                    summary={summary}
+                    onOpenObject={openObjectFromError}
+                    onJumpToLine={revealErrorLine}
+                  />
                 ) : (
-                  <PrintPanel result={activeResult} />
+                  <PrintPanel
+                    result={activeResult}
+                    summary={summary}
+                    onOpenObject={openObjectFromError}
+                    onJumpToLine={revealErrorLine}
+                  />
                 )}
               </div>
             </div>
@@ -1516,12 +1692,15 @@ function TabButton({
   icon,
   label,
   count,
+  error,
 }: {
   active: boolean
   onClick: () => void
   icon: ReactNode
   label: string
   count?: number
+  /** Evidenzia in rosso il contatore (es. errori nei messaggi). */
+  error?: boolean
 }) {
   return (
     <button
@@ -1529,13 +1708,21 @@ function TabButton({
       className={`inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors ${
         active
           ? 'border-sky-500 text-zinc-100'
-          : 'border-transparent text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'
+          : error
+            ? 'border-transparent text-rose-400 hover:border-rose-800'
+            : 'border-transparent text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'
       }`}
     >
       {icon}
       {label}
       {count !== undefined && count > 0 && (
-        <span className="rounded-full bg-zinc-800 px-1.5 text-[10px] text-zinc-400">{count}</span>
+        <span
+          className={`rounded-full px-1.5 text-[10px] ${
+            error ? 'bg-rose-900/70 text-rose-200' : 'bg-zinc-800 text-zinc-400'
+          }`}
+        >
+          {count}
+        </span>
       )}
     </button>
   )

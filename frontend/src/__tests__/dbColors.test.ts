@@ -17,8 +17,8 @@ beforeEach(() => {
 
 describe('dbColors: persistenza colori personalizzati', () => {
   it('roundtrip save/load', () => {
-    saveDbColors({ WSBRITVIC: '#123456', master: '#abcdef' })
-    expect(loadDbColors()).toEqual({ WSBRITVIC: '#123456', master: '#abcdef' })
+    saveDbColors({ DEMOSTORE: '#123456', master: '#abcdef' })
+    expect(loadDbColors()).toEqual({ DEMOSTORE: '#123456', master: '#abcdef' })
   })
 
   it('nessun dato → oggetto vuoto', () => {

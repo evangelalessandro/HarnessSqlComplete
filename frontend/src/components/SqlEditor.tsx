@@ -8,7 +8,7 @@ import type { DatabaseSummary } from '../types'
 
 import { resolveTokenAt } from '../helpers'
 import DataPreviewModal from './DataPreviewModal'
-import { registerInsertHighlight } from '../sqlInsertHighlight'
+import { registerPairHighlight } from '../sqlPairHighlight'
 import { positionAt, runSqlDiagnostics } from '../sqlDiagnostics'
 import { computeBlockGuides } from '../sqlBlockGuides'
 import { computeFoldingRanges } from '../sqlFolding'
@@ -364,7 +364,7 @@ export default function SqlEditor({
     registerSqlDiagnostics()
     registerBlockGuides()
     registerFolding()
-    disposablesRef.current.push(...registerInsertHighlight(editor))
+    disposablesRef.current.push(...registerPairHighlight(editor))
     disposablesRef.current.push(
       registerSqlHover(() => ({
         summary: stateRef.current.summary,
@@ -745,6 +745,16 @@ export default function SqlEditor({
             quickSuggestions: { other: 'on', comments: false, strings: false },
             wordBasedSuggestions: 'off',
             inlineSuggest: { enabled: true, showToolbar: 'onHover' },
+            // scrollbar: canale largo e cursore arrotondato (12px su 16), comodo da afferrare
+            // col mouse; niente ombre e la rotella non viene "catturata" ai bordi
+            scrollbar: {
+              verticalScrollbarSize: 16,
+              horizontalScrollbarSize: 16,
+              verticalSliderSize: 12,
+              horizontalSliderSize: 12,
+              useShadows: false,
+              alwaysConsumeMouseWheel: false,
+            },
           }}
         />
       </div>

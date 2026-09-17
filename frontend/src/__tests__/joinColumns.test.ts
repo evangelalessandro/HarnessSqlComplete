@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildColumnContextSuggestions } from '../helpers'
 import { shouldSuggestJoinConditions } from '../intellisenseContext'
-import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
+import { mkCol, mkTbl, demoStoreLikeSummary } from './schema'
 
 /**
  * "i campi delle tabelle in join ci devo comunque essere sempre": digitando mis_/cel_
@@ -9,7 +9,7 @@ import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
  * (e gli snippet "AND ..." delle condizioni ON NON devono coprirle).
  */
 describe('campi delle tabelle in join: sempre presenti digitando mis_/cel_', () => {
-  const summary = wsbritvicLikeSummary()
+  const summary = demoStoreLikeSummary()
   summary.tables[0].columns!.push(mkCol('UDC_S_CORRIDOIO', 'nvarchar'), mkCol('UDC_S_CELLA', 'nvarchar')) // DAT_UDC
   summary.tables[1].columns!.push(mkCol('MIS_D_CELLA', 'nvarchar'), mkCol('MIS_S_CELLA', 'nvarchar')) // RUN_MISSIONI
   summary.tables.push(

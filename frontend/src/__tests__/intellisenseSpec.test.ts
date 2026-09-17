@@ -8,18 +8,18 @@ import { describe, expect, it } from 'vitest'
 import * as monaco from 'monaco-editor'
 import { provideSqlCompletions } from '../sqlCompletions'
 import type { DatabaseSummary } from '../types'
-import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
+import { mkCol, mkTbl, demoStoreLikeSummary } from './schema'
 
 const K = monaco.languages.CompletionItemKind
 
 function summaryFixture(): DatabaseSummary {
-  const s = wsbritvicLikeSummary()
+  const s = demoStoreLikeSummary()
   s.tables.push(
     mkTbl('dbo', 'MAG_CORRIDOI', [mkCol('COR_CORRIDOIO', 'int'), mkCol('COR_AREA', 'nvarchar')]),
   )
   s.functions.push(
-    { schema: 'dbo', name: 'fn_GetMissioni', type: 'SQL_INLINE_TABLE_VALUED_FUNCTION' },
-    { schema: 'dbo', name: 'fn_td', type: 'SQL_SCALAR_FUNCTION' },
+    { schema: 'dbo', name: 'fn_GIPAVUDUBES', type: 'SQL_INLINE_TABLE_VALUED_FUNCTION' },
+    { schema: 'dbo', name: 'fn_tu', type: 'SQL_SCALAR_FUNCTION' },
   )
   return s
 }
@@ -64,14 +64,14 @@ describe('intellisense T-SQL: dopo FROM/JOIN solo SORGENTI (tabelle, viste, funz
   it('FROM: tabelle/viste/funzioni tabellari, mai colonne o procedure', () => {
     expectOnly('SELECT * FROM ', [K.Struct, K.Interface, K.Class])
     expectSome('SELECT * FROM ', K.Struct)
-    expect(LABELS('SELECT * FROM ')).toContain('dbo.fn_GetMissioni')
+    expect(LABELS('SELECT * FROM ')).toContain('dbo.fn_GIPAVUDUBES')
   })
 
   it('JOIN: stesse sorgenti (e le funzioni tabellari, non quelle scalari)', () => {
     expectOnly('SELECT * FROM dbo.RUN_MISSIONI inner join ', [K.Struct, K.Interface, K.Class])
     const l = LABELS('SELECT * FROM dbo.RUN_MISSIONI inner join ')
-    expect(l).toContain('dbo.fn_GetMissioni')
-    expect(l).not.toContain('dbo.fn_td')
+    expect(l).toContain('dbo.fn_GIPAVUDUBES')
+    expect(l).not.toContain('dbo.fn_tu')
   })
 
   it('le tabelle NON sono proposte dove servono espressioni (WHERE/SELECT-list)', () => {
@@ -98,7 +98,7 @@ describe('intellisense T-SQL: nelle espressioni solo COLONNE e FUNZIONI', () => 
     expectOnly('SELECT ', [K.Field, K.Keyword, K.Function, K.Snippet])
     // le voci "Function" qui sono le funzioni SCALARI dell'utente, non le stored procedure
     const l = LABELS('SELECT ')
-    expect(l).toContain('dbo.fn_td')
+    expect(l).toContain('dbo.fn_tu')
     expect(l.some(x => x.includes('zzz_test_proc'))).toBe(false)
   })
 

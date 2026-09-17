@@ -6,6 +6,7 @@
 // Logica PURA e testabile: nessuna dipendenza da Monaco o dal backend.
 
 import { tokenizeSql } from './helpers'
+import type { SqlToken } from './helpers'
 import type { ColumnInfo, TableInfo } from './types'
 
 /** Salta stringhe e commenti a partire da `i` (ritorna l'indice successivo, o `i`). */
@@ -152,33 +153,120 @@ function makeColumn(name: string, dataType: string): ColumnInfo {
   }
 }
 
+/** TableInfo "locale" (temporanea, variabile tabella o CTE) con le colonne note. */
+function makeLocalTable(name: string, columns: ColumnInfo[]): TableInfo {
+  return {
+    schema: 'dbo',
+    name,
+    columnCount: columns.length,
+    createDate: null,
+    columns,
+    usage: null,
+    extendedProperties: null,
+  }
+}
+
+/**
+ * Indice della parola 'as' a livello 0 nell'elemento (quello di alias), o -1.
+ * Serve a NON scambiare per alias l'`as` interno di una funzione:
+ * "CAST('' as nvarchar(50)) as X_SSCC_DEST" → l'alias è X_SSCC_DEST, non nvarchar.
+ */
+function topLevelAs(item: string): number {
+  let depth = 0
+  let i = 0
+  while (i < item.length) {
+    const skipped = skipNoise(item, i)
+    if (skipped !== i) {
+      i = skipped
+      continue
+    }
+    const ch = item[i]
+    if (ch === '(') {
+      depth++
+      i++
+      continue
+    }
+    if (ch === ')') {
+      depth = Math.max(0, depth - 1)
+      i++
+      continue
+    }
+    if (depth === 0 && (ch === 'a' || ch === 'A') && (item[i + 1] === 's' || item[i + 1] === 'S') && !/[\w$#]/.test(item[i + 2] ?? '') && !/[\w$#]/.test(item[i - 1] ?? '')) {
+      return i
+    }
+    i++
+  }
+  return -1
+}
+
+/** True se fra il testo precedente e il token c'è un OPERATORE o una parentesi aperta (allora
+ *  non è un alias): "a + b" → b non è un alias; "CAST(x as int) Y" → Y è un alias. */
+function operatorePrimaDi(item: string, tokStart: number): boolean {
+  let k = tokStart - 1
+  while (k >= 0 && /\s/.test(item[k])) k--
+  if (k < 0) return true
+  return '+-*/%=<>|&,(['.includes(item[k])
+}
+
+/** Parole che non sono mai un alias (chiudono un'espressione o un CASE). */
+const NON_ALIAS = new Set([
+  'end', 'then', 'else', 'when', 'case', 'null', 'as', 'and', 'or', 'not', 'asc', 'desc',
+  'distinct', 'all', 'by', 'from', 'where', 'on', 'over', 'partition',
+])
+
+/** Elementi di una select-list: nomi di colonna e presenza di '*'. */
+export function selectListInfo(list: string): { names: string[]; star: boolean } {
+  const names: string[] = []
+  let star = false
+  // "SELECT TOP 10 *", "SELECT DISTINCT *": il prefisso non fa parte della lista
+  const senzaPrefisso = list
+    .replace(/^\s*(?:DISTINCT|ALL)\s+/i, '')
+    .replace(/^\s*TOP\s*(?:\(\s*\d+\s*\)|\d+)\s*(?:PERCENT)?\s*(?:WITH\s+TIES\s*)?/i, '')
+  for (const raw of splitTopLevel(senzaPrefisso)) {
+    const item = raw.replace(/^\s*(?:DISTINCT|ALL)\s+/i, '').trim()
+    if (!item) continue
+    // "*" oppure "alias.*": tutte le colonne della sorgente
+    if (item === '*' || /(?:^|\.)\s*\*$/.test(item)) {
+      star = true
+      continue
+    }
+    const words = tokenizeSql(item)
+    if (words.length === 0) continue
+    const asAt = topLevelAs(item)
+    if (asAt !== -1) {
+      const afterAs = item.slice(asAt + 2)
+      const alias = tokenizeSql(afterAs)[0]
+      if (alias) {
+        names.push(alias.text)
+        continue
+      }
+    }
+    // nome semplice (eventualmente qualificato)
+    const simple = /^(?:\[[^\]]+\]|[A-Za-z_@#][\w#$@]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_@#][\w#$@]*))?$/
+    if (simple.test(item)) {
+      names.push(words[words.length - 1].text)
+      continue
+    }
+    // "espressione ALIAS": l'ultimo identificatore è l'alias se non ha un operatore davanti
+    // (es. "SCO_GIAC + SCO_VER X_GIAC", "0 X_CORRIDOIO", "CAST(0 as decimal(15,0)) X_UDC_DEST")
+    const ultimo = words[words.length - 1]
+    if (!ultimo || NON_ALIAS.has(ultimo.lower)) continue
+    if (operatorePrimaDi(item, ultimo.start)) continue
+    // il token che precede non deve essere 'as' (sarebbe il tipo di un CAST: "cast(x as int)")
+    const precedente = words[words.length - 2]
+    if (precedente?.lower === 'as') continue
+    names.push(ultimo.text)
+  }
+  return { names, star }
+}
+
 /**
  * Nomi delle colonne di una select-list (per "SELECT … INTO #t"):
  * "col", "a.col", "expr AS alias", "expr alias" → nome; espressioni senza alias → ignorate
  * (SQL Server non assegna loro un nome).
  */
 export function parseSelectListNames(list: string): string[] {
-  const out: string[] = []
-  for (const raw of splitTopLevel(list)) {
-    const item = raw.replace(/^\s*(?:DISTINCT|ALL)\s+/i, '').trim()
-    if (!item || item === '*') continue
-    const words = tokenizeSql(item)
-    if (words.length === 0) continue
-    const asIdx = words.findIndex(w => w.lower === 'as')
-    if (asIdx !== -1 && words[asIdx + 1]) {
-      out.push(words[asIdx + 1].text)
-      continue
-    }
-    // nome semplice (eventualmente qualificato) o "espressione alias" senza operatori
-    const simple = /^(?:\[[^\]]+\]|[A-Za-z_@#][\w#$@]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_@#][\w#$@]*))?$/
-    if (simple.test(item)) {
-      out.push(words[words.length - 1].text)
-      continue
-    }
-    const hasOperators = /[+\-*/%()=<>]/.test(item)
-    if (!hasOperators && words.length >= 2) out.push(words[words.length - 1].text)
-  }
-  return out
+  return selectListInfo(list).names
 }
 
 /** Trova l'indice del token '(' della lista, se il segmento è "nome (" (senza righe di mezzo). */
@@ -190,15 +278,132 @@ function columnListOf(text: string, nameTokEnd: number): ColumnInfo[] {
   return parseColumnDefs(text.slice(open + 1, close))
 }
 
+/** Parola (o carattere) che precede `from`, saltando SOLO spazi: serve a capire se il nome di
+ *  una CTE è preceduto da "with" o da una virgola. Scansione all'indietro, niente regex:
+ *  la versione con `text.slice(0, i).replace(/(?:\s|…)*$/, '')` esplodeva con i file grandi
+ *  (backtracking catastrofico → la pagina si bloccava digitando in una store lunga). */
+function primaPrimaDi(text: string, from: number): string {
+  let k = from - 1
+  while (k >= 0 && /\s/.test(text[k])) k--
+  if (k < 0) return ''
+  if (!/[A-Za-z_]/.test(text[k])) return text[k]
+  let inizio = k
+  while (inizio > 0 && /[A-Za-z0-9_]/.test(text[inizio - 1])) inizio--
+  return text.slice(inizio, k + 1)
+}
+
+/**
+ * Colonne delle CTE definite nel testo ("with tbl as (select …), altra as (…)"), così una
+ * "SELECT * INTO #t FROM tbl" può copiarle: senza questo le colonne della CTE (che spesso
+ * sono alias: "SCO_SCOMPARTO X_SCO") non arrivano all'intellisense.
+ * La risoluzione dello '*' dentro una CTE usa le tabelle note e le altre CTE.
+ */
+function extractCteColumns(
+  text: string,
+  tokens: SqlToken[],
+  knownTables: TableInfo[],
+): Map<string, { name: string; columns: ColumnInfo[] }> {
+  const map = new Map<string, { name: string; columns: ColumnInfo[] }>()
+
+  /** Colonne di una sorgente risolvibile: CTE o tabella nota. */
+  const columnsOf = (name: string, depth = 0): ColumnInfo[] => {
+    if (depth > 4 || !name) return []
+    const cte = map.get(name.toLowerCase())
+    if (cte) return cte.columns
+    const known = knownTables.find(t => t.name.toLowerCase() === name.toLowerCase())
+    return known?.columns ?? []
+  }
+
+  /** Colonne del corpo di una CTE a partire dalla sua SELECT. */
+  const bodyColumns = (openParen: number, closeParen: number, depth: number): ColumnInfo[] => {
+    const body = text.slice(openParen + 1, closeParen)
+    const bodyTokens = tokenizeSql(body)
+    const selectTok = bodyTokens.find(t => t.lower === 'select')
+    if (!selectTok) return []
+    let fromTok: SqlToken | undefined
+    let par = 0
+    for (let i = 0; i < bodyTokens.length; i++) {
+      const t = bodyTokens[i]
+      if (t.start < selectTok.start) continue
+      // il FROM di primo livello del corpo chiude la select-list
+      const between = body.slice(bodyTokens[i - 1]?.end ?? 0, t.start)
+      par += (between.match(/\(/g) ?? []).length - (between.match(/\)/g) ?? []).length
+      if (par <= 0 && t.lower === 'from') {
+        fromTok = t
+        break
+      }
+    }
+    const listText = body.slice(selectTok.end, fromTok ? fromTok.start : body.length)
+    const info = selectListInfo(listText)
+    const cols: ColumnInfo[] = info.names.map(n => makeColumn(n, ''))
+    if (info.star && fromTok) {
+      const src = bodyTokens[bodyTokens.indexOf(fromTok) + 1]
+      for (const c of columnsOf(src?.text ?? '', depth + 1)) {
+        if (!cols.some(x => x.name.toLowerCase() === c.name.toLowerCase())) cols.push(makeColumn(c.name, c.dataType))
+      }
+    }
+    return cols
+  }
+
+  // "with NOME as ( … )" e le CTE successive ", NOME as ( … )": il tokenizer non restituisce
+  // la virgola, quindi si guarda il TESTO prima del nome
+  for (let i = 2; i < tokens.length; i++) {
+    if (tokens[i].lower !== 'as') continue
+    const nameTok = tokens[i - 1]
+    if (!nameTok || nameTok.lower === 'as') continue
+    if (isLocalTableName(nameAt(text, nameTok))) continue
+    const prima = primaPrimaDi(text, nameTok.start)
+    if (!/^with$/i.test(prima) && prima !== ',') continue
+    // la "(" della CTE può essere a capo ("with nome\n as (select …)"): non si usa
+    // findOpenParen, che si ferma al newline (va bene per "nome (colonne)" ma non qui).
+    // Ricerca LIMITATA: la parentesi è sempre a pochi caratteri dal nome.
+    let open = -1
+    const limite = Math.min(text.length, tokens[i].end + 4000)
+    for (let k = tokens[i].end; k < limite; k++) {
+      const skipped = skipNoise(text, k)
+      if (skipped !== k) {
+        k = skipped - 1
+        continue
+      }
+      if (text[k] === '(') {
+        open = k
+        break
+      }
+      if (text[k] === ';') break
+    }
+    if (open === -1) continue
+    // il corpo di una CTE inizia con SELECT (evita di scambiare per CTE altro codice)
+    const dopoParen = text.slice(open + 1).replace(/^[\s(]+/, '')
+    if (!/^select\b/i.test(dopoParen)) continue
+    const close = matchParen(text, open)
+    if (close === -1) continue
+    map.set(nameTok.lower, { name: nameTok.text, columns: bodyColumns(open, close, 0) })
+  }
+  return map
+}
+
+/**
+ * CTE del testo come "tabelle" locali (nome della CTE + colonne della sua select-list).
+ * Servono all'intellisense per "from c where c." / "from c pippo where pippo." e per le
+ * colonne non qualificate: le CTE, come le temporanee, non sono nello schema del database.
+ */
+export function extractCteTables(text: string, knownTables: TableInfo[] = []): TableInfo[] {
+  const tokens = tokenizeSql(text)
+  return [...extractCteColumns(text, tokens, knownTables).values()]
+    .filter(cte => cte.columns.length > 0)
+    .map(cte => makeLocalTable(cte.name, cte.columns))
+}
+
 /**
  * Tabelle locali definite nel testo. Le definizioni dentro commenti/stringhe sono
  * ignorate; se la stessa tabella è definita più volte le colonne vengono UNITE
  * (vince il tipo già noto). Per "SELECT * INTO #t FROM x" le colonne sono copiate
- * da `knownTables` quando la tabella sorgente è nota.
+ * da `knownTables` (o dalla CTE) quando la tabella sorgente è nota.
  */
 export function extractLocalTables(text: string, knownTables: TableInfo[] = []): TableInfo[] {
   const tokens = tokenizeSql(text)
   const byName = new Map<string, TableInfo>()
+  const cteColumns = extractCteColumns(text, tokens, knownTables)
 
   const ensure = (name: string): TableInfo => {
     const key = name.toLowerCase()
@@ -284,15 +489,20 @@ export function extractLocalTables(text: string, knownTables: TableInfo[] = []):
         const table = ensure(intoName)
         if (isSelectInto) {
           const listText = text.slice(tokens[start].end, tk.start)
-          const names = parseSelectListNames(listText)
-          if (names.length > 0) {
-            for (const n of names) addColumn(table, makeColumn(n, ''))
-          } else if (listText.includes('*')) {
-            // "SELECT * INTO #t FROM x": copia le colonne della sorgente
+          const info = selectListInfo(listText)
+          for (const n of info.names) addColumn(table, makeColumn(n, ''))
+          if (info.star) {
+            // "SELECT … * … INTO #t FROM x": le colonne arrivano dalla sorgente, che può
+            // essere una CTE del testo, un'altra tabella locale o una tabella dello schema
             const fromTok = tokens.find((t, idx) => idx > i && t.lower === 'from')
-            const srcName = fromTok ? tokens[tokens.indexOf(fromTok) + 1] : undefined
-            const src = srcName ? findByLower(srcName.text) : undefined
-            for (const c of src?.columns ?? []) addColumn(table, makeColumn(c.name, c.dataType))
+            const srcTok = fromTok ? tokens[tokens.indexOf(fromTok) + 1] : undefined
+            const srcName = srcTok ? nameAt(text, srcTok) : ''
+            const srcCols =
+              cteColumns.get(srcName.toLowerCase())?.columns ??
+              byName.get(srcName.toLowerCase())?.columns ??
+              findByLower(srcName)?.columns ??
+              []
+            for (const c of srcCols) addColumn(table, makeColumn(c.name, c.dataType))
           }
         }
         continue

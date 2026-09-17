@@ -15,6 +15,8 @@ public class QueryService
         var sw = Stopwatch.StartNew();
         var messages = new List<string>();
         var sets = new List<QueryResultSet>();
+        // messaggi/errori con numero, livello, stato, PROCEDURA e riga (come i "Messaggi" di SSMS)
+        var details = new List<QueryMessage>();
         long totalAffected = 0;
         string? error = null;
         // riga di inizio del batch in esecuzione (per riportare la riga esatta negli errori)
@@ -30,10 +32,24 @@ public class QueryService
                 // riporta la riga assoluta (i PRINT hanno Number 0 → niente prefisso)
                 foreach (SqlError err in e.Errors)
                 {
-                    var text = err.Number == 0
-                        ? err.Message
-                        : $"Riga {currentStartLine + Math.Max(0, err.LineNumber - 1)}: {err.Message}";
-                    messages.Add(text);
+                    if (err.Number == 0)
+                    {
+                        messages.Add(err.Message); // PRINT
+                        continue;
+                    }
+                    var line = AbsoluteLine(err, currentStartLine);
+                    if (checkSyntax)
+                    {
+                        // verifica di sintassi: il formato "Riga N: …" è quello che il client
+                        // trasforma in sottolineature, va lasciato com'è (una sola riga)
+                        messages.Add($"Riga {line}: {err.Message}");
+                        continue;
+                    }
+                    // esecuzione vera: si riporta tutto come fa SSMS, così si vede QUALE
+                    // procedura ha dato errore (err.Procedure) e a che riga della procedura
+                    var detail = DescribeError(err, line, isError: err.Class >= 11);
+                    messages.Add(detail.Display);
+                    details.Add(detail);
                 }
             };
             await conn.OpenAsync(ct);
@@ -131,8 +147,20 @@ public class QueryService
             var parts = new List<string>();
             foreach (SqlError err in ex.Errors)
             {
-                var line = err.LineNumber > 0 ? currentStartLine + err.LineNumber - 1 : currentStartLine;
-                parts.Add($"Riga {line}: {err.Message}");
+                var line = AbsoluteLine(err, currentStartLine);
+                if (checkSyntax)
+                {
+                    // verifica di sintassi: formato a una riga, letto dal client per i marker
+                    parts.Add($"Riga {line}: {err.Message}");
+                    continue;
+                }
+                // esecuzione vera: intestazione come SSMS, con la PROCEDURA che ha fallito
+                var detail = DescribeError(err, line, isError: true);
+                details.Add(detail);
+                parts.Add(detail.Display);
+                // anche nell'elenco dei messaggi: la schermata Messaggi è quella che si apre
+                // per prima quando c'è un errore, quindi deve contenerlo
+                messages.Add(detail.Display);
             }
             error = string.Join(Environment.NewLine, parts);
         }
@@ -142,7 +170,48 @@ public class QueryService
         }
 
         sw.Stop();
-        return new QueryResult(sets, totalAffected, messages, sw.ElapsedMilliseconds, error);
+        return new QueryResult(sets, totalAffected, messages, sw.ElapsedMilliseconds, error, details);
+    }
+
+    /// <summary>
+    /// Riga da mostrare per un errore.
+    /// - errore DENTRO una procedura: la riga è quella interna alla procedura, come la mostra
+    ///   SSMS ("Procedura X, Riga N"): sommarla all'inizio del batch darebbe un numero falso;
+    /// - errore nel batch scritto dall'utente: si aggiunge l'inizio del batch, così la riga è
+    ///   quella del SCRIPT (utile per le sottolineature della verifica di sintassi).
+    /// </summary>
+    private static int AbsoluteLine(SqlError err, int batchStartLine)
+    {
+        if (err.Procedure is { Length: > 0 }) return Math.Max(1, err.LineNumber);
+        return err.LineNumber > 0 ? batchStartLine + err.LineNumber - 1 : batchStartLine;
+    }
+
+    /// <summary>
+    /// Traduce un errore di SQL Server nei dati che mostra SSMS: numero, livello, stato,
+    /// procedura e riga. La procedura è quella che ha eseguito il RAISERROR, quindi su una
+    /// query che richiama più stored procedure dice subito quale ha fallito.
+    /// </summary>
+    private static QueryMessage DescribeError(SqlError err, int line, bool isError)
+    {
+        var message = new QueryMessage(
+            Text: err.Message,
+            Display: "",
+            Number: err.Number,
+            Severity: err.Class,
+            State: err.State,
+            Procedure: string.IsNullOrWhiteSpace(err.Procedure) ? null : err.Procedure,
+            Line: line,
+            IsError: isError);
+        return message with { Display = FormatMessage(message) };
+    }
+
+    /// <summary>Formatta il messaggio come nella finestra "Messaggi" di SSMS.</summary>
+    private static string FormatMessage(QueryMessage m)
+    {
+        if (m.Number == 0) return m.Text;
+        var proc = m.Procedure is { Length: > 0 } p ? $", Procedura {p}" : "";
+        return $"Msg {m.Number}, Livello {m.Severity}, Stato {m.State}{proc}, Riga {m.Line}"
+            + Environment.NewLine + m.Text;
     }
 
     private static object? ConvertValue(object value)

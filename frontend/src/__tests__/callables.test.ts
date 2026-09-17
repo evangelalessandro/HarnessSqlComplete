@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { identifierPartsAt, isCallableAt, resolveCallableAt } from '../callables'
 import type { DatabaseSummary } from '../types'
-import { wsbritvicLikeSummary } from './schema'
-import { realSummary } from './fixtures/wsbritvicReal'
+import { demoStoreLikeSummary } from './schema'
+import { realSummary } from './fixtures/demoStoreReal'
 
 function summaryWithFunction(): DatabaseSummary {
-  const s = wsbritvicLikeSummary()
-  s.functions.push({ schema: 'dbo', name: 'fn_td', type: 'FN' }, { schema: 'dbo', name: 'fn_GetMissioni', type: 'IF' })
+  const s = demoStoreLikeSummary()
+  s.functions.push({ schema: 'dbo', name: 'fn_tu', type: 'FN' }, { schema: 'dbo', name: 'fn_GIPAVUDUBES', type: 'IF' })
   return s
 }
 
@@ -20,8 +20,8 @@ describe('identifierPartsAt: identificatore (anche qualificato) sotto il cursore
   })
 
   it('nome tra parentesi quadre', () => {
-    const sql = 'EXEC [dbo].[ws_L2_Prova] @a = 1'
-    expect(identifierPartsAt(sql, sql.indexOf('ws_L2_Prova'))).toEqual(['dbo', 'ws_L2_Prova'])
+    const sql = 'EXEC [dbo].[ws_L2_PIBAM] @a = 1'
+    expect(identifierPartsAt(sql, sql.indexOf('ws_L2_PIBAM'))).toEqual(['dbo', 'ws_L2_PIBAM'])
   })
 
   it('cursore subito DOPO il nome → lo prende comunque', () => {
@@ -48,9 +48,9 @@ describe('resolveCallableAt: procedure e funzioni richiamate', () => {
   })
 
   it('chiamata a una funzione (anche dentro una espressione)', () => {
-    const sql = "select dbo.fn_td('ciao'), 1"
-    const r = resolveCallableAt(sql, sql.indexOf('fn_td') + 1, summary)
-    expect(r).toEqual({ kind: 'function', schema: 'dbo', name: 'fn_td' })
+    const sql = "select dbo.fn_tu('ciao'), 1"
+    const r = resolveCallableAt(sql, sql.indexOf('fn_tu') + 1, summary)
+    expect(r).toEqual({ kind: 'function', schema: 'dbo', name: 'fn_tu' })
   })
 
   it('una TABELLA non è "chiamabile" (→ null)', () => {
@@ -117,7 +117,7 @@ describe('voce "Modifica" nel tasto destro: solo su procedure e funzioni', () =>
   })
 })
 
-describe('voce "Modifica" con lo schema REALE (WSBRITVIC)', () => {
+describe('voce "Modifica" con lo schema REALE (DEMOSTORE)', () => {
   const real = realSummary()
 
   it('tutte le stored procedure reali → voce attiva', () => {

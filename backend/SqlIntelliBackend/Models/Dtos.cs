@@ -150,12 +150,31 @@ public record QueryResultSet(
     long AffectedRows,
     bool Truncated);
 
+/// <summary>
+/// Messaggio prodotto da SQL Server con gli stessi dati che mostra SSMS nei "Messaggi":
+/// numero, livello, stato, PROCEDURA e riga. Serve a capire subito quale stored procedure
+/// ha dato errore quando una query ne richiama diverse.
+/// </summary>
+/// <param name="Text">Testo del messaggio (senza intestazione).</param>
+/// <param name="Display">Testo già pronto da mostrare, intestazione compresa (come in SSMS).</param>
+public record QueryMessage(
+    string Text,
+    string Display,
+    int Number = 0,
+    int Severity = 0,
+    int State = 0,
+    string? Procedure = null,
+    int Line = 0,
+    bool IsError = false);
+
 public record QueryResult(
     List<QueryResultSet> ResultSets,
     long TotalAffectedRows,
     List<string> Messages,
     long ElapsedMs,
-    string? Error);
+    string? Error,
+    /// <summary>Messaggi con numero/livello/procedura/riga (SSMS), per l'elenco dettagliato.</summary>
+    List<QueryMessage>? Errors = null);
 
 // ---------- Autocompletamento IA ----------
 

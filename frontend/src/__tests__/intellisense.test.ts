@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { allows, classifyContext, filterKeywordsForContext, isAfterOrderKeyword, isOrderWordTyped } from '../intellisenseContext'
 import { buildColumnContextSuggestions, buildSelectListSuggestions, buildStatementSnippets } from '../helpers'
-import { wsbritvicLikeSummary } from './schema'
+import { demoStoreLikeSummary } from './schema'
 
-const summary = wsbritvicLikeSummary()
+const summary = demoStoreLikeSummary()
 
 /**
  * Simula l'input del provider: dato il testo completo e la posizione del cursore
@@ -127,12 +127,14 @@ describe('INTELLIGENZA INTELLISENSE — classificazione del contesto', () => {
     expect(ctx.kind).toBe('columnContext')
   })
 
-  it('dopo "ORDER BY " → orderBy (colonne + ASC/DESC, niente funzioni/tabelle)', () => {
+  it('dopo "ORDER BY " → orderBy (solo colonne: ASC/DESC solo dopo il campo)', () => {
     const ctx = ctxFor('SELECT a FROM T ORDER BY ')
     expect(ctx.kind).toBe('orderBy')
     expect(ctx.inOrderBy).toBe(true)
     expect(allows(ctx, 'columns')).toBe(true)
-    expect(allows(ctx, 'orderDirections')).toBe(true)
+    // le direzioni compaiono solo quando la voce corrente ha già un campo
+    expect(allows(ctx, 'orderDirections')).toBe(false)
+    expect(allows(ctxFor('SELECT a FROM T ORDER BY a '), 'orderDirections')).toBe(true)
     expect(allows(ctx, 'functions')).toBe(false)
     expect(allows(ctx, 'tables')).toBe(false)
     expect(allows(ctx, 'procedures')).toBe(false)

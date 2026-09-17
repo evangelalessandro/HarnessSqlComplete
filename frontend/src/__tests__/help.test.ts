@@ -47,6 +47,8 @@ describe('HelpPage: la guida copre tutte le funzioni', () => {
     'Ctrl+S',
     'Ctrl+Shift+S',
     'Ctrl+Shift+F',
+    'Ctrl+Shift+R',
+    'Ctrl+R',
     'Ctrl+rotella',
     'Ctrl+Spazio',
   ]

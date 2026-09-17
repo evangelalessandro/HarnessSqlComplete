@@ -1,4 +1,4 @@
-﻿// Provider di completamento SQL, ESTRATTO da SqlEditor per poter essere eseguito dai test.
+// Provider di completamento SQL, ESTRATTO da SqlEditor per poter essere eseguito dai test.
 // Se questo codice lancia un'eccezione l'intellisense si "spacca" (popup vuoto):
 // il test src/__tests__/completionSmoke.test.ts esegue il provider su molti contesti
 // reali e fallisce se lancia un errore o se non propone nulla nel codice.
@@ -8,7 +8,8 @@ import { isTextOffsetInComment } from './helpers'
 import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from './helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
 import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, extractDeclaredVariables, extractRoutineParameters, systemVariablePrefixLen, variablePrefixLen } from './tsqlSnippets'
-import { extractLocalTables } from './localTables'
+import { extractCteTables, extractLocalTables } from './localTables'
+import { extractLabels } from './labels'
 import { ORDER_DIRECTIONS } from './intellisenseContext'
 import { classifyContext, filterKeywordsForContext, isAfterOrderKeyword, isOrderWordTyped, shouldSuggestJoinConditions } from './intellisenseContext'
 
@@ -115,18 +116,30 @@ export function provideSqlCompletions({
           const cursorOffset = model.getOffsetAt(position)
           // dentro un commento non si propone alcun suggerimento
           if (isTextOffsetInComment(fullText, cursorOffset)) return { suggestions: [] }
-          // Tabelle TEMPORANEE definite nel testo (#t): senza aggiungerle al sommario
-          // le loro colonne non sarebbero proponibili ("... LEFT JOIN #t ON 1 = 1 WHERE ")
+          // Tabelle TEMPORANEE (#t) e CTE definite nel testo: senza aggiungerle al sommario
+          // le loro colonne non sarebbero proponibili ("... LEFT JOIN #t ON 1 = 1 WHERE ",
+          // "from c pippo where pippo."). Le CTE stanno PRIMA delle tabelle dello schema:
+          // se una CTE ha il nome di una tabella, vince la CTE (come fa SQL Server).
           // (qualsiasi errore del parser locale non deve mai svuotare il popup)
           let localTables: TableInfo[] = []
+          let cteTables: TableInfo[] = []
           try {
-            localTables = extractLocalTables(fullText, baseSt.summary?.tables ?? [])
+            const note = baseSt.summary?.tables ?? []
+            localTables = extractLocalTables(fullText, note)
+            cteTables = extractCteTables(fullText, note)
           } catch {
             localTables = []
+            cteTables = []
           }
           const st =
-            baseSt.summary && localTables.length > 0
-              ? { ...baseSt, summary: { ...baseSt.summary, tables: [...baseSt.summary.tables, ...localTables] } }
+            baseSt.summary && localTables.length + cteTables.length > 0
+              ? {
+                  ...baseSt,
+                  summary: {
+                    ...baseSt.summary,
+                    tables: [...cteTables, ...baseSt.summary.tables, ...localTables],
+                  },
+                }
               : baseSt
           const stmtRange = statementRangeAt(fullText, cursorOffset)
           const stmtText = fullText.slice(stmtRange.start, stmtRange.end)
@@ -139,6 +152,27 @@ export function provideSqlCompletions({
           const push = (item: monaco.languages.CompletionItem) => {
             suggestions.push({ ...item, sortText: completionSortText(rank) })
             rank++
+          }
+
+          // GOTO: si propongono TUTTE le label definite nel documento, anche quelle scritte
+          // più sotto (è il caso normale: "goto lblExit" e la label in fondo alla procedura).
+          // Se il documento non ha label si prosegue con i suggerimenti normali: il popup non
+          // deve mai restare vuoto.
+          if (ctx.allowed.includes('labels')) {
+            const nomiLabel = extractLabels(fullText)
+            if (nomiLabel.length > 0) {
+              for (const nome of nomiLabel) {
+                push({
+                  label: nome,
+                  detail: 'label',
+                  kind: monaco.languages.CompletionItemKind.Reference,
+                  insertText: nome,
+                  range,
+                  filterText: nome,
+                })
+              }
+              return { suggestions }
+            }
           }
 
           // Funzioni T-SQL (aggregati, window, stringhe…) + funzioni utente SCALARI del database.
@@ -621,16 +655,24 @@ export function provideSqlCompletions({
                   filterText: 'by',
                 })
               }
-              for (const dir of ORDER_DIRECTIONS) {
-                push({
-                  label: dir,
-                  detail: 'direzione di ordinamento',
-                  kind: monaco.languages.CompletionItemKind.Keyword,
-                  insertText: dir,
-                  range,
-                  filterText: dir.toLowerCase(),
-                })
+              // ASC/DESC solo quando la voce corrente ha già un campo ("ORDER BY col ▮"):
+              // subito dopo "ORDER BY " (o dopo una virgola) si sceglie prima il campo.
+              // Se però non c'è nessun campo da proporre (tabella non risolta) si mostrano
+              // comunque le direzioni: il popup non deve mai restare vuoto.
+              const directions = () => {
+                for (const dir of ORDER_DIRECTIONS) {
+                  push({
+                    label: dir,
+                    detail: 'direzione di ordinamento',
+                    kind: monaco.languages.CompletionItemKind.Keyword,
+                    insertText: dir,
+                    range,
+                    filterText: dir.toLowerCase(),
+                  })
+                }
               }
+              const mostraSubito = ctx.allowed.includes('orderDirections')
+              if (mostraSubito) directions()
               const orderCols = buildColumnContextSuggestions(
                 stmtText,
                 stmtBefore,
@@ -649,7 +691,32 @@ export function provideSqlCompletions({
                   filterText: completionFilterText(col.name),
                 })
               }
+              // ripiego: nessun campo da proporre → almeno le direzioni (mai popup vuoto)
+              if (!mostraSubito && suggestions.length === 0) directions()
               return { suggestions }
+            }
+
+            // Colonne qualificate con alias/tabella: dopo "r." o "RUN_MISSIONI." suggerisce
+            // le colonne di quella tabella (es. "FROM RUN_MISSIONI r WHERE r."). Sta PRIMA dei
+            // rami per contesto perché vale ovunque: nella select-list il ramo dedicato ritorna
+            // subito e l'alias non veniva mai considerato (segnalato dall'utente: "nella select
+            // non torna per primi i campi della tabella" dopo "from #tmpMission dd").
+            {
+              const qualified = buildQualifiedColumnSuggestions(stmtText, textBefore, st.summary)
+              if (qualified.length > 0) {
+                for (const col of qualified) {
+                  push({
+                    label: col.name,
+                    detail: [columnTypeText(col.dataType, col.isNullable), 'colonna qualificata'].filter(Boolean).join(' · '),
+                    documentation: col.documentation,
+                    kind: monaco.languages.CompletionItemKind.Field,
+                    insertText: col.insertText,
+                    range,
+                    filterText: col.name,
+                  })
+                }
+                return { suggestions }
+              }
             }
 
             // Aiuto SELECT: se il cursore è nella select-list (tra SELECT e FROM dello statement),
@@ -769,26 +836,6 @@ export function provideSqlCompletions({
                 })
               }
               return { suggestions }
-            }
-
-            // Colonne qualificate con alias/tabella: dopo "r." o "RUN_MISSIONI." suggerisce
-            // le colonne di quella tabella (es. "FROM RUN_MISSIONI r WHERE r.")
-            {
-              const qualified = buildQualifiedColumnSuggestions(stmtText, textBefore, st.summary)
-              if (qualified.length > 0) {
-                for (const col of qualified) {
-                  push({
-                    label: col.name,
-                    detail: [columnTypeText(col.dataType, col.isNullable), 'colonna qualificata'].filter(Boolean).join(' · '),
-                    documentation: col.documentation,
-                    kind: monaco.languages.CompletionItemKind.Field,
-                    insertText: col.insertText,
-                    range,
-                    filterText: col.name,
-                  })
-                }
-                return { suggestions }
-              }
             }
 
             // Contesti di colonne (WHERE/ON/HAVING/GROUP BY/SET/AND/OR/=):

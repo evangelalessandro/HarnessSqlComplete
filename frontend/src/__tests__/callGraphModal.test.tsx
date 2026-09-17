@@ -13,7 +13,7 @@ const realGraph: RoutineCallGraph = { edges: realCallEdges, truncated: false }
 function render(props: Partial<Parameters<typeof CallGraphModal>[0]> = {}) {
   return renderToStaticMarkup(
     <CallGraphModal
-      target={{ schema: 'dbo', name: 'fn_InsFromString', kind: 'function' }}
+      target={{ schema: 'dbo', name: 'fn_IADOVODASISID', kind: 'function' }}
       graph={realGraph}
       loading={false}
       error={null}
@@ -29,7 +29,7 @@ describe('finestra del diagramma chiamate', () => {
   it('mostra i legami reali della routine analizzata', () => {
     const html = render()
     expect(html).toContain('Diagramma chiamate')
-    expect(html).toContain('fn_InsFromString')
+    expect(html).toContain('fn_IADOVODASISID')
     expect(html).toContain('Chi la chiama')
     expect(html).toContain('<svg')
     // una targhetta del tipo e almeno un nodo disegnato con il suo rettangolo
@@ -38,15 +38,15 @@ describe('finestra del diagramma chiamate', () => {
   })
 
   it('senza chiamanti spiega che è un punto di ingresso', () => {
-    // dbo.ws_CUSTOM_L2_AbiDisabHydraroll non è chiamata da nessuno (dato reale)
-    const html = render({ target: { schema: 'dbo', name: 'ws_CUSTOM_L2_AbiDisabHydraroll', kind: 'procedure' } })
+    // dbo.ws_CIDEDO_L2_AAMAGEGUPIVODIBOP non è chiamata da nessuno (dato reale)
+    const html = render({ target: { schema: 'dbo', name: 'ws_CIDEDO_L2_AAMAGEGUPIVODIBOP', kind: 'procedure' } })
     expect(html).toContain('Nessuna routine la chiama')
-    expect(html).toContain('ws_CUSTOM_L2_AbiDisabHydraroll')
+    expect(html).toContain('ws_CIDEDO_L2_AAMAGEGUPIVODIBOP')
   })
 
   it('segnala i cicli quando la routine è ricorsiva (dato reale)', () => {
-    // dbo.fn_tabUdcFront chiama se stessa nel database vero
-    const html = render({ target: { schema: 'dbo', name: 'fn_tabUdcFront', kind: 'function' } })
+    // dbo.fn_TOSOGIPEDAP chiama se stessa nel database vero
+    const html = render({ target: { schema: 'dbo', name: 'fn_TOSOGIPEDAP', kind: 'function' } })
     expect(html).toContain('↻')
     expect(html).toContain('ciclo')
   })

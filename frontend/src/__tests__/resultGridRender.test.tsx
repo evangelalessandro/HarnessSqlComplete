@@ -44,26 +44,29 @@ function bodyMarkup(html: string): string {
 }
 
 describe('griglia risultati: struttura', () => {
-  it('la prima colonna è il NUMERO DI RIGA, con le linee delle colonne', () => {
+  it('nel generatore la PRIMA colonna sono le check, poi il numero di riga', () => {
     const html = render()
     const head = headerMarkup(html)
     const headers = [...head.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)]
     expect(headers.length).toBe(columns.length + 2)
-    expect(headers[0][1].replace(/<[^>]*>/g, '').trim()).toBe('#') // numero di riga per primo
-    // intestazione: linea verticale fra le colonne e cella fissa a sinistra
-    expect(headers[0][0]).toContain('border-r')
-    expect(headers[0][0]).toContain('sticky')
-    for (const h of headers.slice(2)) expect(h[0]).toContain('border-r')
+    // prima colonna: casella "seleziona tutte"; seconda: numero di riga
+    expect(headers[0][1]).toContain('type="checkbox"')
+    expect(headers[0][0]).toContain('sticky left-0')
+    expect(headers[1][1].replace(/<[^>]*>/g, '').trim()).toBe('#')
+    expect(headers[1][0]).toContain('sticky left-10') // dietro la colonna delle check
+    // intestazione: linea verticale fra le colonne e celle fisse a sinistra
+    for (const h of headers) expect(h[0]).toContain('border-r')
+    for (const h of headers.slice(0, 2)) expect(h[0]).toContain('sticky')
   })
 
-  it('numera le righe da 1 in poi, nella prima cella', () => {
+  it('numera le righe da 1 in poi, nella seconda cella (dopo la check)', () => {
     const html = render()
     const cells = firstRowCells(html)
-    expect(cells[0]).toBe('1')
-    // la seconda cella è la casella di selezione (senza testo), poi i dati
+    expect(cells[0]).toBe('') // casella di selezione della riga
+    expect(cells[1]).toBe('1')
     expect(cells.slice(2)).toEqual(['UDC1', 'MARIO', '1'])
     // e ogni riga ha il suo numero
-    const numbers = [...html.matchAll(/sticky left-0[^>]*>\s*(\d+)\s*</g)].map(m => m[1])
+    const numbers = [...html.matchAll(/sticky left-10[^>]*>\s*(\d+)\s*</g)].map(m => m[1])
     expect(numbers).toEqual(['1', '2', '3', '4', '5', '6'])
   })
 
@@ -127,7 +130,7 @@ describe('numerazione con la paginazione', () => {
     const html = renderToStaticMarkup(
       <SelectableResultGrid columns={columns} rows={rows.slice(0, 2)} firstRowNumber={51} />,
     )
-    const numbers = [...html.matchAll(/sticky left-0[^>]*>\s*(\d+)\s*</g)].map(m => m[1])
+    const numbers = [...html.matchAll(/sticky left-10[^>]*>\s*(\d+)\s*</g)].map(m => m[1])
     expect(numbers).toEqual(['51', '52'])
   })
 })

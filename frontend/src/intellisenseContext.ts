@@ -11,6 +11,7 @@ export type SuggestionCategory =
   | 'joinTables' // tabelle proposte in posizione JOIN (con ON)
   | 'views'
   | 'procedures'
+  | 'labels' // label di GOTO definite nel documento
   | 'functions' // funzioni SQL di sistema + utente
   | 'keywords' // parole chiave SQL
   | 'snippets' // template statement (INSERT/SELECT/...)
@@ -31,6 +32,7 @@ export interface IntellisenseContext {
     | 'joinPosition'
     | 'afterTableName'
     | 'execPosition'
+    | 'gotoPosition'
     | 'selectList'
     | 'columnContext'
     | 'orderBy'
@@ -40,6 +42,8 @@ export interface IntellisenseContext {
   isTablePosition: boolean
   isJoinPosition: boolean
   isExecPosition: boolean
+  /** True dopo "GOTO " (o "GOTO" parziale): si propongono le label del documento. */
+  isGotoPosition: boolean
   isColumnContext: boolean
   inSelectList: boolean
   /** True quando il cursore è dentro la ORDER BY (… ORDER BY a, b ▮): solo colonne + ASC/DESC. */
@@ -69,6 +73,8 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
   const isTablePosition = /(?:FROM|JOIN|UPDATE|INTO|TABLE)\s*$/i.test(prefix)
   const isJoinPosition = /(?:(?:LEFT|RIGHT|INNER|OUTER|CROSS|FULL)\s+)?JOIN\s*$/i.test(prefix)
   const isExecPosition = /(?:^|\s)EXEC(?:UTE)?\s*$/i.test(prefix)
+  // "GOTO " (anche con la parola in corso: "goto lb") → label del documento
+  const isGotoPosition = /(?:^|[\s;])GOTO\s*$/i.test(prefix)
   // dopo una virgola che CONTINUA una lista di colonne (es. "GROUP BY a, ",
   // "ORDER BY a, b, ", "WHERE x IN (1, ", "ON a = b, "): il contesto resta di colonne.
   // Il testo prima dell'ultima virgola deve appartenere a una clausola di colonne,
@@ -116,6 +122,44 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
     return last.startsWith('ORDER')
   })()
 
+  /**
+   * True se la voce corrente della ORDER BY ha già un campo ("ORDER BY col ▮"): solo allora
+   * ha senso proporre ASC/DESC. Subito dopo "ORDER BY " o dopo una virgola si sceglie il campo.
+   */
+  const orderFieldTyped = (() => {
+    const m = /(?:\bORDER\s+BY\b)([\s\S]*)$/i.exec(prefix)
+    if (!m) return false
+    const testo = m[1]
+    // ultima voce della lista = testo dopo l'ultima virgola di PRIMO livello
+    let depth = 0
+    let quote: string | null = null
+    let ultimaVirgola = -1
+    for (let i = 0; i < testo.length; i++) {
+      const ch = testo[i]
+      if (quote) {
+        if (ch === quote) quote = null
+        continue
+      }
+      if (ch === "'" || ch === '"') {
+        quote = ch
+        continue
+      }
+      if (ch === '[') {
+        quote = ']'
+        continue
+      }
+      if (ch === ']') {
+        quote = null
+        continue
+      }
+      if (ch === '(') depth += 1
+      else if (ch === ')') depth = Math.max(0, depth - 1)
+      else if (ch === ',' && depth === 0) ultimaVirgola = i
+    }
+    const voce = testo.slice(ultimaVirgola + 1)
+    return /[A-Za-z0-9_\]\[@#]/.test(voce.replace(/\b(ASC|DESC)\b/gi, ''))
+  })()
+
   // dopo "FROM t " / "JOIN t " (spazio dopo il nome tabella): la clausola successiva
   const afterTableName =
     /(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+[^\s,;()]+\s*$/i.test(prefix) &&
@@ -128,6 +172,10 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
   if (isExecPosition) {
     kind = 'execPosition'
     allowed = ['procedures']
+  } else if (isGotoPosition) {
+    // dopo GOTO servono SOLO le label del documento
+    kind = 'gotoPosition'
+    allowed = ['labels']
   } else if (isJoinPosition) {
     kind = 'joinPosition'
     allowed = ['joinTables', 'tables', 'views']
@@ -135,9 +183,9 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
     kind = 'tablePosition'
     allowed = ['tables', 'views']
   } else if (inOrderBy) {
-    // dentro la ORDER BY: colonne dello statement + ASC/DESC (niente funzioni/procedure/tabelle)
+    // dentro la ORDER BY: colonne dello statement + ASC/DESC (solo dopo un campo)
     kind = 'orderBy'
-    allowed = ['columns', 'orderDirections']
+    allowed = orderFieldTyped ? ['columns', 'orderDirections'] : ['columns']
   } else if (inSelectList) {
     kind = 'selectList'
     allowed = ['columns', 'functions', 'snippets']
@@ -162,6 +210,7 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
     isTablePosition,
     isJoinPosition,
     isExecPosition,
+    isGotoPosition,
     isColumnContext,
     inSelectList,
     inOrderBy,

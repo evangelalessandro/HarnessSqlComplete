@@ -7,11 +7,11 @@ import { describe, expect, it } from 'vitest'
 import * as monaco from 'monaco-editor'
 import { provideSqlCompletions } from '../sqlCompletions'
 import type { DatabaseSummary } from '../types'
-import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
+import { mkCol, mkTbl, demoStoreLikeSummary } from './schema'
 import { inCommentOrString } from './sqlText'
 
 function summaryWith(): DatabaseSummary {
-  const s = wsbritvicLikeSummary()
+  const s = demoStoreLikeSummary()
   s.tables.push(
     mkTbl('dbo', 'MAG_CORRIDOI', [
       mkCol('COR_CORRIDOIO', 'int'),
@@ -22,9 +22,9 @@ function summaryWith(): DatabaseSummary {
   )
   // funzioni come le manda il BACKEND (type_desc): una tabellare e una scalare
   s.functions.push(
-    { schema: 'dbo', name: 'fn_GetMissioni', type: 'SQL_INLINE_TABLE_VALUED_FUNCTION' },
-    { schema: 'dbo', name: 'fn_Celle', type: 'SQL_TABLE_VALUED_FUNCTION' },
-    { schema: 'dbo', name: 'fn_td', type: 'SQL_SCALAR_FUNCTION' },
+    { schema: 'dbo', name: 'fn_GIPAVUDUBES', type: 'SQL_INLINE_TABLE_VALUED_FUNCTION' },
+    { schema: 'dbo', name: 'fn_CUVAD', type: 'SQL_TABLE_VALUED_FUNCTION' },
+    { schema: 'dbo', name: 'fn_tu', type: 'SQL_SCALAR_FUNCTION' },
   )
   return s
 }
@@ -98,6 +98,24 @@ describe('intellisense: il provider NON si spacca (smoke test)', () => {
     }
   })
 
+  it('subito dopo "ORDER BY " NON propone ASC/DESC (prima si sceglie il campo)', () => {
+    const sql = 'SELECT MIS_UDC FROM dbo.RUN_MISSIONI ORDER BY '
+    const res = suggest(sql, sql.length)
+    const labels = res.suggestions.map(s => String(s.label))
+    expect(labels).not.toContain('ASC')
+    expect(labels).not.toContain('DESC')
+    // le colonne invece ci sono
+    expect(labels).toContain('MIS_UDC')
+  })
+
+  it('dopo la virgola nella ORDER BY le direzioni tornano solo con un altro campo', () => {
+    const sql = 'SELECT MIS_UDC FROM dbo.RUN_MISSIONI ORDER BY MIS_UDC, '
+    const res = suggest(sql, sql.length)
+    const labels = res.suggestions.map(s => String(s.label))
+    expect(labels).not.toContain('ASC')
+    expect(labels).not.toContain('DESC')
+  })
+
   it('dopo EXEC propone le stored procedure', () => {
     const sql = 'EXEC dbo.'
     const res = suggest(sql, sql.length)
@@ -109,10 +127,10 @@ describe('intellisense: il provider NON si spacca (smoke test)', () => {
     const sql = 'SELECT MIS_UDC, MIS_OPERATORE FROM dbo.RUN_MISSIONI inner join '
     const res = suggest(sql, sql.length)
     const labels = res.suggestions.map(s => String(s.label))
-    expect(labels).toContain('dbo.fn_GetMissioni')
-    expect(labels).toContain('dbo.fn_Celle')
+    expect(labels).toContain('dbo.fn_GIPAVUDUBES')
+    expect(labels).toContain('dbo.fn_CUVAD')
     // la funzione SCALARE non è una sorgente → non va proposta dopo JOIN
-    expect(labels).not.toContain('dbo.fn_td')
+    expect(labels).not.toContain('dbo.fn_tu')
     // e restano proposte le tabelle
     expect(labels.some(l => l.includes('RUN_MISSIONI'))).toBe(true)
   })
@@ -120,8 +138,8 @@ describe('intellisense: il provider NON si spacca (smoke test)', () => {
   it('dopo "FROM " propone le funzioni tabellari come sorgenti', () => {
     const sql = 'SELECT * FROM '
     const labels = suggest(sql, sql.length).suggestions.map(s => String(s.label))
-    expect(labels).toContain('dbo.fn_GetMissioni')
-    expect(labels).not.toContain('dbo.fn_td')
+    expect(labels).toContain('dbo.fn_GIPAVUDUBES')
+    expect(labels).not.toContain('dbo.fn_tu')
   })
 
   it('con il testo della procedura utente (CASE + temporanee + JOIN) propone le colonne', () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildJoinConditionSuggestions } from '../helpers'
-import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
+import { mkCol, mkTbl, demoStoreLikeSummary } from './schema'
 
 /**
  * "in questa l'intellisense ... mi fa 'AND ' nomi campi, ma non ci può mettere l'and":
@@ -9,7 +9,7 @@ import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
  * non coppie di altri JOIN.
  */
 describe('ON vuoto: prima condizione senza "AND" e solo la tabella appena unita', () => {
-  const summary = wsbritvicLikeSummary()
+  const summary = demoStoreLikeSummary()
   summary.tables.push(
     mkTbl('dbo', 'DAT_UDC_PRED', [mkCol('UPR_UDCPRED', 'nvarchar')]),
     mkTbl('dbo', 'MAG_CELLE', [mkCol('CEL_CORRIDOIO', 'int'), mkCol('CEL_CELLA', 'nvarchar')]),

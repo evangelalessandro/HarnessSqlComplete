@@ -200,12 +200,34 @@ export interface QueryResultSet {
   truncated: boolean
 }
 
+/**
+ * Messaggio di SQL Server con gli stessi dati che mostra SSMS nei "Messaggi": numero,
+ * livello, stato, PROCEDURA e riga. Serve a capire subito quale stored procedure ha dato
+ * errore quando una query ne richiama diverse.
+ */
+export interface QueryMessage {
+  /** Testo del messaggio, senza intestazione. */
+  text: string
+  /** Testo già pronto da mostrare (intestazione compresa, come in SSMS). */
+  display: string
+  number: number
+  severity: number
+  state: number
+  /** Nome della procedura che ha sollevato l'errore (null se l'errore è nel batch). */
+  procedure: string | null
+  /** Riga: dentro la procedura se l'errore viene da lì, altrimenti riga dello script. */
+  line: number
+  isError: boolean
+}
+
 export interface QueryResult {
   resultSets: QueryResultSet[]
   totalAffectedRows: number
   messages: string[]
   elapsedMs: number
   error: string | null
+  /** Messaggi/errori con numero, livello, procedura e riga (elenco dettagliato). */
+  errors?: QueryMessage[] | null
 }
 
 export interface SuggestionItem {

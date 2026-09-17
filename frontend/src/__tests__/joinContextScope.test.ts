@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { buildJoinSuggestions, findTableRefs, rankTablesForJoin } from '../helpers'
-import { wsbritvicLikeSummary } from './schema'
+import { demoStoreLikeSummary } from './schema'
 
-const summary = wsbritvicLikeSummary()
+const summary = demoStoreLikeSummary()
 
 describe('JOIN in una nuova statement (dopo ;): il contesto è solo lo statement corrente', () => {
   // Scenario utente: DAT_UDC referenziata nel PRIMO statement, poi un nuovo statement

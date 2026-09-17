@@ -26,7 +26,7 @@ describe('formatSqlWithProfile: keyword ufficiali maiuscole (riferimento Microso
 })
 
 describe('formatRoutineWithProfile: stored procedure con blocchi (stile Redgate)', () => {
-  const proc = `alter procedure [dbo].[ws_L2_Engine_Automatismi]
+  const proc = `alter procedure [dbo].[ws_L2_EALAPO_AEPOGODIVUG]
 (
  @pComponente nvarchar(max) /* Componente */
 ,@pGestore nvarchar(max) /* Gestore */
@@ -50,7 +50,7 @@ as
  begin
    select @retval = 1
  end
- exec @retval = dbo.ws_Uti_TabChanges_Done @pGestore, @fn_name, 10
+ exec @retval = dbo.ws_UIM_TISEVEPOVI_DOBU @pGestore, @fn_napi, 10
  return @retval
  end_err:
  raiserror ('x', 16, 1)
@@ -65,11 +65,18 @@ GO`
   it('firma: intestazione, parentesi e parametri su righe proprie con virgola iniziale', () => {
     const out = formatRoutineWithProfile(proc, profile)
     const lines = out.split('\n')
-    expect(lines[0].trim()).toContain('ALTER PROCEDURE [dbo].[ws_L2_Engine_Automatismi]')
+    expect(lines[0].trim()).toContain('ALTER PROCEDURE [dbo].[ws_L2_EALAPO_AEPOGODIVUG]')
     expect(lines[1].trim()).toBe('(')
     expect(out).toContain('@pComponente')
     expect(out).toContain(',@pGestore')
-    expect(out).toContain(",@pOperatore NVARCHAR(max) = 'SYSTEM'")
+    expect(out).toContain(',@pOperatore')
+    expect(out).toContain("= 'SYSTEM'")
+    // i TIPI di dato dei parametri partono tutti dalla stessa colonna (come nel DECLARE)
+    const colonneTipo = lines
+      .filter(l => /^\s*,?@p\w/.test(l))
+      .map(l => l.search(/(NVARCHAR|INT)\b/i))
+    expect(colonneTipo.length).toBeGreaterThanOrEqual(4)
+    expect(new Set(colonneTipo).size).toBe(1)
     expect(lines.some(l => l.trim() === 'AS')).toBe(true)
   })
 
@@ -143,13 +150,13 @@ ROLLBACK`
 IF @trancount < 1
 BEGIN TRANSACTION
 
-EXEC @retVal = ws_L2_LockRunHandHeld @errore = @txtError out
+EXEC @retVal = ws_L2_LESIVEGUDUVASAP @errore = @txtError out
 IF @retVal <> 0
 GOTO lblExit`
     const out = formatRoutineWithProfile(sql, profile)
     expect(out).toMatch(/^IF @trancount < 1\nBEGIN TRANSACTION$/m)
     // i statement successivi restano a margine (non indentati come dentro un BEGIN…END)
-    expect(out).toMatch(/^EXEC @retVal = ws_L2_LockRunHandHeld/m)
+    expect(out).toMatch(/^EXEC @retVal = ws_L2_LESIVEGUDUVASAP/m)
     expect(out).toMatch(/^IF @retVal <> 0$/m)
     expect(out).toMatch(/^  GOTO lblExit$/m)
   })
@@ -213,23 +220,28 @@ describe('formatRoutineWithProfile: SELECT/INSERT…SELECT con clausole spezzate
 END`
     const out = formatRoutineWithProfile(sql, profile)
     expect(out).toMatch(/^  INSERT INTO @tblPitches$/m)
-    expect(out).toMatch(/^  SELECT ROW_NUMBER \(\) OVER \(ORDER BY GM_ORD_PIAZZ\), BPZ_PIAZZOLA$/m)
+    // select-list impilata come nel formattatore query: virgola in testa al campo
+    expect(out).toMatch(/^  SELECT ROW_NUMBER \(\) OVER \(ORDER BY GM_ORD_PIAZZ\)$/m)
+    expect(out).toMatch(/^     ,BPZ_PIAZZOLA$/m)
     expect(out).toMatch(/^  FROM dbo\.MAG_BAIE_PIAZ$/m)
     expect(out).toMatch(/^    INNER JOIN dbo\.GESTORI_MODULI ON \(GM_PIAZZOLA = BPZ_PIAZZOLA\)$/m)
     expect(out).toMatch(/^  WHERE BPZ_BAIA = @nDestBay$/m)
     expect(out).toMatch(/^\s{8}AND BPZ_PIAZZOLA > 0$/m)
   })
 
-  it('SELECT semplice con FROM/JOIN/WHERE spezzati su più righe', () => {
+  it('SELECT con più campi: select-list impilata anche dentro il blocco', () => {
     const sql = `BEGIN
   SELECT a, b FROM dbo.T INNER JOIN dbo.U ON (T.id = U.id) WHERE x = 1 AND y = 2
 END`
     const out = formatRoutineWithProfile(sql, profile)
-    expect(out).toMatch(/^  SELECT a, b$/m)
+    expect(out).toMatch(/^  SELECT a$/m)
+    expect(out).toMatch(/^     ,b$/m)
     expect(out).toMatch(/^  FROM dbo\.T$/m)
     expect(out).toMatch(/^    INNER JOIN dbo\.U ON \(T\.id = U\.id\)$/m)
     expect(out).toMatch(/^  WHERE x = 1$/m)
     expect(out).toMatch(/^\s{8}AND y = 2$/m)
+    // l'effetto è lo STESSO del formattatore per le query semplici sullo stesso SELECT
+    expect(formatRoutineWithProfile(sql, profile)).toContain('SELECT a\n     ,b')
   })
 
   it('SELECT semplice: WHERE con AND spezzati su righe proprie (come le query semplici)', () => {
@@ -250,9 +262,11 @@ END`
     const out = formatRoutineWithProfile(sql, profile)
     expect(out).toMatch(/^  ; WITH TBL_MASTER_BAYS \/\* Master bays list \*\/ AS$/m)
     expect(out).toMatch(/^  \($/m)
-    expect(out).toMatch(/^    SELECT DISTINCT b\.BCO_BAIA AS FLD_MASTER_BAY, b\.BCO_ABI AS FLD_MASTER_BAY_ABI$/m)
+    // anche dentro la CTE la select-list è impilata (virgole in testa), come da sola
+    expect(out).toMatch(/^    SELECT DISTINCT b\.BCO_BAIA AS FLD_MASTER_BAY$/m)
+    expect(out).toMatch(/^       ,b\.BCO_ABI AS FLD_MASTER_BAY_ABI$/m)
     expect(out).toMatch(/^    FROM dbo\.MAG_BAIE b$/m)
-    expect(out).toMatch(/^    INNER JOIN dbo\.MAG_BAIE bm ON \(bm\.BCO_MASTER = b\.BCO_BAIA\)$/m)
+    expect(out).toMatch(/^      INNER JOIN dbo\.MAG_BAIE bm ON \(bm\.BCO_MASTER = b\.BCO_BAIA\)$/m)
     expect(out).toMatch(/^  \)$/m)
     // lo statement che usa la CTE segue su riga propria
     expect(out).toMatch(/^  SELECT TOP 1 @nDestBay = BCO_BAIA$/m)
@@ -266,7 +280,7 @@ describe('formatRoutineWithProfile: header CREATE/ALTER su riga propria dopo i c
       -1 = Runtime error
        0 = Ok
 
-*/ CREATE PROCEDURE [dbo] . [ws_LGV_Redirection]
+*/ CREATE PROCEDURE [dbo] . [ws_LUP_RUPOVIVIDOP]
 (
  @pLgvManager NVARCHAR(30) /* Lgv manager */
 )
@@ -274,7 +288,7 @@ AS
 SET NOCOUNT ON`
     const out = formatRoutineWithProfile(sql, profile)
     expect(out).toMatch(/^\*\/\s*$/m) // il commento chiude su una riga propria
-    expect(out).toMatch(/^CREATE PROCEDURE \[dbo\]\.\[ws_LGV_Redirection\]$/m)
+    expect(out).toMatch(/^CREATE PROCEDURE \[dbo\]\.\[ws_LUP_RUPOVIVIDOP\]$/m)
     expect(out).not.toMatch(/\*\/ CREATE/)
   })
 })

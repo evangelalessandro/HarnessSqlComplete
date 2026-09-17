@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { buildJoinText, findTableRefs, isSqlReserved, rankTablesForJoin, usageScore } from '../helpers'
 import type { TableUsage } from '../types'
-import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
+import { mkCol, mkTbl, demoStoreLikeSummary } from './schema'
 
-const summary = wsbritvicLikeSummary()
+const summary = demoStoreLikeSummary()
 
 describe('JOIN: suggerimenti e clausola ON', () => {
   it('findTableRefs è case-insensitive (bug DAT_UDC maiuscolo)', () => {

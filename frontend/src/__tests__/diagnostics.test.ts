@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { positionAt, runSqlDiagnostics } from '../sqlDiagnostics'
-import { wsbritvicLikeSummary } from './schema'
+import { demoStoreLikeSummary } from './schema'
 
-const summary = wsbritvicLikeSummary()
+const summary = demoStoreLikeSummary()
 
 describe('runSqlDiagnostics: diagnostica in tempo reale', () => {
   it('parentesi non bilanciate', () => {

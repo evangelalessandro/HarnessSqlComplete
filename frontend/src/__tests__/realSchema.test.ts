@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// TEST SULLO SCHEMA REALE (WSBRITVIC), non su quello finto.
+// TEST SULLO SCHEMA REALE (DEMOSTORE), non su quello finto.
 //
 // Perché serve: lo schema di comodo dei test ha `functions: []`, `triggers: []` e nessun
 // vincolo CHECK. Un provider che si aspetta una forma diversa da quella che il backend
@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest'
 import * as monaco from 'monaco-editor'
 import { provideSqlCompletions } from '../sqlCompletions'
 import { isTableValuedFunctionType } from '../helpers'
-import { realSummary } from './fixtures/wsbritvicReal'
+import { realSummary } from './fixtures/demoStoreReal'
 import { inCommentOrString } from './sqlText'
 
 const summary = realSummary()
@@ -42,7 +42,7 @@ function labelsAfter(sql: string): string[] {
 }
 
 describe('schema reale: la fixture ha la forma che manda il backend', () => {
-  it('è lo schema vero di WSBRITVIC', () => {
+  it('è lo schema vero di DEMOSTORE', () => {
     expect(summary.tables.length).toBeGreaterThan(250)
     expect(summary.procedures.length).toBeGreaterThan(500)
     expect(summary.functions.length).toBeGreaterThan(200)
@@ -138,7 +138,9 @@ describe('schema reale: il provider non si spacca su query vere', () => {
     'SELECT * FROM dbo.MAG_CELLE ORDER BY ',
   ]
 
-  it('nessuna eccezione e mai popup vuoto, a ogni offset', () => {
+  // timeout ampio: il provider viene eseguito a OGNI offset di diverse query vere e, con la
+  // suite in parallelo, supera i 5s di default (falliva a intermittenza per il tempo, non per il codice)
+  it('nessuna eccezione e mai popup vuoto, a ogni offset', { timeout: 60000 }, () => {
     for (const sql of QUERIES) {
       for (let offset = 0; offset <= sql.length; offset++) {
         if (inCommentOrString(sql, offset)) continue

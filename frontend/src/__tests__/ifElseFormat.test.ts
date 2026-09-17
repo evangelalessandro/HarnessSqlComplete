@@ -37,8 +37,10 @@ END`
   it('una procedura con firma parte ancora da indent 1 (dopo AS)', () => {
     const sql = `alter procedure [dbo].[x]\nas\nbegin\n    set nocount on\n    if @a = 1\n        select 1\nend`
     const out = fmt(sql)
+    // la firma sta su righe proprie (nome, AS) come per le procedure CON parametri;
+    // il corpo parte indentato di un livello
     expect(out).toBe(
-      `  ALTER PROCEDURE [dbo].[x] AS\n  BEGIN\n    SET NOCOUNT ON\n    IF @a = 1\n      SELECT 1\n  END\n`,
+      `ALTER PROCEDURE [dbo].[x]\nAS\n  BEGIN\n    SET NOCOUNT ON\n    IF @a = 1\n      SELECT 1\n  END\n`,
     )
   })
 

@@ -11,21 +11,34 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
-/* Scrollbar scure coerenti col tema */
+/* Scrollbar scure coerenti col tema. Il cursore è un "punto" tondo e GRANDE (14px di canale,
+   8px di maniglia con il bordo trasparente): così si afferra col mouse senza fatica. */
 * {
-  scrollbar-width: thin;
-  scrollbar-color: rgb(63 63 70) transparent;
+  scrollbar-width: auto;
+  scrollbar-color: rgb(82 82 91) transparent;
 }
 *::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
 }
 *::-webkit-scrollbar-thumb {
-  background: rgb(63 63 70);
-  border-radius: 5px;
+  background: rgb(82 82 91);
+  border-radius: 9999px;
+  /* bordo trasparente + background-clip: la maniglia resta staccata dai bordi e ben visibile */
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgb(113 113 122);
+  background-clip: padding-box;
 }
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+/* Monaco: cursore arrotondato come quello dei pannelli (le dimensioni sono nelle opzioni
+   dell'editor: verticalScrollbarSize/horizontalScrollbarSize + sliderSize) */
+.monaco-editor .scrollbar .slider {
+  border-radius: 9999px;
 }
 
 /* Tema chiaro: ridefinisce le variabili della palette zinc usate da Tailwind v4.
@@ -44,13 +57,18 @@ body {
   --color-zinc-950: #f8fafc;
 }
 .theme-light {
-  scrollbar-color: rgb(203 213 225) transparent;
+  scrollbar-color: rgb(148 163 184) transparent;
 }
 .theme-light * {
-  scrollbar-color: rgb(203 213 225) transparent;
+  scrollbar-color: rgb(148 163 184) transparent;
 }
 .theme-light *::-webkit-scrollbar-thumb {
-  background: rgb(203 213 225);
+  background: rgb(148 163 184);
+  background-clip: padding-box;
+}
+.theme-light *::-webkit-scrollbar-thumb:hover {
+  background: rgb(100 116 139);
+  background-clip: padding-box;
 }
 
 /* Evidenziazione del campo corrispondente negli INSERT (colonna <-> valore) */
