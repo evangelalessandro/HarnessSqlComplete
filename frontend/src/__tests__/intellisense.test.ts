@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { allows, classifyContext, filterKeywordsForContext, isAfterOrderKeyword, isOrderWordTyped } from '../intellisenseContext'
 import { buildColumnContextSuggestions, buildSelectListSuggestions, buildStatementSnippets } from '../helpers'
-import { wsbritvicLikeSummary } from './schema'
+import { demoStoreLikeSummary } from './schema'
 
-const summary = wsbritvicLikeSummary()
+const summary = demoStoreLikeSummary()
 
 /**
  * Simula l'input del provider: dato il testo completo e la posizione del cursore

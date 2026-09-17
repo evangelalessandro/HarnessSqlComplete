@@ -161,11 +161,11 @@ describe('tsqlFormatter: formatta secondo il profilo', () => {
 
   it('EXEC: parametri e valori incolonnati sotto il primo parametro', () => {
     const out = formatSqlWithProfile(
-      'EXEC ws_CUSTOM_Handheld_InventoryKitting_St1_GetList @user = @user, @udc = @pUDC',
+      'EXEC ws_CIDEDO_HUSOBUME_IIGISUMIVOSOVUBE_St1_GIVOSEB @user = @user, @udc = @pUDC',
       profile,
     )
     expect(out).toBe(
-      'EXEC ws_CUSTOM_Handheld_InventoryKitting_St1_GetList @user = @user\n' +
+      'EXEC ws_CIDEDO_HUSOBUME_IIGISUMIVOSOVUBE_St1_GIVOSEB @user = @user\n' +
         '                                                    ,@udc  = @pUDC\n',
     )
   })
@@ -185,7 +185,7 @@ describe('tsqlFormatter: formatta secondo il profilo', () => {
 
   it('SELECT con CASE nella testata: dopo END la FROM va a capo (bug utente)', () => {
     const out = formatSqlWithProfile(
-      "SELECT @txtError = CASE WHEN ISNULL(@ssccLu, '') = '' THEN dbo.fn_td('SSCC not set !') ELSE '' END, @modulo = X_MODULO FROM (SELECT 1 TT) a LEFT JOIN #tbl_InventoryKitting_St1 ON 1 = 1",
+      "SELECT @txtError = CASE WHEN ISNULL(@ssccLu, '') = '' THEN dbo.fn_tu('SSCC not set !') ELSE '' END, @modulo = X_MODULO FROM (SELECT 1 TT) a LEFT JOIN #tbl_InventoryKitting_St1 ON 1 = 1",
       profile,
     )
     // il CASE è espanso

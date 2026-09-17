@@ -1,12 +1,12 @@
 // Impaginazione degli INSERT: campi e valori uno per riga, allineati sotto il primo.
 //
-// Segnalato dall'utente sull'output della store dbo.ws_L2_Host_Import_Avvisi: l'INSERT con
+// Segnalato dall'utente sull'output della store dbo.ws_L2_HAVO_IEDUGI_AESIPE: l'INSERT con
 // 17 campi usciva su una riga sola (colonne e valori), con i CASE dentro i VALUES che
 // rompevano il layout a metà. Le stesse regole valgono dentro e fuori le store.
 import { describe, expect, it } from 'vitest'
 import { formatRoutineWithProfile, formatSqlWithProfile, tokenizeSqlText } from '../tsqlFormatter'
 import { buildFormatProfile, loadFormatProfileXml } from '../formatProfile'
-import avvisi from './fixtures/routine_ws_L2_Host_Import_Avvisi.sql?raw'
+import avvisi from './fixtures/routine_ws_L2_HAVO_IEDUGI_AESIPE.sql?raw'
 
 const profile = buildFormatProfile(loadFormatProfileXml())
 
@@ -70,7 +70,7 @@ describe('INSERT: campi e valori uno per riga', () => {
   })
 })
 
-describe('store reale: dbo.ws_L2_Host_Import_Avvisi', () => {
+describe('store reale: dbo.ws_L2_HAVO_IEDUGI_AESIPE', () => {
   const formattata = formatRoutineWithProfile(avvisi, profile)
 
   it('l INSERT con 17 campi è impaginato uno per riga', () => {

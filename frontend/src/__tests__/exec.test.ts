@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { buildExecParamSnippet, filterUnusedParams, findExecContext, toCreateOrAlterStatement } from '../helpers'
-import { wsbritvicLikeSummary } from './schema'
+import { demoStoreLikeSummary } from './schema'
 
-const summary = wsbritvicLikeSummary()
+const summary = demoStoreLikeSummary()
 const proc = summary.procedures[0] // zzz_test_proc: @id, @nome, @flag (OUTPUT)
 
 describe('EXEC: parametri delle stored procedure', () => {
@@ -118,18 +118,18 @@ describe('toCreateOrAlterStatement: CREATE → CREATE OR ALTER', () => {
   })
 
   it('header reale del DB (commento a blocco + CRLF) → istruzione a capo, header intatto', () => {
-    // inizio reale di dbo.ws_CUSTOM_L2_AbiDisabHydraroll
+    // inizio reale di dbo.ws_CIDEDO_L2_AAMAGEGUPIVODIBOP
     const def =
       '/* Able/Disable Hydraroll Bay also for CarWash */\r\n' +
-      'CREATE PROCEDURE [dbo].[ws_CUSTOM_L2_AbiDisabHydraroll] (\r\n  @pAbleDisable bit\r\n)\r\nAS\r\nSELECT 1'
+      'CREATE PROCEDURE [dbo].[ws_CIDEDO_L2_AAMAGEGUPIVODIBOP] (\r\n  @pAbleDisable bit\r\n)\r\nAS\r\nSELECT 1'
     const out = toCreateOrAlterStatement(def)
     expect(out.startsWith('/* Able/Disable Hydraroll Bay also for CarWash */\r\n')).toBe(true)
     expect(out).not.toMatch(/\*\/CREATE OR ALTER/)
-    expect(out).toContain('CREATE OR ALTER PROCEDURE [dbo].[ws_CUSTOM_L2_AbiDisabHydraroll]')
+    expect(out).toContain('CREATE OR ALTER PROCEDURE [dbo].[ws_CIDEDO_L2_AAMAGEGUPIVODIBOP]')
   })
 
   it('header reale con più commenti a blocco: righe vuote e commenti conservati identici', () => {
-    // forma reale di dbo.ws_AlgoritmoNAVETTE_Picking_Stalli
+    // forma reale di dbo.ws_AABADASUBADUBUBI_PEMAGED_SESAMI
     const def =
       '/* Algoritmo navette per impianti picking */\r\n\r\n\r\n/*\r\n Ritorna : -1 - Errore\r\n*/\r\nALTER PROCEDURE dbo.X AS SELECT 1'
     const out = toCreateOrAlterStatement(def)

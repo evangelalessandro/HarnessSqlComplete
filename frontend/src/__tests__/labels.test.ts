@@ -6,9 +6,9 @@ import { describe, expect, it } from 'vitest'
 import * as monaco from 'monaco-editor'
 import { provideSqlCompletions } from '../sqlCompletions'
 import { extractLabels } from '../labels'
-import { wsbritvicLikeSummary } from './schema'
+import { demoStoreLikeSummary } from './schema'
 
-const summary = wsbritvicLikeSummary()
+const summary = demoStoreLikeSummary()
 
 function suggest(sql: string, offset: number) {
   const model = monaco.editor.createModel(sql, 'sql')

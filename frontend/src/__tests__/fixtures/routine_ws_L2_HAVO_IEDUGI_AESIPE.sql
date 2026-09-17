@@ -6,7 +6,7 @@
  Notices import
  
 */
-CREATE OR ALTER PROCEDURE [dbo].[ws_L2_Host_Import_Avvisi]
+CREATE OR ALTER PROCEDURE [dbo].[ws_L2_HAVO_IEDUGI_AESIPE]
 (
         @pOPERAZIONE NVARCHAR(max) = NULL /* "A" = Solo Insert (e' il default se null), Operazione "I" = Insert o update, "D" = Delete */ /* "A" = Only insert (if null is the default), Operation 'I' = Insert or Update, "D" = Delete */
         ,@pSPLIT BIT = NULL /* Se 1, esegue lo split, se 0 non lo esegue, se null lo ricava dal campo dell'ordine dell'avviso ingresso */ /* If 1, does the split, if 0 does not execute it, if null the input of the notice of the order is obtained from the field */ /**/
@@ -45,7 +45,7 @@ SELECT @pRIG_ARTICOLO = rtrim (@pRIG_ARTICOLO), @pRIG_SUB1 = rtrim (@pRIG_SUB1),
 /* Check HOSTINF value */
 IF @pRIG_HOSTINF = ''
 BEGIN
-  SELECT @errore = dbo.fn_td ('Campo HOSTINF non impostato')
+  SELECT @errore = dbo.fn_tu ('Campo HOSTINF non impostato')
   RAISERROR (@errore, 16, 1)
   RETURN - 1
 END
@@ -78,7 +78,7 @@ BEGIN
           AND RIG_EXPORDINE = 'COMPL'
     IF @@ROWCOUNT < 1
     BEGIN
-      SELECT @errore = dbo.fn_td ('Riga non eliminabile')
+      SELECT @errore = dbo.fn_tu ('Riga non eliminabile')
       RAISERROR (@errore, 16, 1)
       RETURN - 1
     END
@@ -100,7 +100,7 @@ END
 /* Se inserimento e riga duplicata, genero errore */
 IF @pOPERAZIONE = 'A' AND @idriga > 0
 BEGIN
-  SELECT @errore = dbo.fn_td ('Riga duplicata')
+  SELECT @errore = dbo.fn_tu ('Riga duplicata')
   RAISERROR (@errore, 16, 1)
   RETURN - 1
 END
@@ -109,7 +109,7 @@ END
 IF @pOPERAZIONE IN ('I', 'A')
 BEGIN
  INSERT INTO DAT_ORDINI_RIGHE (RIG_ORDINE, RIG_ARTICOLO, RIG_SUB1, RIG_SUB2, RIG_STAMATE, RIG_TIPOCONF, RIG_HOSTINF, RIG_QTAR, RIG_REQ_NOTE, RIG_HOSTCAUS, RIG_HOST, RIG_SSCC_SOURCE, RIG_AVVISO_DPRO, RIG_AVVISO_DSCA, RIG_AVVISO_UDCPRED, RIG_AVVISO_LU_CODE, RIG_AVVISO_SSCC)
-VALUES (@ordine, @pRIG_ARTICOLO, isnull (@pRIG_SUB1, ''), isnull (@pRIG_SUB2, ''), isnull (@pRIG_STAMATE, ''), isnull (@pRIG_TIPOCONF, ''), @pRIG_HOSTINF, @pRIG_QTAR, isnull (@pRIG_REQ_NOTE, ''), ISNULL (@pRIG_HOSTCAUS, ''), 1, isnull (@pRIG_SSCC_SOURCE, ''), CASE WHEN @pRIG_DPRO > '' THEN dbo.fn_Uti_StringToDateTime (@pRIG_DPRO, 'yyyy-MM-dd hh') ELSE '' END, CASE WHEN @pRIG_DSCA > '' THEN dbo.fn_Uti_StringToDateTime (@pRIG_DSCA, 'yyyy-MM-dd hh') ELSE '' END, isnull (@pRIG_AVVISO_UDCPRED, ''), @pRIG_LU_CODE, @pRIG_LU_CODE)
+VALUES (@ordine, @pRIG_ARTICOLO, isnull (@pRIG_SUB1, ''), isnull (@pRIG_SUB2, ''), isnull (@pRIG_STAMATE, ''), isnull (@pRIG_TIPOCONF, ''), @pRIG_HOSTINF, @pRIG_QTAR, isnull (@pRIG_REQ_NOTE, ''), ISNULL (@pRIG_HOSTCAUS, ''), 1, isnull (@pRIG_SSCC_SOURCE, ''), CASE WHEN @pRIG_DPRO > '' THEN dbo.fn_UIM_SELOSUPEDUBIGASO (@pRIG_DPRO, 'yyyy-MM-dd hh') ELSE '' END, CASE WHEN @pRIG_DSCA > '' THEN dbo.fn_UIM_SELOSUPEDUBIGASO (@pRIG_DSCA, 'yyyy-MM-dd hh') ELSE '' END, isnull (@pRIG_AVVISO_UDCPRED, ''), @pRIG_LU_CODE, @pRIG_LU_CODE)
 
   SELECT @idriga = SCOPE_IDENTITY ()
 
@@ -126,7 +126,7 @@ VALUES (@ordine, @pRIG_ARTICOLO, isnull (@pRIG_SUB1, ''), isnull (@pRIG_SUB2, ''
     WHERE ORD_ORDINE = @ordine
   IF @pSPLIT = 1
   BEGIN
-    EXEC @retVal = ws_L2_SplitRiga @idriga
+    EXEC @retVal = ws_L2_SEGOVOGEM @idriga
         ,@errore OUTPUT
     IF @retVal <> 0
     BEGIN
@@ -139,6 +139,6 @@ VALUES (@ordine, @pRIG_ARTICOLO, isnull (@pRIG_SUB1, ''), isnull (@pRIG_SUB2, ''
 END
 
 /* Errore tipo operazione errata */
-SELECT @errore = dbo.fn_InsTextStr (dbo.fn_td ('Tipo di operazione "{0}" non prevista'), isnull (@pOPERAZIONE, ''), DEFAULT, DEFAULT, DEFAULT, DEFAULT)
+SELECT @errore = dbo.fn_IEGASUBODU (dbo.fn_tu ('Tipo di operazione "{0}" non prevista'), isnull (@pOPERAZIONE, ''), DEFAULT, DEFAULT, DEFAULT, DEFAULT)
 RAISERROR (@errore, 16, 1)
 RETURN - 1

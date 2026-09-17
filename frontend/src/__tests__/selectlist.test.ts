@@ -8,9 +8,9 @@ import {
   starFilterText,
   statementRangeAt,
 } from '../helpers'
-import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
+import { mkCol, mkTbl, demoStoreLikeSummary } from './schema'
 
-const summary = wsbritvicLikeSummary()
+const summary = demoStoreLikeSummary()
 const SQL = `SELECT  FROM [dbo].[RUN_MISSIONI] inner join [DAT_UDC] ON [MIS_UDC] = [UDC_UDC]
  ORDER BY 1 DESC;`
 

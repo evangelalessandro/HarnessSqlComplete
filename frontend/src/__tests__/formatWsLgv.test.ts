@@ -1,9 +1,9 @@
-// Verifica: formattando ws_LGV_Redirection (SP reale con molti commenti in posizioni
+// Verifica: formattando ws_LUP_RUPOVIVIDOP (SP reale con molti commenti in posizioni
 // difficili) NON si devono rompere statement o commenti (bug: i commenti "--" seguiti
 // da codice accodato sulla stessa riga commentavano via il resto della query; il ";"
 // di ";WITH" spariva).
 import { describe, expect, it } from 'vitest'
-import rawSql from './fixtures/ws_LGV_Redirection.sql?raw'
+import rawSql from './fixtures/ws_LUP_RUPOVIVIDOP.sql?raw'
 import { buildFormatProfile } from '../formatProfile'
 import { DEFAULT_FORMAT_PROFILE_XML } from '../formatProfileDefault'
 import { formatSqlWithProfile, tokenizeSqlText } from '../tsqlFormatter'
@@ -18,7 +18,7 @@ function meaningfulTokens(text: string): string[] {
     .map(t => (t.type === 'word' ? t.text.toLowerCase() : t.text))
 }
 
-describe('fixture ws_LGV_Redirection (commenti che non devono rompere la SP)', () => {
+describe('fixture ws_LUP_RUPOVIVIDOP (commenti che non devono rompere la SP)', () => {
   it('formatta senza perdere o alterare alcun token SQL', () => {
     let out: string
     expect(() => {

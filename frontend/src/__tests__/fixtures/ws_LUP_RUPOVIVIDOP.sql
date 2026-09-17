@@ -1,6 +1,6 @@
-USE [WSBRITVIC]
+USE [DEMOSTORE]
 GO
-/****** Object:  StoredProcedure [dbo].[ws_LGV_Redirection]    Script Date: 07/09/2026 08:46:23 ******/
+/****** Object:  StoredProcedure [dbo].[ws_LUP_RUPOVIVIDOP]    Script Date: 07/09/2026 08:46:23 ******/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
@@ -41,7 +41,7 @@ GO
        0 = Ok
 
 */
-ALTER PROCEDURE [dbo].[ws_LGV_Redirection]
+ALTER PROCEDURE [dbo].[ws_LUP_RUPOVIVIDOP]
 (
  @pLgvManager   nvarchar(30)            /* Lgv manager (single machine) */
 ,@pTabLgvParam  TYPE_LGV_PARAM READONLY /* Table containing LU list and position info (bay, pitch, corridor, cell, position, depth, level) */
@@ -50,14 +50,14 @@ AS
 SET NOCOUNT ON
 SET XACT_ABORT ON
 
-  declare @msg nvarchar(max) = OBJECT_NAME(@@PROCID), @txterror nvarchar(max), @trancount int, @retVal int, @dDateTimeStart datetime = GETDATE(), @msgXmlMem xml, @bDebug bit = dbo.fn_GetNumFromWork(N'DEBUG_LGV', 0)
+  declare @msg nvarchar(max) = OBJECT_NAME(@@PROCID), @txterror nvarchar(max), @trancount int, @retVal int, @dDateTimeStart datetime = GETDATE(), @msgXmlMem xml, @bDebug bit = dbo.fn_GOPOBEVEMOVEGU(N'DEBUG_LGV', 0)
   
   if not exists(select GES_GESTORE 
                 from dbo.GESTORI 
                 where GES_GESTORE = @pLgvManager 
                   and GES_TIPOGEST = N'LGV')
   begin
-    select @txterror = dbo.fn_InsTextStr(dbo.fn_td('Gestore non valido!') + N' - ({0})', @pLgvManager, default, default, default, default)
+    select @txterror = dbo.fn_IEGASUBODU(dbo.fn_tu('Gestore non valido!') + N' - ({0})', @pLgvManager, default, default, default, default)
     raiserror(@txterror, 16, 1)
     goto end_err
   end
@@ -67,7 +67,7 @@ SET XACT_ABORT ON
   from @pTabLgvParam  
   if @nNumMissPar = 0
   begin
-    select @txterror = dbo.fn_td('Elenco missioni vuoto!')
+    select @txterror = dbo.fn_tu('Elenco missioni vuoto!')
     raiserror(@txterror, 16, 1)
     goto end_err
   end
@@ -79,7 +79,7 @@ SET XACT_ABORT ON
   --            or (SUM(ISNULL(TLP_BAY, 0)) > 0 and SUM(ISNULL(TLP_COR, 0)) > 0)  /* Both destination set, bay and corridor */
   --          )
   --begin
-  --  select @txterror = dbo.fn_td('Elenco missioni con destinazioni multiple!')
+  --  select @txterror = dbo.fn_tu('Elenco missioni con destinazioni multiple!')
   --  raiserror(@txterror, 16, 1)
   --  goto end_err
   --end
@@ -105,14 +105,14 @@ SET XACT_ABORT ON
 
   if @nNumMissPar <> @nNumMiss
   begin
-    select @txterror = dbo.fn_td('Elenco missioni non valido!')
+    select @txterror = dbo.fn_tu('Elenco missioni non valido!')
     raiserror(@txterror, 16, 1)
     goto end_err
   end
 
   if @nNumMissPar <> @nNumMissValid
   begin
-    select @txterror = dbo.fn_td('Elenco missioni con dati non validi!')
+    select @txterror = dbo.fn_tu('Elenco missioni con dati non validi!')
     raiserror(@txterror, 16, 1)
     goto end_err
   end
@@ -149,7 +149,7 @@ SET XACT_ABORT ON
   print CONCAT(N'Destination type ', @nDestinationType)
   if @nDestinationType <= 0
   begin
-    select @txterror = dbo.fn_td('Elenco missioni con destinazioni non valide!')
+    select @txterror = dbo.fn_tu('Elenco missioni con destinazioni non valide!')
     raiserror(@txterror, 16, 1)
     goto end_err
   end
@@ -215,7 +215,7 @@ SET XACT_ABORT ON
     
     -----CUSTOM ALE EVA 2025 12 01 3056004102 AGV Movement added order by for available and last used
     PZ_OK_PIAZZOLA_IMP desc,PZ_UPD_PIAZZOLA_IMP
-    /* NC : Britvic : Inserire qui eventuale baia master alternativa */
+    /* NC : DEMOSTORE : Inserire qui eventuale baia master alternativa */
     if @@ROWCOUNT = 0 and @bIsEvacuation = 0
     begin
       
@@ -227,7 +227,7 @@ SET XACT_ABORT ON
           @nDestBay       = d.BCO_BAIA
         ,@nDestBayMaster = d.BCO_MASTER
         from MAG_BAIE
-        cross apply dbo.fn_InsFromString(MAG_BAIE.BCO_AUT_ELEBAIE,N',')
+        cross apply dbo.fn_IADOVODASISID(MAG_BAIE.BCO_AUT_ELEBAIE,N',')
         inner join MAG_BAIE as d on d.BCO_MASTER = ELEM
         inner join MAG_BAIE as m on m.BCO_BAIA = d.BCO_MASTER
         inner join dbo.MAG_BAIE_PIAZ on (BPZ_BAIA = d.BCO_BAIA)
@@ -401,8 +401,8 @@ SET XACT_ABORT ON
 
         select @nDestPos = ISNULL(CSL_POS, 1)
              , @nDestPro = (CEL_PROFMAX - TIP_PROFTOT + 1)
-             , @nDestY = dbo.fn_Uti_Dep_Y(CEL_DIMY) /* Height destination */
-             , @nDestZ = dbo.fn_Uti_Dep_Z(CEL_DIMZ, CEL_PROFTOT, (CEL_PROFMAX - TIP_PROFTOT + 1)) /* Depth destination */
+             , @nDestY = dbo.fn_UIM_DAS_Y(CEL_DIMY) /* Height destination */
+             , @nDestZ = dbo.fn_UIM_DAS_Z(CEL_DIMZ, CEL_PROFTOT, (CEL_PROFMAX - TIP_PROFTOT + 1)) /* Depth destination */
         from dbo.MAG_CELLE
           inner join dbo.DAT_UDC_CEL on (TIP_TIPOCELLA = CEL_TIPOCELLA)
           left outer join dbo.MAG_CELLE_LARG_SPAZI on (CSL_CORRIDOIO = CEL_CORRIDOIO and CSL_CELLA = CEL_CELLA)
@@ -455,7 +455,7 @@ SET XACT_ABORT ON
     order by BPZ_PRIOBAIE, BPZ_PRIO, PZ_OK_PIAZZOLA desc, PZ_OK_PIAZZOLA_IMP desc
     if @@ROWCOUNT = 0
     begin
-      select @txterror = dbo.fn_td(N'Baia di evacuazione non trovata')
+      select @txterror = dbo.fn_tu(N'Baia di evacuazione non trovata')
       raiserror(@txterror, 16, 1)
       goto end_err
     end
@@ -508,8 +508,8 @@ SET XACT_ABORT ON
 
         select @nDestPos = ISNULL(CSL_POS, 1)
              , @nDestPro = (CEL_PROFMAX - TIP_PROFTOT + 1)
-             , @nDestY = dbo.fn_Uti_Dep_Y(CEL_DIMY) /* Height destination */
-             , @nDestZ = dbo.fn_Uti_Dep_Z(CEL_DIMZ, CEL_PROFTOT, (CEL_PROFMAX - TIP_PROFTOT + 1)) /* Depth destination */
+             , @nDestY = dbo.fn_UIM_DAS_Y(CEL_DIMY) /* Height destination */
+             , @nDestZ = dbo.fn_UIM_DAS_Z(CEL_DIMZ, CEL_PROFTOT, (CEL_PROFMAX - TIP_PROFTOT + 1)) /* Depth destination */
         from dbo.MAG_CELLE
           inner join dbo.DAT_UDC_CEL on (TIP_TIPOCELLA = CEL_TIPOCELLA)
           left outer join dbo.MAG_CELLE_LARG_SPAZI on (CSL_CORRIDOIO = CEL_CORRIDOIO and CSL_CELLA = CEL_CELLA)
@@ -556,8 +556,8 @@ SET XACT_ABORT ON
   and PER_L1STCO = 1 
   if @@ROWCOUNT = 0
   begin
-    print dbo.fn_InsTextStr(N'@sLgvManagerGroup:{0};@nSourceBay:{1};@nSourceCor:{2};@nDestBay:{3};@nDestCor:{4};', @sLgvManagerGroup, @nSourceBay, @nSourceCor, @nDestBay, @nDestCor)
-    select @txterror = dbo.fn_td(N'Percorso non trovato')
+    print dbo.fn_IEGASUBODU(N'@sLgvManagerGroup:{0};@nSourceBay:{1};@nSourceCor:{2};@nDestBay:{3};@nDestCor:{4};', @sLgvManagerGroup, @nSourceBay, @nSourceCor, @nDestBay, @nDestCor)
+    select @txterror = dbo.fn_tu(N'Percorso non trovato')
     raiserror(@txterror, 16, 1)
     goto end_err
   end
@@ -577,11 +577,11 @@ SET XACT_ABORT ON
       , MIS_D_POS = ISNULL(@nDestPos, 1)
       , MIS_D_PRO = ISNULL(@nDestPro, 1)
       , MIS_FIN_BAIA = 0
-      , MIS_GES_D_MODULO = case when @nDestBay > 0 and @nDestPitch = 0 and MIS_H_FIFO = 1 then dbo.fn_getFirstModPiaz(@nDstPitchRight)
-                                when @nDestBay > 0 and @nDestPitch = 0 and MIS_H_FIFO = 3 then dbo.fn_getFirstModPiaz(@nDstPitchRight)
-                                when @nDestBay > 0 and @nDestPitch = 0 and MIS_H_FIFO = 0 then dbo.fn_getFirstModPiaz(@nDstPitchLeft)
-                                when @nDestBay > 0 and @nDestPitch = 0 and MIS_H_FIFO = 2 then dbo.fn_getFirstModPiaz(@nDstPitchLeft)
-                                else dbo.fn_getFirstModPiaz(@nDestPitch)
+      , MIS_GES_D_MODULO = case when @nDestBay > 0 and @nDestPitch = 0 and MIS_H_FIFO = 1 then dbo.fn_GIGUDUGADESUVIB(@nDstPitchRight)
+                                when @nDestBay > 0 and @nDestPitch = 0 and MIS_H_FIFO = 3 then dbo.fn_GIGUDUGADESUVIB(@nDstPitchRight)
+                                when @nDestBay > 0 and @nDestPitch = 0 and MIS_H_FIFO = 0 then dbo.fn_GIGUDUGADESUVIB(@nDstPitchLeft)
+                                when @nDestBay > 0 and @nDestPitch = 0 and MIS_H_FIFO = 2 then dbo.fn_GIGUDUGADESUVIB(@nDstPitchLeft)
+                                else dbo.fn_GIGUDUGADESUVIB(@nDestPitch)
                            end  
       , MIS_L1PACO        = 1
       , MIS_L1STCO        = 1
@@ -611,7 +611,7 @@ SET XACT_ABORT ON
     goto end_err
   if @retVal <> @nNumMissPar
   begin
-    select @txterror = dbo.fn_td(N'Numero missioni aggiornate non valido')
+    select @txterror = dbo.fn_tu(N'Numero missioni aggiornate non valido')
     raiserror(@txterror, 16, 1)
     goto end_err
   end
@@ -646,8 +646,8 @@ end_ok:
   if @bDebug = 1
   begin
     select @msgXmlMem = (select * from @pTabLgvParam as TBL_LGV for xml auto)
-         , @msg += case when @txterror > N'' then N' - ' + @txterror else N'' end + dbo.fn_InsTextStr(N' - @pLgvManager:{0} - Execution(ms):{1}', @pLgvManager, DATEDIFF(MS, @dDateTimeStart, GETDATE()), default, default, default)
-    exec ws_LOG_AddLogWork N'EV', @msg, @pLgvManager, default, default, default, 3, @msgXmlMem
+         , @msg += case when @txterror > N'' then N' - ' + @txterror else N'' end + dbo.fn_IEGASUBODU(N' - @pLgvManager:{0} - Execution(ms):{1}', @pLgvManager, DATEDIFF(MS, @dDateTimeStart, GETDATE()), default, default, default)
+    exec ws_LAV_AAMOVUBEVA N'EV', @msg, @pLgvManager, default, default, default, 3, @msgXmlMem
   end
 
   return 0
@@ -658,8 +658,8 @@ end_err:
     rollback transaction
   
   select @msgXmlMem = (select * from @pTabLgvParam as TBL_LGV for xml auto)
-       , @msg += case when @txterror > N'' then N' - ' + @txterror else N'' end + dbo.fn_InsTextStr(N' - @pLgvManager:{0} - Execution(ms):{1}', @pLgvManager, DATEDIFF(MS, @dDateTimeStart, GETDATE()), default, default, default)
-  exec ws_LOG_AddLogWork N'ERR', @msg, @pLgvManager, default, default, default, 3, @msgXmlMem
+       , @msg += case when @txterror > N'' then N' - ' + @txterror else N'' end + dbo.fn_IEGASUBODU(N' - @pLgvManager:{0} - Execution(ms):{1}', @pLgvManager, DATEDIFF(MS, @dDateTimeStart, GETDATE()), default, default, default)
+  exec ws_LAV_AAMOVUBEVA N'ERR', @msg, @pLgvManager, default, default, default, 3, @msgXmlMem
 
   return -1
 GO

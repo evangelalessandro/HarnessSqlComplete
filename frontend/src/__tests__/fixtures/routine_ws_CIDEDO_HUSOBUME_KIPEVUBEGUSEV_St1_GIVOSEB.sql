@@ -3,10 +3,10 @@
  Poi l’operatore in kitting area scansiona il pallet, riceve le indicazioni e scansiona il pallet di destinazione per confermare il deposito. 
 
 */
-create or alter procedure [dbo].[ws_CUSTOM_Handheld_KittingReturn_St1_GetList]
+create or alter procedure [dbo].[ws_CIDEDO_HUSOBUME_KIPEVUBEGUSEV_St1_GIVOSEB]
 (
                  @user nvarchar(50)
-                ,@sco  decimal(15,0) = 0 --filter from ws_CUSTOM_Handheld_KittingReturn_St1_Execute
+                ,@sco  decimal(15,0) = 0 --filter from ws_CIDEDO_HUSOBUME_KIPEVUBEGUSEV_St1_EAVIBAG
 )
 as
   set nocount on
@@ -20,7 +20,7 @@ as
     begin transaction
 
 
-  exec @retVal = ws_L2_LockRunHandHeld @errore = @txtError out
+  exec @retVal = ws_L2_LESIVEGUDUVASAP @errore = @txtError out
   if @retVal <> 0
     goto lblExit
 

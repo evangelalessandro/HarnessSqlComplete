@@ -288,7 +288,7 @@ if @a > 0
 
 describe('extractRoutineParameters: in modifica propone i PARAMETRI della routine', () => {
   it('procedure con parametri e default → li estrae dalla firma (anche se non DECLARATI)', () => {
-    const text = `CREATE OR ALTER PROCEDURE [dbo].[ws_L2_LancioImmed]
+    const text = `CREATE OR ALTER PROCEDURE [dbo].[ws_L2_LASEGUPAPIG]
     @pRiga int = 0
     ,@pOrdine nvarchar(50)
     ,@baia int OUTPUT

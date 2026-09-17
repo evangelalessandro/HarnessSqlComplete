@@ -6,8 +6,8 @@ statement dai risultati, **diagramma delle chiamate fra routine** e assistente I
 - **Backend**: ASP.NET Core Web API (.NET 10) + `Microsoft.Data.SqlClient`
 - **Frontend**: React + Vite + TypeScript, Tailwind CSS 4, Monaco Editor (bundle locale, nessun CDN)
 - **IA**: completamento inline con API **DeepSeek** (opzionale), con lo schema del database come contesto
-- **Database**: SQL Server (testato su database reali di produzione, es. `WSBRITVIC` con 286 tabelle e
-  598 stored procedure, e `WSGSDMALTA` con oltre 1500 routine)
+- **Database**: SQL Server (testato su database reali di produzione, con centinaia di tabelle e
+  oltre un migliaio di stored procedure per database)
 
 **🇮🇹 Italiano** · [🇬🇧 English](#-english)
 
@@ -282,8 +282,8 @@ query results, a **routine call graph** and an optional AI assistant.
 - **Backend**: ASP.NET Core Web API (.NET 10) + `Microsoft.Data.SqlClient`
 - **Frontend**: React + Vite + TypeScript, Tailwind CSS 4, Monaco Editor (local bundle, no CDN)
 - **AI**: inline completion through the **DeepSeek** API (optional), using the database schema as context
-- **Database**: SQL Server (developed against real production databases, e.g. `WSBRITVIC` with 286 tables
-  and 598 stored procedures, and `WSGSDMALTA` with more than 1500 routines)
+- **Database**: SQL Server (developed against real production databases with hundreds of tables and
+  more than a thousand stored procedures each)
 
 ## Screenshots
 

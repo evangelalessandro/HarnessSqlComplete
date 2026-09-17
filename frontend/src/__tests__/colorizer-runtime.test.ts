@@ -4,9 +4,9 @@
 import { describe, expect, it } from 'vitest'
 import * as monaco from 'monaco-editor'
 import { buildColorDecorations } from '../sqlTableColors'
-import { wsbritvicLikeSummary } from './schema'
+import { demoStoreLikeSummary } from './schema'
 
-function applyAndCollect(sql: string, summary: ReturnType<typeof wsbritvicLikeSummary>) {
+function applyAndCollect(sql: string, summary: ReturnType<typeof demoStoreLikeSummary>) {
   const model = monaco.editor.createModel(sql, 'sql')
   const items = buildColorDecorations(sql, summary).map(d => ({
     range: new monaco.Range(
@@ -30,7 +30,7 @@ function applyAndCollect(sql: string, summary: ReturnType<typeof wsbritvicLikeSu
 }
 
 describe('colorizer: decorazioni applicate al modello Monaco', () => {
-  const summary = wsbritvicLikeSummary()
+  const summary = demoStoreLikeSummary()
   const SQL =
     'SELECT MIS_UDC,UDC_CORRIDOIO  FROM dbo.RUN_MISSIONI inner join DAT_UDC ON MIS_UDC = UDC_UDC ORDER BY 1 DESC;'
 

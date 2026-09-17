@@ -5,9 +5,9 @@ import { buildColumnContextSuggestions, statementRangeAt } from '../helpers'
 import { allows, classifyContext, ORDER_DIRECTIONS } from '../intellisenseContext'
 import { extractLocalTables } from '../localTables'
 import type { DatabaseSummary } from '../types'
-import { wsbritvicLikeSummary } from './schema'
+import { demoStoreLikeSummary } from './schema'
 
-const summary = wsbritvicLikeSummary()
+const summary = demoStoreLikeSummary()
 
 function ctxFor(prefix: string) {
   return classifyContext({ prefix, stmtBefore: prefix })
@@ -66,7 +66,7 @@ describe('ORDER BY: caso utente reale (batch con temporanea, CASE e alias)', () 
   ,X_MODULO NVARCHAR(50)
 )
 
-EXEC ws_CUSTOM_Handheld_InventoryKitting_St1_GetList @user = @user
+EXEC ws_CIDEDO_HUSOBUME_IIGISUMIVOSOVUBE_St1_GIVOSEB @user = @user
                                                     ,@udc  = @pUDC
 IF @@rowcount = 0
 BEGIN
@@ -77,13 +77,13 @@ END
 SELECT @txtError =
   CASE
     WHEN ISNULL (@ssccLu, '') = ''
-      THEN dbo.fn_td ('SSCC not set !')
+      THEN dbo.fn_tu ('SSCC not set !')
     WHEN X_UDC IS NULL
-      THEN dbo.fn_td ('Lu not found !')
+      THEN dbo.fn_tu ('Lu not found !')
     WHEN X_SSCC <> @ssccLu
-      THEN dbo.fn_td ('SSCC not match !')
+      THEN dbo.fn_tu ('SSCC not match !')
     WHEN @Qty <= 0
-      THEN dbo.fn_td ('Qta is invalid !')
+      THEN dbo.fn_tu ('Qta is invalid !')
     ELSE ''
   END
   ,@modulo = X_MODULO

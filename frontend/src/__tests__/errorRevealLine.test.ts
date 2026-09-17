@@ -1,6 +1,6 @@
 // Doppio clic su un errore → riga giusta nell'editor.
 //
-// Segnalato dall'utente: con "Msg 156 … Procedura ws_X_TESTFAKE · Riga 64" ci si aspetta di
+// Segnalato dall'utente: con "Msg 156 … Procedura ws_X_TOSOSASA · Riga 64" ci si aspetta di
 // finire sulla riga 164, perché nella tab la procedura inizia alla riga 101 (SQL Server conta
 // le righe DENTRO la definizione).
 import { describe, expect, it } from 'vitest'
@@ -9,7 +9,7 @@ import type { QueryMessage, QueryResult } from '../types'
 
 /** Tab con 100 righe di intestazione: la definizione inizia alla riga 101. */
 const TAB = `${Array.from({ length: 100 }, (_, i) => `-- riga ${i + 1}`).join('\n')}
-CREATE OR ALTER PROCEDURE [dbo].[ws_CUSTOM_Handheld_KittingReturn_St1_GetList_TESTFAKE]
+CREATE OR ALTER PROCEDURE [dbo].[ws_CIDEDO_HUSOBUME_KIPEVUBEGUSEV_St1_GIVOSEB_TOSOSASA]
 (
   @user nvarchar(50)
 )
@@ -20,11 +20,11 @@ END`
 
 const msg = (extra: Partial<QueryMessage> = {}): QueryMessage => ({
   text: "Invalid object name 'X'.",
-  display: "Msg 156, Livello 15, Stato 1 · Procedura ws_CUSTOM_Handheld_KittingReturn_St1_GetList_TESTFAKE · Riga 64",
+  display: "Msg 156, Livello 15, Stato 1 · Procedura ws_CIDEDO_HUSOBUME_KIPEVUBEGUSEV_St1_GIVOSEB_TOSOSASA · Riga 64",
   number: 156,
   severity: 15,
   state: 1,
-  procedure: 'ws_CUSTOM_Handheld_KittingReturn_St1_GetList_TESTFAKE',
+  procedure: 'ws_CIDEDO_HUSOBUME_KIPEVUBEGUSEV_St1_GIVOSEB_TOSOSASA',
   line: 64,
   isError: true,
   ...extra,
@@ -32,7 +32,7 @@ const msg = (extra: Partial<QueryMessage> = {}): QueryMessage => ({
 
 describe('routineStartLine', () => {
   it('trova la riga della definizione, anche con schema e parentesi', () => {
-    expect(routineStartLine(TAB, 'ws_CUSTOM_Handheld_KittingReturn_St1_GetList_TESTFAKE')).toBe(101)
+    expect(routineStartLine(TAB, 'ws_CIDEDO_HUSOBUME_KIPEVUBEGUSEV_St1_GIVOSEB_TOSOSASA')).toBe(101)
     expect(routineStartLine('CREATE PROCEDURE dbo.p AS SELECT 1', 'p')).toBe(1)
     expect(routineStartLine('alter proc [dbo].[Altro] as select 1', 'ALTRO')).toBe(1)
     expect(routineStartLine('CREATE FUNCTION dbo.f () RETURNS INT AS BEGIN RETURN 1 END', 'f')).toBe(1)

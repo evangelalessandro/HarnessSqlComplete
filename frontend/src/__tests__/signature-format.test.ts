@@ -1,11 +1,11 @@
 // Firma delle routine: parametri uno per riga e TIPI DI DATO incolonnati.
 //
-// Segnalato dall'utente sull'output di dbo.ws_L2_Host_Import_Avvisi: i nomi dei parametri
+// Segnalato dall'utente sull'output di dbo.ws_L2_HAVO_IEDUGI_AESIPE: i nomi dei parametri
 // erano allineati ma il tipo no (ognuno partiva subito dopo il proprio nome).
 import { describe, expect, it } from 'vitest'
 import { formatRoutineWithProfile } from '../tsqlFormatter'
 import { buildFormatProfile, loadFormatProfileXml } from '../formatProfile'
-import avvisi from './fixtures/routine_ws_L2_Host_Import_Avvisi.sql?raw'
+import avvisi from './fixtures/routine_ws_L2_HAVO_IEDUGI_AESIPE.sql?raw'
 
 const profile = buildFormatProfile(loadFormatProfileXml())
 

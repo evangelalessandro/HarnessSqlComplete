@@ -18,9 +18,9 @@ import {
   objectsInErrorText,
 } from '../sqlMessages'
 import type { QueryMessage, QueryResult } from '../types'
-import { wsbritvicLikeSummary } from './schema'
+import { demoStoreLikeSummary } from './schema'
 
-const summary = wsbritvicLikeSummary()
+const summary = demoStoreLikeSummary()
 
 const err = (over: Partial<QueryMessage> = {}): QueryMessage => ({
   text: 'Errore dentro la procedura',
@@ -93,9 +93,9 @@ describe('riconoscere gli errori fra i messaggi', () => {
   })
 
   it('elenca le procedure coinvolte senza duplicati', () => {
-    expect(errorProcedureNames([err(), err(), err({ procedure: 'ws_Altra' }), print('x')])).toEqual([
+    expect(errorProcedureNames([err(), err(), err({ procedure: 'ws_AIVIG' }), print('x')])).toEqual([
       'zzz_test_proc',
-      'ws_Altra',
+      'ws_AIVIG',
     ])
     expect(errorProcedureNames([err({ procedure: null })])).toEqual([])
   })
@@ -198,7 +198,7 @@ describe('pannello Messaggi', () => {
 
   it('evidenzia il conteggio degli errori', () => {
     expect(html(result([err().display], [err()]))).toContain('1 errore')
-    const altra = err({ procedure: 'ws_Altra', display: 'Msg 50000, Livello 16, Stato 1, Procedura ws_Altra, Riga 9\nAltro' })
+    const altra = err({ procedure: 'ws_AIVIG', display: 'Msg 50000, Livello 16, Stato 1, Procedura ws_AIVIG, Riga 9\nAltro' })
     expect(html(result([err().display, altra.display], [err(), altra]))).toContain('2 errori')
     expect(html(result(['solo print'], []))).not.toContain('errore')
   })

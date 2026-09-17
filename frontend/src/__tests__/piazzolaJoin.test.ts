@@ -7,7 +7,7 @@ import {
   rankTablesForJoin,
 } from '../helpers'
 import { classifyContext } from '../intellisenseContext'
-import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
+import { mkCol, mkTbl, demoStoreLikeSummary } from './schema'
 
 /**
  * Scenario reale: "inner join MAG_BAIE_PIAZ ON (BCO_BAIA = BPZ_BAIA) inner join
@@ -18,7 +18,7 @@ import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
  *    MAG_BAIE_PIAZ (GM_PIAZZOLA = BPZ_PIAZZOLA) anche senza FK diretta (via MAG_PIAZZOLE).
  */
 describe('intellisense piazzola (GESTORI_MODULI ↔ MAG_BAIE_PIAZ)', () => {
-  const summary = wsbritvicLikeSummary()
+  const summary = demoStoreLikeSummary()
   summary.tables.push(
     mkTbl('dbo', 'MAG_BAIE', [mkCol('BCO_BAIA', 'int')]),
     mkTbl('dbo', 'MAG_BAIE_PIAZ', [mkCol('BPZ_BAIA', 'int'), mkCol('BPZ_PIAZZOLA', 'int')]),

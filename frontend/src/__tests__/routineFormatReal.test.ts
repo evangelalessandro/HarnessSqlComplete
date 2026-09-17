@@ -6,12 +6,12 @@
 // su una riga. Causa: le routine usano un motore di layout diverso (formatRoutineWithProfile →
 // detailedSelectRows) che non impilava la select-list.
 //
-// Il fixture è la definizione reale di dbo.ws_L2_SetCorridoioMiss_FRS (1125 righe) presa dal
+// Il fixture è la definizione reale di dbo.ws_L2_SUSEVOMOPEPESESE_FIB (1125 righe) presa dal
 // database: serve a garantire che il caso vero non si rompa più.
 import { describe, expect, it } from 'vitest'
 import { formatRoutineWithProfile, formatSqlWithProfile, tokenizeSqlText } from '../tsqlFormatter'
 import { buildFormatProfile, loadFormatProfileXml } from '../formatProfile'
-import procedura from './fixtures/routine_ws_L2_SetCorridoioMiss_FRS.sql?raw'
+import procedura from './fixtures/routine_ws_L2_SUSEVOMOPEPESESE_FIB.sql?raw'
 
 const profile = buildFormatProfile(loadFormatProfileXml())
 
@@ -32,17 +32,17 @@ describe('routine reale: select-list impilata come da sola', () => {
     expect(formattata).toMatch(/^   ,MIS_S_BAIA, MIS_S_CORRIDOIO$/m)
     expect(formattata).toMatch(/^   ,MIS_D_CORRIDOIO, MIS_NOBACK$/m)
     // INTO su riga propria, allineato alla SELECT
-    expect(formattata).toMatch(/^INTO #ws_L2_SetCorridoioMiss_FRS_Missions_filtered$/m)
+    expect(formattata).toMatch(/^INTO #ws_L2_SUSEVOMOPEPESESE_FIB_MASIDAPU_fodopege$/m)
   })
 
   it('lo stesso statement da solo dà la stessa forma', () => {
-    const solo = `SELECT MIS_MISSIONE, MIS_UDC, MIS_BEG_L1, MIS_S_BAIA, MIS_S_CORRIDOIO, MIS_D_CORRIDOIO, MIS_NOBACK INTO #ws_L2_SetCorridoioMiss_FRS_Missions_filtered
+    const solo = `SELECT MIS_MISSIONE, MIS_UDC, MIS_BEG_L1, MIS_S_BAIA, MIS_S_CORRIDOIO, MIS_D_CORRIDOIO, MIS_NOBACK INTO #ws_L2_SUSEVOMOPEPESESE_FIB_MASIDAPU_fodopege
 FROM dbo.RUN_MISSIONI
 WHERE MIS_MISSIONE <> @idMissione`
     const out = formatSqlWithProfile(solo, profile)
     expect(out).toMatch(/^SELECT MIS_MISSIONE$/m)
     expect(out).toMatch(/^   ,MIS_UDC, MIS_BEG_L1$/m)
-    expect(out).toMatch(/^INTO #ws_L2_SetCorridoioMiss_FRS_Missions_filtered$/m)
+    expect(out).toMatch(/^INTO #ws_L2_SUSEVOMOPEPESESE_FIB_MASIDAPU_fodopege$/m)
   })
 
   it('la formattazione è idempotente: riformattare non cambia nulla', () => {
@@ -56,7 +56,7 @@ WHERE MIS_MISSIONE <> @idMissione`
 
   it('i commenti della store restano al loro posto', () => {
     expect(formattata).toContain('/* Get a filtered mission list to use in next queries */')
-    expect(formattata).toContain('CREATE PROCEDURE [dbo].[ws_L2_SetCorridoioMiss_FRS]')
+    expect(formattata).toContain('CREATE PROCEDURE [dbo].[ws_L2_SUSEVOMOPEPESESE_FIB]')
   })
 })
 

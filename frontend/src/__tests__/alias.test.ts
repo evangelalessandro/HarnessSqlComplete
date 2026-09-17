@@ -13,10 +13,10 @@ import { buildQualifiedColumnSuggestions, qualifierBeforeDot } from '../helpers'
 import { provideSqlCompletions } from '../sqlCompletions'
 import { extractCteTables, extractLocalTables } from '../localTables'
 import type { DatabaseSummary } from '../types'
-import { wsbritvicLikeSummary } from './schema'
-import kittingReturn from './fixtures/routine_ws_CUSTOM_Handheld_KittingReturn_St1_GetList.sql?raw'
+import { demoStoreLikeSummary } from './schema'
+import kittingReturn from './fixtures/routine_ws_CIDEDO_HUSOBUME_KIPEVUBEGUSEV_St1_GIVOSEB.sql?raw'
 
-const base = wsbritvicLikeSummary()
+const base = demoStoreLikeSummary()
 
 /** Esegue il provider vero (quello dell'editor) alla posizione indicata. */
 function suggest(sql: string, offset: number, summary: DatabaseSummary = base) {

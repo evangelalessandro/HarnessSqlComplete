@@ -31,12 +31,12 @@ describe('parentesi quadre intelligenti', () => {
 
 describe('dbTabColor: colore tab in base al database', () => {
   it('stesso database → stesso colore (stabile)', () => {
-    expect(dbTabColor('WSBRITVIC')).toBe(dbTabColor('WSBRITVIC'))
+    expect(dbTabColor('DEMOSTORE')).toBe(dbTabColor('DEMOSTORE'))
     expect(dbTabColor('master')).toBe(dbTabColor('master'))
   })
 
   it('database diversi → colori validi esadecimali', () => {
-    const colors = ['WSBRITVIC', 'master', 'model', 'msdb', 'tempdb'].map(d => dbTabColor(d))
+    const colors = ['DEMOSTORE', 'master', 'model', 'msdb', 'tempdb'].map(d => dbTabColor(d))
     for (const c of colors) {
       expect(c).toMatch(/^#[0-9a-f]{6}$/i)
     }
@@ -44,8 +44,8 @@ describe('dbTabColor: colore tab in base al database', () => {
   })
 
   it('override personalizzato: vince sul colore automatico', () => {
-    expect(dbTabColor('WSBRITVIC', { WSBRITVIC: '#123456' })).toBe('#123456')
+    expect(dbTabColor('DEMOSTORE', { DEMOSTORE: '#123456' })).toBe('#123456')
     // senza override usa l'hash automatico
-    expect(dbTabColor('WSBRITVIC')).not.toBe('#123456')
+    expect(dbTabColor('DEMOSTORE')).not.toBe('#123456')
   })
 })

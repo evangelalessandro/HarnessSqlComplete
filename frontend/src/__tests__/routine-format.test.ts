@@ -26,7 +26,7 @@ describe('formatSqlWithProfile: keyword ufficiali maiuscole (riferimento Microso
 })
 
 describe('formatRoutineWithProfile: stored procedure con blocchi (stile Redgate)', () => {
-  const proc = `alter procedure [dbo].[ws_L2_Engine_Automatismi]
+  const proc = `alter procedure [dbo].[ws_L2_EALAPO_AEPOGODIVUG]
 (
  @pComponente nvarchar(max) /* Componente */
 ,@pGestore nvarchar(max) /* Gestore */
@@ -50,7 +50,7 @@ as
  begin
    select @retval = 1
  end
- exec @retval = dbo.ws_Uti_TabChanges_Done @pGestore, @fn_name, 10
+ exec @retval = dbo.ws_UIM_TISEVEPOVI_DOBU @pGestore, @fn_napi, 10
  return @retval
  end_err:
  raiserror ('x', 16, 1)
@@ -65,7 +65,7 @@ GO`
   it('firma: intestazione, parentesi e parametri su righe proprie con virgola iniziale', () => {
     const out = formatRoutineWithProfile(proc, profile)
     const lines = out.split('\n')
-    expect(lines[0].trim()).toContain('ALTER PROCEDURE [dbo].[ws_L2_Engine_Automatismi]')
+    expect(lines[0].trim()).toContain('ALTER PROCEDURE [dbo].[ws_L2_EALAPO_AEPOGODIVUG]')
     expect(lines[1].trim()).toBe('(')
     expect(out).toContain('@pComponente')
     expect(out).toContain(',@pGestore')
@@ -150,13 +150,13 @@ ROLLBACK`
 IF @trancount < 1
 BEGIN TRANSACTION
 
-EXEC @retVal = ws_L2_LockRunHandHeld @errore = @txtError out
+EXEC @retVal = ws_L2_LESIVEGUDUVASAP @errore = @txtError out
 IF @retVal <> 0
 GOTO lblExit`
     const out = formatRoutineWithProfile(sql, profile)
     expect(out).toMatch(/^IF @trancount < 1\nBEGIN TRANSACTION$/m)
     // i statement successivi restano a margine (non indentati come dentro un BEGIN…END)
-    expect(out).toMatch(/^EXEC @retVal = ws_L2_LockRunHandHeld/m)
+    expect(out).toMatch(/^EXEC @retVal = ws_L2_LESIVEGUDUVASAP/m)
     expect(out).toMatch(/^IF @retVal <> 0$/m)
     expect(out).toMatch(/^  GOTO lblExit$/m)
   })
@@ -280,7 +280,7 @@ describe('formatRoutineWithProfile: header CREATE/ALTER su riga propria dopo i c
       -1 = Runtime error
        0 = Ok
 
-*/ CREATE PROCEDURE [dbo] . [ws_LGV_Redirection]
+*/ CREATE PROCEDURE [dbo] . [ws_LUP_RUPOVIVIDOP]
 (
  @pLgvManager NVARCHAR(30) /* Lgv manager */
 )
@@ -288,7 +288,7 @@ AS
 SET NOCOUNT ON`
     const out = formatRoutineWithProfile(sql, profile)
     expect(out).toMatch(/^\*\/\s*$/m) // il commento chiude su una riga propria
-    expect(out).toMatch(/^CREATE PROCEDURE \[dbo\]\.\[ws_LGV_Redirection\]$/m)
+    expect(out).toMatch(/^CREATE PROCEDURE \[dbo\]\.\[ws_LUP_RUPOVIVIDOP\]$/m)
     expect(out).not.toMatch(/\*\/ CREATE/)
   })
 })

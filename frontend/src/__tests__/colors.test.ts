@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { colorClassFor, colorClassMapForKeys, colorizeSqlTokens, isTableValuedFunctionType, splitUserFunctions, tokenizeSql } from '../helpers'
 import type { DatabaseSummary } from '../types'
-import { wsbritvicLikeSummary } from './schema'
+import { demoStoreLikeSummary } from './schema'
 
-const summary = wsbritvicLikeSummary()
+const summary = demoStoreLikeSummary()
 
 function colorOf(text: string, needle: string): { key?: string; isTableName?: boolean } {
   const tokens = tokenizeSql(text)
@@ -114,9 +114,9 @@ describe('colori funzioni tabellari e tabelle temporanee', () => {
   const summaryTvf: DatabaseSummary = {
     ...summary,
     functions: [
-      { schema: 'dbo', name: 'fn_GetMissioni', type: 'IF' },
-      { schema: 'dbo', name: 'fn_GetCelle', type: 'TF' },
-      { schema: 'dbo', name: 'fn_Scalare', type: 'FN' },
+      { schema: 'dbo', name: 'fn_GIPAVUDUBES', type: 'IF' },
+      { schema: 'dbo', name: 'fn_GUGAMIPU', type: 'TF' },
+      { schema: 'dbo', name: 'fn_SUDOMUS', type: 'FN' },
     ],
   }
 
@@ -132,18 +132,18 @@ describe('colori funzioni tabellari e tabelle temporanee', () => {
   }
 
   it('funzione tabellare qualificata (dbo.fn_…) colorata come le tabelle', () => {
-    const sql = 'SELECT * FROM dbo.fn_GetMissioni(1) f'
-    expect(colorOf(sql, 'fn_GetMissioni', summaryTvf)).toEqual({ key: 'dbo.fn_GetMissioni', isTableName: true })
+    const sql = 'SELECT * FROM dbo.fn_GIPAVUDUBES(1) f'
+    expect(colorOf(sql, 'fn_GIPAVUDUBES', summaryTvf)).toEqual({ key: 'dbo.fn_GIPAVUDUBES', isTableName: true })
   })
 
   it('funzione tabellare senza schema colorata allo stesso modo', () => {
-    const sql = 'SELECT * FROM fn_GetCelle(2)'
-    expect(colorOf(sql, 'fn_GetCelle', summaryTvf)).toEqual({ key: 'dbo.fn_GetCelle', isTableName: true })
+    const sql = 'SELECT * FROM fn_GUGAMIPU(2)'
+    expect(colorOf(sql, 'fn_GUGAMIPU', summaryTvf)).toEqual({ key: 'dbo.fn_GUGAMIPU', isTableName: true })
   })
 
   it('funzione SCALARE (FN) non colorata', () => {
-    const sql = 'SELECT dbo.fn_Scalare(1)'
-    expect(colorOf(sql, 'fn_Scalare', summaryTvf).key).toBeUndefined()
+    const sql = 'SELECT dbo.fn_SUDOMUS(1)'
+    expect(colorOf(sql, 'fn_SUDOMUS', summaryTvf).key).toBeUndefined()
   })
 
   it('#temp tokenizzata come UN token e colorata (enfatizzata)', () => {
@@ -198,8 +198,8 @@ describe('colori funzioni tabellari e tabelle temporanee', () => {
 
   it('splitUserFunctions: FN → scalari (espressioni), IF/TF → tabellari (sorgenti)', () => {
     const { scalars, tableValued } = splitUserFunctions(summaryTvf.functions)
-    expect(scalars.map(f => f.name)).toEqual(['fn_Scalare'])
-    expect(tableValued.map(f => f.name).sort()).toEqual(['fn_GetCelle', 'fn_GetMissioni'])
+    expect(scalars.map(f => f.name)).toEqual(['fn_SUDOMUS'])
+    expect(tableValued.map(f => f.name).sort()).toEqual(['fn_GIPAVUDUBES', 'fn_GUGAMIPU'].sort())
     // tipo sconosciuto → trattato come scalare (sicuro nelle espressioni)
     const unknown = splitUserFunctions([{ schema: 'dbo', name: 'fn_X', type: 'X' }])
     expect(unknown.scalars.map(f => f.name)).toEqual(['fn_X'])
@@ -208,14 +208,14 @@ describe('colori funzioni tabellari e tabelle temporanee', () => {
 
   it('splitUserFunctions: il backend manda i type_desc → riconosciuti come tabellari', () => {
     const reali = [
-      { schema: 'dbo', name: 'fn_inline', type: 'SQL_INLINE_TABLE_VALUED_FUNCTION' },
-      { schema: 'dbo', name: 'fn_multi', type: 'SQL_TABLE_VALUED_FUNCTION' },
-      { schema: 'dbo', name: 'fn_clr', type: 'CLR_TABLE_VALUED_FUNCTION' },
-      { schema: 'dbo', name: 'fn_scalare', type: 'SQL_SCALAR_FUNCTION' },
+      { schema: 'dbo', name: 'fn_iebago', type: 'SQL_INLINE_TABLE_VALUED_FUNCTION' },
+      { schema: 'dbo', name: 'fn_modod', type: 'SQL_TABLE_VALUED_FUNCTION' },
+      { schema: 'dbo', name: 'fn_cum', type: 'CLR_TABLE_VALUED_FUNCTION' },
+      { schema: 'dbo', name: 'fn_sudomus', type: 'SQL_SCALAR_FUNCTION' },
     ]
     const { scalars, tableValued } = splitUserFunctions(reali)
-    expect(tableValued.map(f => f.name).sort()).toEqual(['fn_clr', 'fn_inline', 'fn_multi'])
-    expect(scalars.map(f => f.name)).toEqual(['fn_scalare'])
+    expect(tableValued.map(f => f.name).sort()).toEqual(['fn_cum', 'fn_iebago', 'fn_modod'])
+    expect(scalars.map(f => f.name)).toEqual(['fn_sudomus'])
   })
 
   it('isTableValuedFunctionType: codici brevi, type_desc e casi limite', () => {

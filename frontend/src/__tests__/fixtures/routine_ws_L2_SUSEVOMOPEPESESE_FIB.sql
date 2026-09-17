@@ -16,7 +16,7 @@
 			 1 if next decision corridor/bay was not found for full/disabling input buffer,
 	         2 if the corridor is not found to lack free seats
 */
-CREATE PROCEDURE [dbo].[ws_L2_SetCorridoioMiss_FRS]
+CREATE PROCEDURE [dbo].[ws_L2_SUSEVOMOPEPESESE_FIB]
 (
  @idMissione int,
  @corD int OUTPUT,
@@ -78,7 +78,7 @@ declare @retVal int,
 /* Initialize return values and variables */
 select @errore = '', @retVal = 0, @corD = 0
 
-set @debug = dbo.fn_getNumFromWork('DEBUG_INGR', 0)
+set @debug = dbo.fn_GOPOBEVEMOVEGU('DEBUG_INGR', 0)
 
 /* Controllo se sono già attive transazioni ed eventualmente la apro */
 /* Check if there are already active transactions and possibly open transaction */
@@ -88,7 +88,7 @@ if @fTransaction = 0
 
 /* Interblocco con gestione ricerca celle */
 /* Interlock with managing cells search */
-exec @retVal = dbo.ws_L2_LockIngresso @errore output
+exec @retVal = dbo.ws_L2_LEGODADUGIDU @errore output
 if @retVal <> 0
  goto exit_fn
 
@@ -106,7 +106,7 @@ SELECT @udc = MIS_UDC
                                end 
                      end
       ,@modulo = MIS_MODULO
-      ,@s_Piazzola_FirstModulo = case when MIS_S_PIAZZOLA > 0 then dbo.fn_getFirstModPiaz(MIS_S_PIAZZOLA) else '' end
+      ,@s_Piazzola_FirstModulo = case when MIS_S_PIAZZOLA > 0 then dbo.fn_GIGUDUGADESUVIB(MIS_S_PIAZZOLA) else '' end
       ,@usoBaia = BCO_USOBAIA
       ,@valNoBack = power(2, CAST(GM_NOBACK as int) - 1)
       ,@bCdCorAbiIng = cd.COR_ABIING
@@ -132,7 +132,7 @@ from dbo.RUN_MISSIONI
 where MIS_MISSIONE = @idMissione
 if @@rowcount < 1
 begin
-  select @retVal = -2, @errore = dbo.fn_td('Missione non trovata !')
+  select @retVal = -2, @errore = dbo.fn_tu('Missione non trovata !')
   goto exit_fn
 end
 
@@ -162,7 +162,7 @@ from dbo.DAT_UDC
 where UDC_UDC = @udc
 if @@rowcount < 1
 begin
-  select @retVal = -2, @errore = dbo.fn_td('Udc non trovata !')
+  select @retVal = -2, @errore = dbo.fn_tu('Udc non trovata !')
   goto exit_fn
 end
 
@@ -175,7 +175,7 @@ where CTR_CULLA <> 0
 
 /* Get a filtered mission list to use in next queries */
 select MIS_MISSIONE, MIS_UDC, MIS_BEG_L1, MIS_S_BAIA, MIS_S_CORRIDOIO, MIS_D_CORRIDOIO, MIS_NOBACK
-into #ws_L2_SetCorridoioMiss_FRS_Missions_filtered
+into #ws_L2_SUSEVOMOPEPESESE_FIB_MASIDAPU_fodopege
 from dbo.RUN_MISSIONI
 where MIS_MISSIONE <> @idMissione 
   and MIS_D_CORRIDOIO <> 0 
@@ -190,7 +190,7 @@ declare @tmpMissioni table(FLD_INDEX int identity(1,1), D_CORRIDOIO int, MISSION
 insert into @tmpMissioni
 select distinct MIS_D_CORRIDOIO, MIS_MISSIONE, MIS_BEG_L1, UDC_ARTICOLO, UDC_UDCPRED
                ,case when UDC_ARTICOLO <> '' and UDC_RIEMP = @riempDef and UDC_FAMIUDC = 'M' then MIN(ISNULL(SCO_DPRO, 0)) else 0 end
-from #ws_L2_SetCorridoioMiss_FRS_Missions_filtered
+from #ws_L2_SUSEVOMOPEPESESE_FIB_MASIDAPU_fodopege
   inner join dbo.DAT_UDC on (UDC_UDC = MIS_UDC)
   left outer join dbo.DAT_SCOMPART on (SCO_UDC = UDC_UDC)
 where (MIS_S_BAIA <> 0 or MIS_S_CORRIDOIO <> MIS_D_CORRIDOIO) 
@@ -206,11 +206,11 @@ group by MIS_D_CORRIDOIO, MIS_MISSIONE, MIS_BEG_L1, UDC_ARTICOLO, UDC_UDCPRED, U
    this fact generates a problem below during the filling of "@tabTotMissIngCorr", duplicating the records, 
    causing a problem in the next query where is used the @@ROWCOUNT
    For this reason has been added this query to singularize the records */
-select D_CORRIDOIO, BEG_L1, MAX(FLD_INDEX) as FLD_INDEX into #ws_L2_SetCorridoioMiss_FRS_BestMiss
+select D_CORRIDOIO, BEG_L1, MAX(FLD_INDEX) as FLD_INDEX into #ws_L2_SUSEVOMOPEPESESE_FIB_BIBEMEBI
 from @tmpMissioni
 group by D_CORRIDOIO, BEG_L1
-select b.* into #ws_L2_SetCorridoioMiss_FRS_TmpMissForPairing
-from #ws_L2_SetCorridoioMiss_FRS_BestMiss a
+select b.* into #ws_L2_SUSEVOMOPEPESESE_FIB_TEBUBAPABEPUDAMUS
+from #ws_L2_SUSEVOMOPEPESESE_FIB_BIBEMEBI a
   inner join @tmpMissioni b on (b.FLD_INDEX = a.FLD_INDEX)
 
 /* Modifica per gestire gli accoppiamenti in ingresso ai traslo
@@ -245,7 +245,7 @@ declare @tabTotMissIngCorr table (CORRIDOIO int
 )
 select TOT_D_CORRIDOIO, TOT_NUM_MIS, TOT_MIS_DISPARI, ULTIMO_ARTICOLO, TIPO_UDC, PRODUZIONE
 from @tmpTotMissione
-inner join #ws_L2_SetCorridoioMiss_FRS_TmpMissForPairing on (D_CORRIDOIO = TOT_D_CORRIDOIO and BEG_L1 = TOT_BEG_L1)
+inner join #ws_L2_SUSEVOMOPEPESESE_FIB_TEBUBAPABEPUDAMUS on (D_CORRIDOIO = TOT_D_CORRIDOIO and BEG_L1 = TOT_BEG_L1)
  
 /* Totali missioni gia' destinate ai gruppi di baie interne e non gia' imbarcate dal traslo */
 declare @tabTotMissIngGBInt table (GBINT int,
@@ -253,7 +253,7 @@ declare @tabTotMissIngGBInt table (GBINT int,
                                   )
 insert into @tabTotMissIngGBInt (GBINT, TOT)
 select BCOR_GRUPPO, COUNT(*)
-from #ws_L2_SetCorridoioMiss_FRS_Missions_filtered
+from #ws_L2_SUSEVOMOPEPESESE_FIB_MASIDAPU_fodopege
   inner join dbo.MAG_CORRIDOI cs on (cs.COR_CORRIDOIO = MIS_S_CORRIDOIO)
   inner join dbo.MAG_BAIE_CORRIDOI on (BCOR_BAIA = case when MIS_S_BAIA <> 0 then MIS_S_BAIA else cs.COR_DEC_BAIA end and BCOR_CORRIDOIO = MIS_D_CORRIDOIO)
 where MIS_S_CORRIDOIO <> MIS_D_CORRIDOIO
@@ -293,12 +293,12 @@ begin
     left outer join dbo.MAG_GR_BAIE_INTERNE on (GBINT_GRUPPO = BCOR_GRUPPO)
     left outer join dbo.GESTORI_MODULI_GR_BAIE_INTERNE on (GMG_MODULO = @modulo and GMG_GRUPPO = BCOR_GRUPPO)
     left outer join @tabTotMissIngGBInt AS tTotMissIngGBInt on (tTotMissIngGBInt.GBINT = BCOR_GRUPPO)
-    left outer join dbo.fn_Gates_Cells_NotUse() on (GCNU_CORRIDOR = CEL_CORRIDOIO and GCNU_CELL = CEL_CELLA)
+    left outer join dbo.fn_GEDES_CAMUM_NAPIVO() on (GCNU_CORRIDOR = CEL_CORRIDOIO and GCNU_CELL = CEL_CELLA)
   where CEL_CORRIDOIO = @corRis
     and CEL_CELLA = @celRis
   if @@rowcount <> 1
   begin
-    select @retVal = -1, @errore = dbo.fn_td('Problemi in ricerca corridoio/cella riservati')
+    select @retVal = -1, @errore = dbo.fn_tu('Problemi in ricerca corridoio/cella riservati')
     goto exit_fn
   end
 
@@ -309,7 +309,7 @@ begin
       goto gestUpdateMiss
     else
     begin
-      select @retVal = 1, @errore= dbo.fn_td('Buffer ingresso pieno (cella riservata) !')
+      select @retVal = 1, @errore= dbo.fn_tu('Buffer ingresso pieno (cella riservata) !')
       goto exit_fn
     end
   end
@@ -322,7 +322,7 @@ select MFC_BLOCK, MFC_PRIO, COR_CORRIDOIO, COR_CELLE_LIB, COR_NO_TRASLO, COR_TIP
                  ) then 0 
             else 1 
        end as COR_BUFFER_FULL
-into #ws_L2_SetCorridoioMiss_FRS_Corridors_filtered
+into #ws_L2_SUSEVOMOPEPESESE_FIB_CAGESAPUV_fodopege
 from dbo.MAG_CORRIDOI
   inner join dbo.MAG_FRS_CORRIDORS on (MFC_CORRIDOR = COR_CORRIDOIO)
   left outer join @tabTotMissIngCorr as tTotMissIngCorr on (tTotMissIngCorr.CORRIDOIO = COR_CORRIDOIO)
@@ -363,13 +363,13 @@ select distinct
       ,COR_CORRIDOIO, CEL_TIPOCELLA, ISNULL(CEP_MAXPESOUDC_CFG, CEL_MAXPESOUDC_CFG) as CEP_MAXPESOUDC_CFG, CEL_CLAALT, CEL_CLAMOV, CEL_CULMASK, CEL_STACELLA, CEL_CELLA, CEL_BATCH_V, CEL_SLOT_FREE, CEL_SLOT_TOT
       ,SCN_POS_DIM, SCN_DEP_DIM, SCN_LEV_DIM          
       ,TIP_PRIO, TIP_WIDTH, TIP_DEPTH, TIP_LEVELS
-into #ws_L2_SetCorridoioMiss_FRS_TblCells
-from #ws_L2_SetCorridoioMiss_FRS_Corridors_filtered
+into #ws_L2_SUSEVOMOPEPESESE_FIB_TUDACIBE
+from #ws_L2_SUSEVOMOPEPESESE_FIB_CAGESAPUV_fodopege
   inner join dbo.MAG_CELLE on (CEL_CORRIDOIO = COR_CORRIDOIO)
   inner join dbo.DAT_UDC_CEL on (TIP_TIPOCELLA = CEL_TIPOCELLA)
   inner join dbo.MAG_CELLE_SECTIONS on (SCN_CORRIDOIO = CEL_CORRIDOIO and SCN_CELLA = CEL_CELLA)
   left outer join dbo.MAG_CELLE_PRO on (CEP_CORRIDOIO = CEL_CORRIDOIO and CEP_CELLA = CEL_CELLA)
-  left outer join dbo.fn_Gates_Cells_NotUse() on (GCNU_CORRIDOR = CEL_CORRIDOIO and GCNU_CELL = CEL_CELLA)
+  left outer join dbo.fn_GEDES_CAMUM_NAPIVO() on (GCNU_CORRIDOR = CEL_CORRIDOIO and GCNU_CELL = CEL_CELLA)
 where CEL_CELLA <> 0
   and CEL_INIBITA = 0
   and CEL_ABI & CEL_ABI_ING = 1 
@@ -401,7 +401,7 @@ select COR_CORRIDOIO, CEL_TIPOCELLA, CEP_MAXPESOUDC_CFG, CEL_CLAALT, CEL_CLAMOV,
       ,SCN_POS_DIM, SCN_DEP_DIM, SCN_LEV_DIM
       ,TIP_PRIO, TIP_WIDTH, TIP_DEPTH, TIP_LEVELS
       ,SUM(SCN_POS_DIM * SCN_DEP_DIM * SCN_LEV_DIM), COUNT(CEL_CELLA), SUM(CEL_SLOT_FREE)
-from #ws_L2_SetCorridoioMiss_FRS_TblCells
+from #ws_L2_SUSEVOMOPEPESESE_FIB_TUDACIBE
 group by COR_CORRIDOIO, CEL_TIPOCELLA, CEP_MAXPESOUDC_CFG, CEL_CLAALT, CEL_CLAMOV, CEL_CULMASK, CEL_STACELLA
         ,SCN_POS_DIM, SCN_DEP_DIM, SCN_LEV_DIM
         ,TIP_PRIO, TIP_WIDTH, TIP_DEPTH, TIP_LEVELS
@@ -430,7 +430,7 @@ select CEL_CORRIDOIO,
        SUM(TOT_POSTI),
        SUM(TOT_SLOT_FREE)
 from @tabCelleAccorpata
-  inner join #ws_L2_SetCorridoioMiss_FRS_Corridors_filtered on (COR_CORRIDOIO = CEL_CORRIDOIO)
+  inner join #ws_L2_SUSEVOMOPEPESESE_FIB_CAGESAPUV_fodopege on (COR_CORRIDOIO = CEL_CORRIDOIO)
   inner join dbo.TIPI_CELLE on (TCE_TIPOCELLA = CEL_TIPOCELLA)
 group by CEL_CORRIDOIO, CEL_TIPOCELLA, TIP_PRIO, CEL_MAXPESOUDC_CFG, CEL_CLAALT, CEL_CLAMOV, COR_CELLE_LIB
 having /* Solo se numero di celle libere > di quelle da tenere libere per i cella-cella (in caso di cella multi-slot in profondità) */
@@ -467,14 +467,14 @@ begin
   set @tipo = 'ORDINE'
   
   /* Udc abbinate al mio ordine */
-  select UDC_UDC as LO_UDC into #ws_L2_SetCorridoioMiss_FRS_LUsOrder
+  select UDC_UDC as LO_UDC into #ws_L2_SUSEVOMOPEPESESE_FIB_LESASIPI
   from dbo.DAT_UDC
   where UDC_ORDINE = @ord
 
   /* Conteggio Udc abbinate al mio ordine */
   insert into @tabTotQtaCorCella (CORRIDOIO, CELLA, TOT, TOT_AGG, TOT_PALLET, TOT_AGG_PALLET)
   select UDC_CORRIDOIO, UDC_CELLA, 0, 0, COUNT(UDC_UDC), SUM(case when UDC_STAPRENUDC = @staPrenUdc then 1 else 0 end)
-  from #ws_L2_SetCorridoioMiss_FRS_LUsOrder
+  from #ws_L2_SUSEVOMOPEPESESE_FIB_LESASIPI
     inner join dbo.DAT_UDC on (UDC_UDC = LO_UDC)
     left outer join dbo.RUN_MISSIONI on (MIS_UDC = UDC_UDC)
     left outer join dbo.TIPI_CAUSALI_MISSIONI ON (CAUM_CAUSMISS = MIS_CAUSMISS)
@@ -491,7 +491,7 @@ if @fami = N'M'
 begin
 
   /* Udc monoreferenza */
-  exec @retVal = ws_UTI_GetDatiArticoloUdc @udc, @errore OUTPUT
+  exec @retVal = ws_UIM_GODABIVUBEDASOSUDA @udc, @errore OUTPUT
                                           ,@art OUTPUT, @sub1 OUTPUT, @sub2 OUTPUT, @sscc_source OUTPUT
                                           ,@staMate OUTPUT, @tipoConf OUTPUT, @dPro OUTPUT, @dSca OUTPUT
 					        					              ,@tipoGest OUTPUT, null, @fifoV OUTPUT
@@ -499,10 +499,10 @@ begin
     goto exit_fn
 
   /* Parametro per indicare quali sottocodici considerare */
-  set @ingChoiceArt = dbo.fn_getNumFromWork('ING_CHOICE_ART', 0)
+  set @ingChoiceArt = dbo.fn_GOPOBEVEMOVEGU('ING_CHOICE_ART', 0)
   if @ingChoiceArt < 0
   begin
-    select @retVal = -2, @errore = dbo.fn_td('Parametro scelta articolo in base ai sottocodici errato !')
+    select @retVal = -2, @errore = dbo.fn_tu('Parametro scelta articolo in base ai sottocodici errato !')
     goto exit_fn
   end
 
@@ -510,7 +510,7 @@ begin
     set @fifoV = 1
 
   /* Udc col mio stesso batch */
-  select UDC_UDC as LB_UDC into #ws_L2_SetCorridoioMiss_FRS_LUsBatch
+  select UDC_UDC as LB_UDC into #ws_L2_SUSEVOMOPEPESESE_FIB_LESUBEVE
   from dbo.DAT_UDC
   where UDC_BATCH_V = @udcBatchV
 
@@ -526,7 +526,7 @@ begin
           ,SUM(SCO_GIAC + SCO_VER)
           ,COUNT(distinct UDC_UDC)
           ,COUNT(distinct UDC_UDC)
-    from #ws_L2_SetCorridoioMiss_FRS_LUsBatch
+    from #ws_L2_SUSEVOMOPEPESESE_FIB_LESUBEVE
       inner join dbo.DAT_UDC on (UDC_UDC = LB_UDC)
       inner join dbo.DAT_SCOMPART on (SCO_UDC = UDC_UDC)
       left outer join dbo.RUN_MISSIONI on (MIS_UDC = UDC_UDC)
@@ -553,7 +553,7 @@ begin
             SUM(SCO_GIAC + SCO_VER),
             COUNT(distinct UDC_UDC),
             COUNT(distinct UDC_UDC)
-    from #ws_L2_SetCorridoioMiss_FRS_LUsBatch
+    from #ws_L2_SUSEVOMOPEPESESE_FIB_LESUBEVE
       inner join dbo.DAT_UDC on (UDC_UDC = LB_UDC)
       inner join dbo.DAT_SCOMPART on (SCO_UDC = UDC_UDC)
       left outer join dbo.RUN_MISSIONI on (MIS_UDC = UDC_UDC)
@@ -632,8 +632,8 @@ declare @expected_production int, @cel_totudc int, @reason nvarchar(max) = '';
 --  print N'@bBlocksCalculation = 1 --> Block calculation passed'
   
 select COR_CORRIDOIO as SWLWO_CORRIDOIO, CEL_CELLA as SWLWO_CELLA
-into #ws_L2_SetCorridoioMiss_FRS_CellsWithLUsWithoutOrder
-from #ws_L2_SetCorridoioMiss_FRS_TblCells
+into #ws_L2_SUSEVOMOPEPESESE_FIB_CABEGEMIGIBOPIBIMADUPAVE
+from #ws_L2_SUSEVOMOPEPESESE_FIB_TUDACIBE
   inner join dbo.DAT_UDC on (UDC_CORRIDOIO = COR_CORRIDOIO and UDC_CELLA = CEL_CELLA)
 where UDC_ORDINE = ''
 group by COR_CORRIDOIO, CEL_CELLA
@@ -641,7 +641,7 @@ having COUNT(*) > 0
   
 ;with TBL_CELLS (TC_CORRIDOIO, TC_CELLA)
 as (
-    select COR_CORRIDOIO, CEL_CELLA from #ws_L2_SetCorridoioMiss_FRS_TblCells where CEL_BATCH_V = N''
+    select COR_CORRIDOIO, CEL_CELLA from #ws_L2_SUSEVOMOPEPESESE_FIB_TUDACIBE where CEL_BATCH_V = N''
     union  
     select CORRIDOIO, CELLA from @tabTotQtaCorCella
     )
@@ -658,7 +658,7 @@ as (
     from TBL_CELLS
       inner join dbo.MAG_CELLE on (CEL_CORRIDOIO = TC_CORRIDOIO and CEL_CELLA = TC_CELLA)
       inner join dbo.MAG_FRS_CORRIDORS on (MFC_CORRIDOR = CEL_CORRIDOIO)
-      left outer join #ws_L2_SetCorridoioMiss_FRS_CellsWithLUsWithoutOrder on (SWLWO_CORRIDOIO = CEL_CORRIDOIO and SWLWO_CELLA = CEL_CELLA)
+      left outer join #ws_L2_SUSEVOMOPEPESESE_FIB_CABEGEMIGIBOPIBIMADUPAVE on (SWLWO_CORRIDOIO = CEL_CORRIDOIO and SWLWO_CELLA = CEL_CELLA)
     --where CEL_BATCH_V in ('', @udcBatchV)
     )
 insert into @tabCells (TC_BLOCK, TC_CORRIDOR, TC_CELL, TC_BATCH, TC_TOT_SPACES_USED, TC_TOT_SPACES_AVAIL, TC_TOT_SPACES, TC_FULL_BOOKED)  
@@ -685,9 +685,9 @@ from TBL_CELLS_WITH_DATA
 --      --,iif((select count(*) from DAT_UDC with(index(IX_DAT_UDC_CORRIDOIO_CELLA)) where UDC_CORRIDOIO = CEL_CORRIDOIO and UDC_CELLA = CEL_CELLA and UDC_ORDINE = '') > 0, 0, 1)   as TC_FULL_BOOKED
 --      ,iif(SWLWO_CORRIDOIO is null, 1, 0) as TC_FULL_BOOKED
 ----from @tabCelleAccorpata  
---from #ws_L2_SetCorridoioMiss_FRS_TblCells
+--from #ws_L2_SUSEVOMOPEPESESE_FIB_TUDACIBE
 --  --inner join MAG_CORRIDOI on COR_CORRIDOIO = CEL_CORRIDOIO  
---  left outer join #ws_L2_SetCorridoioMiss_FRS_CellsWithLUsWithoutOrder on (SWLWO_CORRIDOIO = COR_CORRIDOIO and SWLWO_CELLA = CEL_CELLA)
+--  left outer join #ws_L2_SUSEVOMOPEPESESE_FIB_CABEGEMIGIBOPIBIMADUPAVE on (SWLWO_CORRIDOIO = COR_CORRIDOIO and SWLWO_CELLA = CEL_CELLA)
 --where CEL_BATCH_V in ('', @udcBatchV)  
 ----group by MFC_BLOCK, COR_CORRIDOIO, CEL_CELLA, CEL_BATCH_V, CEL_SLOT_FREE, CEL_SLOT_TOT
 
@@ -707,7 +707,7 @@ select TC_BLOCK                                                           as TC_
       ,(  
         select COUNT(*)
         from dbo.MAG_CELLE
-          left outer join dbo.fn_Gates_Cells_NotUse() on (GCNU_CORRIDOR = CEL_CORRIDOIO and GCNU_CELL = CEL_CELLA)
+          left outer join dbo.fn_GEDES_CAMUM_NAPIVO() on (GCNU_CORRIDOR = CEL_CORRIDOIO and GCNU_CELL = CEL_CELLA)
         where CEL_CORRIDOIO = TC_CORRIDOR
           and CEL_ABI = 1
           and CEL_INIBITA = 0
@@ -751,7 +751,7 @@ from @tabBlocks
 where TB_BATCH <> ''
   
 select @cel_totudc = min(TC_TOT_SPACES) from @tabCells;  
-  --select @expected_production = dbo.fn_CUSTOM_L2_CalcInboundLu(@udc);  
+  --select @expected_production = dbo.fn_CIDEDO_L2_CABEMOBUVEVUV(@udc);  
     
 declare @nCapacity decimal(11,3)
 
@@ -801,15 +801,15 @@ select @used_blocks   = isnull(@used_blocks,   0)
       ,@used_channels = isnull(@used_channels, 0)
       ,@open_channels = isnull(@open_channels, 0)
   
-declare @bUseNumBlocksAsLimit bit = dbo.fn_GetNumFromWork(N'FRS_BLOCK_LIM', 0)
+declare @bUseNumBlocksAsLimit bit = dbo.fn_GOPOBEVEMOVEGU(N'FRS_BLOCK_LIM', 0)
 if isnull(@expected_production, 0) > 0
 begin
   /* Data based on p.rate */
   select @reason       = 'by p. rate'
         ,@max_channels = round(1.00 * @expected_production / @cel_totudc, 0)
-        ,@max_blocks        = dbo.fn_min(@max_blocks, @max_channels)
-        ,@max_open_channels = case when @bUseNumBlocksAsLimit = 0 then dbo.fn_max(@max_channels, @open_channels)
-                                    else dbo.fn_min(@used_blocks , iif(@max_channels - @used_channels >= 1, @max_channels - @used_channels, 1))
+        ,@max_blocks        = dbo.fn_mub(@max_blocks, @max_channels)
+        ,@max_open_channels = case when @bUseNumBlocksAsLimit = 0 then dbo.fn_mop(@max_channels, @open_channels)
+                                    else dbo.fn_mub(@used_blocks , iif(@max_channels - @used_channels >= 1, @max_channels - @used_channels, 1))
                               end
 end
 else
@@ -848,7 +848,7 @@ select CORRIDOIO, SUM(TOT), SUM(TOT_AGG), SUM(TOT_PALLET), SUM(TOT_AGG_PALLET)
 from @tabTotQtaCorCella
 group by CORRIDOIO
 
-declare @timeout int = dbo.fn_getNumFromWork('FRS_WC_TIMEOUT', 60)  
+declare @timeout int = dbo.fn_GOPOBEVEMOVEGU('FRS_WC_TIMEOUT', 60)  
 declare @timeout_expired bit = case when datediff(second, @mis_beg_req_cor, getdate()) >= @timeout then 1 else 0 end  
 
 /* Carica i corridoi disponibili */  
@@ -910,16 +910,16 @@ select distinct
       ,COR_TIPOCORR         as TC_TIPOCORR  
       ,COR_NO_TRASLO       as TC_NO_TRASLO  
       ,COR_GEST_LGV_USER    as TC_GEST_LGV_USER  
-into #ws_L2_SetCorridoioMiss_FRS_AvailableCorridors  
+into #ws_L2_SUSEVOMOPEPESESE_FIB_AISOPISIGACUBOBISA  
 FROM @tabTipoAltCla AS tTipoAltCla  
-  inner join #ws_L2_SetCorridoioMiss_FRS_Corridors_filtered on (COR_CORRIDOIO = tTipoAltCla.CORRIDOIO)
+  inner join #ws_L2_SUSEVOMOPEPESESE_FIB_CAGESAPUV_fodopege on (COR_CORRIDOIO = tTipoAltCla.CORRIDOIO)
   left outer join @tabTotQtaCor as tQta on tQta.CORRIDOIO = tTipoAltCla.CORRIDOIO  
   left outer join @tabCorridors on TC_CORRIDOR = COR_CORRIDOIO  
   left outer join @tabBlocks on TB_BLOCK = TC_BLOCK and TB_BATCH = TC_BATCH  
 where (@timeout_expired = 1 or isnull(TC_TOT_SPACES_AVAIL, tTipoAltCla.TOT_SPACES_AVAIL) > 0)  
 
 if @bShowDebugQuery = 1
-  select '#ws_L2_SetCorridoioMiss_FRS_AvailableCorridors', * from #ws_L2_SetCorridoioMiss_FRS_AvailableCorridors
+  select '#ws_L2_SUSEVOMOPEPESESE_FIB_AISOPISIGACUBOBISA', * from #ws_L2_SUSEVOMOPEPESESE_FIB_AISOPISIGACUBOBISA
   
 /* Lookup optimal channel */  
 select  /* Temp: to improve FRS cell saturation CUSTOM - per l'ingresso si va a scegliere il corridoio in cui se ha lo stesso batch e c'è spazio nelle celle va in base saturazione per il rientro guarda il le profondità libere */
@@ -969,8 +969,8 @@ select  /* Temp: to improve FRS cell saturation CUSTOM - per l'ingresso si va a 
       ,TC_TOT_CHANNELS_USED
       ,0 as FLD_PRIO
       ,ROW_NUMBER() over(order by TC_CORRIDOR) as FLD_INDEX
-into #ws_L2_SetCorridoioMiss_FRS_Pre_Choice_Log
-from #ws_L2_SetCorridoioMiss_FRS_AvailableCorridors as T  
+into #ws_L2_SUSEVOMOPEPESESE_FIB_PAM_CUVESI_LAV
+from #ws_L2_SUSEVOMOPEPESESE_FIB_AISOPISIGACUBOBISA as T  
 where /* If not forced, I'll look for the optimal position */   
   (@timeout_expired = 0 and TB_TC_CHANNEL_PRIO <> '' and TB_TC_CHANNEL_PRIO not like '%Z%')  
    or /* If forced, I'll look for an available infeed */  
@@ -1008,15 +1008,15 @@ as (
                                        /* Priority to level with more empty space */   
                                       ,TC_TOT_SPACES_AVAIL desc  
                                       ) FLD_PRIO
-    from #ws_L2_SetCorridoioMiss_FRS_Pre_Choice_Log
+    from #ws_L2_SUSEVOMOPEPESESE_FIB_PAM_CUVESI_LAV
     )
-update #ws_L2_SetCorridoioMiss_FRS_Pre_Choice_Log
+update #ws_L2_SUSEVOMOPEPESESE_FIB_PAM_CUVESI_LAV
   set FLD_PRIO = tp.FLD_PRIO
 from TBL_PRIO tp
-  inner join #ws_L2_SetCorridoioMiss_FRS_Pre_Choice_Log lo on (lo.FLD_INDEX = tp.FLD_INDEX)
+  inner join #ws_L2_SUSEVOMOPEPESESE_FIB_PAM_CUVESI_LAV lo on (lo.FLD_INDEX = tp.FLD_INDEX)
 
 if @bShowDebugQuery = 1
-  select '#ws_L2_SetCorridoioMiss_FRS_Pre_Choice_Log', * from #ws_L2_SetCorridoioMiss_FRS_Pre_Choice_Log order by FLD_PRIO
+  select '#ws_L2_SUSEVOMOPEPESESE_FIB_PAM_CUVESI_LAV', * from #ws_L2_SUSEVOMOPEPESESE_FIB_PAM_CUVESI_LAV order by FLD_PRIO
 
 /* Debug */  
 declare  
@@ -1030,8 +1030,8 @@ select
     @corr_choice += concat(TC_CORRIDOR, ',' )  
    ,@corr_choice_details += concat(TC_CORRIDOR, ' prio: ', FLD_PRIO, ', best-ch: ', TB_TC_CHANNEL_PRIO, ', infeed-full: ', TB_TC_INFEED_FULL  
                                   ,', max weight: ', TC_MAXPESOUDC, ', max height: ', TC_CLAALT, ' | ')  
---from #ws_L2_SetCorridoioMiss_FRS_Pre_Choice  
-from #ws_L2_SetCorridoioMiss_FRS_Pre_Choice_Log
+--from #ws_L2_SUSEVOMOPEPESESE_FIB_PAM_CUVESI  
+from #ws_L2_SUSEVOMOPEPESESE_FIB_PAM_CUVESI_LAV
 order by FLD_PRIO;  
   
 /* Retrieve first prio */  
@@ -1045,18 +1045,18 @@ select top 1
       ,@free_channels = isnull(TC_TOT_CHANNELS_FREE, 0)
       ,@open_channels = isnull(TC_TOT_CHANNELS_OPEN, 0)
       ,@used_channels = isnull(TC_TOT_CHANNELS_USED, 0)
---from #ws_L2_SetCorridoioMiss_FRS_Pre_Choice
-from #ws_L2_SetCorridoioMiss_FRS_Pre_Choice_Log
+--from #ws_L2_SUSEVOMOPEPESESE_FIB_PAM_CUVESI
+from #ws_L2_SUSEVOMOPEPESESE_FIB_PAM_CUVESI_LAV
 where TB_TC_INFEED_FULL = 0
 order by FLD_PRIO
 if isnull(@corD, -1) <= 0  
 begin
- --set @errore = case when exists (select * from #ws_L2_SetCorridoioMiss_FRS_Pre_Choice)          then concat(dbo.fn_td('Attesa canale ottimo nel corridoio'), N': ', @corr_choice)  
- set @errore = case when exists (select * from #ws_L2_SetCorridoioMiss_FRS_Pre_Choice_Log)      then CONCAT(dbo.fn_td('Attesa canale ottimo nel corridoio'), N': ', @corr_choice)  
-                    when exists (select * from #ws_L2_SetCorridoioMiss_FRS_AvailableCorridors)  then dbo.fn_td('Attesa ingresso disponibile')
-                                                                                                else dbo.fn_td('Non trovato corridoio destinazione')
+ --set @errore = case when exists (select * from #ws_L2_SUSEVOMOPEPESESE_FIB_PAM_CUVESI)          then concat(dbo.fn_tu('Attesa canale ottimo nel corridoio'), N': ', @corr_choice)  
+ set @errore = case when exists (select * from #ws_L2_SUSEVOMOPEPESESE_FIB_PAM_CUVESI_LAV)      then CONCAT(dbo.fn_tu('Attesa canale ottimo nel corridoio'), N': ', @corr_choice)  
+                    when exists (select * from #ws_L2_SUSEVOMOPEPESESE_FIB_AISOPISIGACUBOBISA)  then dbo.fn_tu('Attesa ingresso disponibile')
+                                                                                                else dbo.fn_tu('Non trovato corridoio destinazione')
                end
- set @retval = case when exists (select * from #ws_L2_SetCorridoioMiss_FRS_AvailableCorridors) then 1 else 2 end
+ set @retval = case when exists (select * from #ws_L2_SUSEVOMOPEPESESE_FIB_AISOPISIGACUBOBISA) then 1 else 2 end
   
  goto exit_fn  
 end  
@@ -1090,17 +1090,17 @@ end
 
 if @debug = CAST(1 as bit)
 begin
-  set @strErrWork = 'Debug: ws_L2_SetCorridoioMiss_FRS (ws_L2_SetCellaMiss): IdMissione: {0}, manuale: {1}, forzata: {2} !'
-  set @strErrWork = dbo.fn_InsTextStr(@strErrWork, CAST(ISNULL(@idMissione,0)as nvarchar(max)), 
+  set @strErrWork = 'Debug: ws_L2_SUSEVOMOPEPESESE_FIB (ws_L2_SOMEMIPESAGE): IdMissione: {0}, manuale: {1}, forzata: {2} !'
+  set @strErrWork = dbo.fn_IEGASUBODU(@strErrWork, CAST(ISNULL(@idMissione,0)as nvarchar(max)), 
                                       CAST(ISNULL(@manuale,0)as nvarchar(max)), 
                                       CAST(ISNULL(@d_forzata,0)as nvarchar(max)), default, default)
-  exec ws_LOG_AddLogWork 'EV', @strErrWork, 'LIVELLO2', default, default, default, 3
+  exec ws_LAV_AAMOVUBEVA 'EV', @strErrWork, 'LIVELLO2', default, default, default, 3
 end
 
 /* Chiamata alla routine di ricerca cella, per la scelta di una cella provvisoria.
    Sara' eventualmente cambiata sulla baia interna di ingresso del corridoio.
 */
-exec @retVal = dbo.ws_L2_SetCellaMiss @idMissione = @idMissione
+exec @retVal = dbo.ws_L2_SOMEMIPESAGE @idMissione = @idMissione
                                      ,@celD = null
                                      ,@posD = null
                                      ,@depD = null
@@ -1116,7 +1116,7 @@ exit_fn:
   if @fTransaction = 0 begin
     if @RetVal <> 0 begin
       ROLLBACK TRANSACTION
-      set @errore = dbo.fn_InsTextStr(dbo.fn_td('Missione {0}, Udc {1} : '), ltrim(str(@idMissione)), CAST(@udc as nvarchar), default, default, default) + @errore
+      set @errore = dbo.fn_IEGASUBODU(dbo.fn_tu('Missione {0}, Udc {1} : '), ltrim(str(@idMissione)), CAST(@udc as nvarchar), default, default, default) + @errore
     end
     ELSE
       COMMIT TRANSACTION

@@ -56,10 +56,10 @@ export function mkProc(schema: string, name: string, params: { name: string; dat
 }
 
 /**
- * Schema ispirato a WSBRITVIC (nomi reali): DAT_UDC e RUN_MISSIONI collegati da FK,
+ * Schema ispirato a DEMOSTORE (nomi reali): DAT_UDC e RUN_MISSIONI collegati da FK,
  * MIS_ELEV volutamente ASSENTE (come nel DB reale), tabelle con colonne condivise.
  */
-export function wsbritvicLikeSummary(): DatabaseSummary {
+export function demoStoreLikeSummary(): DatabaseSummary {
   const tables: TableInfo[] = [
     mkTbl(
       'dbo',

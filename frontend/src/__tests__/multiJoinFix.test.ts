@@ -5,7 +5,7 @@ import {
   buildSelectListSuggestions,
   rankTablesForJoin,
 } from '../helpers'
-import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
+import { mkCol, mkTbl, demoStoreLikeSummary } from './schema'
 
 /**
  * Regressioni dell'intellisense con JOIN su più tabelle:
@@ -15,7 +15,7 @@ import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
  * 3) nella select list una colonna condivisa tra più tabelle viene inserita qualificata.
  */
 describe('intellisense multi-join: niente rumore e ordine sensato', () => {
-  const summary = wsbritvicLikeSummary()
+  const summary = demoStoreLikeSummary()
   summary.tables[0].columns!.push(mkCol('UDC_CNT_BAIA', 'int')) // DAT_UDC
   summary.tables.push(
     mkTbl('dbo', 'MAG_BAIE', [mkCol('BCO_BAIA', 'int'), mkCol('BCO_BAIA2', 'int'), mkCol('BCO_MASTER', 'int')]),

@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { buildColumnContextSuggestions } from '../helpers'
 import { extractLocalTables, parseColumnDefs, selectListInfo } from '../localTables'
 import type { DatabaseSummary } from '../types'
-import { wsbritvicLikeSummary } from './schema'
-import kittingReturn from './fixtures/routine_ws_CUSTOM_Handheld_KittingReturn_St1_GetList.sql?raw'
+import { demoStoreLikeSummary } from './schema'
+import kittingReturn from './fixtures/routine_ws_CIDEDO_HUSOBUME_KIPEVUBEGUSEV_St1_GIVOSEB.sql?raw'
 
 describe('extractLocalTables: tabelle temporanee definite nel testo', () => {
   it('legge nome tabella e colonne con il tipo (parentesi comprese)', () => {
@@ -62,7 +62,7 @@ describe('intellisense: colonne della TEMPORANEA nel WHERE (caso utente)', () =>
   ,X_UDC NVARCHAR(50)
 )
 
-EXEC ws_CUSTOM_Handheld_InventoryKitting_St1_GetList @user = @user, @udc = @pUDC
+EXEC ws_CIDEDO_HUSOBUME_IIGISUMIVOSOVUBE_St1_GIVOSEB @user = @user, @udc = @pUDC
 IF @@rowcount = 0
 BEGIN
   SET @txtError = 'No task find !'
@@ -75,7 +75,7 @@ FROM (SELECT 1 TT) a
 WHERE `
 
   it('con la temporanea nel sommario propone le sue colonne', () => {
-    const base: DatabaseSummary = wsbritvicLikeSummary()
+    const base: DatabaseSummary = demoStoreLikeSummary()
     const local = extractLocalTables(sql)
     expect(local.map(t => t.name)).toEqual(['#tbl_InventoryKitting_St1'])
     const merged: DatabaseSummary = { ...base, tables: [...base.tables, ...local] }
@@ -90,7 +90,7 @@ WHERE `
   })
 
   it('senza la temporanea nel sommario non c\'era nulla da proporre (motivo del bug)', () => {
-    const base: DatabaseSummary = wsbritvicLikeSummary()
+    const base: DatabaseSummary = demoStoreLikeSummary()
     const stmtText = sql.slice(sql.lastIndexOf('SELECT @txtError'))
     const res = buildColumnContextSuggestions(stmtText, stmtText, '', base)
     expect(res.map(r => r.name)).not.toContain('X_SSCC')
@@ -131,7 +131,7 @@ select top 1 * , cast('' as nvarchar(50)) as X_SSCC_DEST into #tmpMission from t
   })
 
   it('CTE annidate fra loro e "SELECT * FROM tabella nota"', () => {
-    const known = wsbritvicLikeSummary()
+    const known = demoStoreLikeSummary()
     const sql = `with a as (select * from ${known.tables[0].name}), b as (select * from a)
 select * into #t from b`
     const t = extractLocalTables(sql, known.tables)[0]
@@ -171,7 +171,7 @@ describe('store reale: #tmpMission nell intellisense', () => {
   })
 
   it('nel JOIN la sua colonna viene proposta (era il problema segnalato)', () => {
-    const base: DatabaseSummary = wsbritvicLikeSummary()
+    const base: DatabaseSummary = demoStoreLikeSummary()
     const merged: DatabaseSummary = { ...base, tables: [...base.tables, ...locali] }
     const stmt = 'select * from DAT_UDC inner join #tmpMission on '
     const res = buildColumnContextSuggestions(stmt, stmt, '', merged)

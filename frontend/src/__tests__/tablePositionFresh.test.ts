@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { buildJoinSuggestions, findTableRefs, rankTablesForPosition } from '../helpers'
-import { wsbritvicLikeSummary } from './schema'
+import { demoStoreLikeSummary } from './schema'
 
-const summary = wsbritvicLikeSummary()
+const summary = demoStoreLikeSummary()
 
 describe('posizione FROM nuova: le query precedenti non nascondono le tabelle', () => {
   // Scenario reale dell'utente: RUN_MISSIONI usata in uno statement precedente,

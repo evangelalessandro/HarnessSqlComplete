@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildColumnContextSuggestions, buildSelectListSuggestions, rankSelectListForTyped } from '../helpers'
 import { classifyContext } from '../intellisenseContext'
-import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
+import { mkCol, mkTbl, demoStoreLikeSummary } from './schema'
 
 /**
  * "select uso ... from MAG_BAIE": digitando "uso" l'intellisense deve proporre SOLO
@@ -10,7 +10,7 @@ import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
  * del filtro di affinità e faceva comparire colonne senza "uso" nel nome).
  */
 describe('intellisense: colonne con "uso" nel nome su MAG_BAIE', () => {
-  const summary = wsbritvicLikeSummary()
+  const summary = demoStoreLikeSummary()
   summary.tables.push(
     mkTbl('dbo', 'MAG_BAIE', [
       mkCol('BCO_USOBAIA', 'nvarchar'),

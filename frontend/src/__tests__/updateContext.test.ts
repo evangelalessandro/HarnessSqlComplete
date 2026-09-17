@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildColumnContextSuggestions, statementRangeAt } from '../helpers'
 import { classifyContext } from '../intellisenseContext'
-import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
+import { mkCol, mkTbl, demoStoreLikeSummary } from './schema'
 
 /**
  * UPDATE ... WHERE con una parola che sta IN MEZZO al nome colonna:
@@ -9,8 +9,8 @@ import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
  * dell'UPDATE), non colonne di altre tabelle anche se matchano meglio per prefisso.
  */
 describe('intellisense: UPDATE ... WHERE con affinità di colonna', () => {
-  const summary = wsbritvicLikeSummary()
-  // DAT_SCOMPART reale (WSBRITVIC): molte colonne SCO_*, SCO_UDC è decimal
+  const summary = demoStoreLikeSummary()
+  // DAT_SCOMPART reale (DEMOSTORE): molte colonne SCO_*, SCO_UDC è decimal
   summary.tables.push(
     mkTbl('dbo', 'DAT_SCOMPART', [
       mkCol('SCO_SCOMPARTO', 'int'),
@@ -64,7 +64,7 @@ describe('intellisense: UPDATE ... WHERE con affinità di colonna', () => {
 })
 
 describe('UPDATE: i campi NON si qualificano col nome tabella se inutile (statement separati senza ";")', () => {
-  const summary = wsbritvicLikeSummary()
+  const summary = demoStoreLikeSummary()
   // DAT_SCOMPART è la tabella dell'UPDATE; ALTRO è referenziato da una SELECT
   // PRECEDENTE (stesso batch senza ';') e ha una colonna con lo STESSO nome.
   summary.tables.push(

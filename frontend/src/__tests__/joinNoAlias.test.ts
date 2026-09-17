@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildJoinSuggestions, rankTablesForJoin } from '../helpers'
-import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
+import { mkCol, mkTbl, demoStoreLikeSummary } from './schema'
 
 /**
  * "non voglio l'alias dei nomi tabelle se non necessario": i suggerimenti di JOIN
@@ -9,7 +9,7 @@ import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
  * se nell'editor è già stato scritto (altrimenti l'ON sarebbe SQL invalido).
  */
 describe('JOIN senza alias se non necessari', () => {
-  const summary = wsbritvicLikeSummary()
+  const summary = demoStoreLikeSummary()
   summary.tables.push(
     mkTbl('dbo', 'MAG_BAIE', [mkCol('BCO_BAIA', 'int'), mkCol('BCO_MASTER', 'int')]),
     mkTbl('dbo', 'MAG_BAIE_PIAZ', [mkCol('BPZ_BAIA', 'int'), mkCol('BPZ_PIAZZOLA', 'int')]),

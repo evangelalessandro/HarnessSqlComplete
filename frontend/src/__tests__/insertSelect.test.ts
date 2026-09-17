@@ -1,4 +1,4 @@
-// Caso utente (riga ~343 di ws_L2_OneTrans_SearchComp): statement su tabelle LOCALI
+// Caso utente (riga ~343 di ws_L2_OIMUVUPA_SUDIVEVEBU): statement su tabelle LOCALI
 //   select distinct MFC_BLOCK, a.COR_CORRIDOIO, CEL_CELLA, cor_area
 //   from #TBL_SEARCH_COMP a
 //     inner join mag_corridoi b where a.cor_corridoio = b.cor_corridoio
@@ -16,10 +16,10 @@ import {
 import { allows, classifyContext } from '../intellisenseContext'
 import { extractLocalTables } from '../localTables'
 import type { DatabaseSummary } from '../types'
-import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
+import { mkCol, mkTbl, demoStoreLikeSummary } from './schema'
 
 function summaryWithCorridoi(): DatabaseSummary {
-  const s = wsbritvicLikeSummary()
+  const s = demoStoreLikeSummary()
   s.tables.push(
     mkTbl('dbo', 'MAG_CORRIDOI', [
       mkCol('COR_CORRIDOIO', 'int'),

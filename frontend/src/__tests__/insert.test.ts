@@ -9,7 +9,7 @@ import {
   parseInsertContext,
   sqlDefaultForType,
 } from '../helpers'
-import { mkCol, mkTbl, wsbritvicLikeSummary } from './schema'
+import { mkCol, mkTbl, demoStoreLikeSummary } from './schema'
 
 const SQL = `INSERT INTO dbo.Clienti (id, nome, prezzo) VALUES (1, 'Mario, Rossi', 10.50);`
 
@@ -141,7 +141,7 @@ describe('aiuto sui VALORI: default per tipo e snippet "tutti i valori"', () => 
   })
 
   it('columnForInsertSlot: risolve la colonna dallo slot (lista colonne o posizionale)', () => {
-    const summary = wsbritvicLikeSummary()
+    const summary = demoStoreLikeSummary()
     const table = summary.tables.find(t => t.name === 'RUN_MISSIONI')!
     const sql = "INSERT INTO RUN_MISSIONI (MIS_UDC, MIS_MISSIONE) VALUES ('x', 1)"
     const ctx = parseInsertContext(sql)!
