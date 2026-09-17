@@ -142,7 +142,7 @@ const KEYWORDS = new Set([
   'GROUP', 'BY', 'HAVING', 'ORDER', 'UNION', 'ALL', 'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET',
   'DELETE', 'MERGE', 'USING', 'WHEN', 'MATCHED', 'NOT', 'THEN', 'AS', 'AND', 'OR', 'IN', 'IS',
   'LIKE', 'BETWEEN', 'EXISTS', 'TOP', 'DISTINCT', 'CASE', 'ELSE', 'END', 'BEGIN', 'DECLARE',
-  'EXEC', 'EXECUTE', 'PRINT', 'RETURN', 'IF', 'WHILE', 'ELSE', 'GO', 'WITH', 'TRUNCATE',
+  'EXEC', 'EXECUTE', 'PRINT', 'RETURN', 'RETURNS', 'IF', 'WHILE', 'ELSE', 'GO', 'WITH', 'TRUNCATE',
   'OUTPUT', 'OPTION', 'RECOMPILE', 'NOCOUNT', 'TRANSACTION', 'COMMIT', 'ROLLBACK', 'SAVE',
   'PROCEDURE', 'FUNCTION', 'TRIGGER', 'CREATE', 'ALTER', 'DROP', 'GOTO', 'RAISERROR', 'THROW',
   'TRY', 'CATCH', 'OPEN', 'CLOSE', 'FETCH', 'DEALLOCATE', 'BREAK', 'CONTINUE', 'WAITFOR',
@@ -775,12 +775,17 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     'ELSE', 'COMMIT', 'ROLLBACK', 'TRUNCATE', 'GO',
   ])
   let sigOpen = -1
+  // true quando i parametri sono dichiarati SENZA parentesi
+  // ("CREATE PROCEDURE p @a int, @b nvarchar(10) AS"): la prima '(' del testo è quella
+  // di un TIPO, non l'elenco parametri, e prenderla per la firma spezzava lo statement.
+  let firmaSenzaParen = false
   for (let k = 0; k < tokens.length; k++) {
     if (tokens[k].type === 'word' && /^(CREATE|ALTER)$/i.test(tokens[k].text)) {
       for (let m = k + 1; m < tokens.length; m++) {
         const t = tokens[m]
         if (t.type === 'comment' || t.type === 'string') continue
         if (t.type === 'punct' && t.text === '(') {
+          if (firmaSenzaParen) continue // parentesi di un tipo (es. nvarchar(10))
           sigOpen = m
           break
         }
@@ -792,6 +797,8 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
             break
           }
           if (SIG_STOP.has(u)) break // è già iniziato il corpo: nessuna firma da separare
+          // un parametro (@nome) prima di qualsiasi '(' → firma senza parentesi
+          if (t.text.startsWith('@')) firmaSenzaParen = true
         }
       }
       break
@@ -852,7 +859,9 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     const header: string[] = []
     while (k < headerTokens.length) {
       const t = headerTokens[k]
-      if (t.type === 'punct' && t.text === '(') break
+      // solo la parentesi dell'elenco parametri chiude l'intestazione: in una firma senza
+      // parentesi le '(' del testo sono quelle dei tipi (es. "@pB nvarchar(10) = 'x'")
+      if (sigOpen !== -1 && t.type === 'punct' && t.text === '(') break
       if (t.type === 'comment') {
         // commento inline nell'intestazione: lo si accoda alla riga (senza perdere testo)
         header.push(t.text)
@@ -865,7 +874,7 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     pushLine(header.join(' '), 0)
 
     // parentesi aperta su riga propria
-    if (k < headerTokens.length && headerTokens[k].type === 'punct' && headerTokens[k].text === '(') {
+    if (sigOpen !== -1 && k < headerTokens.length && headerTokens[k].type === 'punct' && headerTokens[k].text === '(') {
       pushLine('(', 0)
       k++
       // parametri: una riga per parametro con virgola iniziale e TIPO INCOLONNATO
@@ -935,6 +944,12 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       })
       // parentesi chiusa su riga propria
       pushLine(')', 0)
+
+      // clausola fra ")" e "AS": nelle funzioni è "RETURNS INT" (scalari) oppure
+      // "RETURNS @t TABLE (...)" (table-valued). Senza questa riga la clausola spariva:
+      // il ciclo dei parametri si fermava alla ")" e il testo riprendeva da AS.
+      const codaFirma = headerTokens.slice(k + 1)
+      if (codaFirma.length > 0) pushLine(codaFirma.map(up).join(' '), 0)
     }
     // AS su riga propria
     pushLine('AS', 0)

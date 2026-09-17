@@ -774,6 +774,21 @@ async function verifyFormat(page) {
       righeOp.some(r => r.includes('@n -= 1')) &&
       !righeOp.some(r => /[+\-]\s+=/.test(r)),
   )
+
+  // funzione con RETURNS: la clausola fra ")" e "AS" non deve sparire
+  // (segnalazione utente: la format di una funzione cancellava "RETURNS INT")
+  const fn = await scriviEFormatta(
+    'CREATE OR ALTER FUNCTION dbo.fn_Prova_BaiaIngresso() RETURNS INT AS BEGIN DECLARE @baia INT SELECT @baia = 1 RETURN @baia END',
+  )
+  const righeFn = fn.righe.map(r => r.trim()).filter(Boolean)
+  console.log('  funzione con RETURNS:')
+  righeFn.forEach(r => console.log(`    |${r}`))
+  console.log('  (testo digitato, prima di formattare)')
+  fn.righePrima.forEach(r => console.log(`    >${r}`))
+  check('funzione: il pulsante "Formatta" è stato premuto', fn.premuto === true)
+  check('funzione: la clausola RETURNS resta (non viene cancellata)', righeFn.includes('RETURNS INT'))
+  check('funzione: il RETURN del corpo resta', righeFn.some(r => r === 'RETURN @baia'))
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
