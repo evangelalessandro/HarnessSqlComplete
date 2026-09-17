@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildColumnContextSuggestions } from '../helpers'
-import { extractLocalTables, parseColumnDefs, selectListInfo } from '../localTables'
+import { extractCteTables, extractLocalTables, parseColumnDefs, selectListInfo } from '../localTables'
 import type { DatabaseSummary } from '../types'
 import { demoStoreLikeSummary } from './schema'
 import kittingReturn from './fixtures/routine_ws_CIDEDO_HUSOBUME_KIPEVUBEGUSEV_St1_GIVOSEB.sql?raw'
@@ -148,6 +148,20 @@ select * into #seconda from #prima`
 
 describe('store reale: #tmpMission nell intellisense', () => {
   const locali = extractLocalTables(kittingReturn)
+
+  // REGRESSIONE (blocco pagina): su una store LUNGA (57 KB) il parser delle tabelle locali deve
+  // restare veloce. Il riconoscimento delle CTE usava una regex con backtracking catastrofico su
+  // `text.slice(0, nome)`: reggeva fino a ~30 KB e si piantava oltre, e il provider la chiama a
+  // ogni lettera → digitando in una store grande la pagina si bloccava.
+  it('su una store lunga (57 KB) termina subito e trova le CTE', { timeout: 15000 }, () => {
+    const t = Date.now()
+    const trovate = extractLocalTables(kittingReturn)
+    const cte = extractCteTables(kittingReturn)
+    expect(trovate.length).toBeGreaterThan(0)
+    expect(cte.map(x => x.name.toLowerCase())).toContain('tbl')
+    // limite largo: senza la correzione si superavano i 30 secondi (test in timeout)
+    expect(Date.now() - t).toBeLessThan(3000)
+  })
 
   it('riconosce le temporanee della store', () => {
     expect(locali.map(t => t.name)).toEqual(['#tmpMission', '#tmpNewDest'])

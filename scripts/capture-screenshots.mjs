@@ -13,6 +13,7 @@
 //   node scripts/capture-screenshots.mjs --verify-alias           (alias. → campi della tabella)
 //   node scripts/capture-screenshots.mjs --verify-labels          (GOTO → label del documento)
 //   node scripts/capture-screenshots.mjs --verify-error-line      (doppio clic sull'errore → riga)
+//   node scripts/capture-screenshots.mjs --measure-typing         (latenza digitando in una store grande)
 //
 // Prerequisiti: backend su :5213 e dev server su :5173 attivi.
 
@@ -38,6 +39,7 @@ const VERIFY_LOCAL_TABLES = process.argv.includes('--verify-local-tables')
 const VERIFY_ALIAS = process.argv.includes('--verify-alias')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
+const MEASURE_TYPING = process.argv.includes('--measure-typing')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -1426,6 +1428,101 @@ async function verifyErrorLine(page) {
 }
 
 /**
+ * DIAGNOSTICA (--measure-typing): apre una STORE GRANDE dal database e misura quanto si blocca
+ * la pagina digitando un carattere (la latenza di una valutazione banale subito dopo la
+ * digitazione = tempo in cui il thread principale è occupato). Misura anche il costo delle
+ * funzioni pesanti sul testo della store.
+ */
+async function measureTyping(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+
+  // apre la store dal pannello laterale (ricerca + tasto destro + Modifica)
+  await page.eval(`(() => {
+    const input = [...document.querySelectorAll('input')].find(i => (i.placeholder || '').includes('Cerca'));
+    if (!input) return false;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, ${JSON.stringify(ROUTINE_NAME)});
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`)
+  await page.waitFor(
+    `[...document.querySelectorAll('*')].some(e => e.children.length === 0 && (e.textContent || '').trim() === ${JSON.stringify(ROUTINE_NAME)})`,
+    20000,
+    'risultato della ricerca',
+  )
+  await sleep(700)
+  await page.eval(`(() => {
+    const leaf = [...document.querySelectorAll('*')].filter(e => e.children.length === 0 && (e.textContent || '').trim() === ${JSON.stringify(ROUTINE_NAME)})[0];
+    if (leaf) leaf.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window }));
+    return !!leaf;
+  })()`)
+  await sleep(900)
+  await page.clickWhere(
+    `[...document.querySelectorAll('button, [role="menuitem"], div')]
+       .filter(e => (e.textContent || '').trim() === 'Modifica')[0]`,
+  )
+  await sleep(3000)
+  const lunghezza = await page.eval(`(() => {
+    const righe = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].length;
+    const pannello = document.body.innerText || '';
+    return { righeVisibili: righe, haCreateProcedure: /CREATE OR ALTER PROCEDURE/i.test(pannello) };
+  })()`)
+  console.log(`  store aperta: ${JSON.stringify(lunghezza)}`)
+
+  /** Latenza di una valutazione banale: se il thread principale è occupato, la risposta tarda. */
+  const latenza = async () => {
+    const t = Date.now()
+    await page.eval('1')
+    return Date.now() - t
+  }
+  const base = await latenza()
+
+  // cursore dentro l'editor e un carattere digitato
+  const rect = await editorRect(page)
+  await page.clickPoint(rect.x + 160, rect.y + 40)
+  await sleep(600)
+  const primaDigitazione = await latenza()
+  const t0 = Date.now()
+  await page.typeText('x')
+  const invioMs = Date.now() - t0
+  const dopoDigitazione = await latenza()
+  console.log(`  latenza base: ${base} ms · prima di digitare: ${primaDigitazione} ms`)
+  console.log(`  digitazione: invio ${invioMs} ms, latenza SUBITO DOPO: ${dopoDigitazione} ms`)
+
+  // costo delle funzioni pesanti sul testo della store (una per volta: se una si pianta si vede)
+  const prova = async (nome, espressione) => {
+    const t = Date.now()
+    try {
+      const r = await page.eval(espressione)
+      console.log(`  ${nome}: ${Date.now() - t} ms ${JSON.stringify(r)}`)
+    } catch (e) {
+      console.log(`  ${nome}: OLTRE ${Date.now() - t} ms (${e.message})`)
+    }
+  }
+  const apri = `(await import('/src/__tests__/fixtures/routine_ws_L2_SUSEVOMOPEPESESE_FIB.sql?raw')).default`
+  await prova('dimensione fixture', `(async () => { const sql = ${apri}; return sql.length })()`)
+  await prova(
+    'runSqlDiagnostics',
+    `(async () => { const sql = ${apri}; const m = await import('/src/sqlDiagnostics.ts'); const t = performance.now(); const r = m.runSqlDiagnostics(sql, { summary: null }); return Math.round(performance.now() - t) + ' ms, ' + r.length + ' diagnosi' })()`,
+  )
+  await prova(
+    'extractLocalTables',
+    `(async () => { const sql = ${apri}; const m = await import('/src/localTables.ts'); const t = performance.now(); const r = m.extractLocalTables(sql); return Math.round(performance.now() - t) + ' ms, ' + r.length + ' tabelle' })()`,
+  )
+  await prova(
+    'extractCteTables',
+    `(async () => { const sql = ${apri}; const m = await import('/src/localTables.ts'); const t = performance.now(); const r = m.extractCteTables(sql); return Math.round(performance.now() - t) + ' ms, ' + r.length + ' CTE' })()`,
+  )
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -1632,6 +1729,11 @@ async function main() {
 
     if (VERIFY_ERROR_LINE) {
       await verifyErrorLine(page)
+      return
+    }
+
+    if (MEASURE_TYPING) {
+      await measureTyping(page)
       return
     }
 

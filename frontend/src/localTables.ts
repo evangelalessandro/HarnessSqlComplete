@@ -191,7 +191,7 @@ function topLevelAs(item: string): number {
       i++
       continue
     }
-    if (depth === 0 && (ch === 'a' || ch === 'A') && /^as\b/i.test(item.slice(i)) && !/[\w$#]/.test(item[i - 1] ?? '')) {
+    if (depth === 0 && (ch === 'a' || ch === 'A') && (item[i + 1] === 's' || item[i + 1] === 'S') && !/[\w$#]/.test(item[i + 2] ?? '') && !/[\w$#]/.test(item[i - 1] ?? '')) {
       return i
     }
     i++
@@ -278,6 +278,20 @@ function columnListOf(text: string, nameTokEnd: number): ColumnInfo[] {
   return parseColumnDefs(text.slice(open + 1, close))
 }
 
+/** Parola (o carattere) che precede `from`, saltando SOLO spazi: serve a capire se il nome di
+ *  una CTE è preceduto da "with" o da una virgola. Scansione all'indietro, niente regex:
+ *  la versione con `text.slice(0, i).replace(/(?:\s|…)*$/, '')` esplodeva con i file grandi
+ *  (backtracking catastrofico → la pagina si bloccava digitando in una store lunga). */
+function primaPrimaDi(text: string, from: number): string {
+  let k = from - 1
+  while (k >= 0 && /\s/.test(text[k])) k--
+  if (k < 0) return ''
+  if (!/[A-Za-z_]/.test(text[k])) return text[k]
+  let inizio = k
+  while (inizio > 0 && /[A-Za-z0-9_]/.test(text[inizio - 1])) inizio--
+  return text.slice(inizio, k + 1)
+}
+
 /**
  * Colonne delle CTE definite nel testo ("with tbl as (select …), altra as (…)"), così una
  * "SELECT * INTO #t FROM tbl" può copiarle: senza questo le colonne della CTE (che spesso
@@ -338,12 +352,14 @@ function extractCteColumns(
     const nameTok = tokens[i - 1]
     if (!nameTok || nameTok.lower === 'as') continue
     if (isLocalTableName(nameAt(text, nameTok))) continue
-    const before = text.slice(0, nameTok.start).replace(/(?:\s|\/\*[\s\S]*?\*\/|--[^\n]*)*$/, '')
-    if (!/\bwith$/i.test(before) && !before.endsWith(',')) continue
+    const prima = primaPrimaDi(text, nameTok.start)
+    if (!/^with$/i.test(prima) && prima !== ',') continue
     // la "(" della CTE può essere a capo ("with nome\n as (select …)"): non si usa
-    // findOpenParen, che si ferma al newline (va bene per "nome (colonne)" ma non qui)
+    // findOpenParen, che si ferma al newline (va bene per "nome (colonne)" ma non qui).
+    // Ricerca LIMITATA: la parentesi è sempre a pochi caratteri dal nome.
     let open = -1
-    for (let k = tokens[i].end; k < text.length; k++) {
+    const limite = Math.min(text.length, tokens[i].end + 4000)
+    for (let k = tokens[i].end; k < limite; k++) {
       const skipped = skipNoise(text, k)
       if (skipped !== k) {
         k = skipped - 1
