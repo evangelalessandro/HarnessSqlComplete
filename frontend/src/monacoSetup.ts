@@ -25,4 +25,41 @@ import tsWorker from 'monaco-editor/language/typescript/ts.worker?worker'
 
 loader.config({ monaco })
 
+/**
+ * REGOLE DELLA LINGUA SQL.
+ * Monaco non ha una configurazione per "sql": senza `indentationRules` il tasto Invio non sa
+ * come rientrare e la riga nuova parte da colonna 0 invece di seguire l'indentazione della riga
+ * sopra (segnalazione utente sullo statement UPDATE … SET … WHERE dentro una store).
+ * Con queste regole: andando a capo la riga segue la riga sopra, dopo BEGIN/AS/THEN/ELSE rientra
+ * di un livello e davanti a END/ELSE torna indietro.
+ */
+monaco.languages.setLanguageConfiguration('sql', {
+  comments: { lineComment: '--', blockComment: ['/*', '*/'] },
+  brackets: [['(', ')']],
+  autoClosingPairs: [
+    { open: '(', close: ')' },
+    { open: '[', close: ']' },
+    { open: "'", close: "'", notIn: ['string', 'comment'] },
+  ],
+  surroundingPairs: [
+    { open: '(', close: ')' },
+    { open: '[', close: ']' },
+    { open: "'", close: "'" },
+  ],
+  indentationRules: {
+    increaseIndentPattern: /\b(begin|then|else|as|try|catch)\s*$|\(\s*$/i,
+    decreaseIndentPattern: /^\s*(end|else|end\s+try|end\s+catch)\b|^\s*\)/i,
+  },
+  onEnterRules: [
+    {
+      // "BEGIN ↵ END": la riga nuova rientra e la END resta indietro
+      beforeText: /\b(begin|then|else)\s*$/i,
+      afterText: /^\s*(end|else)\b/i,
+      action: { indentAction: monaco.languages.IndentAction.IndentOutdent },
+    },
+    { beforeText: /\b(begin|then|else)\s*$/i, action: { indentAction: monaco.languages.IndentAction.Indent } },
+    { beforeText: /^\s*end\b/i, action: { indentAction: monaco.languages.IndentAction.Outdent } },
+  ],
+})
+
 export default monaco

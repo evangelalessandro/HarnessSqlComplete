@@ -43,6 +43,7 @@ const MEASURE_TYPING = process.argv.includes('--measure-typing')
 const VERIFY_SCROLLBARS = process.argv.includes('--verify-scrollbars')
 const VERIFY_TABTREE = process.argv.includes('--verify-tabtree')
 const VERIFY_SEARCH = process.argv.includes('--verify-search')
+const VERIFY_INDENT = process.argv.includes('--verify-indent')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -282,10 +283,17 @@ class Session {
   async typeText(text) {
     await this.send('Input.insertText', { text })
   }
-  /** Preme un tasto (es. F5) o una combinazione (ctrl+space). */
-  async press(key, { code, vk, modifiers = 0 } = {}) {
+  /** Preme un tasto (es. F5) o una combinazione (ctrl+space). Per i tasti che INSERISCONO un
+   *  carattere serve `text` (es. Enter: text '\r'); con `eventType: 'keyDown'` si manda la
+   *  pressione "vera" (senza testo), che è il percorso del keybinding di Monaco. */
+  async press(key, { code, vk, modifiers = 0, text, eventType } = {}) {
     const base = { key, code: code ?? key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers }
-    await this.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base })
+    const tipo = eventType ?? (text !== undefined ? 'keyDown' : 'rawKeyDown')
+    await this.send('Input.dispatchKeyEvent', {
+      type: tipo,
+      ...base,
+      ...(text !== undefined ? { text, unmodifiedText: text } : {}),
+    })
     await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
   }
   /** Clic del mouse in coordinate di pagina (con eventuale tasto destro). */
@@ -1630,6 +1638,174 @@ async function verifySearch(page) {
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
 }
 
+/**
+ * VERIFICA (--verify-indent): andando a capo dopo uno statement, la nuova riga non deve
+ * partire da colonna 0 ma restare allineata all'indentazione della riga sopra (dentro la
+ * routine). È la segnalazione dell'utente sullo statement UPDATE … SET … WHERE.
+ */
+async function verifyIndent(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const righeEditor = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, ''))`)
+
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(
+    [
+      'CREATE PROCEDURE p',
+      'AS',
+      'BEGIN',
+      '  UPDATE DAT_UDC',
+      '    SET UDC_RETURN = 1',
+      '  WHERE UDC_UDC = @udc',
+      'END',
+    ].join('\n'),
+  )
+  await sleep(700)
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(300)
+  await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Formatta')`,
+  )
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+
+  const prima = await righeEditor()
+  console.log('  dopo la formattazione:')
+  prima.forEach(r => console.log(`    |${r}`))
+
+  // cursore in fondo alla riga della WHERE e Invio: la riga nuova deve rientrare come quella
+  const punto = await page.eval(`(() => {
+    const linea = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].find(l => (l.textContent || '').replace(/\\u00a0/g, ' ').includes('WHERE UDC_UDC'));
+    if (!linea) return null;
+    const spans = [...linea.querySelectorAll('span')];
+    const ultimo = spans[spans.length - 1];
+    if (!ultimo) return null;
+    const r = ultimo.getBoundingClientRect();
+    return { x: r.right - 1, y: r.top + r.height / 2 };
+  })()`)
+  if (!punto) throw new Error('riga "WHERE UDC_UDC" non trovata nell editor')
+  await page.clickPoint(punto.x, punto.y)
+  await sleep(400)
+  // Invio "vero" (keybinding di Monaco): è il percorso che usa l'utente con la tastiera
+  await page.press('Enter', { code: 'Enter', vk: 13, eventType: 'keyDown' })
+  await sleep(300)
+  await page.typeText('X_NUOVA')
+  await sleep(600)
+
+  const dopo = await righeEditor()
+  console.log('  dopo Invio + testo:')
+  dopo.forEach(r => console.log(`    |${r}`))
+  const rientro = t => (t.match(/^\s*/) ?? [''])[0].length
+  const rigaWhere = dopo.find(r => r.includes('WHERE UDC_UDC')) ?? ''
+  const rigaNuova = dopo.find(r => r.includes('X_NUOVA')) ?? ''
+  console.log(`  rientro WHERE: ${rientro(rigaWhere)} · rientro nuova riga: ${rientro(rigaNuova)}`)
+  check('la nuova riga NON parte da colonna 0', rientro(rigaNuova) > 0)
+  check('la nuova riga è allineata alla riga sopra (WHERE)', rientro(rigaNuova) === rientro(rigaWhere))
+
+  // 2) statement NUOVO scritto a colonna 0 dopo l UPDATE: dopo "Formatta" deve rientrare
+  //    come gli altri statement del blocco (non restare a sinistra)
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(
+    [
+      'CREATE PROCEDURE p',
+      'AS',
+      'BEGIN',
+      '  UPDATE DAT_UDC',
+      '    SET UDC_RETURN = 1',
+      '  WHERE UDC_UDC = @udc',
+      'SELECT 1',
+      'END',
+    ].join('\n'),
+  )
+  await sleep(700)
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(300)
+  await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Formatta')`,
+  )
+  await sleep(1500)
+  const dopoFormat = await righeEditor()
+  console.log('  statement nuovo dopo "Formatta":')
+  dopoFormat.forEach(r => console.log(`    |${r}`))
+  const rigaNuovoStmt = dopoFormat.find(r => r.includes('SELECT 1')) ?? ''
+  const rigaUpdate = dopoFormat.find(r => r.includes('UPDATE DAT_UDC')) ?? ''
+  console.log(`  rientro UPDATE: ${rientro(rigaUpdate)} · rientro nuovo statement: ${rientro(rigaNuovoStmt)}`)
+  check('lo statement nuovo non resta a colonna 0', rientro(rigaNuovoStmt) > 0)
+  check('lo statement nuovo rientra come lo statement sopra', rientro(rigaNuovoStmt) === rientro(rigaUpdate))
+
+  // 3) dopo BEGIN la riga nuova rientra di UN livello (regole di rientro della lingua sql)
+  const puntoBegin = await page.eval(`(() => {
+    const linea = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].find(l => (l.textContent || '').replace(/\\u00a0/g, ' ').trim().startsWith('BEGIN'));
+    if (!linea) return null;
+    const spans = [...linea.querySelectorAll('span')];
+    const ultimo = spans[spans.length - 1];
+    if (!ultimo) return null;
+    const r = ultimo.getBoundingClientRect();
+    return { x: r.right - 1, y: r.top + r.height / 2 };
+  })()`)
+  if (puntoBegin) {
+    await page.clickPoint(puntoBegin.x, puntoBegin.y)
+    await sleep(300)
+    await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
+    await sleep(300)
+    await page.typeText('X_BEGIN')
+    await sleep(500)
+  }
+  const dopoBegin = await righeEditor()
+  const rigaBegin = dopoBegin.find(r => r.trim().startsWith('BEGIN')) ?? ''
+  const rigaXBegin = dopoBegin.find(r => r.includes('X_BEGIN')) ?? ''
+  console.log(`  rientro BEGIN: ${rientro(rigaBegin)} · rientro dopo BEGIN: ${rientro(rigaXBegin)}`)
+  check('dopo BEGIN la riga nuova rientra di un livello', rientro(rigaXBegin) === rientro(rigaBegin) + 2)
+
+  // 4) le parentesi si chiudono ancora da sole (la configurazione della lingua è stata ridefinita)
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(300)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText('select ')
+  await page.press('(', { code: 'Digit9', vk: 57, modifiers: 8, text: '(' })
+  await sleep(600)
+  const righeParen = await righeEditor()
+  const rigaParen = righeParen.find(r => r.includes('select')) ?? ''
+  console.log(`  riga con la parentesi: |${rigaParen}`)
+  check('le parentesi si chiudono ancora da sole', /\(\s*\)/.test(rigaParen))
+
+  // 5) Ctrl+/ commenta ancora (la configurazione della lingua dichiara i commenti)
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(300)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText('select 1')
+  await sleep(300)
+  await page.press('/', { code: 'Slash', vk: 191, modifiers: 2 })
+  await sleep(700)
+  const righeCommento = await righeEditor()
+  const rigaCommentata = righeCommento.find(r => r.includes('select 1')) ?? ''
+  console.log(`  dopo Ctrl+/: |${rigaCommentata}`)
+  check('Ctrl+/ commenta ancora la riga', rigaCommentata.trim().startsWith('--'))
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
 async function verifyLabels(page) {
   await page.waitFor(`document.querySelector('input')`, 10000)
   await page.clickWhere(
@@ -2188,6 +2364,11 @@ async function main() {
 
     if (VERIFY_SEARCH) {
       await verifySearch(page)
+      return
+    }
+
+    if (VERIFY_INDENT) {
+      await verifyIndent(page)
       return
     }
 
