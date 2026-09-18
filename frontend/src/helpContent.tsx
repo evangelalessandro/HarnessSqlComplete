@@ -115,8 +115,12 @@ export const HELP_SECTIONS: HelpSection[] = [
           'Il campo in alto cerca tabelle, viste, procedure, funzioni e trigger: gli spazi valgono come % (es. "dat udc" trova DAT_UDC).',
       },
       {
-        title: 'Ricerca generale (stile Redgate SQL Search)',
+        title: 'Eliminare una colonna senza errori',
         detail:
+          'Con "ALTER TABLE t DROP COLUMN " il popup propone, oltre alle colonne, uno snippet "DROP COLUMN sicuro": sostituisce lo statement con uno script che controlla che la colonna esista ancora (IF EXISTS su sys.columns), toglie prima i vincoli collegati (DEFAULT/CHECK sulla colonna, CHECK di tabella che la citano, chiavi esterne uscenti, PK/UNIQUE fatte sulla sola colonna), elimina la colonna e segnala con una PRINT le chiavi esterne di ALTRE tabelle che puntano lì (quelle vanno sistemate a mano). Nelle colonne proposte, il dettaglio dice già quali vincoli sono collegati (es. "vincoli collegati: CK_…, FK_…, PK_…").',
+      },
+      {
+        title: 'Ricerca generale (stile Redgate SQL Search)',        detail:
           'Pulsante "Cerca" in alto: cerca un testo qualunque nei NOMI e nelle DEFINIZIONI delle strutture (tabelle, viste, procedure, funzioni, trigger, vincoli CHECK/DEFAULT, colonne calcolate) e, spuntando "anche nei dati", anche nei VALORI delle colonne di testo delle tabelle. I risultati stanno sopra e l\u2019ANTEPRIMA sotto: per le routine compare lo script con il match evidenziato e la riga trovata, per le colonne la tabella con la colonna in evidenza, per i dati la riga trovata. Da un risultato si può MODIFICARE l\u2019oggetto (pulsante "Modifica" o doppio clic o tasto destro → menu): si apre CREATE OR ALTER in una nuova tab, figlia di quella attiva, come dal tasto destro nell\u2019albero; ci sono anche "Apri definizione" e "Diagramma chiamate". La ricerca resta dentro il database attivo; la scansione dei dati è limitata (tabelle, tempo e righe per tabella) per non appesantire il database, e il riepilogo dice quante tabelle sono state lette.',
       },
     ],

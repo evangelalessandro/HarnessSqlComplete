@@ -169,6 +169,128 @@ export function splitQualifiedName(nome: string): { schema: string; table: strin
   return parti.length > 1 ? { schema: parti[0], table: parti[1] } : { schema: '', table: parti[0] }
 }
 
+/** "[dbo].[DAT_UDC]": nome qualificato con parentesi quadre, come serve a OBJECT_ID. */
+export function quotedQualifiedName(nome: string): string {
+  const { schema, table } = splitQualifiedName(nome)
+  const t = `[${table.replace(/\]/g, ']]')}]`
+  return schema ? `[${schema.replace(/\]/g, ']]')}].${t}` : t
+}
+
+/** Caratteri che in uno snippet Monaco vanno protetti (altrimenti diventano segnaposto). */
+function escapeSnippet(text: string): string {
+  return text.replace(/\\/g, '\\\\').replace(/\$/g, '\\$').replace(/\}/g, '\\}')
+}
+
+/**
+ * SNIPPET "DROP COLUMN sicuro" (richiesta utente): elimina la colonna dopo aver tolto i vincoli
+ * collegati (DEFAULT/CHECK sulla colonna, CHECK di tabella che la citano, chiavi esterne uscenti,
+ * PK/UNIQUE fatte sulla sola colonna) e controlla che la colonna esista ancora. Segnala anche le
+ * chiavi esterne di ALTRE tabelle che puntano alla colonna (quelle vanno valutate a mano).
+ * Il nome della tabella è già quello dello statement; il nome della colonna è un segnaposto
+ * ripetuto: scrivendolo una volta si riempie in tutte le righe.
+ */
+export function dropColumnSnippet(tabella: string): string {
+  const t = quotedQualifiedName(tabella)
+  // La colonna si scrive con un token che sopravvive all'escaping: il segnaposto Monaco
+  // ${1:colonna} si mette DOPO, altrimenti verrebbe protetto come testo normale.
+  const col = '__COLONNA__'
+  const sql = `/* DROP COLUMN sicuro: prima i vincoli collegati, controllando che la colonna esista */
+IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'${t}') AND name = N'${col}')
+BEGIN
+  DECLARE @drop NVARCHAR(MAX) = N'';
+
+  /* DEFAULT e CHECK legati alla singola colonna */
+  SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(o.name) + N';' + CHAR(10)
+  FROM sys.objects o
+    INNER JOIN sys.columns c ON c.object_id = o.parent_object_id AND c.column_id = o.parent_column_id
+  WHERE o.parent_object_id = OBJECT_ID(N'${t}') AND o.type IN ('D', 'C') AND c.name = N'${col}';
+
+  /* CHECK di tabella che citano la colonna */
+  SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(cc.name) + N';' + CHAR(10)
+  FROM sys.check_constraints cc
+  WHERE cc.parent_object_id = OBJECT_ID(N'${t}') AND cc.parent_column_id = 0 AND cc.definition LIKE N'%${col}%';
+
+  /* chiavi esterne USCENTI che usano la colonna */
+  SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(fk.name) + N';' + CHAR(10)
+  FROM sys.foreign_key_columns fkc
+    INNER JOIN sys.foreign_keys fk ON fk.object_id = fkc.constraint_object_id
+  WHERE fkc.parent_object_id = OBJECT_ID(N'${t}') AND COL_NAME(fkc.parent_object_id, fkc.parent_column_id) = N'${col}';
+
+  /* PK / UNIQUE fatte sulla SOLA colonna */
+  SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(kc.name) + N';' + CHAR(10)
+  FROM sys.key_constraints kc
+    INNER JOIN sys.index_columns ic ON ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id
+  WHERE kc.parent_object_id = OBJECT_ID(N'${t}') AND ic.is_included_column = 0
+    AND COL_NAME(ic.object_id, ic.column_id) = N'${col}'
+  GROUP BY kc.name
+  HAVING COUNT(*) = 1;
+
+  IF @drop <> N''
+    EXEC sp_executesql @drop;
+
+  ALTER TABLE ${t} DROP COLUMN [${col}];
+END
+ELSE
+  PRINT N'Colonna ${col} non presente in ${t}: niente da fare.';
+
+/* ALTRE tabelle che puntano a questa colonna: vanno sistemate a mano (il DROP COLUMN
+   altrimenti fallisce). L'elenco esce nel messaggio della PRINT qui sotto. */
+DECLARE @puntano NVARCHAR(MAX) = N'';
+SELECT @puntano = @puntano + N'  ' + fk.name + N' su ' + OBJECT_SCHEMA_NAME(fk.parent_object_id) + N'.'
+                + OBJECT_NAME(fk.parent_object_id) + CHAR(10)
+FROM sys.foreign_key_columns fkc
+  INNER JOIN sys.foreign_keys fk ON fk.object_id = fkc.constraint_object_id
+WHERE fkc.referenced_object_id = OBJECT_ID(N'${t}') AND COL_NAME(fkc.referenced_object_id, fkc.referenced_column_id) = N'${col}';
+IF @puntano <> N''
+  PRINT N'ATTENZIONE: altre tabelle puntano a questa colonna:' + CHAR(10) + @puntano;`
+  // prima si protegge il testo, poi si mette il segnaposto (così resta un segnaposto vero,
+  // ripetuto: scrivendo la colonna una volta si riempie in tutte le righe)
+  return escapeSnippet(sql).split(col).join('${1:colonna}')
+}
+
+/** Tipo di vincolo collegato a una colonna (per i suggerimenti). */
+export interface VincoloCollegato {
+  name: string
+  kind: string
+}
+
+/**
+ * Vincoli che "toccano" una colonna, letti dallo schema già caricato: CHECK che la citano nella
+ * condizione, chiavi esterne (uscenti e di altre tabelle che puntano qui) e PK/UNIQUE che la
+ * contengono. Serve a dire all'utente cosa dovrà togliere prima di eliminarla.
+ */
+export function vincoliCollegati(
+  summary: { checkConstraints?: { schema: string; tableName: string; name: string; definition: string }[] | null; foreignKeys: { name: string; schema: string; table: string; column: string; refSchema: string; refTable: string; refColumn: string }[] },
+  schema: string,
+  table: string,
+  column: string,
+  indexes: { name: string; isPrimaryKey: boolean; isUnique: boolean; columns: string[] | null }[] | null | undefined,
+): VincoloCollegato[] {
+  const eq = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
+  const out: VincoloCollegato[] = []
+  const colonna = column.toLowerCase()
+  for (const cc of summary.checkConstraints ?? []) {
+    if (!eq(cc.tableName, table)) continue
+    if (schema && !eq(cc.schema, schema)) continue
+    // confronto "grezzo" ma efficace: la condizione cita il nome della colonna
+    if (!cc.definition.toLowerCase().includes(colonna)) continue
+    out.push({ name: cc.name, kind: 'CHECK' })
+  }
+  for (const fk of summary.foreignKeys) {
+    if (eq(fk.table, table) && eq(fk.column, column) && (!schema || eq(fk.schema, schema))) {
+      out.push({ name: fk.name, kind: `FOREIGN KEY → ${fk.refSchema}.${fk.refTable}.${fk.refColumn}` })
+    } else if (eq(fk.refTable, table) && eq(fk.refColumn, column)) {
+      out.push({ name: fk.name, kind: `FOREIGN KEY da ${fk.schema}.${fk.table}.${fk.column} (altra tabella)` })
+    }
+  }
+  for (const ix of indexes ?? []) {
+    if (!ix.isPrimaryKey && !ix.isUnique) continue
+    if (!(ix.columns ?? []).some(c => eq(c, column))) continue
+    out.push({ name: ix.name, kind: ix.isPrimaryKey ? 'PRIMARY KEY' : 'UNIQUE' })
+  }
+  return out
+}
+
 /**
  * Contesto di un "ALTER TABLE <tabella> DROP …":
  * - "DROP " (anche "DROP COL") → COLUMN / CONSTRAINT;

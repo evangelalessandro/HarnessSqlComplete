@@ -1833,6 +1833,16 @@ async function verifyDrop(page) {
     await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
       .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
 
+  /** Righe del popup con anche il dettaglio (per leggere "vincoli collegati: …"). */
+  const righePopupConDettaglio = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => (r.textContent || '').replace(/\\u00a0/g, ' ').trim())`)
+
+  /** Righe VISIBILI dell'editor (Monaco usa spazi insecabili: si normalizzano). */
+  const righeEditor = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, ''))`)
+
   const esiti = []
   const check = (nome, ok) => {
     esiti.push(ok)
@@ -1859,6 +1869,50 @@ async function verifyDrop(page) {
   const vociVincoli = minuscole(await vociPopup())
   console.log(`  dopo "DROP CONSTRAINT P": ${JSON.stringify(vociVincoli.slice(0, 6))}`)
   check('dopo "DROP CONSTRAINT " propone i vincoli della tabella', vociVincoli.some(v => v.startsWith('pk_')))
+
+  // 4) nelle colonne compaiono i VINCOLI COLLEGATI (da togliere prima di eliminarla)
+  await scrivi('ALTER TABLE dbo.DAT_UDC DROP COLUMN U')
+  const righeConVincoli = await righePopupConDettaglio()
+  console.log(`  colonne con vincoli collegati: ${JSON.stringify(righeConVincoli.slice(0, 3))}`)
+  check(
+    'nelle colonne dice quali vincoli vanno tolti prima',
+    righeConVincoli.some(r => /vincoli collegati/i.test(r)),
+  )
+
+  // 5) SNIPPET "DROP COLUMN sicuro": controllo di esistenza + vincoli collegati + DROP COLUMN
+  //    (si trova scrivendo un pezzo del nome: il popup filtra per qualità del match)
+  await scrivi('ALTER TABLE dbo.DAT_UDC DROP COLUMN sic')
+  const vociSnippet = await righePopupConDettaglio()
+  console.log(`  popup con "DROP COLUMN sic": ${JSON.stringify(vociSnippet.slice(0, 3))}`)
+  const trovatoSnippet = vociSnippet.find(v => /DROP COLUMN sicuro/i.test(v))
+  console.log(`  snippet proposto: ${JSON.stringify(trovatoSnippet ?? null)}`)
+  check('propone lo snippet "DROP COLUMN sicuro"', !!trovatoSnippet)
+  if (trovatoSnippet) {
+    await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
+    await sleep(600)
+    await page.typeText('UDC_PROVA') // riempie il segnaposto della colonna (ripetuto)
+    await sleep(800)
+    const inizio = await righeEditor()
+    console.log('  snippet inserito (inizio):')
+    inizio.slice(0, 12).forEach(r => console.log(`    |${r}`))
+    const testoInizio = inizio.join('\n')
+    check('lo snippet controlla che la colonna esista', /IF EXISTS \(SELECT 1 FROM sys\.columns/.test(testoInizio))
+    check('lo snippet lavora sulla tabella dello statement', testoInizio.includes("OBJECT_ID(N'[dbo].[DAT_UDC]')"))
+    check('lo snippet toglie i vincoli prima della colonna', /DROP CONSTRAINT/.test(testoInizio))
+    check(
+      'il nome della colonna è ripetuto dal segnaposto',
+      (testoInizio.match(/UDC_PROVA/g) ?? []).length >= 2,
+    )
+    check('lo statement originale è stato sostituito', !testoInizio.includes('ALTER TABLE dbo.DAT_UDC DROP COLUMN'))
+    // in fondo allo snippet: il DROP COLUMN e l avviso sulle altre tabelle
+    await page.press('End', { code: 'End', vk: 35, modifiers: 2 })
+    await sleep(600)
+    const fine = (await righeEditor()).join('\n')
+    console.log('  snippet inserito (fine):')
+    ;(await righeEditor()).slice(-8).forEach(r => console.log(`    |${r}`))
+    check('in fondo c è il DROP COLUMN con la colonna', /DROP COLUMN \[UDC_PROVA\]/.test(fine))
+    check('segnala le chiavi esterne di altre tabelle', /altre tabelle puntano a questa colonna/.test(fine))
+  }
 
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)

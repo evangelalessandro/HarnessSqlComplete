@@ -7,7 +7,7 @@ import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
 import { isTextOffsetInComment } from './helpers'
 import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from './helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
-import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, extractDeclaredVariables, extractRoutineParameters, systemVariablePrefixLen, variablePrefixLen } from './tsqlSnippets'
+import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, dropColumnSnippet, extractDeclaredVariables, extractRoutineParameters, systemVariablePrefixLen, variablePrefixLen, vincoliCollegati } from './tsqlSnippets'
 import { extractCteTables, extractDerivedTables, extractLocalTables } from './localTables'
 import { extractLabels } from './labels'
 import { ORDER_DIRECTIONS } from './intellisenseContext'
@@ -283,14 +283,63 @@ export function provideSqlCompletions({
                   (!dropCtx.schema || t.schema.toLowerCase() === dropCtx.schema.toLowerCase()),
               )
               if (dropCtx.kind === 'column') {
+                // SNIPPET: elimina la colonna togliendo prima i vincoli collegati, con il
+                // controllo che la colonna esista ancora. Sostituisce tutto lo statement
+                // (range largo), così non resta "ALTER TABLE … DROP COLUMN" davanti al blocco.
+                const nomeTabella = dropCtx.schema ? `${dropCtx.schema}.${dropCtx.table}` : dropCtx.table
+                // Lo snippet sostituisce TUTTO lo statement: il testo prima del cursore
+                // ("ALTER TABLE … DROP COLUMN ") si cancella con additionalTextEdits (il range
+                // resta quello della parola, così Monaco non scarta la voce dal popup).
+                const inizioStmt = model.getPositionAt(stmtRange.start)
+                const inizioParola = model.getPositionAt(Math.max(stmtRange.start, cursorOffset - (word.word?.length ?? 0)))
+                push({
+                  label: 'DROP COLUMN sicuro (vincoli + controllo esistenza)',
+                  detail: 'Toglie prima i vincoli collegati e controlla che la colonna esista: IF EXISTS + DROP COLUMN',
+                  documentation: {
+                    value: [
+                      '**DROP COLUMN sicuro** — sostituisce lo statement con uno script che:',
+                      '',
+                      '1. controlla che la colonna esista ancora (`IF EXISTS` su `sys.columns`);',
+                      '2. toglie i vincoli collegati: **DEFAULT/CHECK** sulla colonna, **CHECK** di tabella che la citano, **chiavi esterne uscenti**, **PK/UNIQUE** fatte sulla sola colonna;',
+                      '3. elimina la colonna;',
+                      '4. segnala con una `PRINT` le **chiavi esterne di altre tabelle** che puntano alla colonna (quelle vanno sistemate a mano).',
+                      '',
+                      'Nel testo la colonna è un segnaposto ripetuto: scrivendola una volta si riempie in tutte le righe.',
+                    ].join('\n'),
+                  },
+                  kind: monaco.languages.CompletionItemKind.Snippet,
+                  insertText: dropColumnSnippet(nomeTabella),
+                  insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                  range,
+                  additionalTextEdits: [
+                    {
+                      range: new monaco.Range(
+                        inizioStmt.lineNumber,
+                        inizioStmt.column,
+                        inizioParola.lineNumber,
+                        inizioParola.column,
+                      ),
+                      text: '',
+                    },
+                  ],
+                  filterText: 'DROP COLUMN sicuro vincoli controllo esistenza if exists snippet',
+                })
                 for (const c of tabella?.columns ?? []) {
                   // se la colonna fa parte della chiave primaria va tolta prima: lo diciamo
                   const inPk = (tabella?.indexes ?? []).some(
                     ix => ix.isPrimaryKey && (ix.columns ?? []).some(x => x.toLowerCase() === c.name.toLowerCase()),
                   )
+                  // vincoli collegati (CHECK che la citano, FK, PK/UNIQUE): vanno tolti prima
+                  const collegati = st.summary
+                    ? vincoliCollegati(st.summary, dropCtx.schema, dropCtx.table, c.name, tabella?.indexes)
+                    : []
                   push({
                     label: c.name,
-                    detail: [columnTypeText(c.dataType, c.isNullable), inPk ? 'chiave primaria: va tolta prima' : null]
+                    detail: [
+                      columnTypeText(c.dataType, c.isNullable),
+                      inPk ? 'chiave primaria: va tolta prima' : null,
+                      collegati.length ? `vincoli collegati: ${collegati.map(v => v.name).join(', ')}` : null,
+                    ]
                       .filter(Boolean)
                       .join(' · '),
                     documentation: tabella ? columnInfoMarkdown(tabella, c) : undefined,
