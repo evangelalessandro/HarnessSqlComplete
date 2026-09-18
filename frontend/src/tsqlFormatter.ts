@@ -418,9 +418,16 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
     if (insertLayout) {
       const rows = [...insertLayout.rows]
       if (insertLayout.rest.length > 0) {
-        // resto dello statement (es. lo SELECT di "INSERT … (campi) SELECT …"): formattato
-        // con le stesse regole, su righe proprie
-        rows.push(...formatSqlWithProfile(insertLayout.rest.map(up).join(' '), profile).trimEnd().split('\n'))
+        // resto dello statement (lo SELECT di "INSERT … (campi) SELECT …"): la select-list sono
+        // i VALORI dell'insert, quindi UN valore per riga come per i campi (stesse regole
+        // dentro e fuori le store).
+        const primo = insertLayout.rest.find(t => t.type !== 'comment')
+        const selectRows =
+          primo?.type === 'word' && primo.text.toUpperCase() === 'SELECT'
+            ? detailedSelectRows(insertLayout.rest, up, profile.tabSize || 2, '', profile.setIndent, profile, true)
+            : null
+        if (selectRows) rows.push(...selectRows)
+        else rows.push(...formatSqlWithProfile(insertLayout.rest.map(up).join(' '), profile).trimEnd().split('\n'))
       }
       return rows.join('\n').trimEnd() + '\n'
     }
@@ -1101,8 +1108,13 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
   // iniziali del documento non vengono riprodotte
   let emittedAny = headerTokens.length > 0
 
-  for (const segment of segments) {
+  for (let si = 0; si < segments.length; si++) {
+    const segment = segments[si]
     if (segment.length === 0) continue
+    // True se lo statement PRECEDENTE è un INSERT: la SELECT che segue sono i VALORI
+    // dell'insert (il segmentatore la stacca dall'INSERT), quindi va impaginata un valore per riga.
+    const dopoInsert =
+      si > 0 && segments[si - 1].some(t => t.type === 'word' && t.text.toUpperCase() === 'INSERT')
     // righe vuote tra le istruzioni: preservate così come sono nell'originale.
     // Dentro un'istruzione (token interni allo stesso segmento) vengono invece tolte.
     const blanks = segment[0].blank ?? 0
@@ -1391,12 +1403,29 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
           flushLine()
           insertLayout.rows.forEach(pushRawLine)
           if (insertLayout.rest.length > 0) {
-            rowsNoDashEat(insertLayout.rest, up).forEach(r => pushLine(r, lineIndent))
+            // INSERT … SELECT: la lista dei VALORI è la select-list della SELECT, quindi si
+            // impagina come quella dei campi (un valore per riga, allineati sotto il primo).
+            // Prima il resto restava su una riga sola, anche con venti valori.
+            const primo = insertLayout.rest.find(t => t.type !== 'comment')
+            const selectRows =
+              primo?.type === 'word' && primo.text.toUpperCase() === 'SELECT'
+                ? detailedSelectRows(insertLayout.rest, up, unit, basePad, profile.setIndent, profile, true)
+                : null
+            if (selectRows) selectRows.forEach(pushRawLine)
+            else rowsNoDashEat(insertLayout.rest, up).forEach(r => pushLine(r, lineIndent))
           }
           continue
         }
       }
-      const detailedRows = detailedSelectRows(segment, up, unit, basePad, profile.setIndent, profile)
+      const detailedRows = detailedSelectRows(
+        segment,
+        up,
+        unit,
+        basePad,
+        profile.setIndent,
+        profile,
+        dopoInsert && firstUpper === 'SELECT',
+      )
       if (detailedRows) {
         flushLine()
         for (const row of detailedRows) pushRawLine(row)
@@ -1544,6 +1573,8 @@ function detailedSelectRows(
   basePad: string,
   setIndent: number = unit,
   profile?: FormatProfile,
+  /** True quando questa SELECT sono i VALORI di un "INSERT … SELECT": un valore per riga. */
+  unoPerRiga = false,
 ): string[] | null {
   const groups = splitStatementClauses(segment, up)
   const head = groups[0].tokens
@@ -1604,8 +1635,15 @@ function detailedSelectRows(
         else out.push(`${basePad}  ,${name}${' '.repeat(gap)}${tail}`)
       })
     } else {
-      const r = rowsNoDashEat(head, up)[0]
-      if (r) out.push(`${basePad}${cleanInline(r)}`)
+      // NON è una lista di assegnazioni: la testata è una select-list che contiene una
+      // VARIABILE (caso tipico "INSERT … SELECT @udc, 'SYSTEM', 0"): si impila come tutte le
+      // altre select-list. Prima restava su una riga sola (venti valori di fila).
+      if (profile?.stackSelectColumns) {
+        out.push(...stackSelectList(head, up, basePad, profile, unoPerRiga))
+      } else {
+        const r = rowsNoDashEat(head, up)[0]
+        if (r) out.push(`${basePad}${cleanInline(r)}`)
+      }
     }
   } else {
     // SELECT "normale" (nessuna assegnazione @var = …): con l'opzione attiva la select-list
@@ -1613,7 +1651,7 @@ function detailedSelectRows(
     // Serve soprattutto DENTRO procedure e blocchi, dove prima la lista restava tutta su
     // una riga mentre da sola veniva impilata: due risultati diversi per lo stesso testo.
     if (profile?.stackSelectColumns) {
-      out.push(...stackSelectList(head, up, basePad, profile))
+      out.push(...stackSelectList(head, up, basePad, profile, unoPerRiga))
     } else {
       const r = rowsNoDashEat(head, up)[0]
       if (r) out.push(`${basePad}${cleanInline(r)}`)
@@ -1667,6 +1705,9 @@ function stackSelectList(
   up: (t: Token) => string,
   basePad: string,
   profile: FormatProfile,
+  /** True per la select-list dei VALORI di un "INSERT … SELECT": UN elemento per riga
+   *  (come per i campi/valori di un INSERT), invece del raggruppamento normale. */
+  unoPerRiga = false,
 ): string[] {
   const indent = profile.selectColumnIndent
   // "SELECT … INTO #t": l'INTO va su riga propria. L'INTO di un "INSERT INTO …" invece
@@ -1720,7 +1761,7 @@ function stackSelectList(
       indentLine = false
       continue
     }
-    if (t.type === 'punct' && t.text === ',' && depth === 0 && cur.length > 1) {
+    if (t.type === 'punct' && t.text === ',' && depth === 0 && (unoPerRiga ? cur.length > 0 : cur.length > 1)) {
       push()
       commaPending = true
       continue

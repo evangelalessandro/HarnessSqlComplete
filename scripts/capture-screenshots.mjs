@@ -762,6 +762,27 @@ async function verifyFormat(page) {
   )
   check('INSERT: i campi sono allineati sotto il primo', allineati(righeGrezze, ',RIG_ARTICOLO', colCampi) && allineati(righeGrezze, ',RIG_SUB1)', colCampi))
   check('INSERT: i valori uno per riga, allineati sotto il primo', allineati(righeGrezze, ',@pRIG_ARTICOLO', colValori) && allineati(righeGrezze, ",isnull (@pRIG_SUB1, ''))", colValori))
+
+  // INSERT … SELECT: i VALORI sono la select-list della SELECT → uno per riga come i campi
+  // (segnalazione utente: nella parte dei valori restavano tutti su una riga)
+  const insertSelectSql =
+    "INSERT INTO dbo.DAT_ORDINI_RIGHE (RIG_ORDINE, RIG_ARTICOLO, RIG_SUB1) SELECT @ordine, @pRIG_ARTICOLO, isnull (@pRIG_SUB1, '') FROM dbo.DAT_ORDINI_RIGHE WHERE RIG_ORDINE = @ordine"
+  const f = await scriviEFormatta(`CREATE PROCEDURE p AS\nBEGIN\n  ${insertSelectSql}\nEND`)
+  console.log('  INSERT … SELECT:')
+  f.righe.forEach(r => console.log(`    |${r}`))
+  const righeSel = f.righe.map(r => r.trim()).filter(Boolean)
+  const iSelect = righeSel.findIndex(r => r.startsWith('SELECT'))
+  const iFrom = righeSel.findIndex(r => r.startsWith('FROM'))
+  const valoriSelect = iSelect >= 0 && iFrom > iSelect ? righeSel.slice(iSelect + 1, iFrom) : []
+  console.log(`  valori su righe proprie: ${JSON.stringify(valoriSelect)}`)
+  check(
+    'INSERT … SELECT: la riga della SELECT non porta anche i valori',
+    iSelect >= 0 && !righeSel[iSelect].includes(','),
+  )
+  check(
+    'INSERT … SELECT: un valore per riga (virgola in testa)',
+    valoriSelect.length === 2 && valoriSelect.every(v => v.startsWith(',')),
+  )
   check('firma: i tipi dei parametri partono tutti dalla stessa colonna', colonneTipo.length >= 3 && new Set(colonneTipo).size === 1)
   check('firma: nome e tipo mai incollati', !righeFirma.some(r => /@\w+(NVARCHAR|INT|DECIMAL)/i.test(r)))
   check('firma: un parametro per riga con la virgola in testa', righeFirma.filter(r => r.trim().startsWith(',')).length === 2)
