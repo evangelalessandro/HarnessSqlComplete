@@ -194,6 +194,13 @@ cd backend/SqlIntelliBackend && dotnet run
 cd frontend && npm install && npm run dev
 ```
 
+Su Windows c'è anche uno script che avvia (o ferma) entrambi in due finestre:
+
+```powershell
+.\scripts\start-app.ps1          # avvia backend + app e apre il browser
+.\scripts\start-app.ps1 -Stop    # ferma i due server
+```
+
 **Chiave DeepSeek (opzionale)** per l'autocompletamento IA, in
 `backend/SqlIntelliBackend/appsettings.json`:
 
@@ -450,6 +457,13 @@ cd backend/SqlIntelliBackend && dotnet run
 
 # 2. frontend → http://localhost:5173  (Vite proxies /api to the backend)
 cd frontend && npm install && npm run dev
+```
+
+On Windows there is also a script that starts (or stops) both in two windows:
+
+```powershell
+.\scripts\start-app.ps1          # starts backend + app and opens the browser
+.\scripts\start-app.ps1 -Stop    # stops both servers
 ```
 
 **Optional DeepSeek key** for AI completion, in `backend/SqlIntelliBackend/appsettings.json`:
