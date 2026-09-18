@@ -1180,6 +1180,10 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     if (firstUpper === 'END') {
       // chiude un blocco BEGIN (o il CASE inline è già gestito dentro lo statement)
       indent = Math.max(0, indent - 1)
+      // gli IF chiusi DENTRO questo blocco non possono più ricevere il loro ELSE: si tolgono
+      // dallo stack, altrimenti l'ELSE esterno si allinea a un IF interno e finisce spostato
+      // di due spazi rispetto al suo END (segnalazione utente su "END / ELSE / BEGIN")
+      while (ifStack.length > 0 && ifStack[ifStack.length - 1] > indent) ifStack.pop()
       pendingIndent = null
       flushLine()
       const extra = segment.slice(1).map(up).join(' ')
@@ -1578,7 +1582,46 @@ function detailedSelectRows(
 ): string[] | null {
   const groups = splitStatementClauses(segment, up)
   const head = groups[0].tokens
-  if (head.some(t => t.type === 'word' && t.text.toUpperCase() === 'CASE')) return null
+  // Un CASE nella testata: il percorso "impilato" lo sa espandere (CASE/WHEN/THEN/ELSE/END dentro
+  // l'elemento della lista), quindi si torna null SOLO quando la lista non è impilabile
+  // (nessuna virgola di primo livello, oppure INTO che richiede il percorso dedicato).
+  let listaConCase = false
+  if (head.some(t => t.type === 'word' && t.text.toUpperCase() === 'CASE')) {
+    // Un'assegnazione in testata ("SELECT @x = CASE …") ha il suo percorso dedicato: qui no.
+    // (il tokenizer non tiene la '@' nel testo, quindi si guarda la forma: un "=" di primo
+    //  livello prima della prima virgola)
+    let primoComma = -1
+    let primoUguale = -1
+    let dd = 0
+    for (let i = 0; i < head.length; i++) {
+      const t = head[i]
+      if (t.type !== 'punct') continue
+      if (t.text === '(') dd++
+      else if (t.text === ')') dd = Math.max(0, dd - 1)
+      else if (t.text === ',' && dd === 0) {
+        primoComma = i
+        break
+      } else if (t.text === '=' && dd === 0 && primoUguale === -1) primoUguale = i
+    }
+    const assegnazione = primoUguale >= 0 && (primoComma === -1 || primoUguale < primoComma)
+    const impilabile =
+      !!profile?.stackSelectColumns &&
+      !assegnazione &&
+      !head.some((t, i) => t.type === 'word' && t.text.toUpperCase() === 'INTO' && i > 0) &&
+      (() => {
+        let d = 0
+        for (const t of head) {
+          if (t.type === 'punct') {
+            if (t.text === '(') d++
+            else if (t.text === ')') d = Math.max(0, d - 1)
+            else if (t.text === ',' && d === 0) return true
+          }
+        }
+        return false
+      })()
+    if (!impilabile) return null
+    listaConCase = true
+  }
   // commenti "--" nella testata: niente layout a colonna (il codice dopo il commento
   // non deve finire commentato); si ripiega sul percorso CASE/clausole
   if (head.some(t => t.type === 'comment' && t.text.startsWith('--'))) return null
@@ -1620,7 +1663,34 @@ function detailedSelectRows(
   const listaAssegnazioni = assignItems.length >= 2 && assignItems.every(isAssign)
   // Senza clausole (nessun FROM/JOIN) c'è comunque qualcosa da impaginare se la testata è
   // una lista di assegnazioni "@var = …": "SELECT @a = …, @b = …" va a capo come le altre liste
-  if (groups.length < 2 && !listaAssegnazioni) return null
+  if (groups.length < 2 && !listaAssegnazioni) {
+    // Testata con CASE e lista impilabile, ma clausole non riconosciute (succede alla select-list
+    // di un "INSERT … SELECT" staccata dal segmentatore, che arriva senza la parola SELECT e con
+    // il FROM dentro la testata): si impila comunque la lista e si accoda il resto (FROM/WHERE…).
+    if (!listaConCase) return null
+    let d = 0
+    let taglio = head.length
+    for (let i = 0; i < head.length; i++) {
+      const t = head[i]
+      if (t.type === 'punct') {
+        if (t.text === '(') d++
+        else if (t.text === ')') d = Math.max(0, d - 1)
+        continue
+      }
+      if (
+        d === 0 &&
+        t.type === 'word' &&
+        ['FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING', 'OPTION', 'UNION'].includes(t.text.toUpperCase())
+      ) {
+        taglio = i
+        break
+      }
+    }
+    const righe = stackSelectList(head.slice(0, taglio), up, basePad, profile ?? ({} as FormatProfile), unoPerRiga)
+    const coda = [...head.slice(taglio), ...segment.slice(head.length)]
+    if (coda.length > 0) righe.push(...rowsNoDashEat(coda, up).map(r => `${basePad}${cleanInline(r)}`))
+    return righe
+  }
 
   if (varStart > 0) {
     const items = assignItems
@@ -1716,18 +1786,43 @@ function stackSelectList(
   const out: string[] = []
   let depth = 0
   let cur: string[] = []
+  /** Stessi token di `cur`: servono per espandere un CASE dentro l'elemento. */
+  let curTokens: Token[] = []
   /** True dopo un a-capo della lista: la virgola si attacca al campo successivo (",campo"). */
   let commaPending = false
+  /** True se la virgola in testa all'elemento corrente è stata AGGIUNTA da noi (non era nel testo). */
+  let commaAggiunta = false
   /** False per le righe di clausola (INTO): restano allineate alla SELECT, non rientrano. */
   let indentLine = true
   const push = () => {
     if (cur.length === 0) return
-    const testo = cleanInline(cur.join(' '))
-    if (!testo) return
     // la prima riga resta allineata alla clausola, le successive rientrano di `indent`
     const rientro = out.length === 0 || !indentLine ? '' : ' '.repeat(indent)
+    // CASE dentro l'elemento: si espande (CASE / WHEN / THEN / ELSE / END) invece di lasciarlo
+    // tutto su una riga — segnalazione utente: "c'è un case when in una select che non è indentata"
+    if (curTokens.some(t => t.type === 'word' && t.text.toUpperCase() === 'CASE')) {
+      const unit = profile.tabSize || 2
+      // la virgola in testa aggiunta da noi sta solo in `cur`, non nei token
+      let virgola = commaAggiunta
+      for (const riga of splitCaseLines(curTokens, up)) {
+        const testo = cleanInline(riga.text)
+        if (!testo) continue
+        const extra = riga.delta > 1 ? ' '.repeat((riga.delta - 1) * unit) : ''
+        out.push(`${basePad}${rientro}${virgola ? ',' : ''}${extra}${testo}`)
+        virgola = false
+      }
+      cur = []
+      curTokens = []
+      commaAggiunta = false
+      indentLine = true
+      return
+    }
+    const testo = cleanInline(cur.join(' '))
+    if (!testo) return
     out.push(`${basePad}${rientro}${testo}`)
     cur = []
+    curTokens = []
+    commaAggiunta = false
     indentLine = true
   }
   for (const t of head) {
@@ -1742,6 +1837,7 @@ function stackSelectList(
       if (cur.length === 0 && out.length > 0) out[out.length - 1] += ` ${testo}`
       else {
         cur.push(testo)
+        curTokens.push(t)
         push()
       }
       continue
@@ -1757,7 +1853,9 @@ function stackSelectList(
     ) {
       push()
       cur = [up(t)]
+      curTokens = [t]
       commaPending = false
+      commaAggiunta = false
       indentLine = false
       continue
     }
@@ -1767,6 +1865,8 @@ function stackSelectList(
       continue
     }
     cur.push((commaPending ? ',' : '') + up(t))
+    if (commaPending) commaAggiunta = true
+    curTokens.push(t)
     commaPending = false
   }
   push()

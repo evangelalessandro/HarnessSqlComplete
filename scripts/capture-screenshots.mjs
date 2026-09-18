@@ -822,6 +822,46 @@ async function verifyFormat(page) {
   check('funzione: la clausola RETURNS resta (non viene cancellata)', righeFn.includes('RETURNS INT'))
   check('funzione: il RETURN del corpo resta', righeFn.some(r => r === 'RETURN @baia'))
 
+  // END/ELSE allo stesso livello: l'ELSE non deve stare 2 spazi avanti al suo END
+  const g = await scriviEFormatta(
+    'CREATE PROCEDURE p\nAS\nBEGIN\n  IF @a = 0\n  BEGIN\n    IF @b = 0\n    BEGIN\n      PRINT \'x\'\n    END\n  END\n    ELSE\n  IF @a = 1\n  BEGIN\n    PRINT \'y\'\n  END\nEND',
+  )
+  const righeElse = g.righe.map(r => r.replace(/\s+$/, ''))
+  console.log('  END/ELSE:')
+  g.righe.forEach(r => console.log(`    |${r}`))
+  const rientroRiga = t => (t.match(/^\s*/) ?? [''])[0].length
+  const iElseLine = righeElse.findIndex(r => r.trim() === 'ELSE')
+  let iPrec = iElseLine - 1
+  while (iPrec >= 0 && righeElse[iPrec].trim() === '') iPrec--
+  const rigaEndPrima = righeElse[iPrec] ?? ''
+  console.log(`  riga prima dell ELSE: |${rigaEndPrima} · ELSE: |${righeElse[iElseLine] ?? ''}`)
+  check(
+    'ELSE allo stesso livello del suo END',
+    iElseLine > 0 && rigaEndPrima.trim() === 'END' && rientroRiga(rigaEndPrima) === rientroRiga(righeElse[iElseLine]),
+  )
+
+  // CASE dentro la select-list di un INSERT … SELECT: espanso e indentato, un valore per riga
+  const h = await scriviEFormatta(
+    "CREATE PROCEDURE p\nAS\nBEGIN\n  INSERT INTO dbo.DAT_ORDINI (ORD_ORDINE, ORD_ORDTYPE, ORD_DES)\n  SELECT rtrim (ORD_ORDER), CASE WHEN @t = 1 THEN 'A' ELSE 'B' END, isnull (rtrim (ORD_DESC), '') FROM dbo.DAT_ORDINI\nEND",
+  )
+  const righeCase = h.righe.map(r => r.trim()).filter(Boolean)
+  console.log('  CASE nella select-list:')
+  h.righe.forEach(r => console.log(`    |${r}`))
+  const iCasoLine = h.righe.findIndex(r => /^\s*,?\s*(?:\/\*[^*]*\*\/\s*)?CASE\s*$/.test(r))
+  const iWhenLine = h.righe.findIndex(r => r.trim() === 'WHEN @t = 1')
+  console.log(`  riga CASE: ${iCasoLine} · riga WHEN: ${iWhenLine}`)
+  check(
+    'il CASE della select-list è espanso su righe proprie e rientrato',
+    iCasoLine > -1 &&
+      iWhenLine === iCasoLine + 1 &&
+      rientroRiga(h.righe[iCasoLine]) > 0 &&
+      rientroRiga(h.righe[iWhenLine]) > rientroRiga(h.righe[iCasoLine]),
+  )
+  check(
+    'i valori dell INSERT … SELECT restano uno per riga',
+    righeCase.some(r => r.startsWith(',isnull (rtrim (ORD_DESC)')),
+  )
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
