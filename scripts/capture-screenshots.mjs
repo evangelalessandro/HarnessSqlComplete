@@ -45,6 +45,7 @@ const VERIFY_TABTREE = process.argv.includes('--verify-tabtree')
 const VERIFY_SEARCH = process.argv.includes('--verify-search')
 const VERIFY_INDENT = process.argv.includes('--verify-indent')
 const VERIFY_DROP = process.argv.includes('--verify-drop')
+const VERIFY_FRAGMENT = process.argv.includes('--verify-fragment')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -2068,6 +2069,70 @@ async function verifyDrop(page) {
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
 }
 
+/**
+ * VERIFICA (--verify-fragment): scrivendo "fefo" devono uscire le colonne che CONTENGONO quella
+ * parola ("RIG_REVFEFO_VNA"), sia con la FROM scritta sia senza (ripiego su tutte le colonne dello
+ * schema). Prima Monaco nascondeva i match a metà parola (matchOnWordStartOnly).
+ */
+async function verifyFragment(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1800)
+  }
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+  const minuscole = v => v.map(x => x.toLowerCase())
+
+  // 1) caso segnalato: la colonna con la parola in MEZZO al nome. Il cursore resta in fondo al
+  //    testo digitato, quindi si scrive la parola per ultima (dopo la FROM) o da sola.
+  await scrivi('SELECT * FROM DAT_ORDINI_RIGHE WHERE fefo')
+  const conFrom = await vociPopup()
+  console.log(`  "… WHERE fefo": ${JSON.stringify(conFrom.slice(0, 6))}`)
+  check(
+    'scrivendo "fefo" compare RIG_REVFEFO_VNA (parola in mezzo al nome)',
+    minuscole(conFrom).includes('rig_revfefo_vna'),
+  )
+
+  // 2) senza FROM: si cerca fra le colonne di TUTTO lo schema (ripiego)
+  await scrivi('SELECT fefo')
+  const senzaFrom = await vociPopup()
+  console.log(`  "SELECT fefo": ${JSON.stringify(senzaFrom.slice(0, 6))}`)
+  check('senza FROM cerca comunque fra le colonne dello schema', minuscole(senzaFrom).includes('rig_revfefo_vna'))
+
+  // 3) la voce del ripiego dice da quale tabella arriva
+  const dettaglio = await page.eval(`(() => {
+    const riga = [...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .find(r => /rig_revfefo_vna/i.test(r.textContent || ''));
+    return riga ? (riga.textContent || '').replace(/\\u00a0/g, ' ').trim() : '';
+  })()`)
+  console.log(`  voce completa: ${JSON.stringify(dettaglio)}`)
+  check('la colonna trovata dice di che tabella è', /colonna di dbo\.\w*ORDINI_RIGHE/i.test(dettaglio))
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
 async function verifyLabels(page) {
   await page.waitFor(`document.querySelector('input')`, 10000)
   await page.clickWhere(
@@ -2636,6 +2701,11 @@ async function main() {
 
     if (VERIFY_DROP) {
       await verifyDrop(page)
+      return
+    }
+
+    if (VERIFY_FRAGMENT) {
+      await verifyFragment(page)
       return
     }
 

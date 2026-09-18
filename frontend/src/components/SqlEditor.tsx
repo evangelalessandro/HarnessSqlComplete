@@ -741,7 +741,12 @@ export default function SqlEditor({
             folding: true,
             foldingHighlight: true,
             showFoldingControls: 'always',
-            suggest: { showWords: false },
+            suggest: {
+              showWords: false,
+              // si cerca anche DENTRO i nomi: scrivendo "fefo" deve uscire RIG_REVFEFO_VNA
+              // (il filtro predefinito accetta solo i match a inizio parola)
+              matchOnWordStartOnly: false,
+            },
             quickSuggestions: { other: 'on', comments: false, strings: false },
             wordBasedSuggestions: 'off',
             inlineSuggest: { enabled: true, showToolbar: 'onHover' },

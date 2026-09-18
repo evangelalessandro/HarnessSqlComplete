@@ -5,7 +5,7 @@
 import * as monaco from 'monaco-editor'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
 import { isTextOffsetInComment } from './helpers'
-import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from './helpers'
+import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, columnsByFragment, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from './helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
 import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, dropColumnSnippet, extractDeclaredVariables, extractRoutineParameters, systemVariablePrefixLen, variablePrefixLen, vincoliCollegati } from './tsqlSnippets'
 import { extractCteTables, extractDerivedTables, extractLocalTables } from './localTables'
@@ -912,6 +912,23 @@ export function provideSqlCompletions({
                     insertText: col.insertText,
                     range,
                     filterText: completionFilterText(col.name),
+                  })
+                }
+                // RIPIEGO (richiesta utente: "mi dovrebbe cercare almeno tra le colonne"): se
+                // non c'è (ancora) una tabella da cui prendere i campi — la FROM non è scritta —
+                // si cercano le colonne di TUTTO lo schema che contengono la parola digitata.
+                const proposti = new Set(rankedCols.map(r => r.col.name.toLowerCase()))
+                for (const c of columnsByFragment(st.summary, word.word, 25)) {
+                  if (proposti.has(c.name.toLowerCase())) continue
+                  push({
+                    label: c.name,
+                    detail: [columnTypeText(c.dataType, c.isNullable), `colonna di ${c.tableLabel}`]
+                      .filter(Boolean)
+                      .join(' · '),
+                    kind: monaco.languages.CompletionItemKind.Field,
+                    insertText: sqlIdent(c.name),
+                    range,
+                    filterText: completionFilterText(c.name),
                   })
                 }
                 // anche le funzioni (SUM/AVG/RANK/…) se matchano la parola digitata

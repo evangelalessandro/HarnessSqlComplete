@@ -2509,6 +2509,29 @@ export function buildSelectListSuggestions(
 }
 
 /**
+ * Colonne di TUTTO lo schema il cui nome CONTIENE il frammento digitato (non solo all'inizio):
+ * serve nella select-list quando non c'è ancora una tabella da cui prendere i campi (la FROM non
+ * è stata scritta): così scrivendo "fefo" esce RIG_REVFEFO_VNA anche senza sapere di che tabella è.
+ */
+export function columnsByFragment(
+  summary: DatabaseSummary,
+  frammento: string,
+  max = 25,
+): { name: string; tableLabel: string; dataType: string; isNullable: boolean }[] {
+  const f = frammento.trim().toLowerCase()
+  if (f.length < 2) return []
+  const out: { name: string; tableLabel: string; dataType: string; isNullable: boolean }[] = []
+  for (const t of summary.tables) {
+    for (const c of t.columns ?? []) {
+      if (!c.name.toLowerCase().includes(f)) continue
+      out.push({ name: c.name, tableLabel: `${t.schema}.${t.name}`, dataType: c.dataType, isNullable: c.isNullable })
+      if (out.length >= max) return out
+    }
+  }
+  return out
+}
+
+/**
  * Colonne della select-list filtrate per affinità con la parola digitata e ordinate
  * per punteggio. Il boost FK (+150) si applica SOLO alle colonne che matchano già:
  * digitando "uso" non devono comparire le chiavi estranee che non contengono "uso".
