@@ -199,16 +199,17 @@ IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'${t}') AND na
 BEGIN
   DECLARE @drop NVARCHAR(MAX) = N'';
 
-  /* DEFAULT e CHECK legati alla singola colonna */
-  SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(o.name) + N';' + CHAR(10)
-  FROM sys.objects o
-    INNER JOIN sys.columns c ON c.object_id = o.parent_object_id AND c.column_id = o.parent_column_id
-  WHERE o.parent_object_id = OBJECT_ID(N'${t}') AND o.type IN ('D', 'C') AND c.name = N'${col}';
+  /* DEFAULT legati alla singola colonna (sys.default_constraints: ha parent_column_id) */
+  SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(dc.name) + N';' + CHAR(10)
+  FROM sys.default_constraints dc
+    INNER JOIN sys.columns c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id
+  WHERE dc.parent_object_id = OBJECT_ID(N'${t}') AND c.name = N'${col}';
 
-  /* CHECK di tabella che citano la colonna */
+  /* CHECK che citano la colonna: a livello colonna O di tabella (il filtro e' sulla
+     definizione: sys.objects NON ha parent_column_id, si usano le viste dei vincoli) */
   SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(cc.name) + N';' + CHAR(10)
   FROM sys.check_constraints cc
-  WHERE cc.parent_object_id = OBJECT_ID(N'${t}') AND cc.parent_column_id = 0 AND cc.definition LIKE N'%${col}%';
+  WHERE cc.parent_object_id = OBJECT_ID(N'${t}') AND cc.definition LIKE N'%${col}%';
 
   /* chiavi esterne USCENTI che usano la colonna */
   SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(fk.name) + N';' + CHAR(10)

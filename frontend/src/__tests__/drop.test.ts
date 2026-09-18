@@ -110,11 +110,21 @@ describe('SNIPPET "DROP COLUMN sicuro" (vincoli collegati + controllo esistenza)
   })
 
   it('toglie i vincoli collegati prima della colonna', () => {
-    expect(snippet).toContain('sys.default_constraints'.replace('sys.default_constraints', 'sys.objects')) // DEFAULT/CHECK
+    // i DEFAULT stanno in sys.default_constraints (sys.objects NON ha parent_column_id:
+    // su SQL Server la join sbagliata dava "Msg 207: nome di colonna non valido")
+    expect(snippet).toContain('sys.default_constraints')
+    expect(snippet).toContain('c.column_id = dc.parent_column_id')
+    expect(snippet).not.toContain('o.parent_column_id')
     expect(snippet).toContain('sys.check_constraints')
     expect(snippet).toContain('sys.foreign_key_columns')
     expect(snippet).toContain('sys.key_constraints')
     expect(snippet).toContain('ALTER TABLE [dbo].[DAT_UDC] DROP COLUMN')
+  })
+
+  it('i CHECK si riconoscono dalla definizione (livello colonna o tabella)', () => {
+    expect(snippet).toContain('cc.definition LIKE')
+    // il filtro "parent_column_id = 0" avrebbe escluso i CHECK di livello colonna
+    expect(snippet).not.toContain('cc.parent_column_id = 0')
   })
 
   it('segnala le chiavi esterne di ALTRE tabelle che puntano alla colonna', () => {

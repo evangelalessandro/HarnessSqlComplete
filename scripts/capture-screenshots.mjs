@@ -1914,6 +1914,33 @@ async function verifyDrop(page) {
     check('segnala le chiavi esterne di altre tabelle', /altre tabelle puntano a questa colonna/.test(fine))
   }
 
+  // 6) le query di CATALOGO dello snippet girano davvero sul database collegato: si eseguono
+  //    (solo SELECT) e si controlla che non arrivino errori di colonna non valida — la vecchia
+  //    join su sys.objects.parent_column_id dava "Msg 207: nome di colonna non valido"
+  const queryCatalogo = [
+    "SELECT dc.name FROM sys.default_constraints dc INNER JOIN sys.columns c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id WHERE dc.parent_object_id = OBJECT_ID(N'[dbo].[DAT_UDC]') AND c.name = N'UDC_UDC'",
+    "SELECT cc.name FROM sys.check_constraints cc WHERE cc.parent_object_id = OBJECT_ID(N'[dbo].[DAT_UDC]') AND cc.definition LIKE N'%UDC_UDC%'",
+    "SELECT kc.name FROM sys.key_constraints kc INNER JOIN sys.index_columns ic ON ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id WHERE kc.parent_object_id = OBJECT_ID(N'[dbo].[DAT_UDC]') AND ic.is_included_column = 0 AND COL_NAME(ic.object_id, ic.column_id) = N'UDC_UDC' GROUP BY kc.name HAVING COUNT(*) = 1",
+  ].join(';\n')
+  await scrivi(queryCatalogo)
+  await sleep(400)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(4500)
+  const pagina = await page.eval(`document.body.textContent || ''`)
+  const erroreColonna = /Msg 207|nome di colonna .* non .* valido|Invalid column name/i.test(pagina)
+  console.log(`  query di catalogo: errore di colonna = ${erroreColonna}`)
+  check('le query di catalogo dello snippet girano sul database', !erroreColonna)
+
+  // e la query delle PK/UNIQUE, da sola, restituisce davvero il vincolo.
+  // Prima un marcatore: serve a sapere che l'esecuzione e la lettura della griglia funzionano.
+  await scrivi("SELECT 'PROVA_EXEC_123' AS marcatore")
+  await sleep(400)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(3500)
+  const paginaMarker = await page.eval(`document.body.textContent || ''`)
+  console.log(`  marcatore eseguito e visibile: ${paginaMarker.includes('PROVA_EXEC_123')}`)
+  check('l esecuzione delle query e la lettura dei risultati funzionano', paginaMarker.includes('PROVA_EXEC_123'))
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
