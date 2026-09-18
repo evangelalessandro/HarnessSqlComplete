@@ -9,7 +9,7 @@ import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
-import { buildTabClosePlan, countClosableTabs, insertTabAt, searchTabIndex } from './tabOps'
+import { buildTabClosePlan, countClosableTabs, graphTabIndex, insertTabAt, searchTabIndex } from './tabOps'
 import {
   MAX_TAB_DEPTH,
   childParentFor,
@@ -36,9 +36,8 @@ import {
 import { QueryStatsBadge, QueryStatsModal } from './components/QueryStatsPanel'
 import { hasErrorMessage, messageRevealLine, errorObjectsFor, routineStartLine } from './sqlMessages'
 import type { ErrorObjectRef } from './sqlMessages'
-import CallGraphModal from './components/CallGraphModal'
+import CallGraphPanel from './components/CallGraphPanel'
 import SearchPanel from './components/SearchPanel'
-import type { CallGraphTarget } from './components/CallGraphModal'
 import LoginScreen from './components/LoginScreen'
 import Sidebar from './components/Sidebar'
 import SqlEditor, { DEFAULT_SQL } from './components/SqlEditor'
@@ -58,9 +57,8 @@ export default function App() {
   const [summary, setSummary] = useState<DatabaseSummary | null>(null)
   const [loadingSummary, setLoadingSummary] = useState(false)
   // DIAGRAMMA CHIAMATE: legami fra routine (chi chiama chi) di tutto il database,
-  // caricati alla prima apertura del diagramma e riusati; routine analizzata + stato.
+  // caricati alla prima apertura del diagramma e riusati; lo stato "quale routine" sta nella tab.
   const [callGraph, setCallGraph] = useState<RoutineCallGraph | null>(null)
-  const [callGraphTarget, setCallGraphTarget] = useState<CallGraphTarget | null>(null)
   const [callGraphLoading, setCallGraphLoading] = useState(false)
   const [callGraphError, setCallGraphError] = useState<string | null>(null)
   // Risultati LEGATI alla singola tab dell'editor (non condivisi tra le tab)
@@ -1016,12 +1014,38 @@ export default function App() {
     [connection, callGraph],
   )
 
+  /**
+   * DIAGRAMMA CHIAMATE: si apre in una TAB (come la ricerca), una per routine: riaprendo lo
+   * stesso diagramma si torna sulla tab esistente senza duplicarla.
+   */
   const openCallGraph = useCallback(
     (schema: string, name: string, kind: 'procedure' | 'function') => {
-      setCallGraphTarget({ schema, name, kind })
       void loadCallGraph()
+      const routine = { schema, name, kind }
+      const idx = graphTabIndex(editorTabs, routine)
+      if (idx >= 0) {
+        switchEditorTab(editorTabs[idx].id)
+        return
+      }
+      saveActiveEditor()
+      if (editorTabs.length === 0) tabCounter.current = 1
+      const titolo = schema === 'dbo' ? name : `${schema}.${name}`
+      const tab: EditorTab = {
+        id: `tab-${tabCounter.current++}`,
+        title: `Diagramma: ${titolo}`,
+        icon: '📈',
+        sql: '',
+        pinned: false,
+        database: connection?.database ?? '',
+        kind: 'graph',
+        routine,
+      }
+      // il diagramma nasce come FIGLIA della tab attiva (è aperto da un link/tasto destro)
+      const padre = childParentFor(editorTabs, activeEditorTab)
+      setEditorTabs(prev => (padre ? insertTabAsChild(prev, tab, padre) : insertTabAt(prev, tab, activeEditorTab, newTabPositionRef.current)))
+      setActiveEditorTab(tab.id)
     },
-    [loadCallGraph],
+    [loadCallGraph, editorTabs, activeEditorTab, connection, saveActiveEditor, switchEditorTab],
   )
 
   /**
@@ -1551,6 +1575,25 @@ export default function App() {
                 />
               </div>
             )}
+
+            {/* DIAGRAMMI delle chiamate: una tab per routine, tutte MONTATE (nascoste se non
+                attive) così non si perde il centro/direzione passando da una tab all'altra */}
+            {editorTabs
+              .filter(t => t.kind === 'graph' && t.routine)
+              .map(t => (
+                <div key={t.id} className={`h-full min-h-0 ${t.id === activeEditorTab ? '' : 'hidden'}`}>
+                  <CallGraphPanel
+                    target={t.routine!}
+                    graph={callGraph}
+                    loading={callGraphLoading}
+                    error={callGraphError}
+                    onReload={() => void loadCallGraph(true)}
+                    onOpenObject={(kind, schema, name) =>
+                      void handleOpenObject(kind, schema, name, 'alter', undefined, true)
+                    }
+                  />
+                </div>
+              ))}
           </div>
 
           {resultsVisible && (
@@ -1627,19 +1670,6 @@ export default function App() {
       </div>
       {helpOpen && <HelpPage onClose={() => setHelpOpen(false)} />}
       {statsOpen && activeStats && <QueryStatsModal stats={activeStats} onClose={() => setStatsOpen(false)} />}
-
-      {/* Diagramma delle chiamate: chi chiama una routine, fino al chiamante più lontano */}
-      {callGraphTarget && (
-        <CallGraphModal
-          target={callGraphTarget}
-          graph={callGraph}
-          loading={callGraphLoading}
-          error={callGraphError}
-          onClose={() => setCallGraphTarget(null)}
-          onReload={() => void loadCallGraph(true)}
-          onOpenObject={(kind, schema, name) => void handleOpenObject(kind, schema, name, 'alter', undefined, true)}
-        />
-      )}
 
       {/* Popover: titolo e descrizione libera della tab */}
       {descEditingTab && (

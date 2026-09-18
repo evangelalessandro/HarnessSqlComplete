@@ -334,8 +334,11 @@ export interface EditorTab {
    */
   parentId?: string
   /**
-   * Tipo di tab: `query` (editor SQL, il caso normale) oppure `search` (il pannello di
-   * RICERCA GENERALE nel database, che vive in una tab come gli altri strumenti).
+   * Tipo di tab: `query` (editor SQL, il caso normale), `search` (il pannello di RICERCA
+   * GENERALE nel database) oppure `graph` (il DIAGRAMMA delle chiamate di una routine).
+   * Ricerca e diagrammi vivono in tab come gli altri strumenti, non in finestre.
    */
-  kind?: 'query' | 'search'
+  kind?: 'query' | 'search' | 'graph'
+  /** Routine mostrata nella tab `graph`. */
+  routine?: { schema: string; name: string; kind: 'procedure' | 'function' }
 }

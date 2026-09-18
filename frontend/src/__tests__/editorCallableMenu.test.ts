@@ -46,13 +46,14 @@ describe('menu contestuale editor: voci sulle routine', () => {
     expect(source).toContain('isCallableAt(')
   })
 
-  it('il collegamento è completo: editor → App → finestra del diagramma', () => {
+  it('il collegamento è completo: editor → App → TAB del diagramma', () => {
     // l'editor riceve il gestore e lo chiama con la routine riconosciuta
     expect(source).toContain('onShowCallGraph?.(ref.kind, ref.schema, ref.name)')
     // App lo collega al caricamento del grafo (adattando l'ordine degli argomenti)
     expect(appSource).toContain('onShowCallGraph={(kind, schema, name) => openCallGraph(schema, name, kind)}')
-    // e il diagramma viene mostrato solo quando c'è una routine da analizzare
-    expect(appSource).toMatch(/\{callGraphTarget && \(\s*<CallGraphModal/)
-    expect(appSource).toContain('onClose={() => setCallGraphTarget(null)}')
+    // il diagramma vive in una TAB (una per routine), non in una finestra modale
+    expect(appSource).toContain("kind: 'graph'")
+    expect(appSource).toMatch(/<CallGraphPanel/)
+    expect(appSource).not.toContain('CallGraphModal')
   })
 })

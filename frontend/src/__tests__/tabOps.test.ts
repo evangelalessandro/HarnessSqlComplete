@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildTabClosePlan,
   countClosableTabs,
+  graphTabIndex,
   insertTabAfterActive,
   insertTabAt,
   newTabIndex,
@@ -32,6 +33,29 @@ describe('tab di RICERCA (la ricerca si apre in una tab, non in una finestra)', 
     // niente più finestra modale della ricerca
     expect(appSource).not.toContain('SearchModal')
     expect(appSource).not.toContain('setSearchOpen')
+  })
+
+  it('graphTabIndex trova la tab del diagramma della STESSA routine', () => {
+    const diagramma = (schema: string, name: string, kind: 'procedure' | 'function'): EditorTab => ({
+      ...tab(`g-${name}`),
+      kind: 'graph',
+      routine: { schema, name, kind },
+    })
+    const tabs = [tab('A'), diagramma('dbo', 'ws_Prova', 'procedure'), diagramma('dbo', 'fn_Prova', 'function')]
+    expect(graphTabIndex(tabs, { schema: 'dbo', name: 'ws_Prova', kind: 'procedure' })).toBe(1)
+    // maiuscole/minuscole non contano
+    expect(graphTabIndex(tabs, { schema: 'DBO', name: 'WS_PROVA', kind: 'procedure' })).toBe(1)
+    // funzione diversa e schema diverso: tab distinte
+    expect(graphTabIndex(tabs, { schema: 'dbo', name: 'ws_Prova', kind: 'function' })).toBe(-1)
+    expect(graphTabIndex(tabs, { schema: 'AD', name: 'ws_Prova', kind: 'procedure' })).toBe(-1)
+    expect(graphTabIndex([tab('A')], { schema: 'dbo', name: 'ws_Prova', kind: 'procedure' })).toBe(-1)
+  })
+
+  it('App: anche il diagramma vive in una tab (non più una finestra)', () => {
+    expect(appSource).toContain('<CallGraphPanel')
+    expect(appSource).toContain("kind: 'graph'")
+    expect(appSource).not.toContain('CallGraphModal')
+    expect(appSource).not.toContain('callGraphTarget')
   })
 })
 

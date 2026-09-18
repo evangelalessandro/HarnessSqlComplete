@@ -110,3 +110,21 @@ export function insertTabAfterActive(tabs: EditorTab[], tab: EditorTab, activeId
 export function searchTabIndex(tabs: EditorTab[]): number {
   return tabs.findIndex(t => t.kind === 'search')
 }
+
+/**
+ * Indice della tab con il DIAGRAMMA della stessa routine (-1 se non c'è): riaprendo il diagramma
+ * si torna su quella tab invece di duplicarla.
+ */
+export function graphTabIndex(
+  tabs: EditorTab[],
+  routine: { schema: string; name: string; kind: 'procedure' | 'function' },
+): number {
+  return tabs.findIndex(
+    t =>
+      t.kind === 'graph' &&
+      !!t.routine &&
+      t.routine.name.toLowerCase() === routine.name.toLowerCase() &&
+      t.routine.schema.toLowerCase() === routine.schema.toLowerCase() &&
+      t.routine.kind === routine.kind,
+  )
+}

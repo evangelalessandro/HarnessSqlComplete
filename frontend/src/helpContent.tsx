@@ -107,7 +107,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Diagramma chiamate',
         detail:
-          'Tasto destro su una stored procedure o una funzione → "Diagramma chiamate": mostra i legami con le altre routine, salendo fino al chiamante più lontano (o scendendo verso quello che chiama). I cicli e le routine ricorsive sono segnalati con ↻ invece di bloccare il disegno. Clic su una routine per i dettagli, doppio clic per ricentrare il diagramma, e da lì si apre la definizione in una nuova tab.',
+          'Tasto destro su una stored procedure o una funzione → "Diagramma chiamate": il diagramma si apre in una TAB (icona 📈, una per routine: riaprendo lo stesso diagramma si torna su quella, e resta com\u2019è anche passando da un\u2019altra tab). Mostra i legami con le altre routine, salendo fino al chiamante più lontano (o scendendo verso quello che chiama). I cicli e le routine ricorsive sono segnalati con ↻ invece di bloccare il disegno. Clic su una routine per i dettagli, doppio clic per ricentrare il diagramma, e da lì si apre la definizione in una nuova tab.',
       },
       {
         title: 'Cerca',

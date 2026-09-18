@@ -29,7 +29,8 @@ interface Props {
   graph: RoutineCallGraph | null
   loading: boolean
   error: string | null
-  onClose: () => void
+  /** Chiude il diagramma (la tab si chiude con la sua "×"): se assente non c'è il pulsante. */
+  onClose?: () => void
   /** apre la routine nel diagramma in una nuova tab (CREATE OR ALTER) */
   onOpenObject?: (kind: 'procedure' | 'function' | 'view' | 'trigger', schema: string, name: string) => void
   /** riprova a caricare il grafo (es. dopo una sessione scaduta) */
@@ -53,7 +54,7 @@ function shortName(name: string, max = 24): string {
   return name.length <= max ? name : `${name.slice(0, max - 1)}…`
 }
 
-export default function CallGraphModal({
+export default function CallGraphPanel({
   target,
   graph,
   loading,
@@ -132,11 +133,11 @@ export default function CallGraphModal({
       : null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6" onClick={onClose}>
-      <div
-        className="flex h-[88vh] w-[min(1500px,97vw)] flex-col overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl"
-        onClick={e => e.stopPropagation()}
-      >
+    <div
+      data-diagramma="pannello"
+      className="flex h-full min-h-0 flex-col overflow-hidden border border-zinc-800 bg-zinc-900"
+    >
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {/* Intestazione */}
         <div className="flex flex-wrap items-center gap-2 border-b border-zinc-700 bg-zinc-800/80 px-4 py-2.5">
           <Share2 className="h-4 w-4 text-sky-400" />
@@ -225,13 +226,15 @@ export default function CallGraphModal({
                 <RefreshCw className="h-3.5 w-3.5" />
               </button>
             )}
-            <button
-              onClick={onClose}
-              className="rounded p-1 text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-100"
-              title="Chiudi"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="rounded p-1 text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-100"
+                title="Chiudi"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </div>
 

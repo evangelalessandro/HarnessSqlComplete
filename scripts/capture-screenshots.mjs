@@ -1401,8 +1401,8 @@ async function verifyTabTree(page) {
       figlia: !!t.querySelector('svg.lucide-corner-down-right'),
     }))`)
 
-  /** Apre una stored procedure dal tasto destro sul primo risultato di ricerca ("Modifica"). */
-  const apriDalTastoDestro = async () => {
+  /** Apre una stored procedure dal tasto destro sull'albero e conferma la voce indicata. */
+  const apriDalTastoDestro = async (voce = 'Modifica') => {
     const punto = await page.eval(`(() => {
       const riga = [...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('Trascina nel editor'));
       if (!riga) return null;
@@ -1414,7 +1414,7 @@ async function verifyTabTree(page) {
     await page.clickPoint(punto.x, punto.y, 'right')
     await sleep(700)
     const premuto = await page.clickWhere(
-      `[...document.querySelectorAll('button')].find(b => ((b.textContent || '').trim().startsWith('Modifica')) && b.offsetParent)`,
+      `[...document.querySelectorAll('button')].find(b => ((b.textContent || '').trim().startsWith(${JSON.stringify(voce)})) && b.offsetParent)`,
     )
     await sleep(2000)
     return premuto
@@ -1468,6 +1468,34 @@ async function verifyTabTree(page) {
   const fine = await tabs()
   console.log(`  tab rimaste: ${JSON.stringify(fine.map(t => t.titolo))}`)
   check('"Chiudi anche le figlie" chiude tutto il ramo', fine.length === 1)
+
+  // 6) DIAGRAMMA CHIAMATE: si apre in una TAB (come la ricerca), non in una finestra — e
+  //    riaprendo lo stesso diagramma NON si duplica (una tab per routine)
+  const tabsPrimaGrafo = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  await apriDalTastoDestro('Diagramma chiamate')
+  await sleep(1800)
+  const statoGrafo = await page.eval(`(() => {
+    const p = document.querySelector('[data-diagramma="pannello"]');
+    const tab = [...document.querySelectorAll('.sql-tab')].find(t => (t.textContent || '').includes('Diagramma'));
+    return {
+      tab: tab ? (tab.textContent || '').trim() : null,
+      inModale: !!(p && p.closest('.fixed')),
+      nodi: p ? p.querySelectorAll('svg *').length : 0,
+      titolo: p ? ((p.querySelector('h2') || {}).textContent || '').trim() : '',
+    };
+  })()`)
+  const tabsDopoGrafo = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  console.log(`  diagramma: ${JSON.stringify(statoGrafo)} (tab: ${tabsPrimaGrafo} → ${tabsDopoGrafo})`)
+  check(
+    'il diagramma si apre in una TAB e non in una finestra',
+    tabsDopoGrafo === tabsPrimaGrafo + 1 && !!statoGrafo.tab && statoGrafo.inModale === false,
+  )
+  check('il diagramma mostra i legami della routine', statoGrafo.nodi > 0 && /Diagramma chiamate/.test(statoGrafo.titolo))
+  await apriDalTastoDestro('Diagramma chiamate')
+  await sleep(1500)
+  const tabsDopoGrafo2 = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  console.log(`  tab dopo la riapertura dello stesso diagramma: ${tabsDopoGrafo2}`)
+  check('lo stesso diagramma non viene duplicato', tabsDopoGrafo2 === tabsDopoGrafo)
 
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
