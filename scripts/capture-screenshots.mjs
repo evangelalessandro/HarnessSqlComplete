@@ -44,6 +44,7 @@ const VERIFY_SCROLLBARS = process.argv.includes('--verify-scrollbars')
 const VERIFY_TABTREE = process.argv.includes('--verify-tabtree')
 const VERIFY_SEARCH = process.argv.includes('--verify-search')
 const VERIFY_INDENT = process.argv.includes('--verify-indent')
+const VERIFY_DROP = process.argv.includes('--verify-drop')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -1806,6 +1807,64 @@ async function verifyIndent(page) {
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
 }
 
+/**
+ * VERIFICA (--verify-drop): dopo "ALTER TABLE t DROP" si propongono COLUMN/CONSTRAINT, dopo
+ * "DROP COLUMN" le colonne della tabella e dopo "DROP CONSTRAINT" i suoi vincoli.
+ */
+async function verifyDrop(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1800)
+  }
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+  const minuscole = v => v.map(x => x.toLowerCase())
+
+  // 1) "DROP C" → COLUMN e CONSTRAINT (parola chiave a metà)
+  await scrivi('ALTER TABLE dbo.DAT_UDC DROP C')
+  const vociChiavi = minuscole(await vociPopup())
+  console.log(`  dopo "DROP C": ${JSON.stringify(vociChiavi.slice(0, 6))}`)
+  check('dopo "DROP " propone COLUMN', vociChiavi.includes('column'))
+  check('dopo "DROP " propone CONSTRAINT', vociChiavi.includes('constraint'))
+
+  // 2) "DROP COLUMN U" → le colonne della tabella
+  await scrivi('ALTER TABLE dbo.DAT_UDC DROP COLUMN U')
+  const vociColonne = minuscole(await vociPopup())
+  console.log(`  dopo "DROP COLUMN U": ${JSON.stringify(vociColonne.slice(0, 6))}`)
+  check('dopo "DROP COLUMN " propone le colonne della tabella', vociColonne.some(v => v.startsWith('udc_')))
+  check('dopo "DROP COLUMN " NON ripropone le parole chiave', !vociColonne.includes('column'))
+
+  // 3) "DROP CONSTRAINT P" → i vincoli della tabella (la PK di DAT_UDC è PK_DAT_UDC)
+  await scrivi('ALTER TABLE dbo.DAT_UDC DROP CONSTRAINT P')
+  const vociVincoli = minuscole(await vociPopup())
+  console.log(`  dopo "DROP CONSTRAINT P": ${JSON.stringify(vociVincoli.slice(0, 6))}`)
+  check('dopo "DROP CONSTRAINT " propone i vincoli della tabella', vociVincoli.some(v => v.startsWith('pk_')))
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
 async function verifyLabels(page) {
   await page.waitFor(`document.querySelector('input')`, 10000)
   await page.clickWhere(
@@ -2369,6 +2428,11 @@ async function main() {
 
     if (VERIFY_INDENT) {
       await verifyIndent(page)
+      return
+    }
+
+    if (VERIFY_DROP) {
+      await verifyDrop(page)
       return
     }
 

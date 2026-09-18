@@ -150,6 +150,46 @@ export function detectAlterTableContext(textBefore: string): boolean {
   return /(?:^|;|\bGO\b|\n)[ \t]*ALTER\s+TABLE\s+(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?\s*$/i.test(textBefore)
 }
 
+/** Nome di tabella qualificato: "T", "dbo.T", "[dbo].[T]". */
+const NOME_TABELLA = '(?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*(?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*))?'
+/** Nome (anche parziale) già digitato dopo COLUMN / CONSTRAINT. */
+const NOME_PARZIALE = '(?:\\[[^\\]]*|[A-Za-z_][A-Za-z0-9_]*)'
+
+export type AlterTableDropContext =
+  /** Subito dopo "… DROP " (o con la parola chiave a metà): si propongono COLUMN e CONSTRAINT. */
+  | { kind: 'keywords' }
+  /** Dopo "… DROP COLUMN " (o a metà del nome): si propongono le colonne della tabella. */
+  | { kind: 'column'; schema: string; table: string }
+  /** Dopo "… DROP CONSTRAINT ": si propongono i vincoli della tabella (CHECK, FK, PK, UNIQUE…). */
+  | { kind: 'constraint'; schema: string; table: string }
+
+/** Divide "dbo.T" / "[dbo].[T]" in schema e tabella (schema '' se non indicato). */
+export function splitQualifiedName(nome: string): { schema: string; table: string } {
+  const parti = nome.split('.').map(p => p.trim().replace(/^\[|\]$/g, ''))
+  return parti.length > 1 ? { schema: parti[0], table: parti[1] } : { schema: '', table: parti[0] }
+}
+
+/**
+ * Contesto di un "ALTER TABLE <tabella> DROP …":
+ * - "DROP " (anche "DROP COL") → COLUMN / CONSTRAINT;
+ * - "DROP COLUMN [nome…]" → colonne della tabella;
+ * - "DROP CONSTRAINT [nome…]" → vincoli della tabella.
+ */
+export function detectAlterTableDropContext(textBefore: string): AlterTableDropContext | null {
+  const col = new RegExp(`ALTER\\s+TABLE\\s+(${NOME_TABELLA})\\s+DROP\\s+COLUMN(?:\\s+${NOME_PARZIALE})?\\s*$`, 'i').exec(textBefore)
+  if (col) return { kind: 'column', ...splitQualifiedName(col[1]) }
+  const con = new RegExp(`ALTER\\s+TABLE\\s+(${NOME_TABELLA})\\s+DROP\\s+CONSTRAINT(?:\\s+${NOME_PARZIALE})?\\s*$`, 'i').exec(textBefore)
+  if (con) return { kind: 'constraint', ...splitQualifiedName(con[1]) }
+  if (new RegExp(`ALTER\\s+TABLE\\s+(${NOME_TABELLA})\\s+DROP\\s*$`, 'i').test(textBefore)) return { kind: 'keywords' }
+  // parola chiave a metà ("DROP COL", "DROP CONS"): solo COLUMN/CONSTRAINT
+  const parz = new RegExp(`ALTER\\s+TABLE\\s+(${NOME_TABELLA})\\s+DROP\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*$`, 'i').exec(textBefore)
+  if (parz) {
+    const u = parz[2].toUpperCase()
+    if ('COLUMN'.startsWith(u) || 'CONSTRAINT'.startsWith(u)) return { kind: 'keywords' }
+  }
+  return null
+}
+
 export interface SystemVariableSuggestion {
   name: string
   detail: string

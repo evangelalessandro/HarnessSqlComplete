@@ -7,7 +7,7 @@ import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
 import { isTextOffsetInComment } from './helpers'
 import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from './helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
-import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, extractDeclaredVariables, extractRoutineParameters, systemVariablePrefixLen, variablePrefixLen } from './tsqlSnippets'
+import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, extractDeclaredVariables, extractRoutineParameters, systemVariablePrefixLen, variablePrefixLen } from './tsqlSnippets'
 import { extractCteTables, extractDerivedTables, extractLocalTables } from './localTables'
 import { extractLabels } from './labels'
 import { ORDER_DIRECTIONS } from './intellisenseContext'
@@ -252,6 +252,95 @@ export function provideSqlCompletions({
                 }
               }
               return { suggestions }
+            }
+
+            // ALTER TABLE <tabella> DROP [COLUMN|CONSTRAINT] → colonne e vincoli della tabella
+            // (come SSMS: dopo DROP COLUMN si propongono i campi, dopo DROP CONSTRAINT i vincoli)
+            const dropCtx = detectAlterTableDropContext(textBefore)
+            if (dropCtx) {
+              if (dropCtx.kind === 'keywords') {
+                push({
+                  label: 'COLUMN',
+                  detail: 'Rimuove una colonna della tabella',
+                  kind: monaco.languages.CompletionItemKind.Keyword,
+                  insertText: 'COLUMN ',
+                  range,
+                  filterText: 'COLUMN',
+                })
+                push({
+                  label: 'CONSTRAINT',
+                  detail: 'Rimuove un vincolo (CHECK, FOREIGN KEY, PRIMARY KEY, UNIQUE…)',
+                  kind: monaco.languages.CompletionItemKind.Keyword,
+                  insertText: 'CONSTRAINT ',
+                  range,
+                  filterText: 'CONSTRAINT',
+                })
+                return { suggestions }
+              }
+              const tabella = st.summary?.tables.find(
+                t =>
+                  t.name.toLowerCase() === dropCtx.table.toLowerCase() &&
+                  (!dropCtx.schema || t.schema.toLowerCase() === dropCtx.schema.toLowerCase()),
+              )
+              if (dropCtx.kind === 'column') {
+                for (const c of tabella?.columns ?? []) {
+                  // se la colonna fa parte della chiave primaria va tolta prima: lo diciamo
+                  const inPk = (tabella?.indexes ?? []).some(
+                    ix => ix.isPrimaryKey && (ix.columns ?? []).some(x => x.toLowerCase() === c.name.toLowerCase()),
+                  )
+                  push({
+                    label: c.name,
+                    detail: [columnTypeText(c.dataType, c.isNullable), inPk ? 'chiave primaria: va tolta prima' : null]
+                      .filter(Boolean)
+                      .join(' · '),
+                    documentation: tabella ? columnInfoMarkdown(tabella, c) : undefined,
+                    kind: monaco.languages.CompletionItemKind.Field,
+                    insertText: sqlIdent(c.name),
+                    range,
+                    filterText: c.name,
+                  })
+                }
+                if (suggestions.length > 0) return { suggestions }
+              } else {
+                for (const cc of st.summary?.checkConstraints ?? []) {
+                  if (cc.tableName.toLowerCase() !== dropCtx.table.toLowerCase()) continue
+                  if (dropCtx.schema && cc.schema.toLowerCase() !== dropCtx.schema.toLowerCase()) continue
+                  push({
+                    label: cc.name,
+                    detail: `CHECK ${cc.definition}${cc.isDisabled ? ' · disabilitato' : ''}`,
+                    kind: monaco.languages.CompletionItemKind.Constant,
+                    insertText: sqlIdent(cc.name),
+                    range,
+                    filterText: cc.name,
+                  })
+                }
+                for (const fk of st.summary?.foreignKeys ?? []) {
+                  if (fk.table.toLowerCase() !== dropCtx.table.toLowerCase()) continue
+                  if (dropCtx.schema && fk.schema.toLowerCase() !== dropCtx.schema.toLowerCase()) continue
+                  push({
+                    label: fk.name,
+                    detail: `FOREIGN KEY ${fk.column} → ${fk.refSchema}.${fk.refTable}.${fk.refColumn}`,
+                    kind: monaco.languages.CompletionItemKind.Constant,
+                    insertText: sqlIdent(fk.name),
+                    range,
+                    filterText: fk.name,
+                  })
+                }
+                for (const ix of tabella?.indexes ?? []) {
+                  if (!ix.isPrimaryKey && !ix.isUnique) continue
+                  push({
+                    label: ix.name,
+                    detail: `${ix.isPrimaryKey ? 'PRIMARY KEY' : 'UNIQUE'}${ix.columns?.length ? ` (${ix.columns.join(', ')})` : ''}`,
+                    kind: monaco.languages.CompletionItemKind.Constant,
+                    insertText: sqlIdent(ix.name),
+                    range,
+                    filterText: ix.name,
+                  })
+                }
+                // i vincoli possono non essere nello schema letto (o la tabella non ne ha):
+                // in quel caso NON si resta vuoti, si prosegue con i suggerimenti normali
+                if (suggestions.length > 0) return { suggestions }
+              }
             }
 
             // ALTER TABLE <tabella> → snippet (constraint, colonne, abilita/disabilita trigger)
