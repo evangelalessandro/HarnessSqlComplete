@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   Database as DbIcon,
   FileCode2,
+  History,
   Loader2,
   Pencil,
   Search,
@@ -27,7 +28,12 @@ import {
   kindLabel,
   kindTone,
   matchLabel,
+  MAX_RICERCHE_RICORDATE,
+  parseSearchHistory,
+  pushSearchHistory,
+  removeFromSearchHistory,
   searchMeta,
+  SEARCH_HISTORY_KEY,
   splitHighlight,
   tableOfHit,
 } from '../sqlSearch'
@@ -50,6 +56,24 @@ interface Props {
 /** Voce del menu col tasto destro sui risultati. */
 const VOCE_MENU =
   'flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-zinc-200 transition-colors hover:bg-zinc-800'
+
+/** Cronologia delle ricerche: si legge/salva in localStorage (max 10 voci). */
+function leggiCronologia(): string[] {
+  try {
+    if (typeof localStorage === 'undefined') return []
+    return parseSearchHistory(localStorage.getItem(SEARCH_HISTORY_KEY))
+  } catch {
+    return []
+  }
+}
+function saveCronologia(voci: string[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return
+    localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(voci))
+  } catch {
+    /* storage pieno o disabilitato: la cronologia resta solo in memoria */
+  }
+}
 
 /** Evidenzia le occorrenze del testo cercato dentro una riga. */
 function Evidenzia({ testo, cerca }: { testo: string; cerca: string }) {
@@ -77,6 +101,11 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
   const [scelto, setScelto] = useState<TextSearchHit | null>(null)
   /** Menu col tasto destro su un risultato (stile SSMS): Modifica / Apri definizione / Diagramma. */
   const [menu, setMenu] = useState<{ hit: TextSearchHit; x: number; y: number } | null>(null)
+  /** Ultime ricerche (max 10), ricordate anche chiudendo l'app. */
+  const [cronologia, setCronologia] = useState<string[]>(() => leggiCronologia())
+  const [storicoAperto, setStoricoAperto] = useState(false)
+  /** Posizione nella cronologia mentre si usano le frecce su/giù (-1 = non si sta navigando). */
+  const [indiceStorico, setIndiceStorico] = useState(-1)
   // definizione dell'oggetto scelto (per l'anteprima), caricata su richiesta
   const [definizione, setDefinizione] = useState<{ testo: string; caricando: boolean; errore: string | null }>({
     testo: '',
@@ -92,26 +121,37 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
 
   // La ricerca vive in una TAB: non si chiude con Esc (si chiude con la "×" della tab).
 
-  const cerca = useCallback(async () => {
-    const q = testo.trim()
-    if (q.length < 2) {
-      setErrore('Scrivi almeno 2 caratteri.')
-      return
-    }
-    setErrore(null)
-    setCercando(true)
-    try {
-      const r = await api.textSearch(connectionId, q, conDati)
-      setEsito(r)
-      setScelto(r.hits[0] ?? null)
-    } catch (e) {
-      setErrore(e instanceof Error ? e.message : String(e))
-      setEsito(null)
-      setScelto(null)
-    } finally {
-      setCercando(false)
-    }
-  }, [testo, conDati, connectionId])
+  const cerca = useCallback(
+    async (termine?: string) => {
+      const q = (termine ?? testo).trim()
+      if (q.length < 2) {
+        setErrore('Scrivi almeno 2 caratteri.')
+        return
+      }
+      // la ricerca entra nella cronologia (ultime MAX_RICERCHE_RICORDATE parole cercate)
+      setCronologia(prev => {
+        const nuova = pushSearchHistory(prev, q)
+        saveCronologia(nuova)
+        return nuova
+      })
+      setIndiceStorico(-1)
+      setStoricoAperto(false)
+      setErrore(null)
+      setCercando(true)
+      try {
+        const r = await api.textSearch(connectionId, q, conDati)
+        setEsito(r)
+        setScelto(r.hits[0] ?? null)
+      } catch (e) {
+        setErrore(e instanceof Error ? e.message : String(e))
+        setEsito(null)
+        setScelto(null)
+      } finally {
+        setCercando(false)
+      }
+    },
+    [testo, conDati, connectionId],
+  )
 
   /**
    * MODIFICA dalla ricerca: apre la stored procedure / funzione / vista / trigger in una tab,
@@ -190,14 +230,100 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
         <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-2">
           <input
             ref={inputRef}
+            data-ricerca="testo"
             value={testo}
             onChange={e => setTesto(e.target.value)}
             onKeyDown={e => {
-              if (e.key === 'Enter') void cerca()
+              if (e.key === 'Enter') {
+                void cerca()
+                return
+              }
+              // frecce su/giù: si ripescano le ultime ricerche (come in una shell)
+              if (e.key === 'ArrowUp' && cronologia.length > 0) {
+                e.preventDefault()
+                const i = Math.min(indiceStorico + 1, cronologia.length - 1)
+                setIndiceStorico(i)
+                setTesto(cronologia[i])
+              } else if (e.key === 'ArrowDown' && indiceStorico >= 0) {
+                e.preventDefault()
+                const i = indiceStorico - 1
+                setIndiceStorico(i)
+                setTesto(i < 0 ? '' : cronologia[i])
+              }
             }}
             placeholder="Testo da cercare in nomi, definizioni e (opzionale) dati…"
             className={`${inputClass} min-w-64 flex-1`}
           />
+          {/* ULTIME RICERCHE: le ultime 10 parole cercate, ripescabili con un clic */}
+          <div className="relative">
+            <button
+              data-ricerca="cronologia"
+              onClick={() => setStoricoAperto(v => !v)}
+              disabled={cronologia.length === 0}
+              className="flex items-center gap-1.5 rounded border border-zinc-700 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+              title={
+                cronologia.length > 0
+                  ? `Ultime ricerche (${cronologia.length} di ${MAX_RICERCHE_RICORDATE}) — clic per ripescarle`
+                  : 'Nessuna ricerca ancora: compariranno qui le ultime 10'
+              }
+            >
+              <History className="h-3.5 w-3.5" />
+              {cronologia.length > 0 && <span className="tabular-nums">{cronologia.length}</span>}
+            </button>
+            {storicoAperto && cronologia.length > 0 && (
+              <>
+                <div className="fixed inset-0 z-[75]" onClick={() => setStoricoAperto(false)} />
+                <div className="absolute right-0 z-[80] mt-1 w-80 rounded-md border border-zinc-700 bg-zinc-900 py-1 shadow-2xl">
+                  <div className="border-b border-zinc-800 px-3 pb-1.5 pt-1 text-[11px] text-zinc-500">
+                    Ultime ricerche — clic per ripeterla
+                  </div>
+                  {cronologia.map(t => (
+                    <div key={t} className="flex items-center gap-1 pr-1">
+                      <button
+                        data-ricerca="voce-cronologia"
+                        onClick={() => {
+                          setTesto(t)
+                          setStoricoAperto(false)
+                          void cerca(t)
+                        }}
+                        className="min-w-0 flex-1 truncate px-3 py-1 text-left font-mono text-xs text-zinc-200 hover:bg-zinc-800"
+                        title={`Cerca di nuovo "${t}"`}
+                      >
+                        {t}
+                      </button>
+                      <button
+                        data-ricerca="togli-cronologia"
+                        onClick={() => {
+                          setCronologia(prev => {
+                            const nuova = removeFromSearchHistory(prev, t)
+                            saveCronologia(nuova)
+                            return nuova
+                          })
+                          setIndiceStorico(-1)
+                        }}
+                        className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+                        title="Togli dalla cronologia"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    data-ricerca="svuota-cronologia"
+                    onClick={() => {
+                      setCronologia([])
+                      saveCronologia([])
+                      setStoricoAperto(false)
+                      setIndiceStorico(-1)
+                    }}
+                    className="mt-1 w-full border-t border-zinc-800 px-3 py-1.5 text-left text-[11px] text-zinc-400 hover:bg-zinc-800"
+                  >
+                    Svuota la cronologia
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
           <label className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-400" title="Cerca anche nei valori delle colonne di testo: può essere lento, la scansione è limitata">
             <input
               type="checkbox"

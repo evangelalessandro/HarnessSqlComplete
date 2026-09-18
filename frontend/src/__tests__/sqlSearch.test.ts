@@ -1,6 +1,7 @@
 // Ricerca testuale generale (stile Redgate SQL Search): helper puri del pannello.
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_RICERCHE_RICORDATE,
   canEdit,
   canPreviewColumns,
   canPreviewDefinition,
@@ -12,6 +13,9 @@ import {
   kindLabel,
   kindTone,
   matchLabel,
+  parseSearchHistory,
+  pushSearchHistory,
+  removeFromSearchHistory,
   searchMeta,
   splitHighlight,
   tableOfHit,
@@ -31,6 +35,44 @@ function hit(parziale: Partial<TextSearchHit>): TextSearchHit {
     ...parziale,
   }
 }
+
+describe('cronologia delle ricerche (ultime 10 parole cercate)', () => {
+  it('la ricerca nuova va in testa e la cronologia non supera 10 voci', () => {
+    let c: string[] = []
+    for (let i = 1; i <= 12; i++) c = pushSearchHistory(c, `termine${i}`)
+    expect(c).toHaveLength(MAX_RICERCHE_RICORDATE)
+    expect(c[0]).toBe('termine12')
+    expect(c).not.toContain('termine1') // le più vecchie escono
+    expect(c).not.toContain('termine2')
+  })
+
+  it('niente duplicati, anche con maiuscole diverse: la voce risale in testa', () => {
+    let c = pushSearchHistory([], 'UDC_UDC')
+    c = pushSearchHistory(c, 'baia')
+    c = pushSearchHistory(c, 'udc_udc')
+    expect(c).toEqual(['udc_udc', 'baia'])
+  })
+
+  it('ignora testi vuoti o troppo corti (sotto i 2 caratteri)', () => {
+    expect(pushSearchHistory(['x'], '')).toEqual(['x'])
+    expect(pushSearchHistory(['x'], '   ')).toEqual(['x'])
+    expect(pushSearchHistory(['x'], 'a')).toEqual(['x'])
+  })
+
+  it('toglie una voce (senza maiuscole)', () => {
+    expect(removeFromSearchHistory(['baia', 'udc'], 'BAIA')).toEqual(['udc'])
+  })
+
+  it('legge solo dati validi dal salvataggio', () => {
+    expect(parseSearchHistory(null)).toEqual([])
+    expect(parseSearchHistory('non json')).toEqual([])
+    expect(parseSearchHistory('{"a":1}')).toEqual([])
+    expect(parseSearchHistory('["baia", 5, "x", " udc ", ""]')).toEqual(['baia', 'udc'])
+    expect(parseSearchHistory(JSON.stringify(Array.from({ length: 20 }, (_, i) => `t${i}`)))).toHaveLength(
+      MAX_RICERCHE_RICORDATE,
+    )
+  })
+})
 
 describe('splitHighlight: evidenziazione del testo trovato', () => {
   it('separa le occorrenze, senza distinguere maiuscole', () => {

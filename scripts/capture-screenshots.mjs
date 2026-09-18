@@ -1695,6 +1695,36 @@ async function verifySearch(page) {
   console.log(`  con "anche nei dati": "${metaDati}"`)
   check('con "anche nei dati" la ricerca scandisce le tabelle del database', /tabelle scandite su \d+/.test(metaDati))
 
+  // 8) CRONOLOGIA: la ricerca ricorda le ultime 10 parole cercate e le ripesca
+  await page.eval(`(() => { const i = document.querySelector('[data-ricerca="testo"]'); if (i) { i.focus(); i.select(); } return !!i; })()`)
+  await page.typeText('MIS_MISSIONE')
+  await page.clickWhere(`document.querySelector('[data-ricerca="cerca"]')`)
+  await sleep(2800)
+  const apriCronologia = async () => {
+    await page.clickWhere(`document.querySelector('[data-ricerca="cronologia"]')`)
+    await sleep(500)
+    return await page.eval(
+      `[...document.querySelectorAll('[data-ricerca="voce-cronologia"]')].map(b => (b.textContent || '').trim())`,
+    )
+  }
+  const vociCronologia = await apriCronologia()
+  console.log(`  cronologia: ${JSON.stringify(vociCronologia.slice(0, 4))}`)
+  check(
+    'la ricerca ricorda le ultime parole cercate',
+    vociCronologia.includes('MIS_MISSIONE') && vociCronologia.includes('UDC_UDC'),
+  )
+  check('la ricerca più recente è la prima della cronologia', vociCronologia[0] === 'MIS_MISSIONE')
+  check('la cronologia non supera le 10 voci', vociCronologia.length <= 10)
+  // si chiude il menu e si ripesca l'ultima ricerca con la freccia su
+  await page.clickWhere(`document.querySelector('[data-ricerca="cronologia"]')`)
+  await sleep(300)
+  await page.eval(`document.querySelector('[data-ricerca="testo"]').focus()`)
+  await page.press('ArrowUp', { code: 'ArrowUp', vk: 38 })
+  await sleep(400)
+  const valoreInput = await page.eval(`document.querySelector('[data-ricerca="testo"]').value`)
+  console.log(`  freccia su nell input: ${JSON.stringify(valoreInput)}`)
+  check('freccia su: ripesca l ultima parola cercata', valoreInput === 'MIS_MISSIONE')
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

@@ -186,3 +186,44 @@ export function countByKind(hits: TextSearchHit[]): string {
     })
     .join(' · ')
 }
+
+// ---------- cronologia delle ricerche ----------
+
+/** Quante ricerche si ricordano (richiesta utente: le ultime 10 parole cercate). */
+export const MAX_RICERCHE_RICORDATE = 10
+
+/** Chiave in localStorage della cronologia delle ricerche. */
+export const SEARCH_HISTORY_KEY = 'sqlIntelli.searchHistory.v1'
+
+/**
+ * Aggiunge una ricerca in testa alla cronologia: la più recente per prima, senza duplicati
+ * (confronto senza maiuscole) e con un tetto di MAX_RICERCHE_RICORDATE voci. Testi vuoti o
+ * più corti di 2 caratteri (la stessa soglia della ricerca) vengono ignorati.
+ */
+export function pushSearchHistory(cronologia: string[], termine: string): string[] {
+  const t = termine.trim()
+  if (t.length < 2) return cronologia
+  const senzaDuplicato = cronologia.filter(v => v.toLowerCase() !== t.toLowerCase())
+  return [t, ...senzaDuplicato].slice(0, MAX_RICERCHE_RICORDATE)
+}
+
+/** Toglie una voce dalla cronologia (confronto senza maiuscole). */
+export function removeFromSearchHistory(cronologia: string[], termine: string): string[] {
+  return cronologia.filter(v => v.toLowerCase() !== termine.trim().toLowerCase())
+}
+
+/** Legge la cronologia salvata: accetta solo un array di stringhe valide (max 10). */
+export function parseSearchHistory(raw: string | null): string[] {
+  if (!raw) return []
+  try {
+    const dati: unknown = JSON.parse(raw)
+    if (!Array.isArray(dati)) return []
+    return dati
+      .filter((v): v is string => typeof v === 'string')
+      .map(v => v.trim())
+      .filter(v => v.length >= 2)
+      .slice(0, MAX_RICERCHE_RICORDATE)
+  } catch {
+    return []
+  }
+}
