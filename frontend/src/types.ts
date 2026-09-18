@@ -288,4 +288,10 @@ export interface EditorTab {
   titleCustom?: boolean
   /** Handle del file aperto col picker: permette di sovrascrivere l'originale. */
   fileHandle?: FileSystemFileHandle | null
+  /**
+   * Tab padre quando questa tab è nata da un LINK (tasto destro su tabella/store/funzione,
+   * link nei messaggi d'errore): forma la gerarchia nella barra delle tab.
+   * Assente = tab principale ("in prima linea").
+   */
+  parentId?: string
 }

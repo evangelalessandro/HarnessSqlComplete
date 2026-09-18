@@ -41,6 +41,7 @@ const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
 const VERIFY_SCROLLBARS = process.argv.includes('--verify-scrollbars')
+const VERIFY_TABTREE = process.argv.includes('--verify-tabtree')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -1319,6 +1320,129 @@ async function verifyAlias(page) {
  * VERIFICA (--verify-labels): dopo "GOTO " devono comparire TUTTE le label del documento,
  * anche quelle definite più sotto; quelle nel codice commentato no.
  */
+/**
+ * VERIFICA (--verify-tabtree): una tab aperta da un LINK (qui: tasto destro su una stored
+ * procedure dell'albero) nasce FIGLIA di quella attiva — rientrata e con il marcatore — e la
+ * gerarchia si ferma a 5 livelli. Chiudendo la principale compare la richiesta di chiudere
+ * anche le figlie.
+ */
+async function verifyTabTree(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+
+  /**
+   * Si usa la RICERCA dell'oggetti: le righe trascinabili sono le stored procedure
+   * (title "Trascina nel editor…"), quindi il tasto destro su una di quelle apre il menu con
+   * "Modifica" → nuova tab. Così non serve conoscere un nome di procedura a priori.
+   */
+  const cercato = await page.eval(`(() => {
+    const i = [...document.querySelectorAll('input')].find(x => (x.placeholder || '').includes('Cerca'));
+    if (!i) return false;
+    i.focus();
+    return true;
+  })()`)
+  if (!cercato) throw new Error('campo di ricerca della sidebar non trovato')
+  await page.typeText('ws_')
+  await sleep(1800)
+  console.log(
+    `  risultati di ricerca (procedure): ${await page.eval(
+      `[...document.querySelectorAll('button')].filter(b => (b.getAttribute('title') || '').includes('Trascina nel editor')).length`,
+    )}`,
+  )
+
+  /** Stato della barra: titolo, rientro in px (gerarchia) e se è marcata come figlia. */
+  const tabs = () =>
+    page.eval(`[...document.querySelectorAll('.sql-tab')].map(t => ({
+      titolo: ((t.querySelector('button') || t).textContent || '').trim(),
+      rientro: Math.round(parseFloat(getComputedStyle(t).marginLeft) || 0),
+      figlia: !!t.querySelector('svg.lucide-corner-down-right'),
+    }))`)
+
+  /** Apre una stored procedure dal tasto destro sul primo risultato di ricerca ("Modifica"). */
+  const apriDalTastoDestro = async () => {
+    const punto = await page.eval(`(() => {
+      const riga = [...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('Trascina nel editor'));
+      if (!riga) return null;
+      riga.scrollIntoView({ block: 'center' });
+      const r = riga.getBoundingClientRect();
+      return { x: r.left + 30, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) throw new Error('nessuna riga di stored procedure trovata nell albero')
+    await page.clickPoint(punto.x, punto.y, 'right')
+    await sleep(700)
+    const premuto = await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => ((b.textContent || '').trim().startsWith('Modifica')) && b.offsetParent)`,
+    )
+    await sleep(2000)
+    return premuto
+  }
+
+  console.log(`  tab di partenza: ${JSON.stringify(await tabs())}`)
+
+  // 1) prima apertura dal tasto destro: la tab nasce FIGLIA di quella attiva
+  const primoOk = await apriDalTastoDestro()
+  const dopo1 = await tabs()
+  console.log(`  dopo il primo "Modifica": ${JSON.stringify(dopo1)}`)
+  check('la voce del tasto destro ha aperto una tab', primoOk === true && dopo1.length === 2)
+  check('la nuova tab è FIGLIA (rientro + marcatore)', dopo1[1]?.rientro === 12 && dopo1[1]?.figlia === true)
+  check('sta subito sotto la principale, non in fondo', dopo1[1]?.rientro === 12 && dopo1[0]?.rientro === 0)
+
+  // 2) fino al livello 5 e oltre: il sesto si ferma al livello massimo (diventa sorella)
+  for (let i = 0; i < 4; i++) await apriDalTastoDestro()
+  const dopo5 = await tabs()
+  console.log(`  dopo 5 aperture: ${JSON.stringify(dopo5.map(t => t.rientro))}`)
+  check('arriva al livello 5 (rientro 60)', dopo5[5]?.rientro === 60)
+  await apriDalTastoDestro()
+  const dopo6 = await tabs()
+  console.log(`  dopo la sesta apertura: ${JSON.stringify(dopo6.map(t => t.rientro))}`)
+  check('il sesto livello NON viene creato: si ferma a 60', dopo6[6]?.rientro === 60)
+
+  // 3) chiudendo la figlia di livello 1 si chiede se chiudere anche le figlie
+  const chiusa = await page.eval(`(() => {
+    const t = document.querySelectorAll('.sql-tab')[1];
+    if (!t) return false;
+    const x = [...t.querySelectorAll('button')].find(b => b.querySelector('svg.lucide-x'));
+    if (!x) return false;
+    const r = x.getBoundingClientRect();
+    window.__puntoChiudi = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    return true;
+  })()`)
+  if (chiusa) {
+    const p = await page.eval(`window.__puntoChiudi`)
+    await page.clickPoint(p.x, p.y)
+    await sleep(700)
+  }
+  const richiesta = await page.eval(`document.body.textContent.includes('Chiudere anche le tab figlie?')`)
+  const diceQuante = await page.eval(`/ha 5 tab figlie aperte/.test(document.body.textContent)`)
+  console.log(`  richiesta di chiusura mostrata: ${richiesta}`)
+  check('chiudendo la principale chiede se chiudere anche le figlie', richiesta === true)
+  check('dice quante figlie chiuderebbe (5)', diceQuante === true)
+
+  await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim().startsWith('Chiudi anche le'))`,
+  )
+  await sleep(1200)
+  const fine = await tabs()
+  console.log(`  tab rimaste: ${JSON.stringify(fine.map(t => t.titolo))}`)
+  check('"Chiudi anche le figlie" chiude tutto il ramo', fine.length === 1)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
 async function verifyLabels(page) {
   await page.waitFor(`document.querySelector('input')`, 10000)
   await page.clickWhere(
@@ -1867,6 +1991,11 @@ async function main() {
 
     if (VERIFY_SCROLLBARS) {
       await verifyScrollbars(page)
+      return
+    }
+
+    if (VERIFY_TABTREE) {
+      await verifyTabTree(page)
       return
     }
 

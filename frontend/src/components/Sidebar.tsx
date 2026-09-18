@@ -72,7 +72,7 @@ interface Props {
   /** Apre la preview (SELECT TOP 100 *) in una nuova tab dell'editor. */
   onPreviewInEditor?: (sql: string) => void
   /** Apre uno script generato (CREATE/MERGE) in una nuova tab con titolo. */
-  onOpenScript?: (title: string, sql: string) => void
+  onOpenScript?: (title: string, sql: string, asChild?: boolean) => void
   /** Cambia il database attivo (nuova connessione con lo stesso server). */
   onSwitchDatabase?: (database: string) => void
   /** Colori personalizzati per database. */
@@ -83,12 +83,14 @@ interface Props {
   rightDockEl: HTMLElement | null
   /** Notifica quale pannello è agganciato a destra (null = nessuno) per mostrare/nascondere la colonna. */
   onRightDockChange: (panel: 'db' | 'objects' | null) => void
-  /** Apre una stored procedure / funzione / vista / trigger: 'alter' genera ALTER, 'open' la definizione CREATE. */
+  /** Apre una stored procedure / funzione / vista / trigger: 'alter' genera ALTER, 'open' la definizione CREATE.
+   *  `asChild`: la tab nasce FIGLIA di quella attiva (voci del tasto destro). */
   onOpenObject?: (
     kind: 'procedure' | 'function' | 'view' | 'trigger',
     schema: string,
     name: string,
     mode: 'alter' | 'open',
+    asChild?: boolean,
   ) => void
   /** Apre il DIAGRAMMA delle chiamate di una routine (chi la chiama / cosa chiama). */
   onShowCallGraph?: (schema: string, name: string, kind: 'procedure' | 'function') => void
@@ -136,6 +138,18 @@ export default function Sidebar({
   rightDockEl,
   onRightDockChange,
 }: Props) {
+  /**
+   * GERARCHIA DELLE TAB: le voci del tasto destro aprono la nuova tab come FIGLIA di quella
+   * attiva (richiesta utente: "una tab sotto quella corrente, in senso di gerarchia").
+   */
+  const apriScriptFiglia = (title: string, sql: string) => onOpenScript?.(title, sql, true)
+  const apriOggettoFiglio = (
+    kind: 'procedure' | 'function' | 'view' | 'trigger',
+    schema: string,
+    name: string,
+    mode: 'alter' | 'open',
+  ) => onOpenObject?.(kind, schema, name, mode, true)
+
   const [query, setQuery] = useState('')
   // Filtro per nome nella lista dei database
   const [dbFilter, setDbFilter] = useState('')
@@ -390,7 +404,7 @@ export default function Sidebar({
             label: 'Seleziona le prime 1000 righe',
             icon: <Rows3 className="h-3.5 w-3.5" />,
             hint: 'SELECT TOP (1000) in una nuova tab',
-            run: () => onOpenScript?.(`SELECT ${qname}`, scriptSelectTable(t)),
+            run: () => apriScriptFiglia(`SELECT ${qname}`, scriptSelectTable(t)),
           },
           {
             id: 'script',
@@ -398,13 +412,13 @@ export default function Sidebar({
             icon: <FileCode2 className="h-3.5 w-3.5" />,
             hint: 'Genera lo script della tabella',
             submenu: [
-              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`CREATE ${qname}`, scriptCreateTable(t)) },
-              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('table', hit.schema, hit.name)) },
-              { id: 'select', label: 'SELECT', icon: <Rows3 className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`SELECT ${qname}`, scriptSelectTable(t)) },
-              { id: 'insert', label: 'INSERT', icon: <Plus className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`INSERT ${qname}`, scriptInsertTable(t)) },
-              { id: 'update', label: 'UPDATE', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`UPDATE ${qname}`, scriptUpdateTable(t)) },
-              { id: 'delete', label: 'DELETE', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DELETE ${qname}`, scriptDeleteTable(t)) },
-              { id: 'merge', label: 'MERGE', icon: <GitMerge className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`MERGE ${qname}`, scriptMergeTable(t)) },
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`CREATE ${qname}`, scriptCreateTable(t)) },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => apriScriptFiglia(`DROP ${qname}`, scriptDropObject('table', hit.schema, hit.name)) },
+              { id: 'select', label: 'SELECT', icon: <Rows3 className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`SELECT ${qname}`, scriptSelectTable(t)) },
+              { id: 'insert', label: 'INSERT', icon: <Plus className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`INSERT ${qname}`, scriptInsertTable(t)) },
+              { id: 'update', label: 'UPDATE', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`UPDATE ${qname}`, scriptUpdateTable(t)) },
+              { id: 'delete', label: 'DELETE', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => apriScriptFiglia(`DELETE ${qname}`, scriptDeleteTable(t)) },
+              { id: 'merge', label: 'MERGE', icon: <GitMerge className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`MERGE ${qname}`, scriptMergeTable(t)) },
             ],
           },
         ]
@@ -416,7 +430,7 @@ export default function Sidebar({
             label: 'Seleziona le prime 1000 righe',
             icon: <Rows3 className="h-3.5 w-3.5" />,
             hint: 'SELECT TOP (1000) in una nuova tab',
-            run: () => onOpenScript?.(`SELECT ${qname}`, select1000(hit.schema, hit.name)),
+            run: () => apriScriptFiglia(`SELECT ${qname}`, select1000(hit.schema, hit.name)),
           },
           {
             id: 'script',
@@ -424,10 +438,10 @@ export default function Sidebar({
             icon: <FileCode2 className="h-3.5 w-3.5" />,
             hint: 'Genera lo script della vista',
             submenu: [
-              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('view', hit.schema, hit.name, 'open') },
-              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('view', hit.schema, hit.name, 'alter') },
-              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('view', hit.schema, hit.name)) },
-              { id: 'select', label: 'SELECT', icon: <Rows3 className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`SELECT ${qname}`, select1000(hit.schema, hit.name)) },
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('view', hit.schema, hit.name, 'open') },
+              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('view', hit.schema, hit.name, 'alter') },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => apriScriptFiglia(`DROP ${qname}`, scriptDropObject('view', hit.schema, hit.name)) },
+              { id: 'select', label: 'SELECT', icon: <Rows3 className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`SELECT ${qname}`, select1000(hit.schema, hit.name)) },
             ],
           },
         ]
@@ -446,7 +460,7 @@ export default function Sidebar({
             label: 'Modifica',
             icon: <SquarePen className="h-3.5 w-3.5" />,
             hint: 'Genera CREATE OR ALTER PROCEDURE in una nuova tab',
-            run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'alter'),
+            run: () => apriOggettoFiglio('procedure', hit.schema, hit.name, 'alter'),
           },
           {
             id: 'callgraph',
@@ -461,9 +475,9 @@ export default function Sidebar({
             icon: <FileCode2 className="h-3.5 w-3.5" />,
             hint: 'Genera lo script della stored procedure',
             submenu: [
-              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'open') },
-              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'alter') },
-              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('procedure', hit.schema, hit.name)) },
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('procedure', hit.schema, hit.name, 'open') },
+              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('procedure', hit.schema, hit.name, 'alter') },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => apriScriptFiglia(`DROP ${qname}`, scriptDropObject('procedure', hit.schema, hit.name)) },
               { id: 'execute', label: 'EXECUTE', icon: <Play className="h-3.5 w-3.5" />, run: () => onInsertText(scriptExecProcedure(p)) },
             ],
           },
@@ -476,7 +490,7 @@ export default function Sidebar({
             label: 'Modifica',
             icon: <SquarePen className="h-3.5 w-3.5" />,
             hint: 'Genera CREATE OR ALTER FUNCTION in una nuova tab',
-            run: () => onOpenObject?.('function', hit.schema, hit.name, 'alter'),
+            run: () => apriOggettoFiglio('function', hit.schema, hit.name, 'alter'),
           },
           {
             id: 'callgraph',
@@ -491,9 +505,9 @@ export default function Sidebar({
             icon: <FileCode2 className="h-3.5 w-3.5" />,
             hint: 'Genera lo script della funzione',
             submenu: [
-              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('function', hit.schema, hit.name, 'open') },
-              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('function', hit.schema, hit.name, 'alter') },
-              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('function', hit.schema, hit.name)) },
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('function', hit.schema, hit.name, 'open') },
+              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('function', hit.schema, hit.name, 'alter') },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => apriScriptFiglia(`DROP ${qname}`, scriptDropObject('function', hit.schema, hit.name)) },
             ],
           },
         ]
@@ -504,7 +518,7 @@ export default function Sidebar({
             label: 'Modifica',
             icon: <SquarePen className="h-3.5 w-3.5" />,
             hint: 'Genera CREATE OR ALTER TRIGGER in una nuova tab',
-            run: () => onOpenObject?.('trigger', hit.schema, hit.name, 'alter'),
+            run: () => apriOggettoFiglio('trigger', hit.schema, hit.name, 'alter'),
           },
           {
             id: 'script',
@@ -512,9 +526,9 @@ export default function Sidebar({
             icon: <FileCode2 className="h-3.5 w-3.5" />,
             hint: 'Genera lo script del trigger',
             submenu: [
-              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('trigger', hit.schema, hit.name, 'open') },
-              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('trigger', hit.schema, hit.name, 'alter') },
-              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('trigger', hit.schema, hit.name)) },
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('trigger', hit.schema, hit.name, 'open') },
+              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('trigger', hit.schema, hit.name, 'alter') },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => apriScriptFiglia(`DROP ${qname}`, scriptDropObject('trigger', hit.schema, hit.name)) },
             ],
           },
         ]
@@ -528,7 +542,7 @@ export default function Sidebar({
             icon: <SquarePen className="h-3.5 w-3.5" />,
             hint: 'Apre ALTER TABLE … ADD CONSTRAINT CHECK in una nuova tab per vedere/modificare il vincolo',
             run: () =>
-              onOpenScript?.(
+              apriScriptFiglia(
                 label,
                 scriptCheckConstraint(cc.schema, cc.tableName, cc.name, cc.definition, cc.isDisabled),
               ),

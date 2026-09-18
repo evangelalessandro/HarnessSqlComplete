@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { BookOpen, Database as DbIcon, FilePlus2, Pin, Plus, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { BookOpen, CornerDownRight, Database as DbIcon, FilePlus2, Pin, Plus, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
@@ -10,6 +10,16 @@ import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
 import { buildTabClosePlan, countClosableTabs, insertTabAt } from './tabOps'
+import {
+  MAX_TAB_DEPTH,
+  childParentFor,
+  closeTabIds,
+  descendants,
+  insertTabAsChild,
+  moveTabSubtree,
+  sanitizeTabParents,
+  tabDepth,
+} from './tabTree'
 import type { NewTabPosition, TabCloseMode } from './tabOps'
 import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryMessage, QueryResult, RoutineCallGraph } from './types'
 import { chooseResultTab } from './queryTabs'
@@ -69,6 +79,11 @@ export default function App() {
   const [iconDraft, setIconDraft] = useState('')
   // Menu contestuale della tab (tasto destro): chiusure multiple in stile SSMS
   const [tabMenu, setTabMenu] = useState<{ id: string; x: number; y: number } | null>(null)
+  /**
+   * Chiusura di una tab che ha figlie aperte: si chiede se chiudere anche loro
+   * (richiesta utente). `childIds` sono tutte le discendenti ancora aperte.
+   */
+  const [closeConfirm, setCloseConfirm] = useState<{ id: string; childIds: string[] } | null>(null)
   /**
    * Riga su cui portare il cursore quando si apre un oggetto da un errore
    * (es. "Procedura ws_X, Riga 42"): la consuma l'effetto che carica il testo della tab.
@@ -478,10 +493,17 @@ export default function App() {
       fileName?: string,
       /** Dove mettere la nuova tab; se non indicato si usa la preferenza dell'utente. */
       position?: NewTabPosition,
+      /**
+       * Apre la tab come FIGLIA di quella attiva (voci del tasto destro, link nei messaggi):
+       * si inserisce in fondo al gruppo del padre, entro MAX_TAB_DEPTH livelli.
+       */
+      asChild = false,
     ) => {
       // il progressivo si azzera quando non c'è nessuna tab
       if (editorTabs.length === 0) tabCounter.current = 1
       const n = tabCounter.current++
+      // il padre si calcola ORA: al livello massimo la nuova tab diventa una sorella
+      const padre = asChild ? childParentFor(editorTabs, activeEditorTab) : undefined
       const tab: EditorTab = {
         id: `tab-${n}`,
         title: title ?? `Query ${n}`,
@@ -491,55 +513,14 @@ export default function App() {
         fromFile,
         fileHandle,
         fileName: fileName ?? (fromFile ? title : undefined),
+        parentId: padre,
       }
       const dove = position ?? newTabPositionRef.current
-      setEditorTabs(prev => insertTabAt(prev, tab, activeEditorTab, dove))
+      setEditorTabs(prev => (padre ? insertTabAsChild(prev, tab, padre) : insertTabAt(prev, tab, activeEditorTab, dove)))
       setActiveEditorTab(tab.id)
       return tab.id
     },
-    [editorTabs.length, activeEditorTab, connection],
-  )
-
-  const closeEditorTab = useCallback(
-    (id: string) => {
-      setEditorTabs(prev => {
-        const target = prev.find(t => t.id === id)
-        if (!target || target.pinned) return prev // le tab appuntate non si chiudono
-        const next = prev.filter(t => t.id !== id)
-        // rimuove anche i risultati legati alla tab chiusa
-        setTabResults(r => {
-          const c = { ...r }
-          delete c[id]
-          return c
-        })
-        setTabExecuting(r => {
-          const c = { ...r }
-          delete c[id]
-          return c
-        })
-        setTabResultTab(r => {
-          const c = { ...r }
-          delete c[id]
-          return c
-        })
-        setTabSql(r => {
-          const c = { ...r }
-          delete c[id]
-          return c
-        })
-        forgetTabStats([id])
-        if (next.length === 0) {
-          setActiveEditorTab('') // tutte chiuse: stato vuoto, il prossimo progressivo riparte da 1
-          return []
-        }
-        if (id === activeEditorTab) {
-          const idx = prev.findIndex(t => t.id === id)
-          setActiveEditorTab(next[Math.min(idx, next.length - 1)].id)
-        }
-        return next
-      })
-    },
-    [activeEditorTab],
+    [editorTabs, activeEditorTab, connection],
   )
 
   /** GAMIFICATION: dimentica le statistiche delle tab chiuse. */
@@ -569,6 +550,48 @@ export default function App() {
     setTabSql(without)
   }, [])
 
+  /** Chiude le tab indicate (le appuntate restano) e ripulisce i dati laterali. */
+  const removeTabs = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return
+      const richieste = new Set(ids)
+      const daChiudere = editorTabs.filter(t => richieste.has(t.id) && !t.pinned)
+      if (daChiudere.length === 0) return
+      const gone = new Set(daChiudere.map(t => t.id))
+      dropTabSideData([...gone])
+      forgetTabStats([...gone])
+      setEditorTabs(prev => {
+        const next = sanitizeTabParents(prev.filter(t => !gone.has(t.id)))
+        if (next.length === 0) {
+          setActiveEditorTab('') // tutte chiuse: stato vuoto, il prossimo progressivo riparte da 1
+          return []
+        }
+        if (activeEditorTab && gone.has(activeEditorTab)) {
+          const idx = prev.findIndex(t => t.id === activeEditorTab)
+          setActiveEditorTab(next[Math.min(idx, next.length - 1)].id)
+        }
+        return next
+      })
+    },
+    [editorTabs, activeEditorTab, dropTabSideData, forgetTabStats],
+  )
+
+  /**
+   * Chiude una tab. Se ha figlie ancora aperte NON chiude subito: chiede se chiudere anche
+   * loro (richiesta utente), perché il ramo resterebbe altrimenti appeso a una tab sparita.
+   */
+  const closeEditorTab = useCallback(
+    (id: string) => {
+      const figlie = descendants(editorTabs, id)
+      if (figlie.length > 0) {
+        setCloseConfirm({ id, childIds: figlie.map(t => t.id) })
+        return
+      }
+      removeTabs([id])
+    },
+    [editorTabs, removeTabs],
+  )
+
   /** Applica un'azione di chiusura multipla (menu tasto destro) della tab `anchorId`. */
   const applyTabClosePlan = useCallback(
     (anchorId: string, mode: TabCloseMode) => {
@@ -581,15 +604,35 @@ export default function App() {
       if (plan.removedIds.length === 0) return
       dropTabSideData(plan.removedIds)
       forgetTabStats(plan.removedIds)
-      setEditorTabs(plan.kept)
+      // le figlie di una tab chiusa in blocco non restano appese a un padre sparito
+      setEditorTabs(sanitizeTabParents(plan.kept))
       setActiveEditorTab(prev => (prev && plan.removedIds.includes(prev) ? plan.focusId : prev))
     },
     [editorTabs, dropTabSideData, forgetTabStats],
   )
 
+  /**
+   * GERARCHIA: livello di ogni tab (0 = principale). Si calcola una volta per insieme di tab:
+   * le figlie rientrano sotto la loro principale, fino a MAX_TAB_DEPTH livelli.
+   */
+  const livelliTab = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const t of editorTabs) m.set(t.id, tabDepth(editorTabs, t.id))
+    return m
+  }, [editorTabs])
+
+  /** Esc chiude la richiesta "chiudo anche le figlie?" senza fare nulla. */
+  useEffect(() => {
+    if (!closeConfirm) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCloseConfirm(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [closeConfirm])
+
   // Tab in overflow: a capo automatico fino a 2 righe; oltre compare "»" con l'elenco.
-  const measureTabOverflow = useCallback(() => {
-    const el = wrapRef.current
+  const measureTabOverflow = useCallback(() => {    const el = wrapRef.current
     if (!el) return
     const probe = el.querySelector<HTMLElement>('.sql-tab')
     if (!probe) {
@@ -659,15 +702,8 @@ export default function App() {
 
   const moveTab = useCallback((fromId: string, toId: string) => {
     if (fromId === toId) return
-    setEditorTabs(prev => {
-      const fromIdx = prev.findIndex(t => t.id === fromId)
-      const toIdx = prev.findIndex(t => t.id === toId)
-      if (fromIdx === -1 || toIdx === -1) return prev
-      const next = [...prev]
-      const [moved] = next.splice(fromIdx, 1)
-      next.splice(toIdx, 0, moved)
-      return next
-    })
+    // trascinare una tab la STACCA dal padre (torna "in prima linea") e si porta le figlie
+    setEditorTabs(prev => moveTabSubtree(prev, fromId, toId))
   }, [])
 
   const handleConnected = useCallback(
@@ -676,8 +712,10 @@ export default function App() {
       // tab e query sono salvate PER ISTANZA SQL: carica quelle dell'istanza appena connessa
       setTabsInstance(res.server)
       const persisted = loadPersistedTabs(res.server)
-      setEditorTabs(persisted?.tabs ?? [firstTab()])
-      setActiveEditorTab(persisted?.tabs.some(t => t.id === persisted.active) ? persisted.active : 'tab-1')
+      // i legami padre/figlia salvati possono puntare a tab non più esistenti: si ripuliscono
+      const persistedTabs = persisted ? sanitizeTabParents(persisted.tabs) : []
+      setEditorTabs(persisted ? persistedTabs : [firstTab()])
+      setActiveEditorTab(persistedTabs.some(t => t.id === persisted?.active) ? persisted!.active : 'tab-1')
         // nuova connessione: i risultati delle tab appartenevano al DB precedente
         setTabResults({})
         setTabExecuting({})
@@ -876,10 +914,13 @@ export default function App() {
     [newEditorTab],
   )
 
-  /** Apre uno script generato (CREATE/MERGE) in una nuova tab con titolo. */
+  /**
+   * Apre uno script generato (CREATE/MERGE) in una nuova tab con titolo.
+   * Con `asChild` (voci del tasto destro) la tab nasce FIGLIA di quella attiva.
+   */
   const handleOpenScript = useCallback(
-    (title: string, sql: string) => {
-      newEditorTab(title, sql, connection?.database)
+    (title: string, sql: string, asChild = false) => {
+      newEditorTab(title, sql, connection?.database, false, null, undefined, undefined, asChild)
     },
     [newEditorTab, connection],
   )
@@ -896,6 +937,8 @@ export default function App() {
       name: string,
       mode: 'alter' | 'open',
       revealLine?: number,
+      /** Apre la tab come FIGLIA di quella attiva (voci del tasto destro, link negli errori). */
+      asChild = false,
     ) => {
       if (!connection) return
       setBanner(null)
@@ -903,7 +946,7 @@ export default function App() {
         const { definition } = await api.getObjectDefinition(connection.connectionId, schema, name)
         const sql = mode === 'alter' ? toCreateOrAlterStatement(definition) : definition
         const title = `${mode === 'alter' ? 'CREATE OR ALTER ' : ''}${schema === 'dbo' ? name : `${schema}.${name}`}`
-        const tabId = newEditorTab(title, sql, connection?.database)
+        const tabId = newEditorTab(title, sql, connection?.database, false, null, undefined, undefined, asChild)
         // la riga si applica DOPO che la tab è attiva: l'effetto che carica il testo la usa
         if (revealLine && revealLine > 0) pendingRevealRef.current = { tabId, line: revealLine }
       } catch (e) {
@@ -952,11 +995,11 @@ export default function App() {
     (o: ErrorObjectRef) => {
       if (o.kind === 'table') {
         const t = summary?.tables.find(x => x.name.toLowerCase() === o.name.toLowerCase())
-        if (t) handleOpenScript(`CREATE ${o.schema}.${o.name}`, scriptCreateTable(t))
+        if (t) handleOpenScript(`CREATE ${o.schema}.${o.name}`, scriptCreateTable(t), true)
         return
       }
       // la riga dell'errore è quella interna alla procedura: aprendola si va direttamente lì
-      void handleOpenObject(o.kind, o.schema, o.name, 'alter', o.line)
+      void handleOpenObject(o.kind, o.schema, o.name, 'alter', o.line, true)
     },
     [summary, handleOpenScript, handleOpenObject],
   )
@@ -1168,7 +1211,9 @@ export default function App() {
               onInsertText={handleInsertText}
               onPreviewInEditor={handlePreviewInEditor}
               onOpenScript={handleOpenScript}
-              onOpenObject={handleOpenObject}
+              onOpenObject={(kind, schema, name, mode, asChild) =>
+                void handleOpenObject(kind, schema, name, mode, undefined, asChild)
+              }
               onShowCallGraph={openCallGraph}
               onSwitchDatabase={handleSwitchDatabase}
               dbColors={dbColors}
@@ -1235,8 +1280,16 @@ export default function App() {
                     ? 'border-x border-x-zinc-700 border-b-2 border-b-zinc-900 bg-zinc-700/90 font-semibold text-white shadow-[0_-2px_10px_rgba(56,189,248,0.12)]'
                     : 'border-r-zinc-800 text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300'
                 }`}
-                style={{ borderTopColor: dbTabColor(t.database ?? connection.database, dbColors) }}
-                title={`${t.title} · db: ${t.database || connection.database}${t.description ? ` — ${t.description}` : ''}${t.pinned ? ' (appuntata)' : ''}${t.id === activeEditorTab ? ' — SCHEDA ATTIVA — trascina per riordinare' : ''} — tasto destro: chiudi le altre / a destra / a sinistra / le non appuntate`}
+                style={{
+                  borderTopColor: dbTabColor(t.database ?? connection.database, dbColors),
+                  // gerarchia: le figlie rientrano sotto la loro principale
+                  marginLeft: (livelliTab.get(t.id) ?? 0) * 12,
+                }}
+                title={`${t.title} · db: ${t.database || connection.database}${t.description ? ` — ${t.description}` : ''}${t.pinned ? ' (appuntata)' : ''}${
+                  (livelliTab.get(t.id) ?? 0) > 0
+                    ? ` — FIGLIA di “${editorTabs.find(p => p.id === t.parentId)?.title ?? '?'}” (livello ${livelliTab.get(t.id)} di ${MAX_TAB_DEPTH}; trascinala per staccarla)`
+                    : ''
+                }${t.id === activeEditorTab ? ' — SCHEDA ATTIVA — trascina per riordinare' : ''} — tasto destro: chiudi le altre / a destra / a sinistra / le non appuntate`}
               >
                 {t.id === activeEditorTab && (
                   <span
@@ -1245,6 +1298,14 @@ export default function App() {
                   />
                 )}
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: dbTabColor(t.database ?? connection.database, dbColors) }} />
+                {(livelliTab.get(t.id) ?? 0) > 0 && (
+                  <span
+                    className="shrink-0 text-sky-500/80"
+                    title={`Tab figlia — livello ${livelliTab.get(t.id)} di ${MAX_TAB_DEPTH}`}
+                  >
+                    <CornerDownRight className="h-3 w-3" />
+                  </span>
+                )}
                 {t.icon && (
                   <span className="shrink-0 text-[13px] leading-none" title="Icona della tab">
                     {t.icon}
@@ -1407,7 +1468,9 @@ export default function App() {
                 onZoomFont={zoomFont}
                 onToggleTheme={toggleTheme}
                 registerEditor={setEditor}
-                onOpenObject={handleOpenObject}
+                onOpenObject={(kind, schema, name, mode) =>
+                  void handleOpenObject(kind, schema, name, mode, undefined, true)
+                }
                 onShowCallGraph={(kind, schema, name) => openCallGraph(schema, name, kind)}
               />
             ) : (
@@ -1509,7 +1572,7 @@ export default function App() {
           error={callGraphError}
           onClose={() => setCallGraphTarget(null)}
           onReload={() => void loadCallGraph(true)}
-          onOpenObject={(kind, schema, name) => handleOpenObject(kind, schema, name, 'alter')}
+          onOpenObject={(kind, schema, name) => void handleOpenObject(kind, schema, name, 'alter', undefined, true)}
         />
       )}
 
@@ -1600,6 +1663,61 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* Chiusura di una tab con figlie aperte: si chiede se chiudere anche loro (tasto destro
+          o "×" passano da qui) */}
+      {closeConfirm &&
+        (() => {
+          const padre = editorTabs.find(t => t.id === closeConfirm.id)
+          const n = closeConfirm.childIds.length
+          return (
+            <div
+              className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+              onClick={() => setCloseConfirm(null)}
+            >
+              <div
+                className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-4 shadow-2xl"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-zinc-100">
+                  <CornerDownRight className="h-4 w-4 text-sky-400" />
+                  Chiudere anche le tab figlie?
+                </div>
+                <p className="mb-4 text-xs text-zinc-400">
+                  “{padre?.title ?? 'La tab'}” ha {n === 1 ? '1 tab figlia aperta' : `${n} tab figlie aperte`} (la
+                  gerarchia arriva a {MAX_TAB_DEPTH} livelli). Se chiudi solo questa, le figlie tornano in prima linea.
+                </p>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <button
+                    className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                    onClick={() => setCloseConfirm(null)}
+                  >
+                    Annulla
+                  </button>
+                  <button
+                    className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800"
+                    onClick={() => {
+                      const p = closeConfirm
+                      setCloseConfirm(null)
+                      removeTabs(closeTabIds(editorTabs, p.id, false))
+                    }}
+                  >
+                    Chiudi solo questa
+                  </button>
+                  <button
+                    className="rounded bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                    onClick={() => {
+                      const p = closeConfirm
+                      setCloseConfirm(null)
+                      removeTabs(closeTabIds(editorTabs, p.id, true))
+                    }}
+                  >
+                    {n === 1 ? 'Chiudi anche la figlia' : `Chiudi anche le ${n} figlie`}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
       {/* Menu contestuale della tab (tasto destro): chiusure multiple in stile SSMS */}
       {tabMenu &&
         (() => {
