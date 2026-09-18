@@ -1672,7 +1672,10 @@ async function verifySearch(page) {
   const tabsDopo = await page.eval(`document.querySelectorAll('.sql-tab').length`)
   console.log(`  dopo "Modifica": ${JSON.stringify(tabModifica)} (tab: ${tabsPrima} → ${tabsDopo})`)
   check('"Modifica" apre una tab in più', tabsDopo === tabsPrima + 1)
-  check('la tab aperta è CREATE OR ALTER dell oggetto', (tabModifica?.titolo ?? '').startsWith('CREATE OR ALTER '))
+  check(
+    'la tab aperta porta il NOME dell oggetto (non "CREATE OR ALTER …")',
+    !/CREATE OR ALTER/i.test(tabModifica?.titolo ?? '') && /ws_/i.test(tabModifica?.titolo ?? ''),
+  )
   check('la tab di modifica nasce FIGLIA (gerarchia)', tabModifica?.rientro === 12 && tabModifica?.figlia === true)
 
   // TASTO DESTRO su un risultato: menu con "Modifica"
@@ -1699,7 +1702,10 @@ async function verifySearch(page) {
   )
   console.log(`  tasto destro sul risultato: menu=${menuMostrato} → "${titoloMenu}" (tab: ${tabsPrimaMenu} → ${tabsDopoMenu})`)
   check('il tasto destro su un risultato mostra "Modifica"', menuMostrato === true)
-  check('"Modifica" dal menu apre CREATE OR ALTER in una tab', tabsDopoMenu === tabsPrimaMenu + 1 && titoloMenu.startsWith('CREATE OR ALTER '))
+  check(
+    '"Modifica" dal menu apre l oggetto in una tab col suo nome',
+    tabsDopoMenu === tabsPrimaMenu + 1 && !/CREATE OR ALTER/i.test(titoloMenu) && /ws_/i.test(titoloMenu),
+  )
 
   // anche una FUNZIONE si modifica dalla ricerca
   await tornaAllaRicerca()
@@ -1720,7 +1726,10 @@ async function verifySearch(page) {
   const tabsDopoFn = await page.eval(`document.querySelectorAll('.sql-tab').length`)
   console.log(`  funzione scelta: ${sceltaFunzione === true} · modifica: ${modificaFn} → "${titoloFn}" (tab: ${tabsPrimaFn} → ${tabsDopoFn})`)
   check('una FUNZIONE trovata si può modificare (pulsante Modifica)', modificaFn === true)
-  check('"Modifica" su una funzione apre CREATE OR ALTER in una tab', tabsDopoFn === tabsPrimaFn + 1 && titoloFn.startsWith('CREATE OR ALTER '))
+  check(
+    '"Modifica" su una funzione apre una tab col nome della funzione',
+    tabsDopoFn === tabsPrimaFn + 1 && !/CREATE OR ALTER/i.test(titoloFn) && /fn_/i.test(titoloFn),
+  )
 
   // "anche nei dati": la ricerca scansiona le tabelle (limitatamente) e lo dichiara
   await tornaAllaRicerca()

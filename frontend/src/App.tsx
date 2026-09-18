@@ -981,7 +981,9 @@ export default function App() {
       try {
         const { definition } = await api.getObjectDefinition(connection.connectionId, schema, name)
         const sql = mode === 'alter' ? toCreateOrAlterStatement(definition) : definition
-        const title = `${mode === 'alter' ? 'CREATE OR ALTER ' : ''}${schema === 'dbo' ? name : `${schema}.${name}`}`
+        // il titolo della tab è il NOME dell'oggetto (richiesta utente): la "Modifica" si
+        // riconosce dal contenuto (CREATE OR ALTER) e dalla tooltip della tab
+        const title = schema === 'dbo' ? name : `${schema}.${name}`
         const tabId = newEditorTab(title, sql, connection?.database, false, null, undefined, undefined, asChild)
         // la riga si applica DOPO che la tab è attiva: l'effetto che carica il testo la usa
         if (revealLine && revealLine > 0) pendingRevealRef.current = { tabId, line: revealLine }
