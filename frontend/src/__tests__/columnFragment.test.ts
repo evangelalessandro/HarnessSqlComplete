@@ -90,6 +90,15 @@ describe('provider: "fefo" trova RIG_REVFEFO_VNA', () => {
     expect(String(voce.detail)).toContain('colonna di dbo.DAT_ORDINI_RIGHE')
   })
 
+  it('con lo SPAZIO dopo la parola (mentre si scrive la FROM) la colonna resta proposta', () => {
+    // è il flusso reale: "SELECT fefo " → il popup non deve tornare alle sole funzioni
+    const sql = 'SELECT fefo '
+    const voci = nomi(sql, sql.length)
+    expect(voci).toContain('RIG_REVFEFO_VNA')
+    // e compare fra i primi (prima delle funzioni di aggregazione)
+    expect(voci.indexOf('RIG_REVFEFO_VNA')).toBeLessThan(voci.indexOf('SUM'))
+  })
+
   it('il ripiego non duplica i campi della tabella già proposti', () => {
     const sql = 'SELECT rig FROM DAT_ORDINI_RIGHE'
     const voci = nomi(sql, 'SELECT rig'.length)

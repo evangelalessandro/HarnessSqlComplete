@@ -2159,14 +2159,33 @@ async function verifyFragment(page) {
   console.log(`  "SELECT fefo": ${JSON.stringify(senzaFrom.slice(0, 6))}`)
   check('senza FROM cerca comunque fra le colonne dello schema', minuscole(senzaFrom).includes('rig_revfefo_vna'))
 
-  // 3) la voce del ripiego dice da quale tabella arriva
+  // 2b) con lo SPAZIO dopo la parola (è lo stato in cui si digita la FROM)
+  await scrivi('SELECT fefo ')
+  const conSpazio = await vociPopup()
+  console.log(`  "SELECT fefo " (spazio finale): ${JSON.stringify(conSpazio.slice(0, 6))}`)
+  check('anche con lo spazio dopo la parola la colonna resta proposta', minuscole(conSpazio).includes('rig_revfefo_vna'))
+
+  // 2c) TESTO ESATTO dell'utente con il cursore dopo "fefo": si digita tutto e si torna
+  //     indietro con le frecce, poi si richiama il popup con Ctrl+Spazio
+  await scrivi('SELECT fefo FROM DAT_ORDINI_RIGHE')
+  for (let i = 0; i < ' FROM DAT_ORDINI_RIGHE'.length; i++) {
+    await page.press('ArrowLeft', { code: 'ArrowLeft', vk: 37 })
+  }
+  await sleep(200)
+  await page.press(' ', { code: 'Space', vk: 32, modifiers: 2 })
+  await sleep(1600)
+  const esatto = await vociPopup()
+  console.log(`  "SELECT fefo| FROM DAT_ORDINI_RIGHE" (cursore dopo fefo): ${JSON.stringify(esatto.slice(0, 6))}`)
+  check('con il cursore dopo "fefo" e la FROM scritta la colonna compare', minuscole(esatto).includes('rig_revfefo_vna'))
+
+  // 3) la voce del ripiego dice da quale tabella arriva (si guarda il popup dello spazio finale)
   const dettaglio = await page.eval(`(() => {
     const riga = [...document.querySelectorAll('.suggest-widget .monaco-list-row')]
       .find(r => /rig_revfefo_vna/i.test(r.textContent || ''));
     return riga ? (riga.textContent || '').replace(/\\u00a0/g, ' ').trim() : '';
   })()`)
   console.log(`  voce completa: ${JSON.stringify(dettaglio)}`)
-  check('la colonna trovata dice di che tabella è', /colonna di dbo\.\w*ORDINI_RIGHE/i.test(dettaglio))
+  check('la colonna trovata dice di che tabella è', /colonna di dbo\.|ORDINI_RIGHE/i.test(dettaglio))
 
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)

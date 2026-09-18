@@ -888,6 +888,27 @@ export function provideSqlCompletions({
             // suggerisce le colonne delle tabelle referenziate in tutto lo statement (anche dopo il cursore)
             if (inSelectList) {
               const sel = buildSelectListSuggestions(stmtText, stmtBefore, st.summary)
+              // Parola appena finita (spazio dopo): "SELECT fefo " → "fefo". Serve per non
+              // perdere i campi mentre si sta per scrivere la FROM (segnalazione utente).
+              const parolaPrima = (/([A-Za-z_#@][\w#@]*)\s+$/.exec(textBefore) ?? [])[1] ?? ''
+              const frammento = word.word.length > 0 ? word.word : parolaPrima
+              /** Ripiego "cerca fra le colonne di tutto lo schema" (vedi columnsByFragment). */
+              const pushColonneDaFrammento = (gia: Set<string>) => {
+                if (frammento.length < 2 || !st.summary) return
+                for (const c of columnsByFragment(st.summary, frammento, 25)) {
+                  if (gia.has(c.name.toLowerCase())) continue
+                  push({
+                    label: c.name,
+                    detail: [columnTypeText(c.dataType, c.isNullable), `colonna di ${c.tableLabel}`]
+                      .filter(Boolean)
+                      .join(' · '),
+                    kind: monaco.languages.CompletionItemKind.Field,
+                    insertText: sqlIdent(c.name),
+                    range,
+                    filterText: completionFilterText(c.name),
+                  })
+                }
+              }
               // Con una parola in corso: solo i campi con affinità, ordinati per punteggio.
               // filterText = NOME colonna (stabile): Monaco rifiltra le voci memorizzate
               // con la parola corrente, quindi con la parola digitata come filterText il
@@ -917,20 +938,7 @@ export function provideSqlCompletions({
                 // RIPIEGO (richiesta utente: "mi dovrebbe cercare almeno tra le colonne"): se
                 // non c'è (ancora) una tabella da cui prendere i campi — la FROM non è scritta —
                 // si cercano le colonne di TUTTO lo schema che contengono la parola digitata.
-                const proposti = new Set(rankedCols.map(r => r.col.name.toLowerCase()))
-                for (const c of columnsByFragment(st.summary, word.word, 25)) {
-                  if (proposti.has(c.name.toLowerCase())) continue
-                  push({
-                    label: c.name,
-                    detail: [columnTypeText(c.dataType, c.isNullable), `colonna di ${c.tableLabel}`]
-                      .filter(Boolean)
-                      .join(' · '),
-                    kind: monaco.languages.CompletionItemKind.Field,
-                    insertText: sqlIdent(c.name),
-                    range,
-                    filterText: completionFilterText(c.name),
-                  })
-                }
+                pushColonneDaFrammento(new Set(rankedCols.map(r => r.col.name.toLowerCase())))
                 // anche le funzioni (SUM/AVG/RANK/…) se matchano la parola digitata
                 pushSqlFunctions()
                 return { suggestions }
@@ -961,6 +969,10 @@ export function provideSqlCompletions({
                   range: itemRange,
                 })
               }
+              // Senza parola in corso (es. "SELECT fefo " appena scritto): oltre ai campi dello
+              // statement si ripescano le colonne che contengono la parola appena finita, così
+              // il popup non si svuota mentre si sta per scrivere la FROM.
+              pushColonneDaFrammento(new Set(sel.columns.map(c => c.name.toLowerCase())))
               for (const col of sel.columns) {
                 push({
                   label: col.name,
