@@ -21,6 +21,8 @@ builder.Services.AddSingleton<ConnectionHub>();
 builder.Services.AddSingleton<MetadataCache>();
 builder.Services.AddScoped<MetadataService>();
 builder.Services.AddScoped<QueryService>();
+// Stateless come MetadataService/QueryService (solo ILogger): stessa durata, una per richiesta.
+builder.Services.AddScoped<SearchService>();
 builder.Services.AddHttpClient<DeepSeekService>(c =>
 {
     c.BaseAddress = new Uri(builder.Configuration["DeepSeek:BaseUrl"] ?? "https://api.deepseek.com");

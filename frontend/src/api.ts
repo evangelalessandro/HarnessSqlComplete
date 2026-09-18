@@ -9,6 +9,7 @@ import type {
   RoutineCallGraph,
   SavedConnectionDto,
   SearchResult,
+  TextSearchResult,
   TableReportRow,
 } from './types'
 
@@ -84,6 +85,16 @@ export const api = {
 
   searchObjects: (connectionId: string, q: string) =>
     http<SearchResult[]>(`/metadata/${connectionId}/search?q=${encodeURIComponent(q)}`),
+
+  /**
+   * RICERCA TESTUALE GENERALE nel database della connessione (stile Redgate SQL Search):
+   * nomi e definizioni delle strutture e, con `data = true`, anche i valori nelle colonne
+   * di testo. La scansione dei dati è limitata dal backend (tabelle e tempo).
+   */
+  textSearch: (connectionId: string, q: string, data: boolean) =>
+    http<TextSearchResult>(
+      `/metadata/${connectionId}/text-search?q=${encodeURIComponent(q)}&data=${data ? 'true' : 'false'}`,
+    ),
 
   /** Definizione (testo) di una stored procedure / funzione / vista / trigger. */
   getObjectDefinition: (connectionId: string, schema: string, name: string) =>

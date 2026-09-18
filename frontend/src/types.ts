@@ -185,6 +185,45 @@ export interface SearchResult {
   objectType: string
 }
 
+/** Riga trovata nei DATI (una riga per tabella): colonne e valori già troncati dal backend. */
+export interface TextSearchRow {
+  columns: string[]
+  values: string[]
+}
+
+/**
+ * Un risultato della RICERCA TESTUALE GENERALE (stile Redgate SQL Search): può venire dal
+ * NOME di un oggetto, dalla sua DEFINIZIONE oppure dai DATI di una tabella.
+ */
+export interface TextSearchHit {
+  kind: 'table' | 'view' | 'procedure' | 'function' | 'trigger' | 'column' | 'constraint' | 'computed' | 'data'
+  schema: string
+  /** Nome dell'oggetto; per le colonne il nome della colonna, per i dati il nome della tabella. */
+  name: string
+  /** Descrizione breve mostrata accanto al nome (es. "Stored procedure", "colonna di dbo.MAG_BAIE"). */
+  detail: string
+  matchIn: 'definition' | 'name' | 'column' | 'data'
+  /** Riga (1-based) del match nella definizione, se disponibile. */
+  line: number | null
+  /** Riga/estratto che contiene il match. */
+  snippet: string | null
+  /** Solo per kind "data": la riga trovata. */
+  row: TextSearchRow | null
+}
+
+export interface TextSearchResult {
+  hits: TextSearchHit[]
+  /** True se la ricerca è stata tagliata (troppi risultati o troppe tabelle da scansionare). */
+  truncated: boolean
+  /** Tabelle effettivamente scandite per la ricerca nei dati. */
+  scannedTables: number
+  /** Tabelle candidate (con colonne testuali) nel database. */
+  totalTables: number
+  elapsedMs: number
+  /** Messaggio del backend (es. testo troppo corto) quando non ci sono risultati. */
+  message?: string | null
+}
+
 export interface ColumnResult {
   name: string
   dataType: string

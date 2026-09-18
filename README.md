@@ -119,6 +119,12 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   operazione (CREATE, DROP, SELECT, INSERT, UPDATE, DELETE, MERGE); per procedure/funzioni/viste/trigger
   "Modifica" (CREATE OR ALTER), "Apri definizione", "Script" ed **EXEC con parametri**.
 - **Ricerca** su tabelle, viste, procedure, funzioni e trigger (gli spazi valgono come `%`).
+- **Ricerca generale** (pulsante "Cerca" in alto, stile Redgate SQL Search): un testo qualunque cercato
+  nei **nomi** e nelle **definizioni** delle strutture (tabelle, viste, routine, vincoli, colonne
+  calcolate) e — con "anche nei dati" — nei **valori** delle colonne di testo. Risultati sopra e
+  **anteprima sotto** (script con il match evidenziato e la riga trovata, colonne della tabella, riga di
+  dati trovata). Resta dentro il **database attivo** e la scansione dei dati è limitata (tabelle, tempo,
+  righe per tabella) per non appesantire il database.
 - **Report utilizzo tabelle**: spazio riservato/usato, righe, indici, accessi.
 
 ### Diagramma delle chiamate
@@ -256,6 +262,7 @@ I fixture dei database reali si rigenerano con gli script in `frontend/scripts/`
 | `GET` | `/api/metadata/{connectionId}/objects/{schema}/{name}/definition` | Definizione (testo) di proc/funzione/vista/trigger |
 | `GET` | `/api/metadata/{connectionId}/routine-call-graph` | Legami fra routine (chi chiama chi), per il diagramma |
 | `GET` | `/api/metadata/{connectionId}/search?q=` | Ricerca oggetti per nome |
+| `GET` | `/api/metadata/{connectionId}/text-search?q=&data=` | Ricerca testuale generale (nomi, definizioni e, con `data=true`, valori nelle colonne di testo) |
 | `GET` | `/api/metadata/{connectionId}/report/tables` | Report utilizzo tabelle (spazio, righe, indici, accessi) |
 | `POST` | `/api/query/{connectionId}/execute` | Esegue SQL (multi-batch `GO`, `PRINT`, più result set) |
 | `GET` | `/api/autocomplete/{connectionId}/status` | Stato della configurazione DeepSeek |
@@ -388,6 +395,12 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
   (CREATE, DROP, SELECT, INSERT, UPDATE, DELETE, MERGE); procedures/functions/views/triggers get
   "Modify" (CREATE OR ALTER), "Open definition", "Script" and **EXEC with parameters**.
 - **Search** across tables, views, procedures, functions and triggers (spaces act as `%`).
+- **Full-text search** ("Cerca" button in the header, Redgate SQL Search style): any text searched in
+  object **names** and **definitions** (tables, views, routines, constraints, computed columns) and — with
+  "anche nei dati" — in the **values** of text columns. Results on top and a **preview below** (script with
+  the match highlighted and the matching line, table columns, matching data row). It stays inside the
+  **active database**, and the data scan is bounded (tables, time, rows per table) to keep the database
+  responsive.
 - **Table usage report**: reserved/used space, rows, indexes, reads and writes.
 
 ### Call graph
@@ -516,6 +529,7 @@ Fixture files built from real databases are regenerated with the scripts in `fro
 | `GET` | `/api/metadata/{connectionId}/objects/{schema}/{name}/definition` | Definition text of a procedure/function/view/trigger |
 | `GET` | `/api/metadata/{connectionId}/routine-call-graph` | Routine-to-routine links (who calls whom) for the diagram |
 | `GET` | `/api/metadata/{connectionId}/search?q=` | Search objects by name |
+| `GET` | `/api/metadata/{connectionId}/text-search?q=&data=` | Full-text search (names, definitions and, with `data=true`, values in text columns) |
 | `GET` | `/api/metadata/{connectionId}/report/tables` | Table usage report (space, rows, indexes, reads/writes) |
 | `POST` | `/api/query/{connectionId}/execute` | Execute SQL (multiple `GO` batches, `PRINT`, multiple result sets) |
 | `GET` | `/api/autocomplete/{connectionId}/status` | DeepSeek configuration status |

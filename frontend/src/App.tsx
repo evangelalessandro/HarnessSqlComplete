@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, CornerDownRight, Database as DbIcon, FilePlus2, Pin, Plus, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { BookOpen, CornerDownRight, Database as DbIcon, FilePlus2, Pin, Plus, RefreshCw, Search, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
@@ -37,6 +37,7 @@ import { QueryStatsBadge, QueryStatsModal } from './components/QueryStatsPanel'
 import { hasErrorMessage, messageRevealLine, errorObjectsFor, routineStartLine } from './sqlMessages'
 import type { ErrorObjectRef } from './sqlMessages'
 import CallGraphModal from './components/CallGraphModal'
+import SearchModal from './components/SearchModal'
 import type { CallGraphTarget } from './components/CallGraphModal'
 import LoginScreen from './components/LoginScreen'
 import Sidebar from './components/Sidebar'
@@ -84,6 +85,8 @@ export default function App() {
    * (richiesta utente). `childIds` sono tutte le discendenti ancora aperte.
    */
   const [closeConfirm, setCloseConfirm] = useState<{ id: string; childIds: string[] } | null>(null)
+  /** Pannello di RICERCA GENERALE nel database (stile Redgate SQL Search). */
+  const [searchOpen, setSearchOpen] = useState(false)
   /**
    * Riga su cui portare il cursore quando si apre un oggetto da un errore
    * (es. "Procedura ws_X, Riga 42"): la consuma l'effetto che carica il testo della tab.
@@ -1178,6 +1181,13 @@ export default function App() {
           <RefreshCw className={`h-4 w-4 ${summaryReloading ? 'animate-spin' : ''}`} /> Aggiorna schema
         </button>
         <button
+          onClick={() => setSearchOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
+          title={`Ricerca testuale nel database ${connection.database}: nomi, definizioni e (opzionale) dati`}
+        >
+          <Search className="h-4 w-4" /> Cerca
+        </button>
+        <button
           onClick={() => setHelpOpen(true)}
           className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
           title="Apri la guida con tutte le funzioni"
@@ -1663,6 +1673,19 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* RICERCA GENERALE nel database (stile Redgate SQL Search): risultati + anteprima sotto */}
+      {searchOpen && connection && (
+        <SearchModal
+          connectionId={connection.connectionId}
+          database={connection.database}
+          summary={summary}
+          onClose={() => setSearchOpen(false)}
+          onOpenObject={(kind, schema, name, mode) =>
+            void handleOpenObject(kind, schema, name, mode, undefined, true)
+          }
+        />
+      )}
+
       {/* Chiusura di una tab con figlie aperte: si chiede se chiudere anche loro (tasto destro
           o "×" passano da qui) */}
       {closeConfirm &&

@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace SqlIntelliBackend.Models;
 
 // ---------- Connessioni / Login ----------
@@ -101,6 +103,46 @@ public record CheckConstraintInfo(
 public record FunctionInfo(string Schema, string Name, string Type);
 
 public record SearchResult(string Schema, string Name, string ObjectType);
+
+/// <summary>Riga di dati trovata dalla ricerca testuale: intestazioni e valori (già troncati) delle colonne.</summary>
+public record SearchHitRow(List<string> Columns, List<string> Values);
+
+/// <summary>
+/// Singolo risultato della ricerca testuale generale nel database: una STRUTTURA (match nel nome
+/// o nella definizione) oppure un DATO (valore trovato in una colonna testuale).
+/// </summary>
+/// <param name="Kind">table | view | procedure | function | trigger | column | constraint | computed | data.</param>
+/// <param name="Schema">Schema dell'oggetto (per le colonne: schema della tabella/vista).</param>
+/// <param name="Name">Nome dell'oggetto; per le colonne il nome della COLONNA, per i dati il nome della TABELLA.</param>
+/// <param name="Detail">Descrizione breve mostrata accanto al nome (es. "Stored procedure", "colonna di dbo.MAG_BAIE").</param>
+/// <param name="MatchIn">definition | name | column | data.</param>
+/// <param name="Line">Riga 1-based del match nella definizione, altrimenti null.</param>
+/// <param name="Snippet">Riga (o estratto breve) che contiene il match, per l'anteprima.</param>
+/// <param name="Row">Solo per kind="data": colonne e valori della riga trovata, altrimenti null.</param>
+public record SearchHit(
+    string Kind,
+    string Schema,
+    string Name,
+    string Detail,
+    string MatchIn,
+    // Line/Snippet/Row sono SEMPRE serializzati, anche null: il contratto li prevede espliciti
+    // e la configurazione globale del JSON li ometterebbe (DefaultIgnoreCondition = WhenWritingNull).
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] int? Line,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? Snippet,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] SearchHitRow? Row);
+
+/// <summary>Esito della ricerca testuale generale: hit, troncamento e contatori della scansione dei dati.</summary>
+/// <param name="Truncated">true se i risultati (strutture o dati) sono stati tagliati dai limiti.</param>
+/// <param name="ScannedTables">Tabelle/viste effettivamente scansionate per i dati (0 se data=false).</param>
+/// <param name="TotalTables">Tabelle/viste candidate alla scansione dei dati (0 se data=false).</param>
+/// <param name="Message">Messaggio facoltativo (es. testo di ricerca troppo corto).</param>
+public record TextSearchResponse(
+    List<SearchHit> Hits,
+    bool Truncated,
+    int ScannedTables,
+    int TotalTables,
+    long ElapsedMs,
+    string? Message = null);
 
 /// <summary>Definizione (testo) di un oggetto: stored procedure, funzione, vista, trigger.</summary>
 public record ObjectDefinitionResponse(string Definition);

@@ -42,6 +42,7 @@ const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
 const VERIFY_SCROLLBARS = process.argv.includes('--verify-scrollbars')
 const VERIFY_TABTREE = process.argv.includes('--verify-tabtree')
+const VERIFY_SEARCH = process.argv.includes('--verify-search')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -1443,6 +1444,105 @@ async function verifyTabTree(page) {
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
 }
 
+/**
+ * VERIFICA (--verify-search): la RICERCA GENERALE nel database (stile Redgate SQL Search) cerca un
+ * testo nei nomi/definizioni delle strutture e, se richiesto, nei DATI; i risultati stanno sopra e
+ * l'anteprima (script con il match evidenziato) sotto. Deve restare dentro il database attivo.
+ */
+async function verifySearch(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+  const testo = sel => page.eval(`(document.querySelector(${JSON.stringify(sel)})?.textContent || '').trim()`)
+
+  const dbAttivo = await page.eval(`document.querySelector('select')?.value || ''`)
+  const aperto = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('Ricerca testuale nel database'))`,
+  )
+  await sleep(900)
+  const pannello = await page.eval(`!!document.querySelector('[data-ricerca="meta"]')`)
+  const testoPannello = await page.eval(`(() => {
+    const m = document.querySelector('[data-ricerca="meta"]');
+    const modale = m ? m.closest('.fixed') : null;
+    return modale ? (modale.textContent || '') : '';
+  })()`)
+  console.log(`  database attivo: ${dbAttivo} — pannello mostrato: ${pannello}`)
+  check('il pannello di ricerca si apre', aperto === true && pannello === true)
+  check('il pannello è ristretto al database attivo', dbAttivo.length > 0 && testoPannello.includes(dbAttivo))
+
+  // cerca un nome di colonna che esiste davvero (usato dallo schema del database attivo)
+  await page.eval(`(() => {
+    const i = [...document.querySelectorAll('input')].find(x => (x.placeholder || '').includes('Testo da cercare'));
+    if (i) i.focus();
+    return !!i;
+  })()`)
+  await page.typeText('UDC_UDC')
+  await page.clickWhere(`document.querySelector('[data-ricerca="cerca"]')`)
+  await sleep(3500)
+
+  const righe = await page.eval(`document.querySelectorAll('[data-ricerca="riga"]').length`)
+  const meta = await testo('[data-ricerca="meta"]')
+  const evidenziati = await page.eval(`document.querySelectorAll('[data-ricerca="anteprima"] mark').length`)
+  const titoli = await page.eval(
+    `[...document.querySelectorAll('[data-ricerca="riga"]')].slice(0, 4).map(r => (r.textContent || '').trim().slice(0, 60))`,
+  )
+  console.log(`  risultati: ${righe} · riepilogo: "${meta}" · evidenziati nell anteprima: ${evidenziati}`)
+  console.log(`  primi risultati: ${JSON.stringify(titoli)}`)
+  check('la ricerca trova qualcosa nelle strutture', righe > 0)
+  check('il riepilogo dice risultati e tempo', /\d+ risultati? · \d+ ms/.test(meta))
+
+  // anteprima di uno SCRIPT: si sceglie un risultato su una stored procedure e si guarda lo
+  // script con i numeri di riga, il match evidenziato e la riga trovata in risalto
+  await page.clickWhere(
+    `[...document.querySelectorAll('[data-ricerca="riga"]')].find(r => (r.textContent || '').includes('Stored procedure'))`,
+  )
+  await sleep(2500)
+  const anteprima = await page.eval(`(() => {
+    const p = document.querySelector('[data-ricerca="anteprima"]');
+    if (!p) return null;
+    const righeScript = [...p.querySelectorAll('[data-riga]')];
+    return {
+      righeScript: righeScript.length,
+      evidenziati: p.querySelectorAll('mark').length,
+      rigaInRisalto: righeScript.some(r => (r.className || '').includes('bg-amber')),
+      apriInTab: [...p.querySelectorAll('button')].some(b => (b.textContent || '').includes('Apri in una tab')),
+    };
+  })()`)
+  console.log(`  anteprima dello script: ${JSON.stringify(anteprima)}`)
+  check('l anteprima mostra lo script completo dell oggetto', (anteprima?.righeScript ?? 0) > 5)
+  check('il match è evidenziato nello script', (anteprima?.evidenziati ?? 0) > 0)
+  check('la riga trovata è messa in risalto', anteprima?.rigaInRisalto === true)
+  check('dall anteprima si apre l oggetto in una tab', anteprima?.apriInTab === true)
+
+  // "anche nei dati": la ricerca scansiona le tabelle (limitatamente) e lo dichiara
+  await page.clickWhere(`document.querySelector('[data-ricerca="dati"]')`)
+  await sleep(400)
+  await page.clickWhere(`document.querySelector('[data-ricerca="cerca"]')`)
+  let metaDati = ''
+  for (let i = 0; i < 15; i++) {
+    await sleep(2000)
+    metaDati = await testo('[data-ricerca="meta"]')
+    if (/tabelle scandite su \d+/.test(metaDati) && !metaDati.includes('0 tabelle scandite')) break
+  }
+  console.log(`  con "anche nei dati": "${metaDati}"`)
+  check('con "anche nei dati" la ricerca scandisce le tabelle del database', /tabelle scandite su \d+/.test(metaDati))
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
 async function verifyLabels(page) {
   await page.waitFor(`document.querySelector('input')`, 10000)
   await page.clickWhere(
@@ -1996,6 +2096,11 @@ async function main() {
 
     if (VERIFY_TABTREE) {
       await verifyTabTree(page)
+      return
+    }
+
+    if (VERIFY_SEARCH) {
+      await verifySearch(page)
       return
     }
 

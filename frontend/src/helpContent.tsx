@@ -114,6 +114,11 @@ export const HELP_SECTIONS: HelpSection[] = [
         detail:
           'Il campo in alto cerca tabelle, viste, procedure, funzioni e trigger: gli spazi valgono come % (es. "dat udc" trova DAT_UDC).',
       },
+      {
+        title: 'Ricerca generale (stile Redgate SQL Search)',
+        detail:
+          'Pulsante "Cerca" in alto: cerca un testo qualunque nei NOMI e nelle DEFINIZIONI delle strutture (tabelle, viste, procedure, funzioni, trigger, vincoli CHECK/DEFAULT, colonne calcolate) e, spuntando "anche nei dati", anche nei VALORI delle colonne di testo delle tabelle. I risultati stanno sopra e l\u2019ANTEPRIMA sotto: per le routine compare lo script con il match evidenziato e la riga trovata, per le colonne la tabella con la colonna in evidenza, per i dati la riga trovata. La ricerca resta dentro il database attivo; la scansione dei dati è limitata (tabelle, tempo e righe per tabella) per non appesantire il database, e il riepilogo dice quante tabelle sono state lette.',
+      },
     ],
   },
   {

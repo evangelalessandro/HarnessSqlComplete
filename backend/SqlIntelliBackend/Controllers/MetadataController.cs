@@ -13,6 +13,7 @@ public class MetadataController(
     MetadataService metadata,
     MetadataCache cache,
     QueryService query,
+    SearchService search,
     ILogger<MetadataController> logger) : ControllerBase
 {
     private bool TryGetConnectionString(string connectionId, out string cs)
@@ -176,6 +177,24 @@ public class MetadataController(
             return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
         var results = await metadata.SearchAsync(cs, q, ct);
         return Ok(results);
+    }
+
+    /// <summary>
+    /// Ricerca testuale GENERALE nel database della connessione (stile Redgate SQL Search): cerca
+    /// il testo nei nomi e nelle definizioni degli oggetti e, con <c>data=true</c>, anche nei dati
+    /// delle colonne testuali. Il testo è sempre parametrizzato e solo in lettura.
+    /// </summary>
+    [HttpGet("text-search")]
+    public async Task<ActionResult<TextSearchResponse>> TextSearch(
+        [FromRoute] string connectionId,
+        [FromQuery] string? q,
+        [FromQuery] bool data = false,
+        CancellationToken ct = default)
+    {
+        if (!TryGetConnectionString(connectionId, out var cs))
+            return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
+        var result = await search.SearchAsync(cs, q, data, ct);
+        return Ok(result);
     }
 
     /// <summary>Report utilizzo tabelle: spazio riservato/usato/dati/indici, righe, indici e accessi (ordinabile lato client).</summary>
