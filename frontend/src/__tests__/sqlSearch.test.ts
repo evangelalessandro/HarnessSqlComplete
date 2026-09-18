@@ -1,9 +1,12 @@
 // Ricerca testuale generale (stile Redgate SQL Search): helper puri del pannello.
 import { describe, expect, it } from 'vitest'
 import {
+  canEdit,
   canPreviewColumns,
   canPreviewDefinition,
   countByKind,
+  editableKind,
+  editTabTitle,
   hitKey,
   hitTitle,
   kindLabel,
@@ -105,6 +108,31 @@ describe('titolo, chiave e anteprima', () => {
     expect(canPreviewColumns('computed')).toBe(true)
     expect(canPreviewColumns('procedure')).toBe(false)
     expect(canPreviewColumns('data')).toBe(false)
+  })
+
+  it('si possono MODIFICARE (CREATE OR ALTER) solo routine, viste e trigger', () => {
+    expect(canEdit('procedure')).toBe(true)
+    expect(canEdit('function')).toBe(true)
+    expect(canEdit('view')).toBe(true)
+    expect(canEdit('trigger')).toBe(true)
+    expect(canEdit('table')).toBe(false)
+    expect(canEdit('column')).toBe(false)
+    expect(canEdit('constraint')).toBe(false)
+    expect(canEdit('data')).toBe(false)
+  })
+
+  it('editableKind traduce il tipo per "Modifica" (null se non è modificabile)', () => {
+    expect(editableKind('procedure')).toBe('procedure')
+    expect(editableKind('function')).toBe('function')
+    expect(editableKind('view')).toBe('view')
+    expect(editableKind('trigger')).toBe('trigger')
+    expect(editableKind('data')).toBeNull()
+    expect(editableKind('column')).toBeNull()
+  })
+
+  it('titolo della tab aperta in modifica', () => {
+    expect(editTabTitle(hit({ name: 'ws_X' }), 'alter')).toBe('CREATE OR ALTER ws_X')
+    expect(editTabTitle(hit({ schema: 'AD', name: 'ws_X' }), 'open')).toBe('AD.ws_X')
   })
 
   it('riconosce la tabella di una colonna dal detail del backend', () => {

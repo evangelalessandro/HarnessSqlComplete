@@ -90,6 +90,25 @@ export function canPreviewColumns(kind: TextSearchHit['kind']): boolean {
   return kind === 'table' || kind === 'column' || kind === 'computed'
 }
 
+/**
+ * True se l'oggetto trovato si può MODIFICARE dalla ricerca (CREATE OR ALTER in una tab),
+ * come la voce "Modifica" del tasto destro nell'albero: routine, viste e trigger.
+ */
+export function canEdit(kind: TextSearchHit['kind']): boolean {
+  return kind === 'procedure' || kind === 'function' || kind === 'view' || kind === 'trigger'
+}
+
+/** Tipo di oggetto accettato da "Modifica" (le altre hit non sono modificabili da qui). */
+export function editableKind(kind: TextSearchHit['kind']): 'procedure' | 'function' | 'view' | 'trigger' | null {
+  return canEdit(kind) ? (kind as 'procedure' | 'function' | 'view' | 'trigger') : null
+}
+
+/** Etichetta del tipo per il titolo della tab aperta in modifica. */
+export function editTabTitle(hit: TextSearchHit, mode: 'alter' | 'open'): string {
+  const prefisso = mode === 'alter' ? 'CREATE OR ALTER ' : ''
+  return `${prefisso}${hit.schema === 'dbo' ? hit.name : `${hit.schema}.${hit.name}`}`
+}
+
 /** Tabella a cui appartiene un risultato su colonna (dal `detail` del backend). */
 export function tableOfHit(hit: TextSearchHit): string {
   if (hit.kind === 'table') return hit.name

@@ -1516,14 +1516,80 @@ async function verifySearch(page) {
       righeScript: righeScript.length,
       evidenziati: p.querySelectorAll('mark').length,
       rigaInRisalto: righeScript.some(r => (r.className || '').includes('bg-amber')),
-      apriInTab: [...p.querySelectorAll('button')].some(b => (b.textContent || '').includes('Apri in una tab')),
+      modifica: !!p.querySelector('[data-ricerca="modifica"]'),
+      definizione: !!p.querySelector('[data-ricerca="definizione"]'),
+      diagramma: !!p.querySelector('[data-ricerca="diagramma"]'),
     };
   })()`)
   console.log(`  anteprima dello script: ${JSON.stringify(anteprima)}`)
   check('l anteprima mostra lo script completo dell oggetto', (anteprima?.righeScript ?? 0) > 5)
   check('il match è evidenziato nello script', (anteprima?.evidenziati ?? 0) > 0)
   check('la riga trovata è messa in risalto', anteprima?.rigaInRisalto === true)
-  check('dall anteprima si apre l oggetto in una tab', anteprima?.apriInTab === true)
+  check('dalla ricerca si può MODIFICARE (pulsante Modifica)', anteprima?.modifica === true)
+  check('c è anche "Apri definizione" e il diagramma chiamate', anteprima?.definizione === true && anteprima?.diagramma === true)
+
+  // MODIFICA dall'anteprima: si apre CREATE OR ALTER in una tab FIGLIA di quella attiva
+  const tabsPrima = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  await page.clickWhere(`document.querySelector('[data-ricerca="modifica"]')`)
+  await sleep(2200)
+  const tabModifica = await page.eval(`(() => {
+    const t = [...document.querySelectorAll('.sql-tab')].pop();
+    return t ? {
+      titolo: ((t.querySelector('button') || t).textContent || '').trim(),
+      rientro: Math.round(parseFloat(getComputedStyle(t).marginLeft) || 0),
+      figlia: !!t.querySelector('svg.lucide-corner-down-right'),
+    } : null;
+  })()`)
+  const tabsDopo = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  console.log(`  dopo "Modifica": ${JSON.stringify(tabModifica)} (tab: ${tabsPrima} → ${tabsDopo})`)
+  check('"Modifica" apre una tab in più', tabsDopo === tabsPrima + 1)
+  check('la tab aperta è CREATE OR ALTER dell oggetto', (tabModifica?.titolo ?? '').startsWith('CREATE OR ALTER '))
+  check('la tab di modifica nasce FIGLIA (gerarchia)', tabModifica?.rientro === 12 && tabModifica?.figlia === true)
+
+  // TASTO DESTRO su un risultato: menu con "Modifica"
+  const puntoRiga = await page.eval(`(() => {
+    const r = [...document.querySelectorAll('[data-ricerca="riga"]')].find(x => (x.textContent || '').includes('Stored procedure'));
+    if (!r) return null;
+    const b = r.getBoundingClientRect();
+    return { x: b.left + 40, y: b.top + b.height / 2 };
+  })()`)
+  if (puntoRiga) {
+    await page.clickPoint(puntoRiga.x, puntoRiga.y, 'right')
+    await sleep(600)
+  }
+  const menuMostrato = await page.eval(`!!document.querySelector('[data-ricerca="menu-modifica"]')`)
+  const tabsPrimaMenu = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  if (menuMostrato) {
+    await page.clickWhere(`document.querySelector('[data-ricerca="menu-modifica"]')`)
+    await sleep(2200)
+  }
+  const tabsDopoMenu = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  const titoloMenu = await page.eval(
+    `(() => { const t = [...document.querySelectorAll('.sql-tab')].pop(); return t ? ((t.querySelector('button') || t).textContent || '').trim() : ''; })()`,
+  )
+  console.log(`  tasto destro sul risultato: menu=${menuMostrato} → "${titoloMenu}" (tab: ${tabsPrimaMenu} → ${tabsDopoMenu})`)
+  check('il tasto destro su un risultato mostra "Modifica"', menuMostrato === true)
+  check('"Modifica" dal menu apre CREATE OR ALTER in una tab', tabsDopoMenu === tabsPrimaMenu + 1 && titoloMenu.startsWith('CREATE OR ALTER '))
+
+  // anche una FUNZIONE si modifica dalla ricerca
+  const sceltaFunzione = await page.clickWhere(
+    `[...document.querySelectorAll('[data-ricerca="riga"]')].find(r => (r.textContent || '').includes('Funzione'))`,
+  )
+  await sleep(2500)
+  const tabsPrimaFn = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  const modificaFn = await page.eval(`!!document.querySelector('[data-ricerca="modifica"]')`)
+  let titoloFn = ''
+  if (modificaFn) {
+    await page.clickWhere(`document.querySelector('[data-ricerca="modifica"]')`)
+    await sleep(2500)
+    titoloFn = await page.eval(
+      `(() => { const t = [...document.querySelectorAll('.sql-tab')].pop(); return t ? ((t.querySelector('button') || t).textContent || '').trim() : ''; })()`,
+    )
+  }
+  const tabsDopoFn = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  console.log(`  funzione scelta: ${sceltaFunzione === true} · modifica: ${modificaFn} → "${titoloFn}" (tab: ${tabsPrimaFn} → ${tabsDopoFn})`)
+  check('una FUNZIONE trovata si può modificare (pulsante Modifica)', modificaFn === true)
+  check('"Modifica" su una funzione apre CREATE OR ALTER in una tab', tabsDopoFn === tabsPrimaFn + 1 && titoloFn.startsWith('CREATE OR ALTER '))
 
   // "anche nei dati": la ricerca scansiona le tabelle (limitatamente) e lo dichiara
   await page.clickWhere(`document.querySelector('[data-ricerca="dati"]')`)

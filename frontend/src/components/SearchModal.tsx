@@ -4,13 +4,24 @@
 // La ricerca è ristretta al database della connessione attiva: nessuna query su altri database.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ArrowUpRight, Database as DbIcon, Loader2, Search, X } from 'lucide-react'
+import {
+  AlertTriangle,
+  Database as DbIcon,
+  FileCode2,
+  Loader2,
+  Pencil,
+  Search,
+  Share2,
+  X,
+} from 'lucide-react'
 import { api } from '../api'
 import { Badge, inputClass } from './ui'
 import {
+  canEdit,
   canPreviewColumns,
   canPreviewDefinition,
   countByKind,
+  editableKind,
   hitKey,
   hitTitle,
   kindLabel,
@@ -31,7 +42,13 @@ interface Props {
   onClose: () => void
   /** Apre l'oggetto trovato in una nuova tab (figlia di quella attiva), come dal tasto destro. */
   onOpenObject: (kind: 'procedure' | 'function' | 'view' | 'trigger', schema: string, name: string, mode: 'alter' | 'open') => void
+  /** Apre il diagramma delle chiamate della routine trovata. */
+  onShowCallGraph?: (schema: string, name: string, kind: 'procedure' | 'function') => void
 }
+
+/** Voce del menu col tasto destro sui risultati. */
+const VOCE_MENU =
+  'flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-zinc-200 transition-colors hover:bg-zinc-800'
 
 /** Evidenzia le occorrenze del testo cercato dentro una riga. */
 function Evidenzia({ testo, cerca }: { testo: string; cerca: string }) {
@@ -50,13 +67,15 @@ function Evidenzia({ testo, cerca }: { testo: string; cerca: string }) {
   )
 }
 
-export default function SearchModal({ connectionId, database, summary, onClose, onOpenObject }: Props) {
+export default function SearchModal({ connectionId, database, summary, onClose, onOpenObject, onShowCallGraph }: Props) {
   const [testo, setTesto] = useState('')
   const [conDati, setConDati] = useState(false)
   const [esito, setEsito] = useState<TextSearchResult | null>(null)
   const [cercando, setCercando] = useState(false)
   const [errore, setErrore] = useState<string | null>(null)
   const [scelto, setScelto] = useState<TextSearchHit | null>(null)
+  /** Menu col tasto destro su un risultato (stile SSMS): Modifica / Apri definizione / Diagramma. */
+  const [menu, setMenu] = useState<{ hit: TextSearchHit; x: number; y: number } | null>(null)
   // definizione dell'oggetto scelto (per l'anteprima), caricata su richiesta
   const [definizione, setDefinizione] = useState<{ testo: string; caricando: boolean; errore: string | null }>({
     testo: '',
@@ -98,6 +117,20 @@ export default function SearchModal({ connectionId, database, summary, onClose, 
       setCercando(false)
     }
   }, [testo, conDati, connectionId])
+
+  /**
+   * MODIFICA dalla ricerca: apre la stored procedure / funzione / vista / trigger in una tab,
+   * con la stessa azione della voce "Modifica" del tasto destro nell'albero
+   * ('alter' = CREATE OR ALTER, 'open' = definizione originale). La tab nasce figlia di quella attiva.
+   */
+  const apri = useCallback(
+    (hit: TextSearchHit, mode: 'alter' | 'open') => {
+      const kind = editableKind(hit.kind)
+      if (!kind) return
+      onOpenObject(kind, hit.schema, hit.name, mode)
+    },
+    [onOpenObject],
+  )
 
   // l'anteprima della definizione si carica quando si sceglie un oggetto con script
   useEffect(() => {
@@ -217,6 +250,17 @@ export default function SearchModal({ connectionId, database, summary, onClose, 
                   key={hitKey(h)}
                   data-ricerca="riga"
                   onClick={() => setScelto(h)}
+                  onDoubleClick={() => apri(h, 'alter')}
+                  onContextMenu={e => {
+                    e.preventDefault()
+                    setScelto(h)
+                    setMenu({
+                      hit: h,
+                      x: Math.min(e.clientX, window.innerWidth - 260),
+                      y: Math.min(e.clientY, window.innerHeight - 170),
+                    })
+                  }}
+                  title={canEdit(h.kind) ? 'Doppio clic: Modifica (CREATE OR ALTER) — tasto destro: azioni' : undefined}
                   className={`flex w-full items-start gap-2 border-b border-zinc-800/60 px-3 py-1.5 text-left transition-colors ${
                     attivo ? 'bg-sky-950/50' : 'hover:bg-zinc-800/50'
                   }`}
@@ -250,21 +294,37 @@ export default function SearchModal({ connectionId, database, summary, onClose, 
 
             {scelto && canPreviewDefinition(scelto.kind) && (
               <>
-                <div className="mb-2 flex items-center gap-2">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
                   <span className="font-mono text-xs text-zinc-300">{hitTitle(scelto)}</span>
-                  <button
-                    onClick={() =>
-                      onOpenObject(
-                        scelto.kind === 'view' ? 'view' : scelto.kind === 'trigger' ? 'trigger' : scelto.kind === 'function' ? 'function' : 'procedure',
-                        scelto.schema,
-                        scelto.name,
-                        'alter',
-                      )
-                    }
-                    className="flex items-center gap-1 rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 hover:bg-zinc-800"
-                  >
-                    <ArrowUpRight className="h-3 w-3" /> Apri in una tab
-                  </button>
+                  {canEdit(scelto.kind) && (
+                    <>
+                      <button
+                        data-ricerca="modifica"
+                        onClick={() => apri(scelto, 'alter')}
+                        className="flex items-center gap-1 rounded bg-sky-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-sky-500"
+                        title="Modifica: apre CREATE OR ALTER in una nuova tab (figlia di quella attiva)"
+                      >
+                        <Pencil className="h-3 w-3" /> Modifica
+                      </button>
+                      <button
+                        data-ricerca="definizione"
+                        onClick={() => apri(scelto, 'open')}
+                        className="flex items-center gap-1 rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 hover:bg-zinc-800"
+                        title="Apre la definizione originale (CREATE) in una nuova tab"
+                      >
+                        <FileCode2 className="h-3 w-3" /> Apri definizione
+                      </button>
+                    </>
+                  )}
+                  {onShowCallGraph && (scelto.kind === 'procedure' || scelto.kind === 'function') && (
+                    <button
+                      data-ricerca="diagramma"
+                      onClick={() => onShowCallGraph(scelto.schema, scelto.name, scelto.kind as 'procedure' | 'function')}
+                      className="flex items-center gap-1 rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 hover:bg-zinc-800"
+                    >
+                      <Share2 className="h-3 w-3" /> Diagramma chiamate
+                    </button>
+                  )}
                 </div>
                 {definizione.caricando && (
                   <p className="flex items-center gap-2 text-xs text-zinc-500">
@@ -354,6 +414,71 @@ export default function SearchModal({ connectionId, database, summary, onClose, 
             )}
           </div>
         </div>
+
+        {/* Tasto destro su un risultato: Modifica (CREATE OR ALTER) / Apri definizione / Diagramma */}
+        {menu && (
+          <>
+            <div
+              className="fixed inset-0 z-[75]"
+              onClick={() => setMenu(null)}
+              onContextMenu={e => {
+                e.preventDefault()
+                setMenu(null)
+              }}
+            />
+            <div
+              className="fixed z-[80] min-w-60 rounded-md border border-zinc-700 bg-zinc-900 py-1 shadow-2xl"
+              style={{ left: menu.x, top: menu.y }}
+            >
+              <div className="truncate border-b border-zinc-800 px-3 pb-1.5 pt-1 font-mono text-[11px] text-zinc-400">
+                {hitTitle(menu.hit)}
+              </div>
+              {canEdit(menu.hit.kind) ? (
+                <>
+                  <button
+                    data-ricerca="menu-modifica"
+                    className={VOCE_MENU}
+                    onClick={() => {
+                      const h = menu.hit
+                      setMenu(null)
+                      apri(h, 'alter')
+                    }}
+                  >
+                    <Pencil className="h-3.5 w-3.5" /> Modifica (CREATE OR ALTER)
+                  </button>
+                  <button
+                    data-ricerca="menu-definizione"
+                    className={VOCE_MENU}
+                    onClick={() => {
+                      const h = menu.hit
+                      setMenu(null)
+                      apri(h, 'open')
+                    }}
+                  >
+                    <FileCode2 className="h-3.5 w-3.5" /> Apri definizione
+                  </button>
+                  {(menu.hit.kind === 'procedure' || menu.hit.kind === 'function') && onShowCallGraph && (
+                    <button
+                      data-ricerca="menu-diagramma"
+                      className={VOCE_MENU}
+                      onClick={() => {
+                        const h = menu.hit
+                        setMenu(null)
+                        onShowCallGraph(h.schema, h.name, h.kind as 'procedure' | 'function')
+                      }}
+                    >
+                      <Share2 className="h-3.5 w-3.5" /> Diagramma chiamate
+                    </button>
+                  )}
+                </>
+              ) : (
+                <div className="px-3 py-1.5 text-[11px] text-zinc-500">
+                  Per questo risultato non c’è una definizione da modificare.
+                </div>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   )

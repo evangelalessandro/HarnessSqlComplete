@@ -123,8 +123,10 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   nei **nomi** e nelle **definizioni** delle strutture (tabelle, viste, routine, vincoli, colonne
   calcolate) e — con "anche nei dati" — nei **valori** delle colonne di testo. Risultati sopra e
   **anteprima sotto** (script con il match evidenziato e la riga trovata, colonne della tabella, riga di
-  dati trovata). Resta dentro il **database attivo** e la scansione dei dati è limitata (tabelle, tempo,
-  righe per tabella) per non appesantire il database.
+  dati trovata). Da un risultato su procedura/funzione/vista/trigger si può **modificare** l'oggetto
+  (pulsante "Modifica", doppio clic o tasto destro → menu: CREATE OR ALTER in una tab, figlia di quella
+  attiva; più "Apri definizione" e "Diagramma chiamate"). Resta dentro il **database attivo** e la
+  scansione dei dati è limitata (tabelle, tempo, righe per tabella) per non appesantire il database.
 - **Report utilizzo tabelle**: spazio riservato/usato, righe, indici, accessi.
 
 ### Diagramma delle chiamate
@@ -398,9 +400,11 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
 - **Full-text search** ("Cerca" button in the header, Redgate SQL Search style): any text searched in
   object **names** and **definitions** (tables, views, routines, constraints, computed columns) and — with
   "anche nei dati" — in the **values** of text columns. Results on top and a **preview below** (script with
-  the match highlighted and the matching line, table columns, matching data row). It stays inside the
-  **active database**, and the data scan is bounded (tables, time, rows per table) to keep the database
-  responsive.
+  the match highlighted and the matching line, table columns, matching data row). From a
+  procedure/function/view/trigger result you can **edit** the object ("Modifica" button, double click or
+  right-click menu: CREATE OR ALTER in a tab, child of the active one; plus "Apri definizione" and
+  "Diagramma chiamate"). It stays inside the **active database**, and the data scan is bounded (tables,
+  time, rows per table) to keep the database responsive.
 - **Table usage report**: reserved/used space, rows, indexes, reads and writes.
 
 ### Call graph

@@ -1683,6 +1683,11 @@ export default function App() {
           onOpenObject={(kind, schema, name, mode) =>
             void handleOpenObject(kind, schema, name, mode, undefined, true)
           }
+          onShowCallGraph={(schema, name, kind) => {
+            // il diagramma è una finestra: si chiude la ricerca per non coprirla
+            setSearchOpen(false)
+            openCallGraph(schema, name, kind)
+          }}
         />
       )}
 
