@@ -183,11 +183,10 @@ function escapeSnippet(text: string): string {
 
 /**
  * SNIPPET "DROP COLUMN sicuro" (richiesta utente): elimina la colonna dopo aver tolto i vincoli
- * collegati (DEFAULT/CHECK sulla colonna, CHECK di tabella che la citano, chiavi esterne uscenti,
- * PK/UNIQUE fatte sulla sola colonna) e controlla che la colonna esista ancora. Segnala anche le
- * chiavi esterne di ALTRE tabelle che puntano alla colonna (quelle vanno valutate a mano).
- * Il nome della tabella è già quello dello statement; il nome della colonna è un segnaposto
- * ripetuto: scrivendolo una volta si riempie in tutte le righe.
+ * collegati (DEFAULT/CHECK sulla colonna, CHECK che la citano, chiavi esterne uscenti, PK/UNIQUE
+ * fatte sulla sola colonna) e controlla che la colonna esista ancora.
+ * Il nome della tabella è già quello dello statement; la colonna è dichiarata in UNA variabile
+ * (@colonna, il segnaposto si scrive una volta sola) e usata sotto da tutte le query.
  */
 export function dropColumnSnippet(tabella: string): string {
   const t = quotedQualifiedName(tabella)
@@ -195,7 +194,9 @@ export function dropColumnSnippet(tabella: string): string {
   // ${1:colonna} si mette DOPO, altrimenti verrebbe protetto come testo normale.
   const col = '__COLONNA__'
   const sql = `/* DROP COLUMN sicuro: prima i vincoli collegati, controllando che la colonna esista */
-IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'${t}') AND name = N'${col}')
+DECLARE @colonna SYSNAME = N'${col}'; /* nome senza parentesi quadre: le aggiunge QUOTENAME */
+
+IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'${t}') AND name = @colonna)
 BEGIN
   DECLARE @drop NVARCHAR(MAX) = N'';
 
@@ -203,47 +204,37 @@ BEGIN
   SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(dc.name) + N';' + CHAR(10)
   FROM sys.default_constraints dc
     INNER JOIN sys.columns c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id
-  WHERE dc.parent_object_id = OBJECT_ID(N'${t}') AND c.name = N'${col}';
+  WHERE dc.parent_object_id = OBJECT_ID(N'${t}') AND c.name = @colonna;
 
   /* CHECK che citano la colonna: a livello colonna O di tabella (il filtro e' sulla
      definizione: sys.objects NON ha parent_column_id, si usano le viste dei vincoli) */
   SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(cc.name) + N';' + CHAR(10)
   FROM sys.check_constraints cc
-  WHERE cc.parent_object_id = OBJECT_ID(N'${t}') AND cc.definition LIKE N'%${col}%';
+  WHERE cc.parent_object_id = OBJECT_ID(N'${t}') AND cc.definition LIKE N'%' + @colonna + N'%';
 
   /* chiavi esterne USCENTI che usano la colonna */
   SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(fk.name) + N';' + CHAR(10)
   FROM sys.foreign_key_columns fkc
     INNER JOIN sys.foreign_keys fk ON fk.object_id = fkc.constraint_object_id
-  WHERE fkc.parent_object_id = OBJECT_ID(N'${t}') AND COL_NAME(fkc.parent_object_id, fkc.parent_column_id) = N'${col}';
+  WHERE fkc.parent_object_id = OBJECT_ID(N'${t}') AND COL_NAME(fkc.parent_object_id, fkc.parent_column_id) = @colonna;
 
   /* PK / UNIQUE fatte sulla SOLA colonna */
   SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(kc.name) + N';' + CHAR(10)
   FROM sys.key_constraints kc
     INNER JOIN sys.index_columns ic ON ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id
   WHERE kc.parent_object_id = OBJECT_ID(N'${t}') AND ic.is_included_column = 0
-    AND COL_NAME(ic.object_id, ic.column_id) = N'${col}'
+    AND COL_NAME(ic.object_id, ic.column_id) = @colonna
   GROUP BY kc.name
   HAVING COUNT(*) = 1;
 
+  /* la colonna: DROP COLUMN non accetta variabili, quindi entra nello script dinamico */
+  SET @drop = @drop + N'ALTER TABLE ${t} DROP COLUMN ' + QUOTENAME(@colonna) + N';' + CHAR(10);
+
   IF @drop <> N''
     EXEC sp_executesql @drop;
-
-  ALTER TABLE ${t} DROP COLUMN [${col}];
 END
 ELSE
-  PRINT N'Colonna ${col} non presente in ${t}: niente da fare.';
-
-/* ALTRE tabelle che puntano a questa colonna: vanno sistemate a mano (il DROP COLUMN
-   altrimenti fallisce). L'elenco esce nel messaggio della PRINT qui sotto. */
-DECLARE @puntano NVARCHAR(MAX) = N'';
-SELECT @puntano = @puntano + N'  ' + fk.name + N' su ' + OBJECT_SCHEMA_NAME(fk.parent_object_id) + N'.'
-                + OBJECT_NAME(fk.parent_object_id) + CHAR(10)
-FROM sys.foreign_key_columns fkc
-  INNER JOIN sys.foreign_keys fk ON fk.object_id = fkc.constraint_object_id
-WHERE fkc.referenced_object_id = OBJECT_ID(N'${t}') AND COL_NAME(fkc.referenced_object_id, fkc.referenced_column_id) = N'${col}';
-IF @puntano <> N''
-  PRINT N'ATTENZIONE: altre tabelle puntano a questa colonna:' + CHAR(10) + @puntano;`
+  PRINT N'Colonna ' + @colonna + N' non presente in ${t}: niente da fare.';`
   // prima si protegge il testo, poi si mette il segnaposto (così resta un segnaposto vero,
   // ripetuto: scrivendo la colonna una volta si riempie in tutte le righe)
   return escapeSnippet(sql).split(col).join('${1:colonna}')

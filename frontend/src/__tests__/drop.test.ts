@@ -121,8 +121,10 @@ describe('detectAlterTableDropContext', () => {
 describe('SNIPPET "DROP COLUMN sicuro" (vincoli collegati + controllo esistenza)', () => {
   const snippet = dropColumnSnippet('dbo.DAT_UDC')
 
-  it('controlla che la colonna esista ancora', () => {
+  it('controlla che la colonna esista ancora usando la variabile', () => {
+    expect(snippet).toContain("DECLARE @colonna SYSNAME = N'${1:colonna}'")
     expect(snippet).toContain('IF EXISTS (SELECT 1 FROM sys.columns')
+    expect(snippet).toContain('AND name = @colonna')
     expect(snippet).toContain("OBJECT_ID(N'[dbo].[DAT_UDC]')")
     expect(snippet).toContain('PRINT N')
   })
@@ -136,26 +138,26 @@ describe('SNIPPET "DROP COLUMN sicuro" (vincoli collegati + controllo esistenza)
     expect(snippet).toContain('sys.check_constraints')
     expect(snippet).toContain('sys.foreign_key_columns')
     expect(snippet).toContain('sys.key_constraints')
-    expect(snippet).toContain('ALTER TABLE [dbo].[DAT_UDC] DROP COLUMN')
+    // la colonna entra nello script dinamico (DROP COLUMN non accetta variabili)
+    expect(snippet).toContain("N'ALTER TABLE [dbo].[DAT_UDC] DROP COLUMN ' + QUOTENAME(@colonna)")
   })
 
   it('i CHECK si riconoscono dalla definizione (livello colonna o tabella)', () => {
-    expect(snippet).toContain('cc.definition LIKE')
+    expect(snippet).toContain("cc.definition LIKE N'%' + @colonna + N'%'")
     // il filtro "parent_column_id = 0" avrebbe escluso i CHECK di livello colonna
     expect(snippet).not.toContain('cc.parent_column_id = 0')
   })
 
-  it('segnala le chiavi esterne di ALTRE tabelle che puntano alla colonna', () => {
-    expect(snippet).toContain('altre tabelle puntano a questa colonna')
-    expect(snippet).toContain('referenced_object_id')
-  })
-
-  it('il nome della colonna è UN segnaposto ripetuto (si scrive una volta sola)', () => {
+  it('il nome della colonna è UNA variabile: il segnaposto si scrive una volta sola', () => {
     const segnaposti = snippet.match(/\$\{1:colonna\}/g) ?? []
-    expect(segnaposti.length).toBeGreaterThan(5)
-    // non ci sono altri segnaposti (nessun ${2…}) e il token interno è stato sostituito
+    expect(segnaposti).toHaveLength(1)
     expect(snippet).not.toContain('__COLONNA__')
-    expect(snippet).not.toMatch(/\$\{2/)
+    // e sotto si usa sempre la variabile, mai il valore ripetuto
+    expect((snippet.match(/@colonna/g) ?? []).length).toBeGreaterThan(4)
+    // niente più blocco finale sulle chiavi esterne di altre tabelle (richiesta utente)
+    expect(snippet).not.toContain('@puntano')
+    expect(snippet).not.toContain('referenced_object_id')
+    expect(snippet.trimEnd().endsWith('niente da fare.\';')).toBe(true)
   })
 
   it('accetta anche il nome con parentesi quadre e senza schema', () => {

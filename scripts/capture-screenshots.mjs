@@ -1890,28 +1890,32 @@ async function verifyDrop(page) {
   if (trovatoSnippet) {
     await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
     await sleep(600)
-    await page.typeText('UDC_PROVA') // riempie il segnaposto della colonna (ripetuto)
+    await page.typeText('UDC_PROVA') // riempie il segnaposto: la colonna è una variabile
     await sleep(800)
     const inizio = await righeEditor()
     console.log('  snippet inserito (inizio):')
     inizio.slice(0, 12).forEach(r => console.log(`    |${r}`))
     const testoInizio = inizio.join('\n')
+    check('lo snippet dichiara la colonna in una VARIABILE', /DECLARE @colonna SYSNAME = N'UDC_PROVA'/.test(testoInizio))
     check('lo snippet controlla che la colonna esista', /IF EXISTS \(SELECT 1 FROM sys\.columns/.test(testoInizio))
     check('lo snippet lavora sulla tabella dello statement', testoInizio.includes("OBJECT_ID(N'[dbo].[DAT_UDC]')"))
     check('lo snippet toglie i vincoli prima della colonna', /DROP CONSTRAINT/.test(testoInizio))
     check(
-      'il nome della colonna è ripetuto dal segnaposto',
-      (testoInizio.match(/UDC_PROVA/g) ?? []).length >= 2,
+      'sotto si usa la variabile, non il valore ripetuto',
+      (testoInizio.match(/@colonna/g) ?? []).length >= 2 &&
+        !/c\.name = N'UDC_PROVA'/.test(testoInizio) &&
+        !/definition LIKE N'%UDC_PROVA/.test(testoInizio),
     )
     check('lo statement originale è stato sostituito', !testoInizio.includes('ALTER TABLE dbo.DAT_UDC DROP COLUMN'))
-    // in fondo allo snippet: il DROP COLUMN e l avviso sulle altre tabelle
+    // in fondo allo snippet: il DROP COLUMN dinamico e la PRINT quando la colonna non c'è
     await page.press('End', { code: 'End', vk: 35, modifiers: 2 })
     await sleep(600)
     const fine = (await righeEditor()).join('\n')
     console.log('  snippet inserito (fine):')
     ;(await righeEditor()).slice(-8).forEach(r => console.log(`    |${r}`))
-    check('in fondo c è il DROP COLUMN con la colonna', /DROP COLUMN \[UDC_PROVA\]/.test(fine))
-    check('segnala le chiavi esterne di altre tabelle', /altre tabelle puntano a questa colonna/.test(fine))
+    check('in fondo il DROP COLUMN usa QUOTENAME(@colonna)', /DROP COLUMN ' \+ QUOTENAME\(@colonna\)/.test(fine))
+    check('la parte finale è la PRINT della colonna mancante', /niente da fare/.test(fine))
+    check('la parte finale non ha più il blocco delle FK entranti', !/referenced_object_id|@puntano|altre tabelle puntano/.test(fine))
   }
 
   // 6) le query di CATALOGO dello snippet girano davvero sul database collegato: si eseguono
