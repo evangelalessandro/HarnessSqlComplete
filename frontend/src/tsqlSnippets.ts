@@ -157,11 +157,11 @@ const NOME_PARZIALE = '(?:\\[[^\\]]*|[A-Za-z_][A-Za-z0-9_]*)'
 
 export type AlterTableDropContext =
   /** Subito dopo "… DROP " (o con la parola chiave a metà): si propongono COLUMN e CONSTRAINT. */
-  | { kind: 'keywords' }
+  | { kind: 'keywords'; senzaTable?: boolean; tableAt?: number }
   /** Dopo "… DROP COLUMN " (o a metà del nome): si propongono le colonne della tabella. */
-  | { kind: 'column'; schema: string; table: string }
+  | { kind: 'column'; schema: string; table: string; senzaTable?: boolean; tableAt?: number }
   /** Dopo "… DROP CONSTRAINT ": si propongono i vincoli della tabella (CHECK, FK, PK, UNIQUE…). */
-  | { kind: 'constraint'; schema: string; table: string }
+  | { kind: 'constraint'; schema: string; table: string; senzaTable?: boolean; tableAt?: number }
 
 /** Divide "dbo.T" / "[dbo].[T]" in schema e tabella (schema '' se non indicato). */
 export function splitQualifiedName(nome: string): { schema: string; table: string } {
@@ -297,18 +297,35 @@ export function vincoliCollegati(
  * - "DROP " (anche "DROP COL") → COLUMN / CONSTRAINT;
  * - "DROP COLUMN [nome…]" → colonne della tabella;
  * - "DROP CONSTRAINT [nome…]" → vincoli della tabella.
+ * La parola TABLE può mancare ("ALTER DAT_SPEDIZIONI DROP CONSTRAINT", come capita di scrivere):
+ * in quel caso il contesto viene riconosciuto lo stesso e `senzaTable`/`tableAt` dicono al
+ * chiamante dove inserirla per correggere lo statement.
  */
 export function detectAlterTableDropContext(textBefore: string): AlterTableDropContext | null {
-  const col = new RegExp(`ALTER\\s+TABLE\\s+(${NOME_TABELLA})\\s+DROP\\s+COLUMN(?:\\s+${NOME_PARZIALE})?\\s*$`, 'i').exec(textBefore)
-  if (col) return { kind: 'column', ...splitQualifiedName(col[1]) }
-  const con = new RegExp(`ALTER\\s+TABLE\\s+(${NOME_TABELLA})\\s+DROP\\s+CONSTRAINT(?:\\s+${NOME_PARZIALE})?\\s*$`, 'i').exec(textBefore)
-  if (con) return { kind: 'constraint', ...splitQualifiedName(con[1]) }
-  if (new RegExp(`ALTER\\s+TABLE\\s+(${NOME_TABELLA})\\s+DROP\\s*$`, 'i').test(textBefore)) return { kind: 'keywords' }
+  // "ALTER TABLE" oppure "ALTER" + nome (ma non ALTER PROCEDURE/VIEW/INDEX/...)
+  const testa = `ALTER\\s+(?:TABLE\\s+)?(?!(?:PROCEDURE|PROC|VIEW|FUNCTION|TRIGGER|INDEX|SCHEMA|DATABASE|SERVER|ASSEMBLY|ROLE|USER|LOGIN|PARTITION|COLUMN)\\b)`
+  const varianti: { kind: AlterTableDropContext['kind']; re: RegExp }[] = [
+    { kind: 'column', re: new RegExp(`${testa}(${NOME_TABELLA})\\s+DROP\\s+COLUMN(?:\\s+${NOME_PARZIALE})?\\s*$`, 'i') },
+    { kind: 'constraint', re: new RegExp(`${testa}(${NOME_TABELLA})\\s+DROP\\s+CONSTRAINT(?:\\s+${NOME_PARZIALE})?\\s*$`, 'i') },
+    { kind: 'keywords', re: new RegExp(`${testa}(${NOME_TABELLA})\\s+DROP\\s*$`, 'i') },
+  ]
+  const conNome = (kind: AlterTableDropContext['kind'], m: RegExpExecArray): AlterTableDropContext => {
+    const senzaTable = !/^ALTER\s+TABLE\b/i.test(m[0])
+    const tableAt = m.index + m[0].indexOf(m[1])
+    const nome = splitQualifiedName(m[1])
+    if (kind === 'column') return { kind: 'column', ...nome, senzaTable, tableAt }
+    if (kind === 'constraint') return { kind: 'constraint', ...nome, senzaTable, tableAt }
+    return { kind: 'keywords', senzaTable, tableAt }
+  }
+  for (const v of varianti) {
+    const m = v.re.exec(textBefore)
+    if (m) return conNome(v.kind, m)
+  }
   // parola chiave a metà ("DROP COL", "DROP CONS"): solo COLUMN/CONSTRAINT
-  const parz = new RegExp(`ALTER\\s+TABLE\\s+(${NOME_TABELLA})\\s+DROP\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*$`, 'i').exec(textBefore)
+  const parz = new RegExp(`${testa}(${NOME_TABELLA})\\s+DROP\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*$`, 'i').exec(textBefore)
   if (parz) {
     const u = parz[2].toUpperCase()
-    if ('COLUMN'.startsWith(u) || 'CONSTRAINT'.startsWith(u)) return { kind: 'keywords' }
+    if ('COLUMN'.startsWith(u) || 'CONSTRAINT'.startsWith(u)) return conNome('keywords', parz)
   }
   return null
 }

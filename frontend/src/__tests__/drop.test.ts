@@ -42,24 +42,24 @@ const nomi = (sql: string, summary: DatabaseSummary = base) =>
 
 describe('detectAlterTableDropContext', () => {
   it('DROP da solo (o parola chiave a metà) → COLUMN / CONSTRAINT', () => {
-    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP ')).toEqual({ kind: 'keywords' })
-    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP')).toEqual({ kind: 'keywords' })
-    expect(detectAlterTableDropContext('alter table dbo.T drop COL')).toEqual({ kind: 'keywords' })
-    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP CONS')).toEqual({ kind: 'keywords' })
+    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP ')).toMatchObject({ kind: 'keywords' })
+    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP')).toMatchObject({ kind: 'keywords' })
+    expect(detectAlterTableDropContext('alter table dbo.T drop COL')).toMatchObject({ kind: 'keywords' })
+    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP CONS')).toMatchObject({ kind: 'keywords' })
   })
 
   it('DROP COLUMN → la tabella (anche con nome parziale già digitato)', () => {
-    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP COLUMN ')).toEqual({
+    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP COLUMN ')).toMatchObject({
       kind: 'column',
       schema: 'dbo',
       table: 'T',
     })
-    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP COLUMN')).toEqual({
+    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP COLUMN')).toMatchObject({
       kind: 'column',
       schema: 'dbo',
       table: 'T',
     })
-    expect(detectAlterTableDropContext('ALTER TABLE [dbo].[T] DROP COLUMN [COL')).toEqual({
+    expect(detectAlterTableDropContext('ALTER TABLE [dbo].[T] DROP COLUMN [COL')).toMatchObject({
       kind: 'column',
       schema: 'dbo',
       table: 'T',
@@ -67,20 +67,38 @@ describe('detectAlterTableDropContext', () => {
   })
 
   it('DROP CONSTRAINT → la tabella', () => {
-    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP CONSTRAINT ')).toEqual({
+    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP CONSTRAINT ')).toMatchObject({
       kind: 'constraint',
       schema: 'dbo',
       table: 'T',
     })
-    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP CONSTRAINT CK_x')).toEqual({
+    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP CONSTRAINT CK_x')).toMatchObject({
       kind: 'constraint',
       schema: 'dbo',
       table: 'T',
     })
   })
 
+  it('SENZA la parola TABLE (caso segnalato) il contesto si riconosce lo stesso', () => {
+    const senza = detectAlterTableDropContext('ALTER DAT_SPEDIZIONI DROP CONSTRAINT ')
+    expect(senza).toMatchObject({ kind: 'constraint', schema: '', table: 'DAT_SPEDIZIONI', senzaTable: true })
+    expect(senza?.tableAt).toBe(6) // dove inserire "TABLE " ("ALTER " = 6 caratteri)
+    expect(detectAlterTableDropContext('ALTER DAT_SPEDIZIONI DROP COLUMN ')).toMatchObject({
+      kind: 'column',
+      table: 'DAT_SPEDIZIONI',
+      senzaTable: true,
+    })
+    // con TABLE non c'è nulla da correggere
+    expect(detectAlterTableDropContext('ALTER TABLE dbo.T DROP COLUMN ')).toMatchObject({ senzaTable: false })
+  })
+
+  it('ALTER seguito da altri oggetti non è un contesto DROP di tabella', () => {
+    expect(detectAlterTableDropContext('ALTER PROCEDURE p AS SELECT 1 DROP COLUMN ')).toBeNull()
+    expect(detectAlterTableDropContext('ALTER VIEW v AS SELECT 1 DROP CONSTRAINT ')).toBeNull()
+  })
+
   it('senza schema la tabella resta senza schema (si cerca per nome)', () => {
-    expect(detectAlterTableDropContext('ALTER TABLE T DROP COLUMN ')).toEqual({
+    expect(detectAlterTableDropContext('ALTER TABLE T DROP COLUMN ')).toMatchObject({
       kind: 'column',
       schema: '',
       table: 'T',
@@ -274,6 +292,28 @@ describe('suggerimenti nel provider', () => {
 
   it('una tabella sconosciuta non svuota il popup', () => {
     expect(nomi('ALTER TABLE dbo.NonEsiste DROP COLUMN ').length).toBeGreaterThan(0)
+  })
+
+  it('senza la parola TABLE: propone i vincoli E lo aggiunge accettando il suggerimento', () => {
+    const res = suggest('ALTER Ordini DROP CONSTRAINT ', conVincoli)
+    const voci = (res?.suggestions ?? []).map(s => String(s.label))
+    expect(voci).toContain('CK_Ordini_totale')
+    expect(voci).toContain('PK_Ordini')
+    // ogni voce inserisce "TABLE " dopo ALTER, così lo statement diventa valido
+    const voce = res!.suggestions.find(s => String(s.label) === 'PK_Ordini')!
+    const edits = (voce as { additionalTextEdits?: { range: monaco.IRange; text: string }[] }).additionalTextEdits ?? []
+    expect(edits).toHaveLength(1)
+    expect(edits[0].text).toBe('TABLE ')
+    expect(edits[0].range.startColumn).toBe(7) // subito dopo "ALTER "
+    expect(String(voce.detail)).toContain('manca TABLE')
+  })
+
+  it('senza TABLE anche le colonne si propongono e lo statement viene corretto', () => {
+    const res = suggest('ALTER DAT_UDC DROP COLUMN U')
+    expect((res?.suggestions ?? []).map(s => String(s.label))).toContain('UDC_UDC')
+    const voce = res!.suggestions.find(s => String(s.label) === 'UDC_UDC')!
+    const edits = (voce as { additionalTextEdits?: { text: string }[] }).additionalTextEdits ?? []
+    expect(edits[0]?.text).toBe('TABLE ')
   })
 
   it('subito dopo "ALTER TABLE t " continuano a proporsi gli snippet (non le colonne)', () => {

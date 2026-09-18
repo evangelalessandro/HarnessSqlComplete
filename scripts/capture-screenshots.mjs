@@ -1941,6 +1941,33 @@ async function verifyDrop(page) {
   console.log(`  marcatore eseguito e visibile: ${paginaMarker.includes('PROVA_EXEC_123')}`)
   check('l esecuzione delle query e la lettura dei risultati funzionano', paginaMarker.includes('PROVA_EXEC_123'))
 
+  // 7) caso segnalato: una tabella reale scritta SENZA schema ("ALTER TABLE DAT_SPEDIZIONI …")
+  await scrivi('ALTER TABLE DAT_SPEDIZIONI DROP CONSTRAINT P')
+  const vincoliSped = minuscole(await vociPopup())
+  console.log(`  DAT_SPEDIZIONI · DROP CONSTRAINT P: ${JSON.stringify(vincoliSped.slice(0, 4))}`)
+  check('senza schema: propone i vincoli della tabella', vincoliSped.some(v => v.includes('pk_dat_spedizioni')))
+
+  await scrivi('ALTER TABLE DAT_SPEDIZIONI DROP COLUMN S')
+  const colonneSped = minuscole(await vociPopup())
+  console.log(`  DAT_SPEDIZIONI · DROP COLUMN S: ${JSON.stringify(colonneSped.slice(0, 4))}`)
+  check('senza schema: propone le colonne della tabella', colonneSped.some(v => v.startsWith('spe_')))
+
+  // 8) SENZA la parola TABLE (caso segnalato): stessi suggerimenti + correzione automatica
+  await scrivi('ALTER DAT_SPEDIZIONI DROP CONSTRAINT P')
+  const vociSenzaTable = await righePopupConDettaglio()
+  console.log(`  senza "TABLE" · DROP CONSTRAINT P: ${JSON.stringify(vociSenzaTable.slice(0, 3))}`)
+  check('senza TABLE propone lo stesso i vincoli della tabella', vociSenzaTable.some(v => /pk_dat_spedizioni/i.test(v)))
+  check('senza TABLE avvisa che lo aggiunge', vociSenzaTable.some(v => /manca TABLE/i.test(v)))
+  await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
+  await sleep(900)
+  const rigaSenzaTable =
+    (await righeEditor()).map(r => r.trim()).find(r => r.includes('DAT_SPEDIZIONI')) ?? ''
+  console.log(`  riga dopo la conferma: ${JSON.stringify(rigaSenzaTable)}`)
+  check(
+    'accettando il suggerimento lo statement diventa "ALTER TABLE …"',
+    /^ALTER TABLE DAT_SPEDIZIONI DROP CONSTRAINT \[?PK_DAT_SPEDIZIONI\]?$/i.test(rigaSenzaTable),
+  )
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

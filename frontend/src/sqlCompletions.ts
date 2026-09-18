@@ -258,21 +258,38 @@ export function provideSqlCompletions({
             // (come SSMS: dopo DROP COLUMN si propongono i campi, dopo DROP CONSTRAINT i vincoli)
             const dropCtx = detectAlterTableDropContext(textBefore)
             if (dropCtx) {
+              // Se manca la parola TABLE ("ALTER DAT_SPEDIZIONI DROP …", come capita di
+              // scrivere) la si aggiunge accettando il suggerimento: il testo diventa valido.
+              const correzioneTable =
+                dropCtx.senzaTable && dropCtx.tableAt !== undefined
+                  ? [
+                      {
+                        range: (() => {
+                          const p = model.getPositionAt(dropCtx.tableAt!)
+                          return new monaco.Range(p.lineNumber, p.column, p.lineNumber, p.column)
+                        })(),
+                        text: 'TABLE ',
+                      },
+                    ]
+                  : undefined
+              const notaTable = correzioneTable ? 'manca TABLE: lo aggiungo io · ' : ''
               if (dropCtx.kind === 'keywords') {
                 push({
                   label: 'COLUMN',
-                  detail: 'Rimuove una colonna della tabella',
+                  detail: `${notaTable}Rimuove una colonna della tabella`,
                   kind: monaco.languages.CompletionItemKind.Keyword,
                   insertText: 'COLUMN ',
                   range,
+                  additionalTextEdits: correzioneTable,
                   filterText: 'COLUMN',
                 })
                 push({
                   label: 'CONSTRAINT',
-                  detail: 'Rimuove un vincolo (CHECK, FOREIGN KEY, PRIMARY KEY, UNIQUE…)',
+                  detail: `${notaTable}Rimuove un vincolo (CHECK, FOREIGN KEY, PRIMARY KEY, UNIQUE…)`,
                   kind: monaco.languages.CompletionItemKind.Keyword,
                   insertText: 'CONSTRAINT ',
                   range,
+                  additionalTextEdits: correzioneTable,
                   filterText: 'CONSTRAINT',
                 })
                 return { suggestions }
@@ -294,7 +311,7 @@ export function provideSqlCompletions({
                 const inizioParola = model.getPositionAt(Math.max(stmtRange.start, cursorOffset - (word.word?.length ?? 0)))
                 push({
                   label: 'DROP COLUMN sicuro (vincoli + controllo esistenza)',
-                  detail: 'Toglie prima i vincoli collegati e controlla che la colonna esista: IF EXISTS + DROP COLUMN',
+                  detail: `${notaTable}Toglie prima i vincoli collegati e controlla che la colonna esista: IF EXISTS + DROP COLUMN`,
                   documentation: {
                     value: [
                       '**DROP COLUMN sicuro** — sostituisce lo statement con uno script che:',
@@ -321,6 +338,7 @@ export function provideSqlCompletions({
                       ),
                       text: '',
                     },
+                    ...(correzioneTable ?? []),
                   ],
                   filterText: 'DROP COLUMN sicuro vincoli controllo esistenza if exists snippet',
                 })
@@ -336,7 +354,7 @@ export function provideSqlCompletions({
                   push({
                     label: c.name,
                     detail: [
-                      columnTypeText(c.dataType, c.isNullable),
+                      notaTable + columnTypeText(c.dataType, c.isNullable).trim(),
                       inPk ? 'chiave primaria: va tolta prima' : null,
                       collegati.length ? `vincoli collegati: ${collegati.map(v => v.name).join(', ')}` : null,
                     ]
@@ -346,6 +364,7 @@ export function provideSqlCompletions({
                     kind: monaco.languages.CompletionItemKind.Field,
                     insertText: sqlIdent(c.name),
                     range,
+                    additionalTextEdits: correzioneTable,
                     filterText: c.name,
                   })
                 }
@@ -356,10 +375,11 @@ export function provideSqlCompletions({
                   if (dropCtx.schema && cc.schema.toLowerCase() !== dropCtx.schema.toLowerCase()) continue
                   push({
                     label: cc.name,
-                    detail: `CHECK ${cc.definition}${cc.isDisabled ? ' · disabilitato' : ''}`,
+                    detail: `${notaTable}CHECK ${cc.definition}${cc.isDisabled ? ' · disabilitato' : ''}`,
                     kind: monaco.languages.CompletionItemKind.Constant,
                     insertText: sqlIdent(cc.name),
                     range,
+                    additionalTextEdits: correzioneTable,
                     filterText: cc.name,
                   })
                 }
@@ -368,10 +388,11 @@ export function provideSqlCompletions({
                   if (dropCtx.schema && fk.schema.toLowerCase() !== dropCtx.schema.toLowerCase()) continue
                   push({
                     label: fk.name,
-                    detail: `FOREIGN KEY ${fk.column} → ${fk.refSchema}.${fk.refTable}.${fk.refColumn}`,
+                    detail: `${notaTable}FOREIGN KEY ${fk.column} → ${fk.refSchema}.${fk.refTable}.${fk.refColumn}`,
                     kind: monaco.languages.CompletionItemKind.Constant,
                     insertText: sqlIdent(fk.name),
                     range,
+                    additionalTextEdits: correzioneTable,
                     filterText: fk.name,
                   })
                 }
@@ -379,10 +400,11 @@ export function provideSqlCompletions({
                   if (!ix.isPrimaryKey && !ix.isUnique) continue
                   push({
                     label: ix.name,
-                    detail: `${ix.isPrimaryKey ? 'PRIMARY KEY' : 'UNIQUE'}${ix.columns?.length ? ` (${ix.columns.join(', ')})` : ''}`,
+                    detail: `${notaTable}${ix.isPrimaryKey ? 'PRIMARY KEY' : 'UNIQUE'}${ix.columns?.length ? ` (${ix.columns.join(', ')})` : ''}`,
                     kind: monaco.languages.CompletionItemKind.Constant,
                     insertText: sqlIdent(ix.name),
                     range,
+                    additionalTextEdits: correzioneTable,
                     filterText: ix.name,
                   })
                 }
