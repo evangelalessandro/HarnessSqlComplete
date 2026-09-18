@@ -9,7 +9,7 @@ import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
-import { buildTabClosePlan, countClosableTabs, insertTabAt } from './tabOps'
+import { buildTabClosePlan, countClosableTabs, insertTabAt, searchTabIndex } from './tabOps'
 import {
   MAX_TAB_DEPTH,
   childParentFor,
@@ -37,7 +37,7 @@ import { QueryStatsBadge, QueryStatsModal } from './components/QueryStatsPanel'
 import { hasErrorMessage, messageRevealLine, errorObjectsFor, routineStartLine } from './sqlMessages'
 import type { ErrorObjectRef } from './sqlMessages'
 import CallGraphModal from './components/CallGraphModal'
-import SearchModal from './components/SearchModal'
+import SearchPanel from './components/SearchPanel'
 import type { CallGraphTarget } from './components/CallGraphModal'
 import LoginScreen from './components/LoginScreen'
 import Sidebar from './components/Sidebar'
@@ -85,8 +85,6 @@ export default function App() {
    * (richiesta utente). `childIds` sono tutte le discendenti ancora aperte.
    */
   const [closeConfirm, setCloseConfirm] = useState<{ id: string; childIds: string[] } | null>(null)
-  /** Pannello di RICERCA GENERALE nel database (stile Redgate SQL Search). */
-  const [searchOpen, setSearchOpen] = useState(false)
   /**
    * Riga su cui portare il cursore quando si apre un oggetto da un errore
    * (es. "Procedura ws_X, Riga 42"): la consuma l'effetto che carica il testo della tab.
@@ -407,6 +405,8 @@ export default function App() {
     if (!editor) return
     const tabId = activeEditorTab
     const tab = editorTabs.find(t => t.id === tabId)
+    // la tab di ricerca non usa Monaco: niente testo da sincronizzare
+    if (tab?.kind === 'search') return
     if (tab && editor.getValue() !== tab.sql) editor.setValue(tab.sql)
     // Apertura di un oggetto DA UN ERRORE: il cursore va sulla riga indicata da SQL Server,
     // così si vede subito dove ha fallito ("Procedura X, Riga N").
@@ -443,8 +443,10 @@ export default function App() {
 
   const saveActiveEditor = useCallback(() => {
     if (!editor) return
+    // la tab di RICERCA non ha editor: non c'è niente da salvare (e l'editor non è montato)
+    if (editorTabs.find(t => t.id === activeEditorTab)?.kind === 'search') return
     setEditorTabs(prev => prev.map(t => (t.id === activeEditorTab ? { ...t, sql: editor.getValue() } : t)))
-  }, [editor, activeEditorTab])
+  }, [editor, activeEditorTab, editorTabs])
 
   /** Cambia database della connessione (e lo lega alla tab indicata o a quella attiva). */
   const switchDatabase = useCallback(
@@ -525,6 +527,39 @@ export default function App() {
     },
     [editorTabs, activeEditorTab, connection],
   )
+
+  /**
+   * RICERCA GENERALE: si apre in una TAB (come gli altri strumenti), non in una finestra.
+   * Se la tab di ricerca esiste già la si riporta in primo piano, senza duplicarla.
+   */
+  const openSearchTab = useCallback(() => {
+    const idx = searchTabIndex(editorTabs)
+    if (idx >= 0) {
+      switchEditorTab(editorTabs[idx].id)
+      return
+    }
+    saveActiveEditor()
+    if (editorTabs.length === 0) tabCounter.current = 1
+    const tab: EditorTab = {
+      id: `tab-${tabCounter.current++}`,
+      title: 'Ricerca',
+      icon: '🔎',
+      sql: '',
+      pinned: false,
+      database: connection?.database ?? '',
+      kind: 'search',
+    }
+    setEditorTabs(prev => insertTabAt(prev, tab, activeEditorTab, newTabPositionRef.current))
+    setActiveEditorTab(tab.id)
+  }, [editorTabs, activeEditorTab, connection, saveActiveEditor, switchEditorTab])
+
+  /** La tab attiva è il pannello di ricerca? (nell'area editor si mostra lui, non Monaco) */
+  const activeTabIsSearch = editorTabs.find(t => t.id === activeEditorTab)?.kind === 'search'
+
+  // Tornando dalle tab di ricerca, Monaco è stato nascosto: si ricalcola la sua impaginazione.
+  useEffect(() => {
+    if (!activeTabIsSearch) editor?.layout()
+  }, [activeTabIsSearch, editor])
 
   /** GAMIFICATION: dimentica le statistiche delle tab chiuse. */
   const forgetTabStats = useCallback(
@@ -1181,9 +1216,9 @@ export default function App() {
           <RefreshCw className={`h-4 w-4 ${summaryReloading ? 'animate-spin' : ''}`} /> Aggiorna schema
         </button>
         <button
-          onClick={() => setSearchOpen(true)}
+          onClick={openSearchTab}
           className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
-          title={`Ricerca testuale nel database ${connection.database}: nomi, definizioni e (opzionale) dati`}
+          title={`Ricerca testuale nel database ${connection.database}: nomi, definizioni e (opzionale) dati — si apre in una tab`}
         >
           <Search className="h-4 w-4" /> Cerca
         </button>
@@ -1457,7 +1492,11 @@ export default function App() {
             }}
             title={`Query su database: ${activeDbName} — trascina il divisore sotto per ridimensionare`}
           >
-            {activeEditorTab ? (
+            {/* La ricerca vive in una TAB: il pannello resta MONTATO (nascosto quando non è la
+                tab attiva) così i risultati non si perdono passando da una tab all'altra.
+                L'editor Monaco resta montato per la stessa ragione. */}
+            <div className={`h-full min-h-0 ${activeTabIsSearch ? 'hidden' : ''}`}>
+              {activeEditorTab ? (
               <SqlEditor
                 connectionId={connection.connectionId}
                 summary={summary}
@@ -1483,17 +1522,33 @@ export default function App() {
                 }
                 onShowCallGraph={(kind, schema, name) => openCallGraph(schema, name, kind)}
               />
-            ) : (
-              <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-zinc-600">
-                <FilePlus2 className="h-8 w-8 text-zinc-700" />
-                <p>Nessuna query aperta.</p>
-                <button
-                  onClick={() => newEditorTab()}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-sky-500"
-                >
-                  <FilePlus2 className="h-4 w-4" /> Nuova query
-                </button>
-                <p className="text-xs text-zinc-700">…oppure trascina un file .sql qui</p>
+              ) : (
+                <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-zinc-600">
+                  <FilePlus2 className="h-8 w-8 text-zinc-700" />
+                  <p>Nessuna query aperta.</p>
+                  <button
+                    onClick={() => newEditorTab()}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-sky-500"
+                  >
+                    <FilePlus2 className="h-4 w-4" /> Nuova query
+                  </button>
+                  <p className="text-xs text-zinc-700">…oppure trascina un file .sql qui</p>
+                </div>
+              )}
+            </div>
+
+            {/* RICERCA GENERALE (stile Redgate SQL Search): risultati sopra, anteprima sotto */}
+            {searchTabIndex(editorTabs) >= 0 && connection && (
+              <div className={`h-full min-h-0 ${activeTabIsSearch ? '' : 'hidden'}`}>
+                <SearchPanel
+                  connectionId={connection.connectionId}
+                  database={connection.database}
+                  summary={summary}
+                  onOpenObject={(kind, schema, name, mode) =>
+                    void handleOpenObject(kind, schema, name, mode, undefined, true)
+                  }
+                  onShowCallGraph={(schema, name, kind) => openCallGraph(schema, name, kind)}
+                />
               </div>
             )}
           </div>
@@ -1673,24 +1728,6 @@ export default function App() {
           </div>
         </div>
       )}
-      {/* RICERCA GENERALE nel database (stile Redgate SQL Search): risultati + anteprima sotto */}
-      {searchOpen && connection && (
-        <SearchModal
-          connectionId={connection.connectionId}
-          database={connection.database}
-          summary={summary}
-          onClose={() => setSearchOpen(false)}
-          onOpenObject={(kind, schema, name, mode) =>
-            void handleOpenObject(kind, schema, name, mode, undefined, true)
-          }
-          onShowCallGraph={(schema, name, kind) => {
-            // il diagramma è una finestra: si chiude la ricerca per non coprirla
-            setSearchOpen(false)
-            openCallGraph(schema, name, kind)
-          }}
-        />
-      )}
-
       {/* Chiusura di una tab con figlie aperte: si chiede se chiudere anche loro (tasto destro
           o "×" passano da qui) */}
       {closeConfirm &&

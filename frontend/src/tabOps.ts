@@ -102,3 +102,11 @@ export function newTabIndex(tabs: EditorTab[], activeId: string): number {
 export function insertTabAfterActive(tabs: EditorTab[], tab: EditorTab, activeId: string): EditorTab[] {
   return insertTabAt(tabs, tab, activeId, 'afterActive')
 }
+
+/**
+ * Indice della tab di RICERCA già aperta (-1 se non c'è): la ricerca vive in una tab e non va
+ * duplicata — se c'è, la si riporta semplicemente in primo piano.
+ */
+export function searchTabIndex(tabs: EditorTab[]): number {
+  return tabs.findIndex(t => t.kind === 'search')
+}

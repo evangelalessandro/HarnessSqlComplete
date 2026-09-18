@@ -6,11 +6,34 @@ import {
   insertTabAt,
   newTabIndex,
   newTabIndexFor,
+  searchTabIndex,
 } from '../tabOps'
 import type { EditorTab } from '../types'
 import appSource from '../App.tsx?raw'
 
 const tab = (id: string, pinned = false): EditorTab => ({ id, title: id, sql: '', pinned })
+
+describe('tab di RICERCA (la ricerca si apre in una tab, non in una finestra)', () => {
+  it('searchTabIndex trova la tab di ricerca e -1 se non c\'è', () => {
+    const tabs = [tab('A'), { ...tab('R'), kind: 'search' as const }, tab('B')]
+    expect(searchTabIndex(tabs)).toBe(1)
+    expect(searchTabIndex([tab('A'), tab('B')])).toBe(-1)
+    expect(searchTabIndex([])).toBe(-1)
+  })
+
+  it('una tab di query (kind assente) non viene scambiata per la ricerca', () => {
+    expect(searchTabIndex([{ ...tab('A'), kind: 'query' }, tab('B')])).toBe(-1)
+  })
+
+  it('App: la ricerca vive in una tab e non in una finestra modale', () => {
+    // il pannello è renderizzato dentro l'area dell'editor quando la tab attiva è la ricerca
+    expect(appSource).toContain('activeTabIsSearch')
+    expect(appSource).toContain('<SearchPanel')
+    // niente più finestra modale della ricerca
+    expect(appSource).not.toContain('SearchModal')
+    expect(appSource).not.toContain('setSearchOpen')
+  })
+})
 
 describe('TAB: chiusure multiple in stile SSMS (tasto destro)', () => {
   const tabs = [

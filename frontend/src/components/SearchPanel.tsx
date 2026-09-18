@@ -39,7 +39,8 @@ interface Props {
   database: string
   /** Sommario dello schema: serve per l'anteprima delle tabelle e delle colonne. */
   summary: DatabaseSummary | null
-  onClose: () => void
+  /** Chiude la ricerca (la tab si chiude con la sua "×"): se assente non c'è il pulsante. */
+  onClose?: () => void
   /** Apre l'oggetto trovato in una nuova tab (figlia di quella attiva), come dal tasto destro. */
   onOpenObject: (kind: 'procedure' | 'function' | 'view' | 'trigger', schema: string, name: string, mode: 'alter' | 'open') => void
   /** Apre il diagramma delle chiamate della routine trovata. */
@@ -67,7 +68,7 @@ function Evidenzia({ testo, cerca }: { testo: string; cerca: string }) {
   )
 }
 
-export default function SearchModal({ connectionId, database, summary, onClose, onOpenObject, onShowCallGraph }: Props) {
+export default function SearchPanel({ connectionId, database, summary, onClose, onOpenObject, onShowCallGraph }: Props) {
   const [testo, setTesto] = useState('')
   const [conDati, setConDati] = useState(false)
   const [esito, setEsito] = useState<TextSearchResult | null>(null)
@@ -89,13 +90,7 @@ export default function SearchModal({ connectionId, database, summary, onClose, 
     inputRef.current?.focus()
   }, [])
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  // La ricerca vive in una TAB: non si chiude con Esc (si chiude con la "×" della tab).
 
   const cerca = useCallback(async () => {
     const q = testo.trim()
@@ -171,11 +166,11 @@ export default function SearchModal({ connectionId, database, summary, onClose, 
   const righeDefinizione = useMemo(() => definizione.testo.split('\n'), [definizione.testo])
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div
-        className="flex h-[80vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl"
-        onClick={e => e.stopPropagation()}
-      >
+    <div
+      data-ricerca="pannello"
+      className="flex h-full min-h-0 flex-col overflow-hidden border border-zinc-800 bg-zinc-900"
+    >
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {/* intestazione */}
         <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2">
           <Search className="h-4 w-4 text-sky-400" />
@@ -184,9 +179,11 @@ export default function SearchModal({ connectionId, database, summary, onClose, 
             <DbIcon className="h-3 w-3" />
             {database}
           </span>
-          <button onClick={onClose} className="ml-auto rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200" title="Chiudi (Esc)">
-            <X className="h-4 w-4" />
-          </button>
+          {onClose && (
+            <button onClick={onClose} className="ml-auto rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200" title="Chiudi la ricerca">
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
 
         {/* barra di ricerca */}

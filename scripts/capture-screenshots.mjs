@@ -1496,20 +1496,50 @@ async function verifySearch(page) {
   }
   const testo = sel => page.eval(`(document.querySelector(${JSON.stringify(sel)})?.textContent || '').trim()`)
 
+  /** La ricerca vive in una TAB: aprendo un oggetto si cambia tab, quindi si torna qui
+   *  cliccando il TITOLO della tab (non il centro, che può cadere su un altro pulsante). */
+  const tornaAllaRicerca = async () => {
+    const ok = await page.clickWhere(
+      `(() => { const t = [...document.querySelectorAll('.sql-tab')].find(x => (x.textContent || '').includes('Ricerca')); return t ? t.querySelector('button') : null; })()`,
+    )
+    await sleep(900)
+    const attiva = await page.eval(`!!document.querySelector('[data-ricerca="pannello"]')`)
+    console.log(`  ritorno alla tab di ricerca: ${ok} · pannello visibile: ${attiva}`)
+    return ok && attiva
+  }
+
   const dbAttivo = await page.eval(`document.querySelector('select')?.value || ''`)
+  const tabsPrimaDellaRicerca = await page.eval(`document.querySelectorAll('.sql-tab').length`)
   const aperto = await page.clickWhere(
     `[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('Ricerca testuale nel database'))`,
   )
   await sleep(900)
   const pannello = await page.eval(`!!document.querySelector('[data-ricerca="meta"]')`)
-  const testoPannello = await page.eval(`(() => {
+  const statoRicerca = await page.eval(`(() => {
     const m = document.querySelector('[data-ricerca="meta"]');
-    const modale = m ? m.closest('.fixed') : null;
-    return modale ? (modale.textContent || '') : '';
+    const contenitore = m ? m.closest('[data-ricerca="pannello"]') : null;
+    const tabRicerca = [...document.querySelectorAll('.sql-tab')].find(t => (t.textContent || '').includes('Ricerca'));
+    return {
+      testo: contenitore ? (contenitore.textContent || '') : '',
+      inModale: !!(contenitore && contenitore.closest('.fixed')),
+      tabRicerca: tabRicerca ? (tabRicerca.textContent || '').trim() : null,
+      attiva: tabRicerca ? tabRicerca.className.includes('border-b-zinc-900') : false,
+    };
   })()`)
-  console.log(`  database attivo: ${dbAttivo} — pannello mostrato: ${pannello}`)
+  console.log(
+    `  database attivo: ${dbAttivo} — pannello: ${pannello} — tab di ricerca: ${JSON.stringify(statoRicerca.tabRicerca)}`,
+  )
   check('il pannello di ricerca si apre', aperto === true && pannello === true)
-  check('il pannello è ristretto al database attivo', dbAttivo.length > 0 && testoPannello.includes(dbAttivo))
+  check('la ricerca si apre in una TAB e non in una finestra', statoRicerca.inModale === false && !!statoRicerca.tabRicerca)
+  check('la tab della ricerca è quella attiva', statoRicerca.attiva === true)
+  check(
+    'la tab di ricerca NON viene duplicata riaprendola',
+    (await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('Ricerca testuale nel database'))`,
+    )) === true &&
+      (await sleep(600), (await page.eval(`document.querySelectorAll('.sql-tab').length`)) === tabsPrimaDellaRicerca + 1),
+  )
+  check('il pannello è ristretto al database attivo', dbAttivo.length > 0 && statoRicerca.testo.includes(dbAttivo))
 
   // cerca un nome di colonna che esiste davvero (usato dallo schema del database attivo)
   await page.eval(`(() => {
@@ -1577,6 +1607,7 @@ async function verifySearch(page) {
   check('la tab di modifica nasce FIGLIA (gerarchia)', tabModifica?.rientro === 12 && tabModifica?.figlia === true)
 
   // TASTO DESTRO su un risultato: menu con "Modifica"
+  await tornaAllaRicerca()
   const puntoRiga = await page.eval(`(() => {
     const r = [...document.querySelectorAll('[data-ricerca="riga"]')].find(x => (x.textContent || '').includes('Stored procedure'));
     if (!r) return null;
@@ -1602,6 +1633,7 @@ async function verifySearch(page) {
   check('"Modifica" dal menu apre CREATE OR ALTER in una tab', tabsDopoMenu === tabsPrimaMenu + 1 && titoloMenu.startsWith('CREATE OR ALTER '))
 
   // anche una FUNZIONE si modifica dalla ricerca
+  await tornaAllaRicerca()
   const sceltaFunzione = await page.clickWhere(
     `[...document.querySelectorAll('[data-ricerca="riga"]')].find(r => (r.textContent || '').includes('Funzione'))`,
   )
@@ -1622,6 +1654,7 @@ async function verifySearch(page) {
   check('"Modifica" su una funzione apre CREATE OR ALTER in una tab', tabsDopoFn === tabsPrimaFn + 1 && titoloFn.startsWith('CREATE OR ALTER '))
 
   // "anche nei dati": la ricerca scansiona le tabelle (limitatamente) e lo dichiara
+  await tornaAllaRicerca()
   await page.clickWhere(`document.querySelector('[data-ricerca="dati"]')`)
   await sleep(400)
   await page.clickWhere(`document.querySelector('[data-ricerca="cerca"]')`)

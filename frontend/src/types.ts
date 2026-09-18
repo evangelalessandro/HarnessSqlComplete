@@ -333,4 +333,9 @@ export interface EditorTab {
    * Assente = tab principale ("in prima linea").
    */
   parentId?: string
+  /**
+   * Tipo di tab: `query` (editor SQL, il caso normale) oppure `search` (il pannello di
+   * RICERCA GENERALE nel database, che vive in una tab come gli altri strumenti).
+   */
+  kind?: 'query' | 'search'
 }
