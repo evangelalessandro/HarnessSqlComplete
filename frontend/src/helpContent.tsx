@@ -146,6 +146,11 @@ export const HELP_SECTIONS: HelpSection[] = [
           'Mentre modifichi una stored procedure o una funzione (CREATE OR ALTER), scrivendo "@" l\u2019intellisense propone i PARAMETRI della firma (con il tipo, es. "nvarchar(255) · parametro della routine") INSIEME alle variabili dichiarate nel corpo (DECLARE): funziona con i parametri fra parentesi o senza, su più righe, con i valori di default, con lo stile "@param as tipo" e anche quando fra i parametri ci sono commenti (es. "/* da usare as default */"). Le voci si filtrano digitando parte del nome (@mI → @mId).',
       },
       {
+        title: 'Scrivere su più righe',
+        detail:
+          'Due modi, come in SSMS/VS Code. 1) PIÙ CURSORI: Ctrl+Alt+Giù (o Ctrl+Alt+Su) aggiunge un cursore alla riga sotto/sopra, Alt+clic ne aggiunge uno dove clicchi, Ctrl+D seleziona l\u2019occorrenza successiva: quello che scrivi finisce su TUTTI i cursori, e incollando più righe il testo si distribuisce su un cursore per riga. 2) SELEZIONE A BLOCCHI (pulsante "Scrittura su più righe" in alto, oppure Alt+C): trascinando col mouse si seleziona un RETTANGOLO di testo e quello che scrivi va su tutte le righe selezionate, nella stessa colonna; la scelta resta salvata anche dopo il riavvio.',
+      },
+      {
         title: 'Alias delle tabelle',
         detail:
           'Dando un alias a una tabella, scrivendo "alias." vengono proposti i suoi campi (anche nella select-list): vale anche per le tabelle temporanee (#tmp.) e per le CTE definite nel documento ("with c as (...) select * from c pippo where pippo."), anche con le parentesi quadre ([pippo].).',

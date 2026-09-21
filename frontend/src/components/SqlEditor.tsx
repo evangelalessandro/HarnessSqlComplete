@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import { Eraser, FolderOpen, IndentDecrease, IndentIncrease, MessageSquare, Moon, Play, Save, Settings2, Sun, Table2, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
 import monaco from '../monacoSetup'
@@ -23,6 +23,7 @@ import { registerSqlHover } from '../sqlHover'
 import { buildFormatProfile, loadFormatProfileXml } from '../formatProfile'
 import { formatSqlWithProfile } from '../tsqlFormatter'
 import { SQL_WORD_SEPARATORS } from '../editorOptions'
+import { BLOCCHI_KEY, opzioniMonaco, parseBlocchi, serializzaBlocchi } from '../blockMode'
 import FormatProfilePanel from './FormatProfilePanel'
 import { Badge, Button, Spinner, Toggle } from './ui'
 
@@ -131,6 +132,37 @@ export default function SqlEditor({
   const [profileOpen, setProfileOpen] = useState(false)
   // Verifica di sintassi opzionale (errori reali di SQL Server con "Riga N:")
   const [syntaxCheck, setSyntaxCheck] = useState(false)
+  /**
+   * SCRITTURA SU PIÙ RIGHE (selezione a blocchi, come Alt+C di SSMS): accesa, trascinando si
+   * seleziona un rettangolo e quello che si scrive finisce su tutte le righe selezionate.
+   */
+  const [blocchi, setBlocchi] = useState(() => {
+    try {
+      return parseBlocchi(localStorage.getItem(BLOCCHI_KEY))
+    } catch {
+      return false
+    }
+  })
+  const toggleBlocchi = useCallback(() => {
+    setBlocchi(v => {
+      const nuovo = !v
+      try {
+        localStorage.setItem(BLOCCHI_KEY, serializzaBlocchi(nuovo))
+      } catch {
+        /* localStorage non disponibile */
+      }
+      return nuovo
+    })
+  }, [])
+  // Il comando Alt+C è registrato al mount di Monaco: si passano i valori correnti con due ref.
+  const blocchiRef = useRef(blocchi)
+  blocchiRef.current = blocchi
+  const toggleBlocchiRef = useRef(toggleBlocchi)
+  toggleBlocchiRef.current = toggleBlocchi
+  // Accensione/spegnimento: l'opzione di Monaco va aggiornata a editor montato.
+  useEffect(() => {
+    editorRef.current?.updateOptions(opzioniMonaco(blocchi))
+  }, [blocchi])
   // Finestra anteprima dati della tabella sotto il cursore (F4)
   const [previewTarget, setPreviewTarget] = useState<{ schema: string; table: string } | null>(null)
   // tabella attualmente sotto l'hover (per il pulsante cliccabile nella tooltip)
@@ -273,6 +305,11 @@ export default function SqlEditor({
     registerEditor(editor)
     setEditor(editor)
     ensureColorizer()
+
+    // SCRITTURA SU PIÙ RIGHE: si parte dalla preferenza salvata (selezione a blocchi stile SSMS)
+    editor.updateOptions(opzioniMonaco(blocchiRef.current))
+    // Alt+C accende/spegne la selezione a blocchi, come in SSMS
+    editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.KeyC, () => toggleBlocchiRef.current?.())
 
     // Esegui: F5 e Ctrl+Invio (registra nella cronologia le tabelle usate)
     const runQuery = () => {
@@ -708,6 +745,13 @@ export default function SqlEditor({
             label="Verifica sintassi"
             title="Sottolinea gli errori reali di SQL Server (esegue il testo in una transazione che viene annullata — nessun effetto collaterale)"
           />
+          <Toggle
+            checked={blocchi}
+            onChange={toggleBlocchi}
+            label="Scrittura su più righe"
+            title="Selezione a BLOCCHI come in SSMS (Alt+C): trascina col mouse un rettangolo di testo e quello che scrivi va su TUTTE le righe selezionate. Per più cursori: Alt+clic oppure Ctrl+Alt+Giù / Ctrl+Alt+Su."
+            data-multiriga="blocchi"
+          />
           <Badge tone={aiConfigured ? 'emerald' : 'amber'}>{aiStatusText}</Badge>
         </div>
       </div>
@@ -731,6 +775,10 @@ export default function SqlEditor({
             minimap: { enabled: false },
             scrollBeyondLastLine: false,
             tabSize: 2,
+            // SCRITTURA SU PIÙ RIGHE: selezione a blocchi (stile SSMS) e Alt+clic per più cursori
+            columnSelection: blocchi,
+            multiCursorModifier: 'alt',
+            multiCursorPaste: 'spread',
             // doppio click: seleziona anche '@' e '#' iniziali (@var, @@ROWCOUNT, #tmp)
             wordSeparators: SQL_WORD_SEPARATORS,
             padding: { top: 10 },

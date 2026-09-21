@@ -50,6 +50,7 @@ const VERIFY_SIDEBAR = process.argv.includes('--verify-sidebar')
 const VERIFY_CHANGES = process.argv.includes('--verify-changes')
 const VERIFY_MERGE = process.argv.includes('--verify-merge')
 const VERIFY_PARAMS = process.argv.includes('--verify-params')
+const VERIFY_MULTIRIGA = process.argv.includes('--verify-multiriga')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -327,6 +328,23 @@ class Session {
     await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...common, buttons: 0 })
     await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...common, buttons })
     await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...common, buttons: 0 })
+  }
+  /**
+   * Trascinamento del mouse da un punto a un altro (per la selezione col mouse).
+   * `modifiers`: 0 nessuno, 1 Alt (selezione a BLOCCHI come SSMS).
+   */
+  async dragPoint(x1, y1, x2, y2, modifiers = 0) {
+    const base = { button: 'left', clickCount: 1, buttons: 1, modifiers }
+    await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(x1), y: Math.round(y1), button: 'none', buttons: 0, modifiers })
+    await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: Math.round(x1), y: Math.round(y1), ...base })
+    const passi = 8
+    for (let i = 1; i <= passi; i++) {
+      const x = x1 + ((x2 - x1) * i) / passi
+      const y = y1 + ((y2 - y1) * i) / passi
+      // eslint-disable-next-line no-await-in-loop
+      await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(x), y: Math.round(y), button: 'left', buttons: 1, modifiers })
+    }
+    await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: Math.round(x2), y: Math.round(y2), button: 'left', buttons: 0, modifiers })
   }
   /** Attende che una condizione JS diventi vera. */
   async waitFor(expression, timeoutMs = 15000, label = expression) {
@@ -1648,6 +1666,138 @@ async function verifyTabTree(page) {
   const tabsDopoGrafo2 = await page.eval(`document.querySelectorAll('.sql-tab').length`)
   console.log(`  tab dopo la riapertura dello stesso diagramma: ${tabsDopoGrafo2}`)
   check('lo stesso diagramma non viene duplicato', tabsDopoGrafo2 === tabsDopoGrafo)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-multiriga): SCRITTURA SU PIÙ RIGHE. Nello stesso punto di più righe si scrive
+ * insieme: con più cursori (Ctrl+Alt+Giù / Alt+clic) e in selezione a BLOCCHI (Alt+C, come SSMS:
+ * si trascina un rettangolo e si scrive su tutte le righe).
+ */
+async function verifyMultiriga(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  const righeEditor = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, ''))`)
+  const cursori = () =>
+    page.eval(`document.querySelectorAll('.monaco-editor .cursors-layer .cursor').length`)
+
+  /** Scrive un testo nell'editor (selezione tutto + scrittura). */
+  const scrivi = async (testo) => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(300)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(testo)
+    await sleep(600)
+  }
+
+  // ---------------------------------------------------------------- 1. più cursori (Ctrl+Alt+Giù)
+  await scrivi(['SELECT 1', 'SELECT 2', 'SELECT 3'].join('\n'))
+  await page.clickPoint(rect.x + 200, rect.y + 18) // riga 1
+  await page.press('Home', { code: 'Home', vk: 36 })
+  await sleep(300)
+  const prima = await cursori()
+  // Ctrl(2) + Alt(1) = modifiers 3 → "aggiungi cursore sotto"
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 3 })
+  await sleep(400)
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 3 })
+  await sleep(400)
+  const dopo = await cursori()
+  console.log(`  cursori: prima ${prima}, dopo Ctrl+Alt+Giù ${dopo}`)
+  check('Ctrl+Alt+Giù aggiunge un cursore per riga', dopo >= 3, `${dopo} cursori`)
+  await page.typeText('X')
+  await sleep(600)
+  const scritte = await righeEditor()
+  console.log(`  righe dopo aver scritto "X": ${JSON.stringify(scritte)}`)
+  check(
+    'scrivendo si scrive su TUTTE le righe con il cursore',
+    scritte.filter(r => r.startsWith('X')).length >= 3,
+    JSON.stringify(scritte.slice(0, 3)),
+  )
+
+  // ------------------------------------------------------- 2. selezione a BLOCCHI (Alt+C, stile SSMS)
+  /** Stato dell'interruttore "Scrittura su più righe". */
+  const statoBlocchi = () =>
+    page.eval(`(() => {
+      const b = document.querySelector('[data-multiriga="blocchi"]');
+      if (!b) return null;
+      return {
+        acceso: /bg-sky-600/.test(b.innerHTML),
+        testo: (b.textContent || '').trim(),
+        titolo: b.getAttribute('title') || '',
+      };
+    })()`)
+
+  /** Trascina dalla prima all'ultima riga selezionando la PRIMA colonna. */
+  const trascinaBlocco = async (righe = 3, modifiers = 0) => {
+    const p = await page.eval(`(() => {
+      const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')];
+      const a = linee[0], c = linee[${righe - 1}];
+      if (!a || !c) return null;
+      const ra = a.getBoundingClientRect(), rc = c.getBoundingClientRect();
+      return { x1: ra.left + 3, y1: ra.top + ra.height / 2, x2: rc.left + 3, y2: rc.top + rc.height / 2 };
+    })()`)
+    if (!p) return false
+    await page.dragPoint(p.x1, p.y1, p.x2, p.y2, modifiers)
+    await sleep(500)
+    return true
+  }
+
+  await scrivi(['aaa', 'bbb', 'ccc'].join('\n'))
+  const accesoPrima = await statoBlocchi()
+  console.log(`  interruttore: ${JSON.stringify(accesoPrima)}`)
+  check('in toolbar c\'è l\'interruttore "Scrittura su più righe"', accesoPrima !== null, JSON.stringify(accesoPrima?.testo))
+  if (accesoPrima && !accesoPrima.acceso) {
+    await page.clickWhere(`document.querySelector('[data-multiriga="blocchi"]')`)
+    await sleep(500)
+  }
+  const accesoDopo = await statoBlocchi()
+  check('l\'interruttore accende la modalità a blocchi', accesoDopo?.acceso === true, JSON.stringify(accesoDopo?.acceso))
+
+  // con la modalità accesa il trascinamento seleziona un rettangolo: si scrive su tutte le righe
+  if (await trascinaBlocco(3)) {
+    await page.typeText('Z')
+    await sleep(700)
+  }
+  const conBlocchi = await righeEditor()
+  console.log(`  righe dopo la scrittura a blocchi: ${JSON.stringify(conBlocchi.slice(0, 4))}`)
+  check(
+    'in selezione a blocchi si scrive su tutte le righe selezionate',
+    conBlocchi.filter(r => /^Z/.test(r)).length >= 3,
+    JSON.stringify(conBlocchi.slice(0, 3)),
+  )
+
+  await page.screenshot('scrittura-multiriga')
+
+  // Alt+C spegne la modalità (scorciatoia come in SSMS)
+  await page.press('c', { code: 'KeyC', vk: 67, modifiers: 1 })
+  await sleep(500)
+  const spento = await statoBlocchi()
+  check('Alt+C accende/spegne la modalità a blocchi', spento?.acceso === false, JSON.stringify(spento?.acceso))
+
+  // si rimette l'interruttore com'era all'inizio (le altre verifiche non devono trovarlo acceso)
+  if (spento?.acceso !== accesoPrima?.acceso) {
+    await page.clickWhere(`document.querySelector('[data-multiriga="blocchi"]')`)
+    await sleep(300)
+  }
 
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
@@ -3357,6 +3507,11 @@ async function main() {
 
     if (VERIFY_PARAMS) {
       await verifyParams(page)
+      return
+    }
+
+    if (VERIFY_MULTIRIGA) {
+      await verifyMultiriga(page)
       return
     }
 
