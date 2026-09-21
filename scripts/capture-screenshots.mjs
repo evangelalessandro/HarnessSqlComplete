@@ -1588,11 +1588,25 @@ async function verifyTabTree(page) {
   const statoGrafo = await page.eval(`(() => {
     const p = document.querySelector('[data-diagramma="pannello"]');
     const tab = [...document.querySelectorAll('.sql-tab')].find(t => (t.textContent || '').includes('Diagramma'));
+    const r = p ? p.getBoundingClientRect() : null;
+    // l'editor Monaco deve essere NASCOSTO mentre si guarda il diagramma, altrimenti il
+    // pannello finisce sotto di lui (fuori dall'area visibile) e sembra non essersi aperto
+    const editorNascosto = (() => {
+      const ed = document.querySelector('.monaco-editor');
+      if (!ed) return true;
+      for (let n = ed; n && n !== document.body; n = n.parentElement) {
+        if (n.classList.contains('hidden')) return true;
+      }
+      return false;
+    })();
     return {
       tab: tab ? (tab.textContent || '').trim() : null,
       inModale: !!(p && p.closest('.fixed')),
       nodi: p ? p.querySelectorAll('svg *').length : 0,
       titolo: p ? ((p.querySelector('h2') || {}).textContent || '').trim() : '',
+      rettangolo: r ? { top: Math.round(r.top), altezza: Math.round(r.height), larghezza: Math.round(r.width) } : null,
+      visibile: !!r && r.height > 120 && r.width > 200 && r.top < window.innerHeight && r.bottom > 0,
+      editorNascosto,
     };
   })()`)
   const tabsDopoGrafo = await page.eval(`document.querySelectorAll('.sql-tab').length`)
@@ -1602,6 +1616,10 @@ async function verifyTabTree(page) {
     tabsDopoGrafo === tabsPrimaGrafo + 1 && !!statoGrafo.tab && statoGrafo.inModale === false,
   )
   check('il diagramma mostra i legami della routine', statoGrafo.nodi > 0 && /Diagramma chiamate/.test(statoGrafo.titolo))
+  check(
+    'il diagramma è VISIBILE nel pannello (editor nascosto, non coperto)',
+    statoGrafo.visibile === true && statoGrafo.editorNascosto === true,
+  )
   await apriDalTastoDestro('Diagramma chiamate')
   await sleep(1500)
   const tabsDopoGrafo2 = await page.eval(`document.querySelectorAll('.sql-tab').length`)

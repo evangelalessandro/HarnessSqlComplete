@@ -555,11 +555,16 @@ export default function App() {
 
   /** La tab attiva è il pannello di ricerca? (nell'area editor si mostra lui, non Monaco) */
   const activeTabIsSearch = editorTabs.find(t => t.id === activeEditorTab)?.kind === 'search'
+  /** La tab attiva è un diagramma delle chiamate? (occupa tutta l'area editor) */
+  const activeTabIsGraph = editorTabs.find(t => t.id === activeEditorTab)?.kind === 'graph'
+  /** In queste tab Monaco non si vede: va nascosto, altrimenti spinge il pannello fuori posto. */
+  const pannelloAlPostoDiMonaco = activeTabIsSearch || activeTabIsGraph
 
-  // Tornando dalle tab di ricerca, Monaco è stato nascosto: si ricalcola la sua impaginazione.
+  // Tornando dalle tab di ricerca/diagramma, Monaco è stato nascosto: si ricalcola la sua
+  // impaginazione (altrimenti resta con la larghezza sbagliata e le righe sembrano tagliate).
   useEffect(() => {
-    if (!activeTabIsSearch) editor?.layout()
-  }, [activeTabIsSearch, editor])
+    if (!pannelloAlPostoDiMonaco) editor?.layout()
+  }, [pannelloAlPostoDiMonaco, editor])
 
   /** GAMIFICATION: dimentica le statistiche delle tab chiuse. */
   const forgetTabStats = useCallback(
@@ -1545,10 +1550,11 @@ export default function App() {
             }}
             title={`Query su database: ${activeDbName} — trascina il divisore sotto per ridimensionare`}
           >
-            {/* La ricerca vive in una TAB: il pannello resta MONTATO (nascosto quando non è la
-                tab attiva) così i risultati non si perdono passando da una tab all'altra.
-                L'editor Monaco resta montato per la stessa ragione. */}
-            <div className={`h-full min-h-0 ${activeTabIsSearch ? 'hidden' : ''}`}>
+            {/* La ricerca e i diagrammi vivono in TAB: il pannello resta MONTATO (nascosto quando
+                non è la tab attiva) così i risultati non si perdono passando da una tab all'altra.
+                L'editor Monaco resta montato per la stessa ragione, ma va NASCOSTO quando la tab
+                attiva è un pannello: altrimenti occupa l'area e spinge il pannello fuori vista. */}
+            <div className={`h-full min-h-0 ${pannelloAlPostoDiMonaco ? 'hidden' : ''}`}>
               {activeEditorTab ? (
               <SqlEditor
                 connectionId={connection.connectionId}
