@@ -90,7 +90,8 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
 - **Scrivere su più righe**: più cursori (`Ctrl+Alt+Giù/Su`, `Alt+clic`, `Ctrl+D`) — quello che scrivi va su
   tutti i cursori e incollando più righe il testo si distribuisce — oppure **selezione a blocchi** stile SSMS
   (`Alt+C` o l'interruttore "Scrittura su più righe"): si trascina un rettangolo e si scrive su tutte le righe
-  selezionate. La preferenza è salvata.
+  selezionate. La preferenza è salvata. `Ctrl+Alt+Giù` aggiunge **solo** il cursore (non copia la riga): per
+  copiare la riga sotto resta `Shift+Alt+Giù`.
 - **INSERT**: dentro `INSERT INTO tab (` suggerisce le colonne (con "tutte le colonne"); dentro `VALUES`
   propone i valori di default per la colonna corrente, **evidenziando la coppia colonna↔valore**.
 - **Campo corrispondente**: con il cursore su un campo si illumina quello abbinato — colonna ↔ valore negli
@@ -397,7 +398,8 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
 - **Multi-line writing**: multiple cursors (`Ctrl+Alt+Down/Up`, `Alt+click`, `Ctrl+D`) — what you type goes to
   every cursor and pasting several lines spreads them across cursors — or SSMS-style **block selection**
   (`Alt+C` or the "Scrittura su più righe" switch): drag a rectangle and type on every selected line. The
-  preference is persisted.
+  preference is persisted. `Ctrl+Alt+Down` only adds a cursor (it never copies the line); `Shift+Alt+Down`
+  remains "copy line down".
 - **Smart brackets**: identifiers are inserted without `[brackets]` when they are not needed.
 - **Temp tables and table variables** defined in the document are in scope (`CREATE TABLE #t`,
   `DECLARE @t TABLE`, `SELECT ... INTO #t`, `INSERT INTO #t`). For `SELECT … INTO #t` the columns come from

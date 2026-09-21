@@ -24,6 +24,7 @@ import { buildFormatProfile, loadFormatProfileXml } from '../formatProfile'
 import { formatSqlWithProfile } from '../tsqlFormatter'
 import { SQL_WORD_SEPARATORS } from '../editorOptions'
 import { BLOCCHI_KEY, opzioniMonaco, parseBlocchi, serializzaBlocchi } from '../blockMode'
+import { azioneCursore, cursoreDaAggiungere } from '../multiCursor'
 import FormatProfilePanel from './FormatProfilePanel'
 import { Badge, Button, Spinner, Toggle } from './ui'
 
@@ -310,6 +311,27 @@ export default function SqlEditor({
     editor.updateOptions(opzioniMonaco(blocchiRef.current))
     // Alt+C accende/spegne la selezione a blocchi, come in SSMS
     editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.KeyC, () => toggleBlocchiRef.current?.())
+    /**
+     * Ctrl+Alt+Su/Giù DEVE aggiungere un cursore sopra/sotto, mai copiare o spostare la riga
+     * (segnalazione utente: "con ctrl+alt+giù si sta copiando la riga corrente"). L'evento viene
+     * intercettato in fase di CAPTURA, prima di Monaco: si riconosce la combinazione dal codice del
+     * tasto (keyCode/key possono variare quando il browser vede AltGr) e si esegue direttamente
+     * l'azione giusta, annullando tutto il resto.
+     */
+    const domNodeTasti = editor.getDomNode()
+    const onTasti = (ev: KeyboardEvent) => {
+      const direzione = cursoreDaAggiungere(ev)
+      if (!direzione) return
+      ev.preventDefault()
+      ev.stopPropagation()
+      editor.trigger('sqlIntelli', azioneCursore(direzione), null)
+    }
+    if (domNodeTasti) {
+      domNodeTasti.addEventListener('keydown', onTasti, true)
+      disposablesRef.current.push({
+        dispose: () => domNodeTasti.removeEventListener('keydown', onTasti, true),
+      })
+    }
 
     // Esegui: F5 e Ctrl+Invio (registra nella cronologia le tabelle usate)
     const runQuery = () => {

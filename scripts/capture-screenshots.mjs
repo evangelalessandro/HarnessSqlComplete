@@ -1694,11 +1694,27 @@ async function verifyMultiriga(page) {
     console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
   }
 
+  // Le .view-line di Monaco non sono garantite in ordine nel DOM: si ordina per posizione
+  // verticale, così l'elenco segue davvero le righe dall'alto in basso.
   const righeEditor = () =>
     page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
-      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, ''))`)
+      .map(l => ({ top: l.getBoundingClientRect().top, testo: (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, '') }))
+      .sort((a, b) => a.top - b.top)
+      .map(l => l.testo)`)
   const cursori = () =>
     page.eval(`document.querySelectorAll('.monaco-editor .cursors-layer .cursor').length`)
+  /** Clic in una riga precisa (indice 0 = prima riga visibile). */
+  const clicRiga = async (indice, xOffset = 4) => {
+    const p = await page.eval(`(() => {
+      const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')];
+      const l = linee[${indice}];
+      if (!l) return null;
+      const r = l.getBoundingClientRect();
+      return { x: r.left + ${xOffset}, y: r.top + r.height / 2 };
+    })()`)
+    if (p) await page.clickPoint(p.x, p.y)
+    await sleep(300)
+  }
 
   /** Scrive un testo nell'editor (selezione tutto + scrittura). */
   const scrivi = async (testo) => {
@@ -1732,6 +1748,54 @@ async function verifyMultiriga(page) {
     scritte.filter(r => r.startsWith('X')).length >= 3,
     JSON.stringify(scritte.slice(0, 3)),
   )
+
+  // --------------------- 1b. REGRESSIONE: "con ctrl+alt+giù si sta copiando la riga corrente".
+  // La combinazione va riconosciuta anche quando il browser consegna l'evento in modo anomalo
+  // (AltGr su Windows: keyCode 229 e getModifierState('AltGraph') = true): cursore aggiunto e
+  // NESSUNA riga copiata.
+  await scrivi(['uno', 'due', 'tre'].join('\n'))
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await clicRiga(0)
+  const primaDelCaso = await cursori()
+  // dispatchEvent restituisce false se l'evento è stato annullato: la nostra intercettazione
+  // (fase di cattura) deve prenderlo in carico PRIMA che Monaco faccia altro.
+  const nonAnnullato = await page.eval(`(() => {
+    const dom = document.querySelector('.monaco-editor textarea') || document.querySelector('.monaco-editor');
+    const ev = new KeyboardEvent('keydown', {
+      key: 'ArrowDown', code: 'ArrowDown', keyCode: 229, which: 229,
+      ctrlKey: true, altKey: true, bubbles: true, cancelable: true, view: window,
+    });
+    Object.defineProperty(ev, 'getModifierState', { value: (k) => k === 'AltGraph' });
+    return dom.dispatchEvent(ev);
+  })()`)
+  await sleep(500)
+  const cursoriAltGr = await cursori()
+  await page.typeText('W')
+  await sleep(600)
+  const righeAltGr = await righeEditor()
+  console.log(`  Ctrl+Alt+Giù con AltGr: annullato=${!nonAnnullato} cursori=${cursoriAltGr} righe=${JSON.stringify(righeAltGr)}`)
+  check(
+    'Ctrl+Alt+Giù è preso in carico da noi (evento annullato) anche con AltGr',
+    nonAnnullato === false && primaDelCaso === 1,
+    `dispatchEvent → ${nonAnnullato}, cursori prima: ${primaDelCaso}`,
+  )
+  check(
+    'Ctrl+Alt+Giù aggiunge un cursore e NON copia la riga (caso AltGr)',
+    cursoriAltGr >= 2 && righeAltGr.filter(r => r.includes('W')).length >= 2 && righeAltGr.length === 3,
+    `${cursoriAltGr} cursori, ${righeAltGr.length} righe`,
+  )
+
+  // Shift+Alt+Giù resta "copia riga sotto" (la nostra intercettazione non lo tocca)
+  await scrivi(['uno', 'due', 'tre'].join('\n'))
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await clicRiga(0)
+  const primaCopia = await cursori()
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 }) // Alt(1) + Shift(8)
+  await sleep(600)
+  const righeCopia = await righeEditor()
+  const copiata = righeCopia.length === 4 && righeCopia.some((r, i) => i > 0 && r === righeCopia[i - 1])
+  console.log(`  Shift+Alt+Giù (cursori ${primaCopia}): ${JSON.stringify(righeCopia)}`)
+  check('Shift+Alt+Giù continua a copiare la riga sotto', copiata, JSON.stringify(righeCopia))
 
   // ------------------------------------------------------- 2. selezione a BLOCCHI (Alt+C, stile SSMS)
   /** Stato dell'interruttore "Scrittura su più righe". */
