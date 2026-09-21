@@ -968,27 +968,44 @@ export function scriptCheckConstraint(
   return lines.join('\n') + '\n'
 }
 
-/** Script MERGE generato: chiave = colonna IDENTITY (o la prima), sorgente con valori di default. */
+/**
+ * Script MERGE generato: chiave = colonne della PRIMARY KEY (anche composita), altrimenti la
+ * colonna IDENTITY, altrimenti la prima. I campi chiave NON entrano nell'UPDATE SET (sono già
+ * uguali per la condizione ON, e le identity/calcolate non si aggiornano).
+ */
 export function scriptMergeTable(table: TableInfo): string {
   const cols = table.columns ?? []
-  const pk = cols.find(c => c.isIdentity) ?? cols[0]
+  const pkCols = (table.indexes ?? [])
+    .filter(i => i.isPrimaryKey)
+    .flatMap(i => i.columns ?? [])
+    .filter(c => cols.some(x => x.name.toLowerCase() === c.toLowerCase()))
+  const chiave = pkCols.length > 0
+    ? pkCols
+    : [cols.find(c => c.isIdentity)?.name ?? cols[0]?.name ?? ''].filter(Boolean)
+  const chiavi = new Set(chiave.map(c => c.toLowerCase()))
   const target = qualified(table.schema, table.name)
-  const pkName = pk?.name ?? ''
   const colList = cols.map(c => sqlIdent(c.name)).join(', ')
   const srcCols = cols.map(c => `${sqlDefaultForType(c.dataType, false)} AS ${sqlIdent(c.name)}`).join(', ')
   const updateSet = cols
-    .filter(c => c !== pk)
+    .filter(c => !chiavi.has(c.name.toLowerCase()))
     .map(c => `    ${sqlIdent(c.name)} = src.${sqlIdent(c.name)}`)
     .join(',\n')
-  return [
+  const on = chiave.map(c => `tgt.${sqlIdent(c)} = src.${sqlIdent(c)}`).join(' AND\n    ')
+  const righe = [
     `MERGE INTO ${target} AS tgt`,
     `USING (SELECT ${srcCols}) AS src`,
-    `ON tgt.${sqlIdent(pkName)} = src.${sqlIdent(pkName)}`,
-    'WHEN MATCHED THEN UPDATE SET',
-    updateSet || '    -- nessuna colonna da aggiornare',
+    `ON ${on}`,
+  ]
+  if (updateSet) {
+    righe.push('WHEN MATCHED THEN UPDATE SET', updateSet)
+  } else {
+    righe.push('-- chiave = tutte le colonne: nulla da aggiornare, si inserisce soltanto')
+  }
+  righe.push(
     `WHEN NOT MATCHED THEN INSERT (${colList})`,
     `VALUES (${cols.map(c => `src.${sqlIdent(c.name)}`).join(', ')});`,
-  ].join('\n')
+  )
+  return righe.join('\n')
 }
 
 /** Script EXEC di una stored procedure: IN → @nome = valore (default se noto), OUTPUT → @nome OUTPUT. */

@@ -232,6 +232,11 @@ export const HELP_SECTIONS: HelpSection[] = [
         detail:
           'Passando sopra una tabella nella sidebar (o usando il menu contestuale "Seleziona le prime 1000 righe") si apre una query di anteprima dati.',
       },
+      {
+        title: 'Generatore SQL e MERGE senza campi chiave',
+        detail:
+          'Nell\u2019anteprima dati (F4 su una tabella) o nei risultati di una query si selezionano righe e colonne e si genera INSERT, UPDATE, MERGE, DELETE o INSERT INTO #tmp. Nella MERGE la condizione ON usa la CHIAVE della tabella — le colonne della PRIMARY KEY, anche composita — e i campi chiave NON vengono mai messi nell\u2019UPDATE SET: restano solo nella ON e nell\u2019INSERT, perché sono già uguali e spesso sono identity o calcolati (SQL Server non li lascerebbe aggiornare). Se la chiave copre tutte le colonne selezionate, la clausola "WHEN MATCHED THEN UPDATE" non viene scritta affatto, con un commento che lo spiega. Anche lo "Script MERGE" del tasto destro su una tabella segue la stessa regola.',
+      },
     ],
   },
   {

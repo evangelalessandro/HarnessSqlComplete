@@ -160,6 +160,9 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   seguono l'ordine originale.
 - **Generatore SQL dai risultati**: seleziona righe e colonne e genera `INSERT`, `UPDATE`, `MERGE`,
   `DELETE` o `INSERT INTO #tmp` (la tabella target è proposta dal SQL eseguito ed è modificabile).
+  Nella `MERGE` la chiave è la **primary key** della tabella (anche composita) e i **campi chiave non
+  finiscono mai nell'`UPDATE SET`**: restano solo nella condizione `ON` (e nell'`INSERT`); se la chiave
+  copre tutte le colonne la clausola `WHEN MATCHED THEN UPDATE` non viene scritta.
 - **Tab Stampa** con la versione pronta per la stampa di risultati e messaggi.
 
 ### Gamification del lavoro
@@ -443,6 +446,9 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
   keep the original column order.
 - **SQL generator from results**: select rows and columns and generate `INSERT`, `UPDATE`, `MERGE`,
   `DELETE` or `INSERT INTO #tmp` (the target table is inferred from the executed SQL and is editable).
+  In a `MERGE` the key is the table's **primary key** (composite included) and **key columns never appear
+  in the `UPDATE SET`**: they stay in the `ON` condition (and in the `INSERT`); when the key covers every
+  column the `WHEN MATCHED THEN UPDATE` clause is omitted.
 - **Print tab** with a print-ready rendering of results and messages.
 
 ### Work gamification

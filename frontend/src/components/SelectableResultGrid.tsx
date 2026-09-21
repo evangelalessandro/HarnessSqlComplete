@@ -11,6 +11,7 @@ import {
   buildInsertSql,
   buildMergeSql,
   buildUpdateSql,
+  chiaveTabella,
   parseTargetTable,
 } from '../sqlGen'
 import type { GenColumn } from '../sqlGen'
@@ -30,11 +31,23 @@ interface Props {
   initialTarget?: string
   /** Nomi delle colonne identity (chiave del MERGE/DELETE). */
   identityColumns?: string[]
+  /**
+   * Colonne CHIAVE della tabella (primary key, anche composita): sono quelle della condizione ON
+   * della MERGE e non finiscono MAI nell'UPDATE SET. Se assenti si usano le identity.
+   */
+  keyColumns?: string[]
   /** Numero della prima riga mostrata (paginazione). Default 1. */
   firstRowNumber?: number
 }
 
-export default function SelectableResultGrid({ columns, rows, initialTarget, identityColumns, firstRowNumber = 1 }: Props) {
+export default function SelectableResultGrid({
+  columns,
+  rows,
+  initialTarget,
+  identityColumns,
+  keyColumns,
+  firstRowNumber = 1,
+}: Props) {
   const [targetTable, setTargetTable] = useState(initialTarget ?? '')
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set())
   const [selectedCols, setSelectedCols] = useState<Set<number>>(new Set())
@@ -70,7 +83,8 @@ export default function SelectableResultGrid({ columns, rows, initialTarget, ide
 
   const output = useMemo(() => {
     if (!table || selCols.length === 0 || selRows.length === 0) return ''
-    const keys = genColumns.filter(c => c.isIdentity).map(c => c.name)
+    // chiave: la primary key della tabella se nota, altrimenti le identity
+    const keys = chiaveTabella(genColumns, keyColumns ?? identityColumns)
     try {
       switch (kind) {
         case 'INSERT':

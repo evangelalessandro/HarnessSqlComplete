@@ -11,6 +11,21 @@ export interface GenColumn {
   isIdentity?: boolean
 }
 
+/**
+ * Colonne CHIAVE della tabella: quelle della PRIMARY KEY (anche composita), altrimenti le
+ * identity, altrimenti nessuna. Serve alla MERGE (condizione ON, e quindi ai campi da NON
+ * aggiornare) e al DELETE.
+ */
+export function chiaveTabella(
+  columns: { name: string; isIdentity?: boolean }[],
+  pkColumns?: string[] | null,
+): string[] {
+  const nomi = new Set(columns.map(c => c.name.toLowerCase()))
+  const pk = (pkColumns ?? []).filter(c => nomi.has(c.toLowerCase()))
+  if (pk.length > 0) return pk
+  return columns.filter(c => c.isIdentity).map(c => c.name)
+}
+
 /** Literal SQL da un valore cella: NULL, numeri nudi, booleani 1/0, stringhe con '' sfuggite. */
 export function sqlLiteral(value: CellValue): string {
   if (value === null || value === undefined) return 'NULL'
@@ -262,7 +277,11 @@ export function buildInsertIntoTempSql(
 /**
  * MERGE INTO t AS tgt USING (VALUES …) AS src (col…) ON <chiave> WHEN MATCHED THEN
  * UPDATE SET … WHEN NOT MATCHED THEN INSERT (…) VALUES (src.col, …);
- * La chiave dell'ON sono le colonne isIdentity (o la prima colonna se non note).
+ * La chiave dell'ON sono le colonne indicate (`keyColumns`), altrimenti le identity, altrimenti la
+ * prima colonna. I CAMPI CHIAVE non entrano MAI nell'UPDATE SET (richiesta utente): sono già uguali
+ * per la condizione ON, quindi aggiornarli sarebbe un no-op — e in molte tabelle sono identity o
+ * calcolati, che SQL Server non lascia aggiornare. Se la chiave copre tutte le colonne, la clausola
+ * "WHEN MATCHED THEN UPDATE" non viene scritta affatto.
  */
 export function buildMergeSql(
   schema: string,
@@ -277,17 +296,25 @@ export function buildMergeSql(
     ? keyColumns
     : columns.filter(c => c.isIdentity).map(c => c.name)
   const onCols = keys.length > 0 ? keys : [columns[0].name]
+  const chiave = new Set(onCols.map(c => c.toLowerCase()))
   const on = onCols
     .map(c => `tgt.[${c}] = src.[${c}]`)
     .join(' AND\n    ')
   const values = rows.map(r => valueTuple(columns, r)).join(',\n    ')
-  const sets = columns.map(c => `tgt.[${c.name}] = src.[${c.name}]`).join(',\n    ')
+  const aggiornabili = columns.filter(c => !chiave.has(c.name.toLowerCase()))
   const ins = columns.map(c => `src.[${c.name}]`).join(', ')
-  return [
+  const righe = [
     `MERGE INTO ${tableRef(schema, table)} AS tgt`,
     `USING (VALUES\n    ${values}) AS src (${colList(columns)})`,
     `ON ${on}`,
-    `WHEN MATCHED THEN UPDATE SET\n    ${sets}`,
-    `WHEN NOT MATCHED THEN INSERT (${colList(columns)})\n    VALUES (${ins});`,
-  ].join('\n')
+  ]
+  if (aggiornabili.length > 0) {
+    const sets = aggiornabili.map(c => `tgt.[${c.name}] = src.[${c.name}]`).join(',\n    ')
+    righe.push(`WHEN MATCHED THEN UPDATE SET\n    ${sets}`)
+  } else {
+    // tutti i campi sono chiave: non c'è nulla da aggiornare (la riga esiste già identica)
+    righe.push('-- chiave = tutte le colonne: nulla da aggiornare, si inserisce soltanto')
+  }
+  righe.push(`WHEN NOT MATCHED THEN INSERT (${colList(columns)})\n    VALUES (${ins});`)
+  return righe.join('\n')
 }

@@ -48,6 +48,7 @@ const VERIFY_DROP = process.argv.includes('--verify-drop')
 const VERIFY_FRAGMENT = process.argv.includes('--verify-fragment')
 const VERIFY_SIDEBAR = process.argv.includes('--verify-sidebar')
 const VERIFY_CHANGES = process.argv.includes('--verify-changes')
+const VERIFY_MERGE = process.argv.includes('--verify-merge')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -65,6 +66,11 @@ const QUERY =
 const EXEC_LINE = process.env.SHOT_EXEC ?? 'EXEC dbo.ws_L2_SetCorridoioMiss @idMissione = 1'
 /** Routine di cui mostrare il diagramma delle chiamate. */
 const ROUTINE_NAME = process.env.SHOT_ROUTINE ?? 'ws_L2_SetCorridoioMiss'
+/**
+ * Tabella con PRIMARY KEY COMPOSITA usata dalla verifica della MERGE (--verify-merge):
+ * serve a controllare che NESSUN campo chiave finisca nell'UPDATE SET.
+ */
+const TABELLA_CHIAVE = process.env.SHOT_TABLE ?? 'L1_AZIONI_PERCORSI'
 /** Quanti caratteri spostare il cursore per finire DENTRO il nome della routine ("EXEC dbo." = 9). */
 const EXEC_NAME_OFFSET = Number(process.env.SHOT_EXEC_OFFSET ?? 13)
 
@@ -1635,6 +1641,96 @@ async function verifyTabTree(page) {
 }
 
 /**
+ * VERIFICA (--verify-merge): la MERGE generata dall'anteprima dati non deve MAI aggiornare i
+ * campi chiave della tabella (richiesta utente: "quando fai la merge, non mettere mai nell'update
+ * anche i campi chiave della tabella"). La chiave sono le colonne della PRIMARY KEY — anche
+ * composita — e restano solo nella condizione ON.
+ */
+async function verifyMerge(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // 1) nel editor si scrive una SELECT sulla tabella con chiave composita e si apre l'anteprima (F4)
+  const rect = await editorRect(page)
+  await page.clickPoint(rect.x + 160, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(`SELECT * FROM dbo.${TABELLA_CHIAVE}`)
+  await sleep(400)
+  // il cursore deve stare DENTRO il nome della tabella (F4 risolve il token sotto il cursore)
+  for (let i = 0; i < 5; i++) await page.press('ArrowLeft', { code: 'ArrowLeft', vk: 37 })
+  await sleep(300)
+  await page.press('F4', { code: 'F4', vk: 115 })
+  await page.waitFor(`document.body.textContent.includes('Anteprima dati —')`, 30000, 'anteprima dati')
+  await sleep(2000)
+
+  // 2) tutte le righe selezionate (casella di intestazione) e generazione della MERGE
+  const box = await page.eval(`(() => {
+    const h = [...document.querySelectorAll('h2')].find(x => (x.textContent || '').includes('Anteprima dati'));
+    const mod = h && h.closest('div.fixed');
+    const c = mod && mod.querySelector('input[title="Seleziona tutte le righe"]');
+    if (!c) return null;
+    c.scrollIntoView({ block: 'center' });
+    const r = c.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (!box) throw new Error('casella "Seleziona tutte le righe" non trovata nell anteprima')
+  await page.clickPoint(box.x, box.y)
+  await sleep(600)
+  const premuto = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'MERGE')`,
+  )
+  await sleep(900)
+  check('la MERGE si genera dall\'anteprima dati', premuto === true)
+
+  /** Analisi della MERGE generata: chiavi dell'ON e colonne aggiornate nel SET. */
+  const analisi = await page.eval(`(() => {
+    const h = [...document.querySelectorAll('h2')].find(x => (x.textContent || '').includes('Anteprima dati'));
+    const mod = h && h.closest('div.fixed');
+    const pre = mod ? [...mod.querySelectorAll('pre')].map(p => p.textContent).find(t => (t || '').includes('MERGE INTO')) : null;
+    if (!pre) return null;
+    const on = (pre.match(/ON ([\\s\\S]*?)\\nWHEN/) || [])[1] || '';
+    const chiavi = [...on.matchAll(/tgt\\.\\[([^\\]]+)\\]/g)].map(m => m[1]);
+    const dopoUpdate = pre.includes('UPDATE SET') ? pre.split('UPDATE SET')[1] : '';
+    const set = dopoUpdate ? dopoUpdate.split('WHEN NOT MATCHED')[0] : '';
+    const aggiornate = [...set.matchAll(/tgt\\.\\[([^\\]]+)\\]/g)].map(m => m[1]);
+    return { chiavi, aggiornate, testa: pre.split('\\n').slice(0, 3).join(' / ') };
+  })()`)
+  console.log(`  chiave ON: ${JSON.stringify(analisi?.chiavi)}`)
+  console.log(`  campi nell'UPDATE SET: ${JSON.stringify(analisi?.aggiornate)}`)
+  check('la MERGE ha una chiave nella condizione ON', (analisi?.chiavi.length ?? 0) > 0)
+  check(
+    'la chiave è tutta la primary key (qui composita), non solo la prima colonna',
+    (analisi?.chiavi.length ?? 0) >= 2,
+    `${analisi?.chiavi.length} colonne di chiave`,
+  )
+  const intrusi = (analisi?.chiavi ?? []).filter(c => (analisi?.aggiornate ?? []).includes(c))
+  check('NESSUN campo chiave compare nell\'UPDATE SET', intrusi.length === 0, `intrusi: ${JSON.stringify(intrusi)}`)
+  check(
+    'gli altri campi si aggiornano comunque',
+    (analisi?.aggiornate.length ?? 0) > 0,
+    `${analisi?.aggiornate.length} campi`,
+  )
+  await page.screenshot('merge-senza-chiavi')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * VERIFICA (--verify-changes): la finestra "Modifiche agli oggetti" (richiesta utente: "una
  * finestra dove vedo la lista delle cose modificate e quando, tipo una griglia con la store x il
  * giorno ora"). Controlla che la griglia arrivi dai dati VERI del database: date con giorno e ora,
@@ -3117,6 +3213,11 @@ async function main() {
 
     if (VERIFY_CHANGES) {
       await verifyChanges(page)
+      return
+    }
+
+    if (VERIFY_MERGE) {
+      await verifyMerge(page)
       return
     }
 

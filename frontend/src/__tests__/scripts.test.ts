@@ -72,6 +72,27 @@ describe('scriptMergeTable: genera MERGE upsert', () => {
     const sql = scriptMergeTable(t)
     expect(sql).toContain('ON tgt.a = src.a')
   })
+
+  // Richiesta utente: "quando fai la merge, non mettere mai nell'update anche i campi chiave
+  // della tabella" → vale anche per la primary key composita, non solo per l'identity.
+  it('la primary key composita fuori dal SET: chiave interamente nella condizione ON', () => {
+    const t = mkTbl('dbo', 'Righe', [mkCol('anno'), mkCol('numero'), mkCol('importo')])
+    t.indexes = [{ name: 'PK_Righe', isPrimaryKey: true, isUnique: true, columns: ['anno', 'numero'] }]
+    const sql = scriptMergeTable(t)
+    expect(sql).toContain('ON tgt.anno = src.anno AND\n    tgt.numero = src.numero')
+    expect(sql).not.toMatch(/UPDATE SET\n\s+anno = src\.anno/)
+    expect(sql).not.toMatch(/UPDATE SET\n\s+numero = src\.numero/)
+    expect(sql).toContain('importo = src.importo')
+  })
+
+  it('se la chiave copre tutte le colonne non scrive la clausola UPDATE', () => {
+    const t = mkTbl('dbo', 'Coppie', [mkCol('a'), mkCol('b')])
+    t.indexes = [{ name: 'PK_Coppie', isPrimaryKey: true, isUnique: true, columns: ['a', 'b'] }]
+    const sql = scriptMergeTable(t)
+    expect(sql).not.toContain('WHEN MATCHED THEN UPDATE')
+    expect(sql).toContain('-- chiave = tutte le colonne: nulla da aggiornare, si inserisce soltanto')
+    expect(sql).toContain('WHEN NOT MATCHED THEN INSERT (a, b)')
+  })
 })
 
 describe('scriptExecProcedure: genera EXEC con parametri', () => {
