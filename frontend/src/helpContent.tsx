@@ -55,12 +55,12 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Tante tab? Tasto destro e "»"',
         detail:
-          'Tasto destro su una tab per chiudere in blocco come in SSMS: tutte le altre, quelle a destra, quelle a sinistra, o tutte le non appuntate (le appuntate sono protette). Quando le tab non stanno in una riga vanno a capo su una seconda riga; se non bastano nemmeno due righe compare il pulsante "»" che elenca tutte le tab aperte.',
+          'Tasto destro su una tab per chiudere in blocco come in SSMS: tutte le altre, quelle a destra, quelle a sinistra, o tutte le non appuntate (le appuntate sono protette). Le tab riempiono la riga e poi vanno a capo: ogni gruppo di figlie occupa la riga sotto la propria madre. Se le righe necessarie superano lo spazio disponibile compare il pulsante "»" che elenca tutte le tab aperte.',
       },
       {
         title: 'Dove si aprono le nuove tab',
         detail:
-          'Il pulsante col segno "<" accanto a "Nuova" apre la query come PRIMA tab, cioè a sinistra; lo stesso vale per Shift+clic o clic col tasto centrale su "Nuova". Nel tasto destro su una tab scegli dove aprire le nuove tab — a sinistra, dopo quella attiva o in fondo — e la scelta resta salvata.',
+          'Il pulsante "Nuova" apre la query a destra, subito dopo quella attiva. Per aprirla come PRIMA tab, cioè a sinistra, tieni premuto Shift mentre clicchi (oppure clicca col tasto centrale del mouse). Un oggetto aperto da un link o da "Modifica" nasce invece FIGLIA della tab attiva: va a capo su una riga sotto la madre, rientrata e con una freccia come marcatore, fino a 5 livelli. Trascinando una tab fuori dal suo gruppo la si stacca e torna principale.',
       },
       {
         title: 'Esegui query',

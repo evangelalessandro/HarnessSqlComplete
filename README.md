@@ -48,8 +48,12 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   quella attiva**, non in fondo.
 - **Icona/emoji per tab** (⭐ 🐞 ⚠️ …) più titolo e descrizione libera, dal tasto destro sulla tab.
 - **Tante tab? Tasto destro e "»"**: chiusura in blocco stile SSMS (tutte le altre, a destra, a sinistra,
-  tutte le non appuntate — le appuntate sono protette). Le tab vanno a capo su una seconda riga e, se non
-  bastano, compare il pulsante "»" con l'elenco completo.
+  tutte le non appuntate — le appuntate sono protette). Le tab riempiono la riga e poi vanno a capo; se non
+  bastano le righe disponibili compare il pulsante "»" con l'elenco completo.
+- **Tab figlie**: un oggetto aperto da un link o da "Modifica" nasce **figlio** della tab attiva e va a capo
+  su una riga **sotto la madre** (rientrato, con la freccia come marcatore), fino a 5 livelli. Trascinando
+  una tab fuori dal gruppo la si stacca e torna principale; chiudendo una madre con figlie l'app chiede se
+  chiudere anche loro.
 - **Esecuzione**: F5 / Ctrl+Invio esegue lo statement corrente (o solo la selezione, come SSMS); più batch
   separati da `GO`, cattura dei `PRINT`, più result set.
 - **File .sql**: trascina i file nell'app o usa "Apri file"; **Salva** (Ctrl+S) sovrascrive l'originale,
@@ -331,7 +335,11 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
   close with X. A new tab opens **right after the active one**.
 - **Per-tab icon/emoji** (⭐ 🐞 ⚠️ …) plus a free-text title and description, from the tab context menu.
 - **Many tabs? Right-click and "»"**: SSMS-style bulk close (all others, to the right, to the left, all
-  unpinned — pinned tabs are protected). Tabs wrap onto a second row and then collapse into a "»" menu.
+  unpinned — pinned tabs are protected). Tabs fill the row and then wrap; when the available rows are not
+  enough a "»" menu lists every open tab.
+- **Child tabs**: an object opened from a link or from "Edit" is created as a **child** of the active tab
+  and wraps onto a row **below its parent** (indented, arrow marker), up to 5 levels deep. Dragging a tab
+  out of the group detaches it back to top level; closing a parent with children asks whether to close them too.
 - **Run**: F5 / Ctrl+Enter runs the current statement, or just the selection, like SSMS; multiple `GO`
   batches, `PRINT` capture and multiple result sets.
 - **.sql files**: drag files into the app or use "Open file"; **Save** (Ctrl+S) overwrites the original,

@@ -19,6 +19,8 @@ import {
   moveTabSubtree,
   sanitizeTabParents,
   tabDepth,
+  tabRowBreaks,
+  tabRowsNeeded,
 } from './tabTree'
 import type { NewTabPosition, TabCloseMode } from './tabOps'
 import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryMessage, QueryResult, RoutineCallGraph } from './types'
@@ -657,6 +659,19 @@ export default function App() {
     return m
   }, [editorTabs])
 
+  // Tab in overflow: a capo automatico; con la GERARCHIA servono più righe (le figlie stanno
+  // sulla riga sotto la madre), altrimenti restano le due righe di sempre.
+  const righeTabRef = useRef(2)
+
+  /**
+   * GERARCHIA nella barra: le figlie vanno A CAPO, sulla riga sotto la madre. `righeTab` dice
+   * quante righe servono (2 quando non c'è gerarchia), `aCapoTab` dove inserire il ritorno a capo.
+   */
+  const profondita = useCallback((t: EditorTab) => livelliTab.get(t.id) ?? 0, [livelliTab])
+  const aCapoTab = useMemo(() => tabRowBreaks(editorTabs, profondita), [editorTabs, profondita])
+  const righeTab = Math.min(8, tabRowsNeeded(editorTabs, profondita))
+  righeTabRef.current = righeTab
+
   /** Esc chiude la richiesta "chiudo anche le figlie?" senza fare nulla. */
   useEffect(() => {
     if (!closeConfirm) return
@@ -667,21 +682,29 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [closeConfirm])
 
-  // Tab in overflow: a capo automatico fino a 2 righe; oltre compare "»" con l'elenco.
-  const measureTabOverflow = useCallback(() => {    const el = wrapRef.current
+  const measureTabOverflow = useCallback(() => {
+    const el = wrapRef.current
     if (!el) return
-    const probe = el.querySelector<HTMLElement>('.sql-tab')
-    if (!probe) {
+    const tab = [...el.querySelectorAll<HTMLElement>('.sql-tab')]
+    if (tab.length === 0) {
       setTabOverflow(false)
       setOverflowOpen(false)
+      el.style.maxHeight = ''
       return
     }
-    const twoRows = probe.offsetHeight * 2 + 4 // gap-1 tra le righe
-    const top = el.getBoundingClientRect().top
-    const clipped = [...el.children].some(
-      c => c.getBoundingClientRect().bottom > top + twoRows + 1,
-    )
-    el.style.maxHeight = clipped ? `${twoRows}px` : ''
+    // Righe REALI: le figlie occupano righe dedicate, quindi non basta contare le tab.
+    // Si raggruppa per coordinata `top` e si tiene il fondo maggiore di ogni riga.
+    const perRiga = new Map<number, number>()
+    for (const t of tab) {
+      const r = t.getBoundingClientRect()
+      const chiave = Math.round(r.top)
+      perRiga.set(chiave, Math.max(perRiga.get(chiave) ?? r.bottom, r.bottom))
+    }
+    const righe = [...perRiga.entries()].sort((a, b) => a[0] - b[0])
+    const tenute = righe.slice(0, righeTabRef.current)
+    const altezza = Math.round(tenute[tenute.length - 1][1] - tenute[0][0])
+    const clipped = righe.length > righeTabRef.current
+    el.style.maxHeight = clipped ? `${altezza}px` : ''
     setTabOverflow(clipped)
     if (!clipped) setOverflowOpen(false)
   }, [])
@@ -1321,7 +1344,11 @@ export default function App() {
               ref={wrapRef}
               className="flex min-w-0 flex-1 flex-wrap items-center gap-1 overflow-hidden"
             >
-            {editorTabs.map(t => (
+            {editorTabs.flatMap((t, i) => [
+              // Le figlie (e le nipoti) iniziano una RIGA NUOVA, sotto la madre.
+              ...(aCapoTab[i]
+                ? [<div key={`capo-${t.id}`} className="h-0 w-full basis-full" aria-hidden="true" />]
+                : []),
               <div
                 key={t.id}
                 onContextMenu={e => {
@@ -1421,8 +1448,8 @@ export default function App() {
                     <X className="h-3 w-3" />
                   </button>
                 )}
-              </div>
-            ))}
+              </div>,
+            ])}
             {/* UN solo pulsante per la nuova tab: apre a DESTRA, subito dopo quella attiva.
                 (Shift+clic o clic col tasto centrale la aprono a sinistra, come prima tab:
                 è una scorciatoia, non un secondo pulsante.) */}

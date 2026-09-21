@@ -102,6 +102,21 @@ export function insertTabAsChild(tabs: EditorTab[], tab: EditorTab, parentId: st
  * tab la riporta principale, quindi anche "in prima linea". Non si sposta un gruppo dentro
  * se stesso.
  */
+/**
+ * Tab da mandare A CAPO nella barra: `true` quando il livello cambia rispetto alla tab
+ * precedente. Serve a mettere le FIGLIE su una riga SOTTO la madre (richiesta utente): le
+ * radici stanno sulla prima riga, le figlie di un gruppo sulla riga successiva, i nipoti
+ * ancora sotto, e si torna a capo quando il gruppo finisce.
+ */
+export function tabRowBreaks(tabs: EditorTab[], depthOf: (t: EditorTab) => number): boolean[] {
+  return tabs.map((t, i) => depthOf(t) !== (i > 0 ? depthOf(tabs[i - 1]) : 0))
+}
+
+/** Quante righe servono alla barra con questa gerarchia (1 + i cambi di livello). */
+export function tabRowsNeeded(tabs: EditorTab[], depthOf: (t: EditorTab) => number): number {
+  return Math.max(1, tabRowBreaks(tabs, depthOf).filter(Boolean).length + 1)
+}
+
 export function moveTabSubtree(tabs: EditorTab[], fromId: string, toId: string): EditorTab[] {
   if (fromId === toId) return tabs
   if (!tabs.some(t => t.id === fromId) || !tabs.some(t => t.id === toId)) return tabs

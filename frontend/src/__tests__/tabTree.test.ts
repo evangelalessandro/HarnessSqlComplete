@@ -14,6 +14,8 @@ import {
   sanitizeTabParents,
   subtreeIds,
   tabDepth,
+  tabRowBreaks,
+  tabRowsNeeded,
 } from '../tabTree'
 import type { EditorTab } from '../types'
 
@@ -131,5 +133,41 @@ describe('sanitizeTabParents', () => {
     expect(sanitizeTabParents([tab('A'), tab('B', 'A')])).toHaveLength(2)
     const sano = [tab('A'), tab('B', 'A')]
     expect(sanitizeTabParents(sano)).toBe(sano)
+  })
+})
+
+// Richiesta utente: "riesci a mettere le tab figlie, sotto la tab madre?" → le figlie vanno
+// A CAPO, su una riga tutta loro sotto la madre.
+describe('ritorni a capo nella barra (tabRowBreaks / tabRowsNeeded)', () => {
+  const livelli = (tabs: EditorTab[]) => (t: EditorTab) => tabDepth(tabs, t.id)
+
+  it('solo principali: nessun ritorno a capo, una riga', () => {
+    const tabs = [tab('A'), tab('B'), tab('C')]
+    expect(tabRowBreaks(tabs, livelli(tabs))).toEqual([false, false, false])
+    expect(tabRowsNeeded(tabs, livelli(tabs))).toBe(1)
+  })
+
+  it('figlia → va a capo; il nipote ancora; si torna a capo quando il gruppo finisce', () => {
+    // A, A1(figlia), A2(nipote), B principale
+    const tabs = [tab('A'), tab('A1', 'A'), tab('A2', 'A1'), tab('B')]
+    expect(tabRowBreaks(tabs, livelli(tabs))).toEqual([false, true, true, true])
+    expect(tabRowsNeeded(tabs, livelli(tabs))).toBe(4)
+  })
+
+  it('due figlie sullo stesso livello condividono la riga', () => {
+    const tabs = [tab('A'), tab('A1', 'A'), tab('A2', 'A')]
+    // solo la prima figlia va a capo: la seconda resta sulla riga delle figlie
+    expect(tabRowBreaks(tabs, livelli(tabs))).toEqual([false, true, false])
+    expect(tabRowsNeeded(tabs, livelli(tabs))).toBe(2)
+  })
+
+  it('torna alla riga delle principali dopo il gruppo di figlie', () => {
+    const tabs = [tab('A'), tab('A1', 'A'), tab('B'), tab('B1', 'B')]
+    expect(tabRowBreaks(tabs, livelli(tabs))).toEqual([false, true, true, true])
+    expect(tabRowsNeeded(tabs, livelli(tabs))).toBe(4)
+  })
+
+  it('lista vuota → una riga', () => {
+    expect(tabRowsNeeded([], () => 0)).toBe(1)
   })
 })

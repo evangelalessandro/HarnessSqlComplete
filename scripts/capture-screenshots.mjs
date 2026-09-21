@@ -357,9 +357,9 @@ async function newPage() {
 }
 
 /**
- * VERIFICA (--verify-tabs): nella barra delle tab, la nuova tab finisce davvero a sinistra?
- * Controlla il comportamento vero nel browser: pulsante "a sinistra", "Nuova" con la
- * preferenza attiva, e la voce del menu della tab. Stampa PASS/FAIL per ogni caso.
+ * VERIFICA (--verify-tabs): nella barra delle tab, dove finisce la nuova tab?
+ * Un solo pulsante "Nuova" (a destra, dopo quella attiva): Shift+clic o clic col tasto
+ * centrale la aprono come PRIMA tab, cioè a sinistra. Stampa PASS/FAIL per ogni caso.
  */
 async function verifyTabPositions(page) {
   await page.waitFor(`document.querySelector('input')`, 10000)
@@ -375,8 +375,22 @@ async function verifyTabPositions(page) {
     page.eval(`[...document.querySelectorAll('[title*="\\u00b7 db:"]')]
       .map(b => (b.getAttribute('title') || '').split(' \\u00b7 db: ')[0].trim())`)
   const clickNew = () => page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').startsWith('Nuova query'))`)
-  const clickNewLeft = () =>
-    page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('PRIMA tab'))`)
+  /** Shift+clic sul pulsante "Nuova" (scorciatoia "apri come prima tab"). */
+  const shiftClickNew = () =>
+    page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(x => (x.getAttribute('title') || '').startsWith('Nuova query'));
+      if (!b) return false;
+      b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, shiftKey: true }));
+      return true;
+    })()`)
+  /** Clic col tasto centrale sul pulsante "Nuova" (stessa scorciatoia). */
+  const middleClickNew = () =>
+    page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(x => (x.getAttribute('title') || '').startsWith('Nuova query'));
+      if (!b) return false;
+      b.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, view: window, button: 1 }));
+      return true;
+    })()`)
 
   const results = []
   const check = (name, ok, detail) => {
@@ -390,17 +404,38 @@ async function verifyTabPositions(page) {
   const before = await tabs()
   console.log(`  tab attuali: ${JSON.stringify(before)}`)
 
-  // 1. pulsante dedicato "a sinistra"
-  await clickNewLeft()
+  // 1. Shift+clic su "Nuova": la nuova tab nasce come PRIMA (a sinistra)
+  await shiftClickNew()
+  await sleep(400)
   const afterLeft = await tabs()
-  check('il pulsante apre la nuova tab come PRIMA', afterLeft[0] === afterLeft[0] && afterLeft.length === before.length + 1 && !before.includes(afterLeft[0]), JSON.stringify(afterLeft))
+  check(
+    'Shift+clic su "Nuova" apre la tab come PRIMA',
+    afterLeft.length === before.length + 1 && !before.includes(afterLeft[0]),
+    JSON.stringify(afterLeft),
+  )
 
-  // 2. "Nuova" normale: con la preferenza su "dopo l'attiva" la tab va dopo quella attiva
+  // 2. clic col tasto centrale su "Nuova": stessa scorciatoia
+  await middleClickNew()
+  await sleep(400)
+  const afterMiddle = await tabs()
+  check(
+    'clic col tasto centrale apre la tab come PRIMA',
+    afterMiddle.length === afterLeft.length + 1 && !afterLeft.includes(afterMiddle[0]),
+    JSON.stringify(afterMiddle),
+  )
+
+  // 3. clic normale: la nuova tab va DOPO quella attiva (non in fondo, non a sinistra)
   await clickNew()
+  await sleep(400)
   const afterNormal = await tabs()
-  check('"Nuova" rispetta la preferenza (dopo quella attiva)', afterNormal.length === afterLeft.length + 1, JSON.stringify(afterNormal))
+  check(
+    '"Nuova" apre dopo quella attiva',
+    afterNormal.length === afterMiddle.length + 1 && afterNormal[0] === afterMiddle[0],
+    JSON.stringify(afterNormal),
+  )
 
-  // 3. dal menu della tab: "Nuove tab a sinistra" rende la scelta permanente
+  // 4. il tasto destro sulla tab non deve offrire voci "nuove tab a sinistra" (le scorciatoie
+  //    sono Shift+clic e tasto centrale): si controlla che il menu si apra e non le contenga
   const openedMenu = await page.eval(`(() => {
     const b = document.querySelector('[title*="\\u00b7 db:"]');
     if (!b) return false;
@@ -408,16 +443,17 @@ async function verifyTabPositions(page) {
     return true;
   })()`)
   await sleep(600)
-  const toggled = openedMenu && (await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim().startsWith('Nuove tab a sinistra'))`))
+  const vociMenu = await page.eval(
+    `[...document.querySelectorAll('button')].filter(b => b.offsetParent).map(b => (b.textContent || '').trim()).filter(t => t.startsWith('Chiudi') || t.includes('nuove tab'))`,
+  )
+  console.log(`  voci del menu della tab: ${JSON.stringify(vociMenu)}`)
+  check(
+    'il menu della tab ha le voci di chiusura e nessun doppione "nuove tab"',
+    openedMenu === true && vociMenu.some(v => v.startsWith('Chiudi')) && !vociMenu.some(v => v.includes('nuove tab')),
+    JSON.stringify(vociMenu),
+  )
+  await page.press('Escape', { code: 'Escape', vk: 27 })
   await sleep(300)
-  const persisted = await page.eval(`JSON.parse(localStorage.getItem('sqlIntelli.settings.v1') || '{}').newTabPosition || ''`)
-  check('il menu imposta la preferenza "a sinistra"', !!toggled && persisted === 'start', `preferenza salvata: ${JSON.stringify(persisted)}`)
-
-  // 4. ora "Nuova" deve aprire a sinistra
-  await clickNew()
-  const afterPref = await tabs()
-  const firstIsNew = !afterNormal.includes(afterPref[0]) || afterPref[0] === afterPref[0]
-  check('con la preferenza attiva "Nuova" apre a sinistra', afterPref.length === afterNormal.length + 1 && firstIsNew, JSON.stringify(afterPref))
 
   const failed = results.filter(r => !r.ok)
   console.log(`\nesito: ${results.length - failed.length}/${results.length} controlli superati`)
@@ -1440,7 +1476,27 @@ async function verifyTabTree(page) {
       titolo: ((t.querySelector('button') || t).textContent || '').trim(),
       rientro: Math.round(parseFloat(getComputedStyle(t).marginLeft) || 0),
       figlia: !!t.querySelector('svg.lucide-corner-down-right'),
+      top: Math.round(t.getBoundingClientRect().top),
     }))`)
+
+  /** Le tab sono tutte dentro l'altezza visibile della barra? (nessuna riga tagliata) */
+  const tabVisibili = () =>
+    page.eval(`(() => {
+      const primo = document.querySelector('.sql-tab');
+      const wrap = primo && primo.parentElement;
+      if (!wrap) return { ok: false, tagliate: 0 };
+      const r = wrap.getBoundingClientRect();
+      const tab = [...wrap.querySelectorAll('.sql-tab')];
+      const tagliate = tab.filter(t => t.getBoundingClientRect().bottom > r.bottom + 1).length;
+      return {
+        ok: tagliate === 0,
+        tagliate,
+        altezza: Math.round(r.height),
+        maxHeight: wrap.style.maxHeight,
+        fondo: Math.round(r.bottom),
+        fondoUltima: Math.round(tab[tab.length - 1].getBoundingClientRect().bottom),
+      };
+    })()`)
 
   /** Apre una stored procedure dal tasto destro sull'albero e conferma la voce indicata. */
   const apriDalTastoDestro = async (voce = 'Modifica') => {
@@ -1470,12 +1526,26 @@ async function verifyTabTree(page) {
   check('la voce del tasto destro ha aperto una tab', primoOk === true && dopo1.length === 2)
   check('la nuova tab è FIGLIA (rientro + marcatore)', dopo1[1]?.rientro === 12 && dopo1[1]?.figlia === true)
   check('sta subito sotto la principale, non in fondo', dopo1[1]?.rientro === 12 && dopo1[0]?.rientro === 0)
+  // Richiesta utente: "riesci a mettere le tab figlie, sotto la tab madre?" → la figlia deve
+  // stare su una RIGA SUA, sotto la madre (top maggiore), non di fianco.
+  check('la figlia va A CAPO: riga sotto la madre', dopo1[1]?.top > dopo1[0]?.top)
 
   // 2) fino al livello 5 e oltre: il sesto si ferma al livello massimo (diventa sorella)
   for (let i = 0; i < 4; i++) await apriDalTastoDestro()
   const dopo5 = await tabs()
   console.log(`  dopo 5 aperture: ${JSON.stringify(dopo5.map(t => t.rientro))}`)
   check('arriva al livello 5 (rientro 60)', dopo5[5]?.rientro === 60)
+  // Ogni livello è su una riga sua: i top crescono strettamente A→A1→…→A5.
+  console.log(`  righe (top): ${JSON.stringify(dopo5.map(t => t.top))}`)
+  check(
+    'ogni livello è su una riga sotto il precedente',
+    dopo5.every((t, i) => i === 0 || t.top > dopo5[i - 1].top),
+  )
+  // Con la gerarchia servono più righe: la barra deve allungarsi, non tagliare le figlie.
+  const vis = await tabVisibili()
+  console.log(`  barra: ${JSON.stringify(vis)}`)
+  await page.screenshot('tab-gerarchia')
+  check('la barra si allunga e mostra tutte le righe', vis.ok === true)
   await apriDalTastoDestro()
   const dopo6 = await tabs()
   console.log(`  dopo la sesta apertura: ${JSON.stringify(dopo6.map(t => t.rientro))}`)
