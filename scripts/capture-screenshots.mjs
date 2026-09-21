@@ -1620,6 +1620,7 @@ async function verifyTabTree(page) {
     'il diagramma è VISIBILE nel pannello (editor nascosto, non coperto)',
     statoGrafo.visibile === true && statoGrafo.editorNascosto === true,
   )
+  await page.screenshot('diagramma-aperto')
   await apriDalTastoDestro('Diagramma chiamate')
   await sleep(1500)
   const tabsDopoGrafo2 = await page.eval(`document.querySelectorAll('.sql-tab').length`)
