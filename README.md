@@ -54,6 +54,9 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   su una riga **sotto la madre** (rientrato, con la freccia come marcatore), fino a 5 livelli. Trascinando
   una tab fuori dal gruppo la si stacca e torna principale; chiudendo una madre con figlie l'app chiede se
   chiudere anche loro.
+- **Pannello dei risultati per tab**: `Ctrl+R` nasconde/mostra i risultati **della tab attiva** (la scelta è
+  legata alla tab: nascondendolo in una non sparisce nelle altre). Nelle tab di ricerca e nei diagrammi il
+  pannello dei risultati non c'è.
 - **Esecuzione**: F5 / Ctrl+Invio esegue lo statement corrente (o solo la selezione, come SSMS); più batch
   separati da `GO`, cattura dei `PRINT`, più result set.
 - **File .sql**: trascina i file nell'app o usa "Apri file"; **Salva** (Ctrl+S) sovrascrive l'originale,

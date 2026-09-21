@@ -336,6 +336,11 @@ export interface EditorTab {
   icon?: string
   /** Tab appuntata: resta in testa e non è chiudibile. */
   pinned?: boolean
+  /**
+   * Pannello dei risultati visibile per QUESTA tab (Ctrl+R lo nasconde/mostra solo qui):
+   * la scelta è legata alla tab, non all'applicazione. Assente = visibile.
+   */
+  resultsVisible?: boolean
   /** Database associato alla tab (per il colore). */
   database?: string
   /** Tab nata da un file (nome = file). */

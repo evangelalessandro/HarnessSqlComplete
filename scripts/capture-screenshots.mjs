@@ -502,6 +502,42 @@ async function verifyTabPositions(page) {
   await page.press('Escape', { code: 'Escape', vk: 27 })
   await sleep(300)
 
+  // 5) il pannello dei RISULTATI è legato alla TAB: nascondendolo qui non sparisce nell'altra
+  const risultati = () => page.eval(`!!document.querySelector('[data-risultati="pannello"]')`)
+  /** Si assicura che nella tab attiva i risultati siano VISIBILI (Ctrl+R se sono nascosti). */
+  const assicuraVisibili = async () => {
+    if (!(await risultati())) {
+      await page.press('r', { code: 'KeyR', vk: 82, modifiers: 2 })
+      await sleep(600)
+    }
+  }
+  await page.clickWhere(`document.querySelectorAll('.sql-tab')[0]`)
+  await sleep(500)
+  await assicuraVisibili()
+  await clickNew()
+  await sleep(600)
+  await assicuraVisibili()
+  const titoloNuova = (await tabs()).slice(-1)[0]
+  const primaDelToggle = await risultati()
+  await page.press('r', { code: 'KeyR', vk: 82, modifiers: 2 }) // Ctrl+R: nasconde QUI
+  await sleep(600)
+  const dopoIlToggle = await risultati()
+  // si passa all'altra tab (il clic va sul PULSANTE del titolo: il div della tab non cambia tab)
+  await page.clickWhere(
+    `(() => {
+      const t = [...document.querySelectorAll('.sql-tab')].find(x => !(x.textContent || '').includes(${JSON.stringify(titoloNuova)}));
+      return t ? t.querySelector('button') : null;
+    })()`,
+  )
+  await sleep(600)
+  const altraTab = await risultati()
+  console.log(`  risultati: prima=${primaDelToggle} dopo Ctrl+R=${dopoIlToggle} altra tab=${altraTab}`)
+  check(
+    'Ctrl+R nasconde i risultati solo nella tab attiva',
+    primaDelToggle === true && dopoIlToggle === false && altraTab === true,
+    `prima ${primaDelToggle}, dopo ${dopoIlToggle}, altra ${altraTab}`,
+  )
+
   const failed = results.filter(r => !r.ok)
   console.log(`\nesito: ${results.length - failed.length}/${results.length} controlli superati`)
   if (failed.length > 0) throw new Error(`${failed.length} controlli falliti`)

@@ -9,7 +9,7 @@ import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
-import { buildTabClosePlan, countClosableTabs, graphTabIndex, insertTabAt, searchTabIndex } from './tabOps'
+import { buildTabClosePlan, countClosableTabs, graphTabIndex, insertTabAt, risultatiVisibiliPer, searchTabIndex } from './tabOps'
 import {
   MAX_TAB_DEPTH,
   childParentFor,
@@ -146,7 +146,12 @@ export default function App() {
       return 52
     }
   })
-  const [resultsVisible, setResultsVisible] = useState<boolean>(() => {
+  /**
+   * PANNELLO RISULTATI: la visibilità è PER TAB (prima era globale: nascondendolo in una tab
+   * spariva in tutte). Ctrl+R agisce sulla tab attiva. La preferenza dell'ultima scelta si
+   * ricorda solo come valore iniziale delle tab NUOVE.
+   */
+  const [risultatiPredefiniti, setRisultatiPredefiniti] = useState<boolean>(() => {
     try {
       return (localStorage.getItem('sql-intelli:split-results') ?? '1') !== '0'
     } catch {
@@ -162,11 +167,11 @@ export default function App() {
   }, [editorPct])
   useEffect(() => {
     try {
-      localStorage.setItem('sql-intelli:split-results', resultsVisible ? '1' : '0')
+      localStorage.setItem('sql-intelli:split-results', risultatiPredefiniti ? '1' : '0')
     } catch {
       /* ignora */
     }
-  }, [resultsVisible])
+  }, [risultatiPredefiniti])
 
   const editorPaneRef = useRef<HTMLDivElement | null>(null)
   const resultsPaneRef = useRef<HTMLDivElement | null>(null)
@@ -194,17 +199,7 @@ export default function App() {
     window.addEventListener('mouseup', onUp)
   }
 
-  // Ctrl+R (o Cmd+R): nasconde/mostra il pannello dei risultati (evita il refresh del browser)
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (isToggleResultsShortcut(e)) {
-        e.preventDefault()
-        setResultsVisible(v => !v)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  // (Ctrl+R: vedi più sotto, dopo la definizione di "risultatiVisibili" — dipende dalla tab attiva)
 
   // Layout dei pannelli: larghezza della sidebar e pannello agganciato a destra (persistiti)
   const [layout, setLayout] = useState<{
@@ -519,13 +514,15 @@ export default function App() {
         fileHandle,
         fileName: fileName ?? (fromFile ? title : undefined),
         parentId: padre,
+        // la visibilità dei risultati è della tab: le nuove partono dall'ultima scelta fatta
+        resultsVisible: risultatiPredefiniti,
       }
       const dove = position ?? newTabPositionRef.current
       setEditorTabs(prev => (padre ? insertTabAsChild(prev, tab, padre) : insertTabAt(prev, tab, activeEditorTab, dove)))
       setActiveEditorTab(tab.id)
       return tab.id
     },
-    [editorTabs, activeEditorTab, connection],
+    [editorTabs, activeEditorTab, connection, risultatiPredefiniti],
   )
 
   /**
@@ -559,6 +556,33 @@ export default function App() {
   const activeTabIsGraph = editorTabs.find(t => t.id === activeEditorTab)?.kind === 'graph'
   /** In queste tab Monaco non si vede: va nascosto, altrimenti spinge il pannello fuori posto. */
   const pannelloAlPostoDiMonaco = activeTabIsSearch || activeTabIsGraph
+
+  /**
+   * PANNELLO RISULTATI legato alla TAB ATTIVA: ognuna ricorda se lo vuole visibile o no
+   * (Ctrl+R agisce solo su questa). Nelle tab di ricerca/diagramma non c'è: lì lo spazio è
+   * tutto del pannello.
+   */
+  const tabAttiva = editorTabs.find(t => t.id === activeEditorTab)
+  const risultatiVisibili = risultatiVisibiliPer(tabAttiva, pannelloAlPostoDiMonaco)
+  const setRisultatiVisibili = useCallback(
+    (visibile: boolean) => {
+      setRisultatiPredefiniti(visibile)
+      setEditorTabs(prev => prev.map(t => (t.id === activeEditorTab ? { ...t, resultsVisible: visibile } : t)))
+    },
+    [activeEditorTab],
+  )
+
+  // Ctrl+R (o Cmd+R): nasconde/mostra il pannello dei risultati DELLA TAB ATTIVA
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isToggleResultsShortcut(e)) {
+        e.preventDefault()
+        setRisultatiVisibili(!risultatiVisibili)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [risultatiVisibili, setRisultatiVisibili])
 
   // Tornando dalle tab di ricerca/diagramma, Monaco è stato nascosto: si ricalcola la sua
   // impaginazione (altrimenti resta con la larghezza sbagliata e le righe sembrano tagliate).
@@ -823,7 +847,7 @@ export default function App() {
         setFireTick(t => t + 1)
       }
       // eseguendo una query i risultati compaiono sempre, anche se nascosti con Ctrl+R
-      setResultsVisible(true)
+      setRisultatiVisibili(true)
       // il risultato va alla tab ATTIVA al momento dell'esecuzione
       const tabId = activeEditorTab
       if (!tabId) return
@@ -1543,7 +1567,7 @@ export default function App() {
             ref={editorPaneRef}
             className="shrink-0"
             style={{
-              flexGrow: resultsVisible ? editorPct : 1,
+              flexGrow: risultatiVisibili ? editorPct : 1,
               flexBasis: 0,
               border: `2px solid ${activeDbColor}`,
               minHeight: 0,
@@ -1631,7 +1655,7 @@ export default function App() {
               ))}
           </div>
 
-          {resultsVisible && (
+          {risultatiVisibili && (
             <div
               onMouseDown={startSplitDrag}
               className="group relative z-10 flex h-1.5 shrink-0 cursor-row-resize items-center justify-center border-y border-zinc-800 bg-zinc-900/80 hover:bg-sky-950/60"
@@ -1641,11 +1665,12 @@ export default function App() {
             </div>
           )}
 
-          {resultsVisible && (
+          {risultatiVisibili && (
             <div
               ref={resultsPaneRef}
               className="flex min-h-0 flex-col"
               style={{ flexGrow: 100 - editorPct, flexBasis: 0 }}
+              data-risultati="pannello"
             >
               <div className="flex shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-900/40 px-2">
                 <TabButton

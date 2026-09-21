@@ -7,6 +7,7 @@ import {
   insertTabAt,
   newTabIndex,
   newTabIndexFor,
+  risultatiVisibiliPer,
   searchTabIndex,
 } from '../tabOps'
 import type { EditorTab } from '../types'
@@ -217,5 +218,34 @@ describe('TAB: dove aprire una tab nuova (le tre posizioni)', () => {
     // il secondo pulsante "a sinistra" è stato tolto e non deve tornare
     expect(appSource).not.toContain('PRIMA tab (a sinistra)')
     expect(appSource).not.toContain('Nuove tab a sinistra')
+  })
+})
+
+// Il pannello dei risultati è legato alla TAB (richiesta utente: "se nascondo il pannello dei
+// risultati è collegato alla tab alla cui lo faccio") e non esiste nelle tab di ricerca/diagramma.
+describe('risultatiVisibiliPer: pannello risultati legato alla tab', () => {
+  const query: EditorTab = { id: 'q', title: 'Query 1', sql: '' }
+  it('visibile di default, nascosto solo dove è stato chiuso', () => {
+    expect(risultatiVisibiliPer(query, false)).toBe(true)
+    expect(risultatiVisibiliPer({ ...query, resultsVisible: true }, false)).toBe(true)
+    expect(risultatiVisibiliPer({ ...query, resultsVisible: false }, false)).toBe(false)
+  })
+
+  it('niente pannello nelle tab di ricerca e di diagramma', () => {
+    expect(risultatiVisibiliPer({ ...query, kind: 'search' }, true)).toBe(false)
+    expect(risultatiVisibiliPer({ ...query, kind: 'graph' }, true)).toBe(false)
+    // e nemmeno se una di quelle tab avesse la preferenza "visibile"
+    expect(risultatiVisibiliPer({ ...query, kind: 'search', resultsVisible: true }, true)).toBe(false)
+  })
+
+  it('senza tab attiva il pannello non si mostra', () => {
+    expect(risultatiVisibiliPer(undefined, false)).toBe(false)
+  })
+
+  it('la scelta è salvata nella tab e Ctrl+R non tocca le altre', () => {
+    expect(appSource).toContain('resultsVisible: visibile')
+    expect(appSource).toMatch(/prev\.map\(t => \(t\.id === activeEditorTab \? \{ \.\.\.t, resultsVisible/)
+    // la visibilità non è più uno stato globale dell'app
+    expect(appSource).not.toContain('const [resultsVisible, setResultsVisible]')
   })
 })
