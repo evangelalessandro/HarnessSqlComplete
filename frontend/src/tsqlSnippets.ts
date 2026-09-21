@@ -1,6 +1,8 @@
 // Snippet e suggerimenti contestuali T-SQL (manuale Microsoft, SQL 2019 e superiore):
 // tipi di dato per DECLARE, opzioni SET con i valori possibili, snippet per ALTER TABLE.
 
+import { stripSqlNoise } from './sqlGen'
+
 export interface TypeSuggestion {
   name: string
   detail: string
@@ -606,22 +608,62 @@ export function variablePrefixLen(textBefore: string): number {
 // ---------- Parametri della routine aperta in modifica ----------
 
 /**
+ * Firma della routine: la parte fra il nome e la chiusura della firma.
+ * - forma con parentesi ("CREATE PROC p ( @a int, @b int )"): si prende il contenuto della prima
+ *   coppia di parentesi (le parentesi dei tipi, es. decimal(11, 3), sono annidate e vengono contate);
+ * - forma senza parentesi ("CREATE PROC p @a int, @b int AS"): si arriva fino all'`AS` di chiusura,
+ *   saltando gli `AS` che dichiarano il tipo di un parametro ("@p AS int").
+ * Commenti e stringhe sono già stati neutralizzati: un "as" in un commento non deve chiudere la
+ * firma (prima faceva perdere tutti i parametri successivi).
+ */
+function firmaDellaRoutine(code: string, da: number): string {
+  let i = da
+  while (i < code.length && /\s/.test(code[i])) i += 1
+  if (code[i] === '(') {
+    let livello = 0
+    for (let j = i; j < code.length; j++) {
+      if (code[j] === '(') livello += 1
+      else if (code[j] === ')') {
+        livello -= 1
+        if (livello === 0) return code.slice(i + 1, j)
+      }
+    }
+    return code.slice(i + 1)
+  }
+  let livello = 0
+  for (let j = i; j < code.length; j++) {
+    const ch = code[j]
+    if (ch === '(') livello += 1
+    else if (ch === ')') livello = Math.max(0, livello - 1)
+    else if (livello === 0 && (ch === 'A' || ch === 'a') && /^AS\b/i.test(code.slice(j, j + 3))) {
+      const parolaPrima = /([A-Za-z0-9_@]+)\s*$/.exec(code.slice(0, j))?.[1] ?? ''
+      if (parolaPrima.startsWith('@')) continue // "@p AS int": è il tipo, non la fine della firma
+      return code.slice(i, j)
+    }
+  }
+  return code.slice(i)
+}
+
+/**
  * Parametri della stored procedure/funzione che contiene il cursore: quando si
  * modifica una routine ("CREATE OR ALTER PROCEDURE …") l'intellisense deve
  * proporre anche i PARAMETRI (@… della firma), non solo le variabili DECLARATE
  * dentro il corpo. Restituisce quelli dell'ULTIMO header (CREATE/ALTER …
  * PROC/FUNCTION) presente nel testo prima del cursore; per un trigger → vuoto.
+ * Commenti e stringhe vengono neutralizzati prima dell'analisi: dentro un commento
+ * o un valore di default può comparire la parola "as", che non deve chiudere la firma.
  */
 export function extractRoutineParameters(text: string): DeclaredVariable[] {
+  const code = stripSqlNoise(text)
   const headerRe =
-    /(?:^|;|\bGO\b|(?:\r?\n)\s*)(?:ALTER|CREATE)\s+(?:OR\s+ALTER\s+)?(?:PROC(?:EDURE)?|PROCEDURE|FUNCTION|FUN)\s+(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?([\s\S]*?)\bAS\b/gi
+    /(?:^|;|\bGO\b|(?:\r?\n)\s*)(?:ALTER|CREATE)\s+(?:OR\s+ALTER\s+)?(?:PROC(?:EDURE)?|PROCEDURE|FUNCTION|FUN)\s+(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?/gi
   let last: RegExpExecArray | null = null
   let m: RegExpExecArray | null
-  while ((m = headerRe.exec(text)) !== null) last = m
+  while ((m = headerRe.exec(code)) !== null) last = m
   if (!last) return []
 
   const out: DeclaredVariable[] = []
-  const signature = last[1]
+  const signature = firmaDellaRoutine(code, last.index + last[0].length)
   // nome@(eventuale AS) tipo(con lunghezza opzionale tipo "nvarchar(50)")
   const paramRe =
     /@([A-Za-z_][A-Za-z0-9_]*)\s+(?:(?:AS\s+)?)((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\(\s*\d+(?:\s*,\s*\d+)?\s*\))?)/gi

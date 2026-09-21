@@ -141,6 +141,11 @@ export const HELP_SECTIONS: HelpSection[] = [
           'I suggerimenti dipendono dalla posizione: dopo FROM/JOIN solo tabelle e viste, dopo EXEC solo stored procedure, nella select-list e in WHERE/ON/GROUP/ORDER solo colonne e funzioni, dopo un alias (r.) le colonne qualificate di quella tabella. Nella ORDER BY le direzioni ASC/DESC compaiono solo dopo aver scelto il campo.',
       },
       {
+        title: 'Parametri e variabili della routine che stai modificando',
+        detail:
+          'Mentre modifichi una stored procedure o una funzione (CREATE OR ALTER), scrivendo "@" l\u2019intellisense propone i PARAMETRI della firma (con il tipo, es. "nvarchar(255) · parametro della routine") INSIEME alle variabili dichiarate nel corpo (DECLARE): funziona con i parametri fra parentesi o senza, su più righe, con i valori di default, con lo stile "@param as tipo" e anche quando fra i parametri ci sono commenti (es. "/* da usare as default */"). Le voci si filtrano digitando parte del nome (@mI → @mId).',
+      },
+      {
         title: 'Alias delle tabelle',
         detail:
           'Dando un alias a una tabella, scrivendo "alias." vengono proposti i suoi campi (anche nella select-list): vale anche per le tabelle temporanee (#tmp.) e per le CTE definite nel documento ("with c as (...) select * from c pippo where pippo."), anche con le parentesi quadre ([pippo].).',

@@ -84,6 +84,9 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   condizione propone le altre coppie dello stesso vincolo.
 - **EXEC**: dopo `EXEC proc` suggerisce i parametri (tipo, IN/OUTPUT, default noti, tab-stop) ed esclude
   quelli già scritti; dal menu contestuale genera l'`EXEC` con i valori di default reali.
+- **Parametri della routine in modifica**: mentre modifichi una store o una funzione, scrivendo `@` il popup
+  propone i **parametri della firma** insieme alle variabili dichiarate (`DECLARE`); letti anche con lo stile
+  `@param as tipo`, con i parametri fra parentesi su più righe, i valori di default e i commenti in mezzo.
 - **INSERT**: dentro `INSERT INTO tab (` suggerisce le colonne (con "tutte le colonne"); dentro `VALUES`
   propone i valori di default per la colonna corrente, **evidenziando la coppia colonna↔valore**.
 - **Campo corrispondente**: con il cursore su un campo si illumina quello abbinato — colonna ↔ valore negli

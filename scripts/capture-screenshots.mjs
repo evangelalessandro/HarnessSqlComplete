@@ -49,6 +49,7 @@ const VERIFY_FRAGMENT = process.argv.includes('--verify-fragment')
 const VERIFY_SIDEBAR = process.argv.includes('--verify-sidebar')
 const VERIFY_CHANGES = process.argv.includes('--verify-changes')
 const VERIFY_MERGE = process.argv.includes('--verify-merge')
+const VERIFY_PARAMS = process.argv.includes('--verify-params')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -71,6 +72,19 @@ const ROUTINE_NAME = process.env.SHOT_ROUTINE ?? 'ws_L2_SetCorridoioMiss'
  * serve a controllare che NESSUN campo chiave finisca nell'UPDATE SET.
  */
 const TABELLA_CHIAVE = process.env.SHOT_TABLE ?? 'L1_AZIONI_PERCORSI'
+/**
+ * Store usata da --verify-params: è una di quelle scritte con lo stile "@param as tipo", dove la
+ * lettura della firma si fermava al primo "as" (i parametri non comparivano nell'intellisense).
+ */
+const ROUTINE_PARAMS_NAME = process.env.SHOT_PARAMS_ROUTINE ?? 'ws_HDL_TestPrio'
+/**
+ * Parametri della routine ROUTINE_PARAMS_NAME (dalla firma nel database): la verifica
+ * --verify-params controlla che l'intellisense li proponga mentre la si modifica.
+ */
+const ROUTINE_PARAMS = (process.env.SHOT_PARAMS ?? '@mId,@nNoBack,@fExist,@Errore')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean)
 /** Quanti caratteri spostare il cursore per finire DENTRO il nome della routine ("EXEC dbo." = 9). */
 const EXEC_NAME_OFFSET = Number(process.env.SHOT_EXEC_OFFSET ?? 13)
 
@@ -1212,7 +1226,7 @@ async function verifyLocalTables(page) {
 
   // controllo deterministico sul modulo servito all'app, con la STORE REALE (nessuna digitazione)
   const colonneStore = await page.eval(`(async () => {
-    const sql = (await import('/src/__tests__/fixtures/routine_ws_CUSTOM_Handheld_KittingReturn_St1_GetList.sql?raw')).default;
+    const sql = (await import('/src/__tests__/fixtures/routine_ws_CIDEDO_HUSOBUME_KIPEVUBEGUSEV_St1_GIVOSEB.sql?raw')).default;
     const mod = await import('/src/localTables.ts');
     return mod.extractLocalTables(sql).map(t => ({ nome: t.name, colonne: (t.columns || []).map(c => c.name) }));
   })()`)
@@ -1634,6 +1648,126 @@ async function verifyTabTree(page) {
   const tabsDopoGrafo2 = await page.eval(`document.querySelectorAll('.sql-tab').length`)
   console.log(`  tab dopo la riapertura dello stesso diagramma: ${tabsDopoGrafo2}`)
   check('lo stesso diagramma non viene duplicato', tabsDopoGrafo2 === tabsDopoGrafo)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-params): mentre si MODIFICA una stored procedure, scrivendo "@" l'intellisense
+ * deve proporre i PARAMETRI della firma (segnalazione utente: "l'intellisense non legge anche i
+ * parametri della store procedure che sto modificando"). Si apre la store vera dal tasto destro,
+ * si scrive "SELECT @" dentro e si leggono le voci del popup.
+ */
+async function verifyParams(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // 1) la store si apre dall'albero ("Modifica" → CREATE OR ALTER in una tab)
+  const cercato = await page.eval(`(() => {
+    const i = [...document.querySelectorAll('input')].find(x => (x.placeholder || '').includes('Cerca'));
+    if (!i) return false;
+    i.focus();
+    return true;
+  })()`)
+  if (!cercato) throw new Error('campo di ricerca della sidebar non trovato')
+  await page.typeText(ROUTINE_PARAMS_NAME)
+  await sleep(2000)
+  const punto = await page.eval(`(() => {
+    const riga = [...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('Trascina nel editor'));
+    if (!riga) return null;
+    riga.scrollIntoView({ block: 'center' });
+    const r = riga.getBoundingClientRect();
+    return { x: r.left + 30, y: r.top + r.height / 2 };
+  })()`)
+  if (!punto) throw new Error('nessuna riga di stored procedure trovata nell albero')
+  await page.clickPoint(punto.x, punto.y, 'right')
+  await sleep(700)
+  const premuto = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => ((b.textContent || '').trim().startsWith('Modifica')) && b.offsetParent)`,
+  )
+  await sleep(2500)
+  const titoloTab = await page.eval(`(() => {
+    const t = [...document.querySelectorAll('.sql-tab')].find(x => (x.textContent || '').includes(${JSON.stringify(ROUTINE_PARAMS_NAME)}));
+    return t ? (t.textContent || '').trim() : null;
+  })()`)
+  check(
+    'la store si apre in modifica (tab col nome dell oggetto)',
+    premuto === true && !!titoloTab,
+    JSON.stringify(titoloTab),
+  )
+
+  // 2) dentro la store si scrive "SELECT @" e si guarda il popup
+  const rect = await editorRect(page)
+  await page.clickPoint(rect.x + 200, rect.y + 40)
+  await sleep(300)
+  await page.press('End', { code: 'End', vk: 35, modifiers: 2 }) // Ctrl+Fine: fondo del documento
+  await sleep(300)
+  await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
+  await page.typeText('SELECT @')
+  await sleep(2200)
+  const voci = await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+    .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+  console.log(`  popup dopo "SELECT @": ${JSON.stringify(voci.slice(0, 12))}`)
+
+  const variabili = voci.filter(v => v.startsWith('@'))
+  const mancanti = ROUTINE_PARAMS.filter(p => !variabili.some(v => v.toLowerCase() === p.toLowerCase()))
+  console.log(`  parametri attesi: ${JSON.stringify(ROUTINE_PARAMS)}`)
+  check('il popup propone le variabili/parametri', variabili.length > 0, `${variabili.length} voci con @`)
+  check('propone TUTTI i parametri della firma', mancanti.length === 0, `mancanti: ${JSON.stringify(mancanti)}`)
+
+  // 3) con più contesti di scrittura i parametri devono esserci sempre
+  //    (SELECT @, WHERE ... = @, SET @, IF @): si annulla ogni prova con Ctrl+Z
+  const contesti = [
+    { etichetta: 'SELECT @', testo: 'SELECT @' },
+    { etichetta: 'WHERE c = @', testo: 'SELECT 1 FROM dbo.T WHERE c = @' },
+    { etichetta: 'SET @', testo: 'SET @' },
+    { etichetta: 'IF @', testo: 'IF @' },
+  ]
+  for (const c of contesti) {
+    await page.press('End', { code: 'End', vk: 35, modifiers: 2 })
+    await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
+    await page.typeText(c.testo)
+    await sleep(1800)
+    const righe = await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+    const mancano = ROUTINE_PARAMS.filter(p => !righe.some(v => v.toLowerCase() === p.toLowerCase()))
+    console.log(`  ${c.etichetta}: ${righe.length} voci, mancanti ${JSON.stringify(mancano)}`)
+    check(`i parametri compaiono con "${c.etichetta}"`, righe.length > 0 && mancano.length === 0, JSON.stringify(mancano))
+    await page.press('Escape', { code: 'Escape', vk: 27 })
+    // Ctrl+Z: si toglie la riga di prova e si torna al documento
+    await page.press('z', { code: 'KeyZ', vk: 90, modifiers: 2 })
+    await sleep(500)
+  }
+
+  // 4) filtrando per nome ("@mI") resta il parametro giusto
+  await page.press('End', { code: 'End', vk: 35, modifiers: 2 })
+  await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
+  await page.typeText('SELECT @mI')
+  await sleep(1800)
+  const voci2 = await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+    .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+  console.log(`  popup dopo "@mI": ${JSON.stringify(voci2.slice(0, 6))}`)
+  check(
+    'filtrando per nome resta il parametro giusto',
+    voci2.some(v => v.toLowerCase() === '@mid'),
+    JSON.stringify(voci2.slice(0, 3)),
+  )
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await page.screenshot('parametri-store-intellisense')
 
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
@@ -3218,6 +3352,11 @@ async function main() {
 
     if (VERIFY_MERGE) {
       await verifyMerge(page)
+      return
+    }
+
+    if (VERIFY_PARAMS) {
+      await verifyParams(page)
       return
     }
 
