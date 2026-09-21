@@ -1926,6 +1926,32 @@ async function verifyMultiriga(page) {
     `${cursoriAltGr} cursori, ${righeAltGr.length} righe`,
   )
 
+  // 1c) varianti con cui la tastiera può consegnare AltGr: solo altGraph (senza altKey) e
+  //     keyCode senza key/code. Segnalazione utente: "ctrl+alt+giù non va in modalità multi cursore".
+  for (const variante of [
+    { nome: 'solo altGraph', evento: `{ key: 'ArrowDown', code: 'ArrowDown', altKey: false, ctrlKey: false, altGraph: true }` },
+    { nome: 'solo keyCode 40', evento: `{ keyCode: 40, which: 40, ctrlKey: true, altKey: true }` },
+  ]) {
+    await scrivi(['uno', 'due', 'tre'].join('\n'))
+    await page.press('Escape', { code: 'Escape', vk: 27 })
+    await clicRiga(0)
+    await page.eval(`(() => {
+      const dom = document.querySelector('.monaco-editor textarea') || document.querySelector('.monaco-editor');
+      const dati = ${variante.evento};
+      const ev = new KeyboardEvent('keydown', Object.assign({
+        key: 'ArrowDown', code: '', bubbles: true, cancelable: true, view: window,
+      }, dati));
+      Object.defineProperty(ev, 'getModifierState', { value: (k) => k === 'AltGraph' ? !!dati.altGraph : false });
+      Object.defineProperty(ev, 'keyCode', { value: dati.keyCode ?? 0 });
+      Object.defineProperty(ev, 'which', { value: dati.which ?? 0 });
+      return dom.dispatchEvent(ev);
+    })()`)
+    await sleep(500)
+    const c = await cursori()
+    console.log(`  Ctrl+Alt+Giù (${variante.nome}): cursori=${c}`)
+    check(`Ctrl+Alt+Giù riconosciuto anche con "${variante.nome}"`, c >= 2, `${c} cursori`)
+  }
+
   // Shift+Alt+Giù resta "copia riga sotto" (la nostra intercettazione non lo tocca)
   await scrivi(['uno', 'due', 'tre'].join('\n'))
   await page.press('Escape', { code: 'Escape', vk: 27 })

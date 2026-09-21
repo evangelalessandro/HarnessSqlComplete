@@ -37,6 +37,24 @@ describe('cursoreDaAggiungere: Ctrl+Alt+Su/Giù', () => {
     expect(cursoreDaAggiungere({ code: 'KeyC', ctrlKey: true, altKey: true })).toBeNull()
     expect(cursoreDaAggiungere({})).toBeNull()
   })
+
+  // Segnalazione utente: "ctrl+alt+giù non va in modalità multi cursore". Con AltGr il browser può
+  // consegnare l'evento in modi diversi (senza key/code, oppure con il solo altGraph): vanno
+  // riconosciuti tutti.
+  it('AltGr: riconosciuto anche senza key/code (solo keyCode) e con il solo altGraph', () => {
+    expect(cursoreDaAggiungere({ code: 'ArrowDown', keyCode: 229, ctrlKey: true, altKey: true, altGraph: true })).toBe('sotto')
+    // key/code assenti (browser che li omette) → si usa il codice del tasto
+    expect(cursoreDaAggiungere({ keyCode: 40, ctrlKey: true, altKey: true })).toBe('sotto')
+    expect(cursoreDaAggiungere({ which: 38, ctrlKey: true, altKey: true })).toBe('sopra')
+    // AltGr riportato SOLO come altGraph (senza altKey)
+    expect(cursoreDaAggiungere({ code: 'ArrowDown', altGraph: true })).toBe('sotto')
+    expect(cursoreDaAggiungere({ code: 'ArrowUp', altGraph: true })).toBe('sopra')
+  })
+
+  it('PageUp/PageDown non contano, e senza modificatori nemmeno le frecce', () => {
+    expect(cursoreDaAggiungere({ code: 'ArrowDown' })).toBeNull()
+    expect(cursoreDaAggiungere({ code: 'ArrowDown', keyCode: 40 })).toBeNull()
+  })
 })
 
 describe('azioneCursore', () => {
@@ -49,9 +67,18 @@ describe('azioneCursore', () => {
 describe('collegamento nell\'editor', () => {
   it('la combinazione è intercettata in fase di cattura, prima di Monaco', () => {
     expect(source).toContain("addEventListener('keydown', onTasti, true)")
-    expect(source).toContain('cursoreDaAggiungere(ev)')
+    expect(source).toContain('cursoreDaAggiungere({')
+    // AltGr si legge con getModifierState: non è una proprietà dell'evento
+    expect(source).toContain("getModifierState?.('AltGraph')")
     expect(source).toContain('azioneCursore(direzione)')
     // e la copia riga NON deve essere assegnata a Ctrl+Alt+Giù
     expect(source).not.toContain('copyLinesDownAction')
+  })
+
+  it('c\'è anche il comando dell\'editor e la voce nel tasto destro (se la tastiera non arriva)', () => {
+    expect(source).toContain('sqlIntelliMultiCursor')
+    expect(source).toContain("'sql-intelli-cursore-sotto'")
+    expect(source).toContain("'sql-intelli-cursore-sopra'")
+    expect(source).toContain("editor.getAction(id)")
   })
 })

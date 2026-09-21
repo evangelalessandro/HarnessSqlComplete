@@ -311,20 +311,42 @@ export default function SqlEditor({
     editor.updateOptions(opzioniMonaco(blocchiRef.current))
     // Alt+C accende/spegne la selezione a blocchi, come in SSMS
     editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.KeyC, () => toggleBlocchiRef.current?.())
+
+    /** Aggiunge un cursore sopra/sotto: azione di Monaco, con ripiego sul comando per id. */
+    const aggiungiCursore = (direzione: 'sopra' | 'sotto') => {
+      const id = azioneCursore(direzione)
+      const azione = editor.getAction(id)
+      if (azione) void azione.run()
+      else editor.trigger('sqlIntelli', id, null)
+    }
+
     /**
      * Ctrl+Alt+Su/Giù DEVE aggiungere un cursore sopra/sotto, mai copiare o spostare la riga
-     * (segnalazione utente: "con ctrl+alt+giù si sta copiando la riga corrente"). L'evento viene
-     * intercettato in fase di CAPTURA, prima di Monaco: si riconosce la combinazione dal codice del
-     * tasto (keyCode/key possono variare quando il browser vede AltGr) e si esegue direttamente
-     * l'azione giusta, annullando tutto il resto.
+     * (segnalazione utente: "con ctrl+alt+giù si sta copiando la riga corrente", poi "ctrl+alt+giù
+     * non va in modalità multi cursore"). L'evento viene intercettato in fase di CAPTURA, prima di
+     * Monaco, e la combinazione si riconosce da code/key/keyCode + modificatori (AltGr compreso):
+     * quando la tastiera passa per AltGr il browser può non riportare key/code e la combinazione
+     * sembrerebbe non premuta.
      */
     const domNodeTasti = editor.getDomNode()
     const onTasti = (ev: KeyboardEvent) => {
-      const direzione = cursoreDaAggiungere(ev)
+      // AltGr non è una proprietà dell'evento: si legge con getModifierState (su Windows
+      // Ctrl+Alt e AltGr coincidono e alcuni browser lo riportano solo così).
+      const direzione = cursoreDaAggiungere({
+        code: ev.code,
+        key: ev.key,
+        keyCode: ev.keyCode,
+        which: ev.which,
+        ctrlKey: ev.ctrlKey,
+        metaKey: ev.metaKey,
+        altKey: ev.altKey,
+        shiftKey: ev.shiftKey,
+        altGraph: ev.getModifierState?.('AltGraph') ?? false,
+      })
       if (!direzione) return
       ev.preventDefault()
       ev.stopPropagation()
-      editor.trigger('sqlIntelli', azioneCursore(direzione), null)
+      aggiungiCursore(direzione)
     }
     if (domNodeTasti) {
       domNodeTasti.addEventListener('keydown', onTasti, true)
@@ -332,6 +354,36 @@ export default function SqlEditor({
         dispose: () => domNodeTasti.removeEventListener('keydown', onTasti, true),
       })
     }
+    // Seconda linea di difesa: le stesse combinazioni legate come comandi dell'editor, così
+    // funzionano anche se l'evento non arriva al DOM dell'editor (focus sul pannello, ecc.).
+    for (const direzione of ['sopra', 'sotto'] as const) {
+      const freccia = direzione === 'sotto' ? monaco.KeyCode.DownArrow : monaco.KeyCode.UpArrow
+      editor.addCommand(
+        monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | freccia,
+        () => aggiungiCursore(direzione),
+        'sqlIntelliMultiCursor',
+      )
+      editor.addCommand(
+        monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyMod.Shift | freccia,
+        () => aggiungiCursore(direzione),
+        'sqlIntelliMultiCursor',
+      )
+    }
+    // ...e nella tendina del tasto destro, per chi non ricorda la scorciatoia
+    editor.addAction({
+      id: 'sql-intelli-cursore-sotto',
+      label: 'Aggiungi cursore sotto (Ctrl+Alt+Giù)',
+      contextMenuGroupId: 'sql-intelli-righe',
+      contextMenuOrder: 1,
+      run: () => aggiungiCursore('sotto'),
+    })
+    editor.addAction({
+      id: 'sql-intelli-cursore-sopra',
+      label: 'Aggiungi cursore sopra (Ctrl+Alt+Su)',
+      contextMenuGroupId: 'sql-intelli-righe',
+      contextMenuOrder: 2,
+      run: () => aggiungiCursore('sopra'),
+    })
 
     // Esegui: F5 e Ctrl+Invio (registra nella cronologia le tabelle usate)
     const runQuery = () => {
