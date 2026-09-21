@@ -71,8 +71,35 @@ body {
   background-clip: padding-box;
 }
 
-/* Evidenziazione del campo corrispondente negli INSERT (colonna <-> valore) */
-.monaco-editor .sql-pair-highlight {
+/* GRIGLIA RISULTATI: fasce alternate delle righe e riga selezionata.
+   Stanno qui (non come classi Tailwind con colori espliciti) perché devono seguire il TEMA:
+   in chiaro le fasce diventano bianco/grigio chiaro e la selezione azzurro tenue. */
+.sql-zebra-0 {
+  background-color: #0b0b0e;
+}
+.sql-zebra-1 {
+  background-color: #17171b;
+}
+.sql-zebra-2 {
+  background-color: #23232a;
+}
+.sql-row-selected {
+  background-color: #082f49; /* sky-950 */
+}
+.theme-light .sql-zebra-0 {
+  background-color: #ffffff;
+}
+.theme-light .sql-zebra-1 {
+  background-color: #f4f4f5;
+}
+.theme-light .sql-zebra-2 {
+  background-color: #e4e4e7;
+}
+.theme-light .sql-row-selected {
+  background-color: #e0f2fe; /* sky-100 */
+}
+
+/* Evidenziazione del campo corrispondente negli INSERT (colonna <-> valore) */.monaco-editor .sql-pair-highlight {
   background-color: rgba(245, 158, 11, 0.2);
   box-shadow: inset 0 -2px 0 rgba(245, 158, 11, 0.8);
   border-radius: 2px;

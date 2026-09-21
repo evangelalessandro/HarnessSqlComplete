@@ -51,6 +51,7 @@ const VERIFY_CHANGES = process.argv.includes('--verify-changes')
 const VERIFY_MERGE = process.argv.includes('--verify-merge')
 const VERIFY_PARAMS = process.argv.includes('--verify-params')
 const VERIFY_MULTIRIGA = process.argv.includes('--verify-multiriga')
+const VERIFY_TEMA = process.argv.includes('--verify-tema')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -1721,6 +1722,91 @@ async function verifyTabTree(page) {
   const tabsDopoGrafo2 = await page.eval(`document.querySelectorAll('.sql-tab').length`)
   console.log(`  tab dopo la riapertura dello stesso diagramma: ${tabsDopoGrafo2}`)
   check('lo stesso diagramma non viene duplicato', tabsDopoGrafo2 === tabsDopoGrafo)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-tema): cambiando tema chiaro/scuro anche le RIGHE DELLA GRIGLIA dei risultati
+ * devono cambiare colore (segnalazione utente: "il cambio modalità chiaro e scuro fa rimanere in
+ * scuro le righe della griglia"). Si esegue una query, si legge il colore di sfondo delle prime
+ * righe, si cambia tema e si rilegge.
+ */
+async function verifyTema(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // 1) una query per avere righe nella griglia
+  const rect = await editorRect(page)
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText('SELECT TOP 6 UDC_UDC, UDC_TIPOUDC, UDC_ARTICOLO FROM dbo.DAT_UDC')
+  await sleep(400)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await page.waitFor(`document.querySelectorAll('[data-risultati="pannello"] tbody tr').length >= 3`, 40000, 'righe della griglia')
+  await sleep(1200)
+
+  /** Colore di sfondo (rgb) delle prime righe della griglia. */
+  const coloriRighe = () =>
+    page.eval(`[...document.querySelectorAll('[data-risultati="pannello"] tbody tr')].slice(0, 3)
+      .map(tr => getComputedStyle(tr).backgroundColor)`)
+  /** Luminosità media di un colore rgb(...) → serve a dire se è chiaro o scuro. */
+  const luminosita = (rgb) => {
+    const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(rgb ?? '')
+    if (!m) return null
+    return (Number(m[1]) + Number(m[2]) + Number(m[3])) / 3
+  }
+  const cambiaTema = async () => {
+    const premuto = await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => /Passa al tema (chiaro|scuro)/.test(b.getAttribute('title') || ''))`,
+    )
+    await sleep(900)
+    return premuto
+  }
+
+  const scuro = await coloriRighe()
+  console.log(`  righe in tema scuro: ${JSON.stringify(scuro)}`)
+  const premuto = await cambiaTema()
+  const chiaro = await coloriRighe()
+  console.log(`  righe in tema chiaro: ${JSON.stringify(chiaro)}`)
+  await page.screenshot('tema-chiaro-griglia')
+
+  check('il pulsante del tema c\'è e cambia la modalità', premuto === true)
+  check(
+    'in tema scuro le righe sono scure',
+    scuro.length >= 3 && scuro.every(c => (luminosita(c) ?? 255) < 90),
+    JSON.stringify(scuro),
+  )
+  check(
+    'CAMBIA IL TEMA: in chiaro le righe diventano chiare',
+    chiaro.length >= 3 && chiaro.every(c => (luminosita(c) ?? 0) > 180),
+    JSON.stringify(chiaro),
+  )
+  check(
+    'le TRE fasce alternate restano distinguibili anche in chiaro',
+    new Set(chiaro).size >= 2,
+    JSON.stringify(chiaro),
+  )
+
+  // si torna al tema scuro (le altre verifiche si aspettano il tema di partenza)
+  await cambiaTema()
+  const tornato = await coloriRighe()
+  check('tornando al tema scuro le righe tornano scure', tornato.every(c => (luminosita(c) ?? 255) < 90), JSON.stringify(tornato))
 
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
@@ -3631,6 +3717,11 @@ async function main() {
 
     if (VERIFY_MULTIRIGA) {
       await verifyMultiriga(page)
+      return
+    }
+
+    if (VERIFY_TEMA) {
+      await verifyTema(page)
       return
     }
 
