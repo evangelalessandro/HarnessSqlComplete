@@ -47,6 +47,7 @@ const VERIFY_INDENT = process.argv.includes('--verify-indent')
 const VERIFY_DROP = process.argv.includes('--verify-drop')
 const VERIFY_FRAGMENT = process.argv.includes('--verify-fragment')
 const VERIFY_SIDEBAR = process.argv.includes('--verify-sidebar')
+const VERIFY_CHANGES = process.argv.includes('--verify-changes')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -1634,6 +1635,144 @@ async function verifyTabTree(page) {
 }
 
 /**
+ * VERIFICA (--verify-changes): la finestra "Modifiche agli oggetti" (richiesta utente: "una
+ * finestra dove vedo la lista delle cose modificate e quando, tipo una griglia con la store x il
+ * giorno ora"). Controlla che la griglia arrivi dai dati VERI del database: date con giorno e ora,
+ * ordinamento per colonna, filtri per nome, per tipo e per periodo.
+ */
+async function verifyChanges(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Report utilizzo tabelle')`, 40000, 'sidebar pronta')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  /** Righe della griglia: data (gg/mm/aaaa hh:mm), nome, tipo e "quando". */
+  const righe = () =>
+    page.eval(`[...document.querySelectorAll('[data-modifiche="riga"]')].map(tr => {
+      const celle = tr.querySelectorAll('td');
+      return {
+        data: (celle[0] ? celle[0].textContent : '').trim(),
+        nome: (celle[1] ? celle[1].textContent : '').trim(),
+        tipo: (celle[2] ? celle[2].textContent : '').trim(),
+        quando: (celle[5] ? celle[5].textContent : '').trim(),
+      };
+    })`)
+
+  const apri = await page.clickWhere(`document.querySelector('[data-modifiche="apri"]')`)
+  if (!apri) throw new Error('pulsante "Modifiche agli oggetti" non trovato nella sidebar')
+  await page.waitFor(`document.querySelector('[data-modifiche="finestra"]')`, 10000, 'finestra Modifiche')
+  await page.waitFor(`document.querySelectorAll('[data-modifiche="riga"]').length > 0`, 45000, 'righe della griglia')
+  await sleep(500)
+
+  const tutte = await righe()
+  console.log(`  riepilogo: ${JSON.stringify(await page.eval(`(document.querySelector('[data-modifiche="riepilogo"]') || {}).textContent`))}`)
+  console.log(`  prime righe: ${JSON.stringify(tutte.slice(0, 3))}`)
+  check('la griglia mostra gli oggetti del database', tutte.length > 10, `${tutte.length} righe`)
+
+  const formatoOk = tutte.slice(0, 20).every(r => /^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/.test(r.data))
+  check('ogni riga ha giorno E ora (gg/mm/aaaa hh:mm)', formatoOk, JSON.stringify(tutte[0]?.data))
+  check(
+    'c\'è la colonna "quando" in italiano (ora / N minuti fa / …)',
+    tutte.slice(0, 5).every(r => /ora$|fa$|^il \d{2}\/\d{2}\/\d{4}$/.test(r.quando)),
+    JSON.stringify(tutte.slice(0, 3).map(r => r.quando)),
+  )
+
+  // 1) ordinamento di partenza: dalla modifica più recente
+  const date = tutte.map(r => {
+    const [d, o] = r.data.split(' ')
+    const [gg, mm, aaaa] = d.split('/')
+    return `${aaaa}${mm}${gg}${o.replace(':', '')}`
+  })
+  const decrescente = date.every((v, i) => i === 0 || date[i - 1] >= v)
+  check('all\'apertura è ordinato dalla modifica più recente', decrescente, `${date[0]} → ${date[date.length - 1]}`)
+
+  // 2) ordinamento per nome (clic sull'intestazione)
+  await page.clickWhere(`document.querySelector('[data-modifiche="col-name"]')`)
+  await sleep(600)
+  const perNome = (await righe()).slice(0, 30).map(r => r.nome.toLowerCase())
+  const nomeCrescente = perNome.every((v, i) => i === 0 || perNome[i - 1].localeCompare(v) <= 0)
+  check('cliccando "Oggetto" la griglia si ordina per nome', nomeCrescente, `${perNome[0]} → ${perNome[perNome.length - 1]}`)
+
+  // 3) filtro per nome (si scrive nel campo col focus, come si farebbe a mano)
+  const prova = tutte[0].nome.split('.').pop().slice(0, 6)
+  await page.eval(`(() => {
+    const i = document.querySelector('[data-modifiche="filtro"]');
+    i.focus();
+    return true;
+  })()`)
+  await page.typeText(prova)
+  await sleep(800)
+  const scritto = await page.eval(`document.querySelector('[data-modifiche="filtro"]').value`)
+  const filtrate = await righe()
+  console.log(`  filtro "${scritto}": ${filtrate.length} righe`)
+  check(
+    'il filtro per nome restringe la griglia',
+    scritto.toLowerCase() === prova.toLowerCase() &&
+      filtrate.length > 0 &&
+      filtrate.length < tutte.length &&
+      filtrate.every(r => r.nome.toLowerCase().includes(prova.toLowerCase())),
+    `${filtrate.length} di ${tutte.length}`,
+  )
+
+  // 4) filtro per tipo: solo store
+  await page.eval(`(() => {
+    const i = document.querySelector('[data-modifiche="filtro"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(i, '');
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`)
+  await sleep(400)
+  await page.clickWhere(`document.querySelector('[data-modifiche="tipo-procedura"]')`)
+  await sleep(800)
+  const soleStore = await righe()
+  console.log(`  filtro "Store": ${soleStore.length} righe`)
+  check(
+    'il filtro per tipo mostra solo le store',
+    soleStore.length > 0 && soleStore.every(r => r.tipo === 'procedura'),
+    `${soleStore.length} store`,
+  )
+
+  // 5) filtro per periodo: ultime 24 ore (le date devono essere di oggi)
+  await page.eval(`(() => {
+    const s = document.querySelector('[data-modifiche="periodo"]');
+    s.value = '1';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`)
+  await sleep(800)
+  const oggi = await righe()
+  const adesso = new Date()
+  const due = n => String(n).padStart(2, '0')
+  const oggiStr = `${due(adesso.getDate())}/${due(adesso.getMonth() + 1)}/${adesso.getFullYear()}`
+  console.log(`  ultime 24 ore: ${oggi.length} store — ${JSON.stringify(oggi.slice(0, 3).map(r => r.nome))}`)
+  check(
+    'il filtro "ultime 24 ore" tiene solo le modifiche di oggi',
+    oggi.every(r => r.data.startsWith(oggiStr)),
+    `${oggi.length} righe, oggi=${oggiStr}`,
+  )
+  await page.screenshot('modifiche-oggetti')
+
+  // 6) la finestra si chiude con Esc
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await sleep(500)
+  const chiusa = await page.eval(`!document.querySelector('[data-modifiche="finestra"]')`)
+  check('Esc chiude la finestra', chiusa === true)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * VERIFICA (--verify-sidebar): nel pannello Oggetti la ricerca resta FISSA in alto e scorre solo
  * l'elenco sotto (richiesta utente: "mi lasci la ricerca fissa in alto e non la far scorrere").
  */
@@ -2973,6 +3112,11 @@ async function main() {
 
     if (VERIFY_SIDEBAR) {
       await verifySidebar(page)
+      return
+    }
+
+    if (VERIFY_CHANGES) {
+      await verifyChanges(page)
       return
     }
 

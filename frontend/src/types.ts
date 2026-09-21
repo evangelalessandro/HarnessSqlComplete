@@ -306,6 +306,20 @@ export interface TableReportRow {
   lastWrite: string | null
 }
 
+/**
+ * Riga della finestra "Modifiche": un oggetto del database con giorno e ora di creazione e di
+ * ultima modifica (ISO 8601 UTC, come le registra SQL Server). `typeCode` è il codice di
+ * `sys.objects.type` ('P', 'V', 'FN', 'IF', 'TF', 'TR', 'U').
+ */
+export interface ObjectChangeRow {
+  schema: string
+  name: string
+  typeCode: string
+  typeDesc: string
+  createdAt: string | null
+  modifiedAt: string | null
+}
+
 /** Tab dell'editor (query o definizione oggetto). */
 export interface EditorTab {
   id: string

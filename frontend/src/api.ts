@@ -5,6 +5,7 @@ import type {
   ConnectionRequest,
   ConnectionTestResult,
   DatabaseSummary,
+  ObjectChangeRow,
   QueryResult,
   RoutineCallGraph,
   SavedConnectionDto,
@@ -115,6 +116,10 @@ export const api = {
   /** Report utilizzo tabelle: spazio riservato/usato/dati/indici, righe, indici e accessi. */
   tableReport: (connectionId: string) =>
     http<TableReportRow[]>(`/metadata/${connectionId}/report/tables`),
+
+  /** Modifiche agli oggetti: creazione e ultima modifica (giorno e ora) di store, viste, tabelle… */
+  objectChanges: (connectionId: string) =>
+    http<ObjectChangeRow[]>(`/metadata/${connectionId}/changes`),
 
   autocomplete: (connectionId: string, sql: string, apiKey?: string) =>
     http<AutocompleteResponse>(`/autocomplete/${connectionId}`, {

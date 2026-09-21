@@ -246,3 +246,18 @@ public record TableReportRow(
     long Writes,
     string? LastRead,
     string? LastWrite);
+
+// ---------- Modifiche agli oggetti (finestra "Modifiche") ----------
+
+/// <summary>
+/// Un oggetto del database con le date registrate da SQL Server: creazione e ULTIMA modifica
+/// (ISO 8601 UTC). SQL Server tiene solo l'ultima modifica per oggetto, quindi è una fotografia
+/// dello stato attuale, non uno storico delle singole modifiche.
+/// </summary>
+public record ObjectChangeRow(
+    string Schema,
+    string Name,
+    string TypeCode,
+    string TypeDesc,
+    string? CreatedAt,
+    string? ModifiedAt);

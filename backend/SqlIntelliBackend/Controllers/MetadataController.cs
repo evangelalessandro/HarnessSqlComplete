@@ -268,6 +268,53 @@ public class MetadataController(
         return Ok(rows);
     }
 
+    /// <summary>
+    /// MODIFICHE AGLI OGGETTI: elenco piatto degli oggetti del database della connessione con la
+    /// data di creazione e di ULTIMA modifica (ordinate dalla più recente). È la griglia della
+    /// finestra "Modifiche": store, funzioni, viste, tabelle e trigger con giorno e ora.
+    /// Le date sono in UTC (ISO 8601) perché è così che SQL Server le registra: la finestra le
+    /// converte nell'ora locale.
+    /// </summary>
+    [HttpGet("changes")]
+    public async Task<ActionResult<List<ObjectChangeRow>>> ObjectChanges([FromRoute] string connectionId, CancellationToken ct)
+    {
+        if (!TryGetConnectionString(connectionId, out var cs))
+            return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
+
+        const string sql = """
+            SELECT s.name,
+                   o.name,
+                   o.type,
+                   o.type_desc,
+                   CONVERT(varchar(30), o.create_date, 126) + 'Z',
+                   CONVERT(varchar(30), o.modify_date, 126) + 'Z'
+            FROM sys.objects o
+            INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
+            WHERE o.is_ms_shipped = 0
+              AND o.type IN ('P', 'V', 'FN', 'IF', 'TF', 'TR', 'U')
+            ORDER BY o.modify_date DESC;
+            """;
+
+        await using var conn = new SqlConnection(cs);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.CommandTimeout = 60;
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        var rows = new List<ObjectChangeRow>();
+        while (await r.ReadAsync(ct))
+        {
+            rows.Add(new ObjectChangeRow(
+                r.GetString(0),
+                r.GetString(1),
+                r.GetString(2).Trim(),
+                r.GetString(3),
+                r.IsDBNull(4) ? null : r.GetString(4),
+                r.IsDBNull(5) ? null : r.GetString(5)));
+        }
+        return Ok(rows);
+    }
+
     /// <summary>Escape dei nomi oggetto per l'uso tra parentesi quadre SQL Server.</summary>
     private static string EscapeBracket(string name) => name.Replace("]", "]]");
 }

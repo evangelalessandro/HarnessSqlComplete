@@ -13,6 +13,7 @@ import {
   Flame,
   FolderOpen,
   GitMerge,
+  History,
   KeyRound,
   Play,
   Plus,
@@ -61,6 +62,7 @@ import type { PanelSize, PanelState } from '../panelLayout'
 import { ColumnHoverCard, TableHoverCard } from './HoverCards'
 import type { HoverRect, HoverTarget } from './HoverCards'
 import TableReportModal from './TableReportModal'
+import ChangesModal from './ChangesModal'
 
 interface Props {
   summary: DatabaseSummary | null
@@ -279,6 +281,9 @@ export default function Sidebar({
 
   // Report utilizzo tabelle (modale)
   const [reportOpen, setReportOpen] = useState(false)
+
+  // Modifiche agli oggetti (modale): griglia con giorno e ora dell'ultima modifica
+  const [changesOpen, setChangesOpen] = useState(false)
 
   const toggleDbNode = (name: string) => {
     if (name === activeDatabase) {
@@ -671,15 +676,23 @@ export default function Sidebar({
         )
       })}
       </div>
-      {/* Report utilizzo tabelle del database attivo */}
+      {/* Report utilizzo tabelle del database attivo + MODIFICHE agli oggetti (giorno e ora) */}
       {connectionId && (
-        <div className="shrink-0 border-t border-zinc-800 p-2">
+        <div className="shrink-0 space-y-1 border-t border-zinc-800 p-2">
           <button
             onClick={() => setReportOpen(true)}
             className="flex w-full items-center justify-center gap-1.5 rounded border border-zinc-700 px-2 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-sky-700 hover:bg-sky-950/30 hover:text-sky-300"
             title="Report utilizzo tabelle: spazio riservato/usato, dati, indici, righe e accessi — ordinabile per colonna"
           >
             <Rows3 className="h-3.5 w-3.5 text-sky-400" /> Report utilizzo tabelle
+          </button>
+          <button
+            onClick={() => setChangesOpen(true)}
+            className="flex w-full items-center justify-center gap-1.5 rounded border border-zinc-700 px-2 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-amber-700 hover:bg-amber-950/30 hover:text-amber-300"
+            title="Modifiche agli oggetti: la griglia con store, funzioni, viste, tabelle e trigger e QUANDO sono stati modificati (giorno e ora) — ordinabile per colonna"
+            data-modifiche="apri"
+          >
+            <History className="h-3.5 w-3.5 text-amber-400" /> Modifiche agli oggetti
           </button>
         </div>
       )}
@@ -1241,6 +1254,18 @@ export default function Sidebar({
                 <Rows3 className="h-3.5 w-3.5 text-sky-400" /> Report utilizzo tabelle…
               </button>
             )}
+            {colorMenu.db === activeDatabase && (
+              <button
+                onClick={() => {
+                  setChangesOpen(true)
+                  setColorMenu(null)
+                }}
+                className="flex w-full items-center gap-1.5 rounded px-2 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-amber-300"
+                title="Modifiche agli oggetti: quando sono stati modificati (giorno e ora)"
+              >
+                <History className="h-3.5 w-3.5 text-amber-400" /> Modifiche agli oggetti…
+              </button>
+            )}
           </div>
         </>
       )}
@@ -1269,6 +1294,16 @@ export default function Sidebar({
       {/* Report utilizzo tabelle (ordinabile per colonna) */}
       {reportOpen && connectionId && (
         <TableReportModal connectionId={connectionId} onClose={() => setReportOpen(false)} />
+      )}
+
+      {/* Modifiche agli oggetti: griglia con giorno e ora dell'ultima modifica */}
+      {changesOpen && connectionId && (
+        <ChangesModal
+          connectionId={connectionId}
+          database={activeDatabase}
+          onClose={() => setChangesOpen(false)}
+          onOpenObject={(kind, schema, name) => onOpenObject?.(kind, schema, name, 'alter', true)}
+        />
       )}
     </div>
   )

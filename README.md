@@ -132,6 +132,11 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   attiva; più "Apri definizione" e "Diagramma chiamate"). Resta dentro il **database attivo** e la
   scansione dei dati è limitata (tabelle, tempo, righe per tabella) per non appesantire il database.
 - **Report utilizzo tabelle**: spazio riservato/usato, righe, indici, accessi.
+- **Modifiche agli oggetti**: la finestra con la griglia di store, funzioni, viste, tabelle e trigger e
+  **quando** sono stati modificati (giorno e ora dell'ultima modifica, più la creazione e il "quanto fa" in
+  italiano). Ordinabile per colonna, con filtri per nome, tipo e periodo (24 ore / 7 / 30 giorni); doppio
+  clic su una riga per aprire l'oggetto e modificarlo. Le date sono quelle di SQL Server (`sys.objects`):
+  per oggetto c'è l'ultima modifica, non lo storico.
 
 ### Diagramma delle chiamate
 
@@ -270,6 +275,7 @@ I fixture dei database reali si rigenerano con gli script in `frontend/scripts/`
 | `GET` | `/api/metadata/{connectionId}/search?q=` | Ricerca oggetti per nome |
 | `GET` | `/api/metadata/{connectionId}/text-search?q=&data=` | Ricerca testuale generale (nomi, definizioni e, con `data=true`, valori nelle colonne di testo) |
 | `GET` | `/api/metadata/{connectionId}/report/tables` | Report utilizzo tabelle (spazio, righe, indici, accessi) |
+| `GET` | `/api/metadata/{connectionId}/changes` | Modifiche agli oggetti: creazione e ultima modifica (giorno e ora) di store, funzioni, viste, tabelle, trigger |
 | `POST` | `/api/query/{connectionId}/execute` | Esegue SQL (multi-batch `GO`, `PRINT`, più result set) |
 | `GET` | `/api/autocomplete/{connectionId}/status` | Stato della configurazione DeepSeek |
 | `POST` | `/api/autocomplete/{connectionId}` | Suggerimento inline (SQL parziale + schema) |
