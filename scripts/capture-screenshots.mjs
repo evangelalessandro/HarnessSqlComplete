@@ -2592,12 +2592,22 @@ async function verifySearch(page) {
       modifica: !!p.querySelector('[data-ricerca="modifica"]'),
       definizione: !!p.querySelector('[data-ricerca="definizione"]'),
       diagramma: !!p.querySelector('[data-ricerca="diagramma"]'),
+      // SINTASSI A COLORI: il coloratore di Monaco produce span con classi mtk*
+      colorate: p.querySelectorAll('[data-sintassi="colorata"]').length,
+      token: p.querySelectorAll('[data-sintassi="colorata"] [class*="mtk"]').length,
+      colori: new Set([...p.querySelectorAll('[data-sintassi="colorata"] [class*="mtk"]')]
+        .map(s => getComputedStyle(s).color)).size,
     };
   })()`)
   console.log(`  anteprima dello script: ${JSON.stringify(anteprima)}`)
   check('l anteprima mostra lo script completo dell oggetto', (anteprima?.righeScript ?? 0) > 5)
   check('il match è evidenziato nello script', (anteprima?.evidenziati ?? 0) > 0)
   check('la riga trovata è messa in risalto', anteprima?.rigaInRisalto === true)
+  check(
+    'l anteprima ha la SINTASSI A COLORI (come una tab: parole chiave, stringhe, commenti)',
+    (anteprima?.token ?? 0) > 0 && (anteprima?.colori ?? 0) >= 3,
+    `${anteprima?.token} token colorati, ${anteprima?.colori} colori diversi`,
+  )
   check('dalla ricerca si può MODIFICARE (pulsante Modifica)', anteprima?.modifica === true)
   check('c è anche "Apri definizione" e il diagramma chiamate', anteprima?.definizione === true && anteprima?.diagramma === true)
 

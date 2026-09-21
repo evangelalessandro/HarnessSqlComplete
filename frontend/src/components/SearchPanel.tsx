@@ -16,6 +16,7 @@ import {
   X,
 } from 'lucide-react'
 import { api } from '../api'
+import monaco from '../monacoSetup'
 import { Badge, inputClass } from './ui'
 import {
   canEdit,
@@ -90,6 +91,51 @@ function Evidenzia({ testo, cerca }: { testo: string; cerca: string }) {
       )}
     </>
   )
+}
+
+/** Escape per l'uso in una RegExp. */
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * Evidenzia le occorrenze del testo cercato DENTRO l'HTML colorato da Monaco: si toccano solo i
+ * pezzi di testo (mai i tag), altrimenti sostituendo una parola che compare nel markup — "span",
+ * "class" — si romperebbe l'HTML.
+ */
+export function evidenziaHtml(html: string, cerca: string): string {
+  const termine = cerca.trim()
+  if (termine.length < 2) return html
+  const re = new RegExp(escapeRegExp(termine), 'gi')
+  return html
+    .split(/(<[^>]*>)/)
+    .map(parte => (parte.startsWith('<') ? parte : parte.replace(re, m => `<mark class="rounded bg-amber-500/30 px-0.5 text-amber-100">${m}</mark>`)))
+    .join('')
+}
+
+/**
+ * Sintassi a colori del testo SQL: si usa il coloratore di Monaco (stesse parole chiave, stringhe
+ * e commenti dell'editor) e si tiene il risultato per riga, così numeri di riga ed evidenziazione
+ * del match restano quelli di prima.
+ */
+export function useSqlColorato(righe: string[]): string[] | null {
+  const [html, setHtml] = useState<string[] | null>(null)
+  const chiave = righe.join('\n')
+  useEffect(() => {
+    let annullato = false
+    if (righe.length === 0) {
+      setHtml(null)
+      return
+    }
+    void Promise.all(
+      righe.map(r => (r ? monaco.editor.colorize(r, 'sql', {}) : Promise.resolve('')).catch(() => r)),
+    ).then(risultato => {
+      if (!annullato) setHtml(risultato)
+    })
+    return () => {
+      annullato = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chiave])
+  return html
 }
 
 export default function SearchPanel({ connectionId, database, summary, onClose, onOpenObject, onShowCallGraph }: Props) {
@@ -204,6 +250,8 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
   }, [scelto, summary])
 
   const righeDefinizione = useMemo(() => definizione.testo.split('\n'), [definizione.testo])
+  /** Le stesse righe con la SINTASSI A COLORI (coloratore di Monaco, come nell'editor). */
+  const htmlColorato = useSqlColorato(righeDefinizione)
 
   return (
     <div
@@ -455,7 +503,28 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
                   </p>
                 )}
                 {definizione.errore && <p className="text-xs text-rose-300">{definizione.errore}</p>}
-                {definizione.testo && (
+                {definizione.testo && htmlColorato && (
+                  <pre className="overflow-x-auto font-mono text-[11px] leading-5 text-zinc-300">
+                    {righeDefinizione.map((r, i) => (
+                      <div
+                        key={i}
+                        data-riga={i + 1}
+                        className={scelto.line === i + 1 ? 'bg-amber-500/10' : undefined}
+                      >
+                        <span className="mr-3 inline-block w-10 select-none text-right text-zinc-600">{i + 1}</span>
+                        {htmlColorato[i] !== undefined ? (
+                          <span
+                            data-sintassi="colorata"
+                            dangerouslySetInnerHTML={{ __html: evidenziaHtml(htmlColorato[i], testo) }}
+                          />
+                        ) : (
+                          <Evidenzia testo={r} cerca={testo.trim()} />
+                        )}
+                      </div>
+                    ))}
+                  </pre>
+                )}
+                {definizione.testo && !htmlColorato && (
                   <pre className="overflow-x-auto font-mono text-[11px] leading-5 text-zinc-300">
                     {righeDefinizione.map((r, i) => (
                       <div
