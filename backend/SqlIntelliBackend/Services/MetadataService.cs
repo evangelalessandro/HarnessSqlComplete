@@ -320,6 +320,45 @@ public class MetadataService
                 functions.Add(new FunctionInfo(r.GetString(0), r.GetString(1), r.GetString(2)));
         }
 
+        // Colonne RESTITUITE dalle funzioni tabellari (IF = inline, TF = multi-istruzione):
+        // servono all'intellisense per proporre i campi di "FROM dbo.fn_x() a" quando si scrive "a.".
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT s.name, f.name, c.name, ty.name, c.is_nullable, c.max_length
+                FROM sys.objects f
+                INNER JOIN sys.schemas s ON f.schema_id = s.schema_id
+                INNER JOIN sys.columns c ON c.object_id = f.object_id
+                INNER JOIN sys.types ty ON ty.user_type_id = c.user_type_id
+                WHERE f.type IN ('IF','TF') AND f.is_ms_shipped = 0
+                ORDER BY s.name, f.name, c.column_id;
+                """;
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            var perFunzione = new Dictionary<(string, string), List<ColumnInfo>>();
+            while (await r.ReadAsync(ct))
+            {
+                var key = (r.GetString(0), r.GetString(1));
+                if (!perFunzione.TryGetValue(key, out var list))
+                    perFunzione[key] = list = [];
+                list.Add(new ColumnInfo(
+                    r.GetString(2),
+                    r.GetString(3),
+                    r.GetBoolean(4),
+                    false,
+                    false,
+                    r.IsDBNull(5) ? null : (int)r.GetInt16(5),
+                    Description: null));
+            }
+            if (perFunzione.Count > 0)
+            {
+                functions = functions
+                    .Select(f => perFunzione.TryGetValue((f.Schema, f.Name), out var cols)
+                        ? f with { Columns = cols }
+                        : f)
+                    .ToList();
+            }
+        }
+
         // Foreign key (TUTTE le coppie di colonne: le composite generano più righe con lo stesso Name,
         // così ogni relazione utilizzabile — es. MIS_D_CELLA = CEL_CELLA — è suggeribile)
         await using (var cmd = conn.CreateCommand())

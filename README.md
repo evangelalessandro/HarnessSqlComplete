@@ -107,8 +107,11 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   le colonne si ricavano dalla select-list (anche con `TOP n *`, alias di funzione e alias per posizione tipo
   `SCO_GIAC + SCO_VER X_GIAC`) e, con `*`, dalla sorgente: tabella dello schema, altra temporanea o **CTE**
   definita nel testo.
-- **Alias delle tabelle** e **label di GOTO**: dopo `GOTO ` vengono proposte tutte le label del
-  documento (anche quelle definite più sotto, ignorando quelle nel codice commentato).
+- **Alias delle tabelle, delle derivate e delle funzioni tabellari**: dopo `alias.` arrivano i campi della
+  sorgente — tabella, tabella derivata `(select …) t`, CTE, temporanea e **funzione tabellare**
+  (`FROM dbo.fn_x() a` → i campi che la funzione restituisce, letti da `sys.columns`). Dopo `GOTO ` vengono
+  proposte tutte le label del documento (anche quelle definite più sotto, ignorando quelle nel codice
+  commentato).
 - **Errori in stile SSMS**: numero/livello/stato, procedura e riga; doppio clic sul messaggio →
   il cursore va sulla riga che ha fallito (per gli errori dentro una procedura la riga viene
   riportata sulla definizione aperta nella tab), e i pulsanti aprono gli oggetti citati.

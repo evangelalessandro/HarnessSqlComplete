@@ -153,7 +153,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Alias delle tabelle',
         detail:
-          'Dando un alias a una tabella, scrivendo "alias." vengono proposti i suoi campi (anche nella select-list): vale anche per le tabelle temporanee (#tmp.) e per le CTE definite nel documento ("with c as (...) select * from c pippo where pippo."), anche con le parentesi quadre ([pippo].).',
+          'Dando un alias a una tabella, scrivendo "alias." vengono proposti i suoi campi (anche nella select-list): vale anche per le tabelle temporanee (#tmp.) e per le CTE definite nel documento ("with c as (...) select * from c pippo where pippo."), anche con le parentesi quadre ([pippo].). Se l\u2019alias \u00e8 quello di una FUNZIONE TABELLARE ("select * from dbo.fn_x() a where a.") arrivano i campi che la funzione restituisce.',
       },
       {
         title: 'Label di GOTO',

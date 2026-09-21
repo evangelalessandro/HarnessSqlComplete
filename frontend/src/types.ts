@@ -133,6 +133,11 @@ export interface FunctionInfo {
   schema: string
   name: string
   type: string
+  /**
+   * Colonne RESTITUITE dalle funzioni tabellari (`IF` inline, `TF` multi-istruzione): servono
+   * per proporre i campi di "FROM dbo.fn_x() a" quando si scrive "a.".
+   */
+  columns?: ColumnInfo[] | null
 }
 
 export interface DatabaseInfo {

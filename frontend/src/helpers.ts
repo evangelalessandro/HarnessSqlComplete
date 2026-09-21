@@ -1790,17 +1790,71 @@ export function buildQualifiedColumnSuggestions(
     // senza alias non compaiono fra i riferimenti FROM/JOIN, ma il sommario le porta con il
     // nome con cui si qualificano le loro colonne (per la derivata è l'alias stesso).
     summary.tables.find(t => t.name.toLowerCase() === qualifier.toLowerCase())
-  if (!table?.columns) return []
+  if (table?.columns) {
+    // insertText = SOLO il nome della colonna: il qualificatore (e il punto) sono già nel testo
+    // ("p." + "X_SCO"), altrimenti confermando il suggerimento si otterrebbe "p.p.X_SCO".
+    return table.columns.map(c => ({
+      name: c.name,
+      insertText: sqlIdent(c.name),
+      dataType: c.dataType,
+      isNullable: c.isNullable,
+      documentation: columnInfoMarkdown(table, c),
+    }))
+  }
 
-  // insertText = SOLO il nome della colonna: il qualificatore (e il punto) sono già nel testo
-  // ("p." + "X_SCO"), altrimenti confermando il suggerimento si otterrebbe "p.p.X_SCO".
-  return table.columns.map(c => ({
+  // FUNZIONI TABELLARI: "FROM dbo.fn_x() a" → scrivendo "a." (o "fn_x.") si propongono le
+  // colonne restituite dalla funzione (segnalato dall'utente: il popup restava vuoto).
+  const fn = extractTableValuedFunctionRefs(stmtText).find(
+    f => (f.alias ?? f.name).toLowerCase() === qualifier.toLowerCase() || f.name.toLowerCase() === qualifier.toLowerCase(),
+  )
+  if (!fn) return []
+  const info =
+    summary.functions.find(
+      f =>
+        f.name.toLowerCase() === fn.name.toLowerCase() &&
+        (!fn.schema || f.schema.toLowerCase() === fn.schema.toLowerCase()),
+    ) ?? summary.functions.find(f => f.name.toLowerCase() === fn.name.toLowerCase())
+  const colonne = info?.columns ?? []
+  return colonne.map(c => ({
     name: c.name,
     insertText: sqlIdent(c.name),
     dataType: c.dataType,
     isNullable: c.isNullable,
-    documentation: columnInfoMarkdown(table, c),
+    documentation: `${sqlIdent(info!.schema)}.${sqlIdent(info!.name)}() · colonna restituita dalla funzione`,
   }))
+}
+
+/** Nome di funzione tabellare: "schema.nome" (o solo "nome" → schema nullo). */
+export interface TableValuedFunctionRef {
+  schema: string | null
+  name: string
+  alias: string | null
+}
+
+/**
+ * Funzioni TABELLARI richiamate nello statement: "FROM dbo.fn_x()", "JOIN fn_y (1) a".
+ * Riconosce l'eventuale alias (con o senza AS) e ignora le funzioni di sistema a colonna singola.
+ */
+export function extractTableValuedFunctionRefs(stmtText: string): TableValuedFunctionRef[] {
+  const code = stmtText.replace(/'[^']*'/g, "''")
+  const re =
+    /\b(?:FROM|JOIN)\s+((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)\s*\(([^()]*)\)\s*(?:AS\s+)?(\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)?/gi
+  const out: TableValuedFunctionRef[] = []
+  let m: RegExpExecArray | null
+  while ((m = re.exec(code)) !== null) {
+    const raw = m[1].replace(/[\[\]\s]/g, '')
+    const parti = raw.split('.')
+    const nome = parti[parti.length - 1]
+    const schema = parti.length > 1 ? parti[0] : null
+    const aliasGrezzo = (m[3] ?? '').replace(/[\[\]\s]/g, '')
+    // l'alias non può essere una parola chiave che segue la funzione
+    const alias =
+      aliasGrezzo && !/^(ON|WHERE|GROUP|ORDER|INNER|LEFT|RIGHT|FULL|CROSS|JOIN|HAVING|UNION|OPTION|WITH)$/i.test(aliasGrezzo)
+        ? aliasGrezzo
+        : null
+    out.push({ schema, name: nome, alias })
+  }
+  return out
 }
 
 // ---------- Parsing EXEC (autocompletamento parametri delle stored procedure) ----------

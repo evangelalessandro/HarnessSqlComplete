@@ -100,7 +100,7 @@ public record CheckConstraintInfo(
     string Definition,
     bool IsDisabled);
 
-public record FunctionInfo(string Schema, string Name, string Type);
+public record FunctionInfo(string Schema, string Name, string Type, List<ColumnInfo>? Columns = null);
 
 public record SearchResult(string Schema, string Name, string ObjectType);
 

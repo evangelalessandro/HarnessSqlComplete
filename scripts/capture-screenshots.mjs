@@ -74,6 +74,13 @@ const ROUTINE_NAME = process.env.SHOT_ROUTINE ?? 'ws_L2_SetCorridoioMiss'
  */
 const TABELLA_CHIAVE = process.env.SHOT_TABLE ?? 'L1_AZIONI_PERCORSI'
 /**
+ * Funzione TABELLARE usata da --verify-alias: con "FROM dbo.<fn>() a" l'intellisense deve
+ * proporre i campi che la funzione restituisce (era il caso in cui il popup restava vuoto).
+ */
+const FUNZIONE_TABELLARE = process.env.SHOT_TVF ?? 'fn_Calc_ORD_RIGHE_FIELDS'
+/** Una colonna restituita da FUNZIONE_TABELLARE (per il controllo nel popup). */
+const FUNZIONE_TABELLARE_CAMPO = process.env.SHOT_TVF_COL ?? 'CALC_ORD_ORDINE'
+/**
  * Store usata da --verify-params: è una di quelle scritte con lo stile "@param as tipo", dove la
  * lettura della firma si fermava al primo "as" (i parametri non comparivano nell'intellisense).
  */
@@ -1456,6 +1463,18 @@ async function verifyAlias(page) {
   check(
     'alias di una derivata con "*": propone i campi della tabella sorgente',
     normali(vociDerivataStar).some(v => v.startsWith('udc_')),
+  )
+
+  // 10) FUNZIONE TABELLARE con alias (caso segnalato): "select * from dbo.fn_x() a where a.ca"
+  // deve proporre i campi che la funzione restituisce. Prima il popup restava vuoto.
+  await scrivi(['select *', `from dbo.${FUNZIONE_TABELLARE}() a`, 'where a.'].join('\n'))
+  console.log('  testo (funzione tabellare):')
+  ;(await righeEditor()).forEach(r => console.log(`    |${r}`))
+  const vociFunzione = await apriPopupInFondo(FUNZIONE_TABELLARE_CAMPO.slice(0, 2))
+  console.log(`  alias di funzione tabellare: ${JSON.stringify(vociFunzione.slice(0, 6))}`)
+  check(
+    `alias di una FUNZIONE TABELLARE "dbo.${FUNZIONE_TABELLARE}() a": propone i campi restituiti`,
+    vociFunzione.length > 0 && normali(vociFunzione).includes(FUNZIONE_TABELLARE_CAMPO.toLowerCase()),
   )
 
   await page.press('Escape', { code: 'Escape', vk: 27 })
