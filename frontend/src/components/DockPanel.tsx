@@ -31,6 +31,12 @@ interface DockPanelProps {
   onDockRight?: () => void
   /** Classi per il layout quando è ancorato (es. "flex-1 min-h-0"). */
   dockClassName?: string
+  /**
+   * Classi del corpo del pannello. Di default il corpo È il contenitore che scorre
+   * (`overflow-y-auto`); passando "flex flex-col overflow-hidden" il contenuto gestisce da
+   * sé le sue zone (es. la ricerca degli Oggetti resta FISSA in alto e scorre solo l'elenco).
+   */
+  bodyClassName?: string
   /** Altezza fissa in px quando ancorato (per il pannello Database ridimensionabile). */
   dbHeight?: number
   accent?: string
@@ -137,6 +143,7 @@ export default function DockPanel({
   onDockLeft,
   onDockRight,
   dockClassName = '',
+  bodyClassName = 'overflow-y-auto',
   dbHeight,
   accent = 'text-sky-300',
   onScroll,
@@ -187,7 +194,7 @@ export default function DockPanel({
             </button>
           </span>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto" onScroll={onScroll}>{children}</div>
+        <div className={`min-h-0 flex-1 ${bodyClassName}`} onScroll={onScroll}>{children}</div>
         {/* Maniglie di ridimensionamento */}
         <div
           onMouseDown={resizeE}
@@ -232,7 +239,7 @@ export default function DockPanel({
           </button>
         </span>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto" onScroll={onScroll}>{children}</div>
+      <div className={`min-h-0 flex-1 ${bodyClassName}`} onScroll={onScroll}>{children}</div>
     </div>
   )
 }

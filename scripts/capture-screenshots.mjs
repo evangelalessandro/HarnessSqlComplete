@@ -46,6 +46,7 @@ const VERIFY_SEARCH = process.argv.includes('--verify-search')
 const VERIFY_INDENT = process.argv.includes('--verify-indent')
 const VERIFY_DROP = process.argv.includes('--verify-drop')
 const VERIFY_FRAGMENT = process.argv.includes('--verify-fragment')
+const VERIFY_SIDEBAR = process.argv.includes('--verify-sidebar')
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -1633,6 +1634,110 @@ async function verifyTabTree(page) {
 }
 
 /**
+ * VERIFICA (--verify-sidebar): nel pannello Oggetti la ricerca resta FISSA in alto e scorre solo
+ * l'elenco sotto (richiesta utente: "mi lasci la ricerca fissa in alto e non la far scorrere").
+ */
+async function verifySidebar(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Tabelle')`, 40000, 'schema caricato')
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // il pannello Oggetti può essere chiuso: nel caso lo si riapre dalla barra dei pannelli
+  const campo = `document.querySelector('input[placeholder^="Cerca (spazio"]')`
+  if (!(await page.eval(`!!${campo}`))) {
+    await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '+ Oggetti')`,
+    )
+    await sleep(900)
+  }
+
+  /**
+   * Geometria del pannello: il campo di ricerca deve stare in un blocco `shrink-0` FUORI
+   * dall'area che scorre, il corpo del pannello non deve scorrere e l'elenco sotto sì.
+   */
+  const misure = () =>
+    page.eval(`(() => {
+      const i = ${campo};
+      if (!i) return null;
+      const blocco = i.closest('div.shrink-0') || i.parentElement;
+      const corpo = blocco && blocco.parentElement;
+      const lista = corpo ? [...corpo.children].find(c => c !== blocco) : null;
+      const r = i.getBoundingClientRect();
+      return {
+        top: Math.round(r.top),
+        corpoFlex: corpo ? getComputedStyle(corpo).display : '',
+        corpoScorre: corpo ? getComputedStyle(corpo).overflowY : '',
+        listaScorre: lista ? getComputedStyle(lista).overflowY : '',
+        listaScrollTop: lista ? Math.round(lista.scrollTop) : -1,
+      };
+    })()`)
+
+  const prima = await misure()
+  console.log(`  ricerca Oggetti: ${JSON.stringify(prima)}`)
+  check('il campo di ricerca degli Oggetti si vede', !!prima)
+  check(
+    "il corpo del pannello non scorre (scorre solo l'elenco)",
+    prima?.corpoFlex === 'flex' && prima?.corpoScorre === 'hidden',
+    JSON.stringify(prima),
+  )
+  check(
+    "l'elenco sotto ha la sua barra di scorrimento",
+    prima?.listaScorre === 'auto',
+    JSON.stringify(prima),
+  )
+
+  // si scorre l'elenco: il campo di ricerca NON si deve muovere
+  const scrollato = await page.eval(`(() => {
+    const i = ${campo};
+    const blocco = i.closest('div.shrink-0') || i.parentElement;
+    const lista = [...blocco.parentElement.children].find(c => c !== blocco);
+    if (!lista || lista.scrollHeight <= lista.clientHeight) return -1;
+    lista.scrollTop = 300;
+    return Math.round(lista.scrollTop);
+  })()`)
+  await sleep(600)
+  const dopo = await misure()
+  console.log(`  dopo lo scroll (scrollTop ${scrollato}): top ricerca ${dopo?.top}`)
+  check("scorrendo l'elenco la ricerca resta ferma in alto", scrollato > 0 && dopo?.top === prima?.top)
+  await page.screenshot('ricerca-oggetti-fissa')
+
+  // e resta ferma anche con i risultati di ricerca aperti (elenco più lungo)
+  await page.clickWhere(campo)
+  await page.typeText('ws_')
+  await sleep(2500)
+  const conRisultati = await misure()
+  await page.eval(`(() => {
+    const i = ${campo};
+    const blocco = i.closest('div.shrink-0') || i.parentElement;
+    const lista = [...blocco.parentElement.children].find(c => c !== blocco);
+    if (lista) lista.scrollTop = 250;
+  })()`)
+  await sleep(600)
+  const conRisultatiDopo = await misure()
+  console.log(`  con i risultati: ${JSON.stringify(conRisultatiDopo)}`)
+  check(
+    'con i risultati di ricerca la ricerca resta ferma in alto',
+    conRisultatiDopo?.top === prima?.top && conRisultatiDopo?.listaScrollTop > 0,
+    `top=${conRisultatiDopo?.top} scrollTop=${conRisultatiDopo?.listaScrollTop}`,
+  )
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * VERIFICA (--verify-search): la RICERCA GENERALE nel database (stile Redgate SQL Search) cerca un
  * testo nei nomi/definizioni delle strutture e, se richiesto, nei DATI; i risultati stanno sopra e
  * l'anteprima (script con il match evidenziato) sotto. Deve restare dentro il database attivo.
@@ -2863,6 +2968,11 @@ async function main() {
 
     if (VERIFY_FRAGMENT) {
       await verifyFragment(page)
+      return
+    }
+
+    if (VERIFY_SIDEBAR) {
+      await verifySidebar(page)
       return
     }
 

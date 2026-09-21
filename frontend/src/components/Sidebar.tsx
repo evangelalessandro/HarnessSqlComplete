@@ -1054,6 +1054,7 @@ export default function Sidebar({
           onToggleFloat={floatObjects}
           accent="text-emerald-300"
           dockClassName="min-h-0 flex-1"
+          bodyClassName="flex flex-col overflow-hidden"
           onScroll={clearCloseTimerAndHover}
         >
           {objectsContent()}
@@ -1119,6 +1120,7 @@ export default function Sidebar({
           onDockLeft={dockObjectsLeft}
           onDockRight={dockObjectsRight}
           accent="text-emerald-300"
+          bodyClassName="flex flex-col overflow-hidden"
           onScroll={clearCloseTimerAndHover}
         >
           {objectsContent()}
@@ -1156,6 +1158,7 @@ export default function Sidebar({
             onToggleFloat={floatObjects}
             accent="text-emerald-300"
             dockClassName="min-h-0 flex-1"
+            bodyClassName="flex flex-col overflow-hidden"
             onScroll={clearCloseTimerAndHover}
           >
             {objectsContent()}
