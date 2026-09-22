@@ -19,8 +19,7 @@ import {
   moveTabSubtree,
   sanitizeTabParents,
   tabDepth,
-  tabRowBreaks,
-  tabRowsNeeded,
+
 } from './tabTree'
 import type { NewTabPosition, TabCloseMode } from './tabOps'
 import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryMessage, QueryResult, RoutineCallGraph } from './types'
@@ -688,18 +687,14 @@ export default function App() {
     return m
   }, [editorTabs])
 
-  // Tab in overflow: a capo automatico; con la GERARCHIA servono più righe (le figlie stanno
-  // sulla riga sotto la madre), altrimenti restano le due righe di sempre.
-  const righeTabRef = useRef(2)
-
   /**
-   * GERARCHIA nella barra: le figlie vanno A CAPO, sulla riga sotto la madre. `righeTab` dice
-   * quante righe servono (2 quando non c'è gerarchia), `aCapoTab` dove inserire il ritorno a capo.
+   * BARRA delle tab: i GRUPPI stanno consecutivi — il padre per primo, subito dopo i suoi figli —
+   * e si va a capo solo quando non c'è più spazio (richiesta utente: "i padri devono stare in alto
+   * e non in basso"; prima ogni livello apriva una riga propria sotto la madre).
    */
-  const profondita = useCallback((t: EditorTab) => livelliTab.get(t.id) ?? 0, [livelliTab])
-  const aCapoTab = useMemo(() => tabRowBreaks(editorTabs, profondita), [editorTabs, profondita])
-  const righeTab = Math.min(8, tabRowsNeeded(editorTabs, profondita))
-  righeTabRef.current = righeTab
+  // Tab in overflow: a capo automatico su due righe, poi l'elenco "»".
+  const righeTabRef = useRef(2)
+  righeTabRef.current = 2
 
   /** Esc chiude la richiesta "chiudo anche le figlie?" senza fare nulla. */
   useEffect(() => {
@@ -1073,7 +1068,13 @@ export default function App() {
    * stesso diagramma si torna sulla tab esistente senza duplicarla.
    */
   const openCallGraph = useCallback(
-    (schema: string, name: string, kind: 'procedure' | 'function') => {
+    /**
+     * `asChild` (default true): il diagramma nasce FIGLIO della tab attiva quando lo si apre da un
+     * link/tasto destro dentro l'editor o dalla ricerca; dal pannello a SINISTRA invece è una tab
+     * principale (richiesta utente: "se la apro dalla ricerca dal pannello a sinistra non deve
+     * essere figlia di nessuno").
+     */
+    (schema: string, name: string, kind: 'procedure' | 'function', asChild = true) => {
       void loadCallGraph()
       const routine = { schema, name, kind }
       const idx = graphTabIndex(editorTabs, routine)
@@ -1094,14 +1095,14 @@ export default function App() {
         kind: 'graph',
         routine,
       }
-      // il diagramma nasce come FIGLIA della tab attiva (è aperto da un link/tasto destro)
-      const padre = childParentFor(editorTabs, activeEditorTab)
+      // FIGLIA della tab attiva quando lo si apre da un link/tasto destro o dalla ricerca;
+      // principale quando arriva dal pannello a sinistra.
+      const padre = asChild ? childParentFor(editorTabs, activeEditorTab) : undefined
       setEditorTabs(prev => (padre ? insertTabAsChild(prev, tab, padre) : insertTabAt(prev, tab, activeEditorTab, newTabPositionRef.current)))
       setActiveEditorTab(tab.id)
     },
     [loadCallGraph, editorTabs, activeEditorTab, connection, saveActiveEditor, switchEditorTab],
   )
-
   /**
    * Apre un oggetto citato in un messaggio di errore, con lo stesso risultato del tasto destro
    * nell'albero: "Modifica" (CREATE OR ALTER) per routine, viste e trigger; per le tabelle lo
@@ -1334,10 +1335,10 @@ export default function App() {
               onInsertText={handleInsertText}
               onPreviewInEditor={handlePreviewInEditor}
               onOpenScript={handleOpenScript}
-              onOpenObject={(kind, schema, name, mode, asChild) =>
-                void handleOpenObject(kind, schema, name, mode, undefined, asChild)
+              onOpenObject={(kind, schema, name, mode) =>
+                void handleOpenObject(kind, schema, name, mode, undefined, false)
               }
-              onShowCallGraph={openCallGraph}
+              onShowCallGraph={(schema, name, kind) => openCallGraph(schema, name, kind, false)}
               onSwitchDatabase={handleSwitchDatabase}
               dbColors={dbColors}
               onSetDbColor={handleSetDbColor}
@@ -1373,11 +1374,7 @@ export default function App() {
               ref={wrapRef}
               className="flex min-w-0 flex-1 flex-wrap items-center gap-1 overflow-hidden"
             >
-            {editorTabs.flatMap((t, i) => [
-              // Le figlie (e le nipoti) iniziano una RIGA NUOVA, sotto la madre.
-              ...(aCapoTab[i]
-                ? [<div key={`capo-${t.id}`} className="h-0 w-full basis-full" aria-hidden="true" />]
-                : []),
+            {editorTabs.map(t => (
               <div
                 key={t.id}
                 onContextMenu={e => {
@@ -1477,8 +1474,8 @@ export default function App() {
                     <X className="h-3 w-3" />
                   </button>
                 )}
-              </div>,
-            ])}
+              </div>
+            ))}
             {/* UN solo pulsante per la nuova tab: apre a DESTRA, subito dopo quella attiva.
                 (Shift+clic o clic col tasto centrale la aprono a sinistra, come prima tab:
                 è una scorciatoia, non un secondo pulsante.) */}

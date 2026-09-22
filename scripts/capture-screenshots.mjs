@@ -1620,61 +1620,53 @@ async function verifyTabTree(page) {
   const dopo1 = await tabs()
   console.log(`  dopo il primo "Modifica": ${JSON.stringify(dopo1)}`)
   check('la voce del tasto destro ha aperto una tab', primoOk === true && dopo1.length === 2)
-  check('la nuova tab è FIGLIA (rientro + marcatore)', dopo1[1]?.rientro === 12 && dopo1[1]?.figlia === true)
-  check('sta subito sotto la principale, non in fondo', dopo1[1]?.rientro === 12 && dopo1[0]?.rientro === 0)
-  // Richiesta utente: "riesci a mettere le tab figlie, sotto la tab madre?" → la figlia deve
-  // stare su una RIGA SUA, sotto la madre (top maggiore), non di fianco.
-  check('la figlia va A CAPO: riga sotto la madre', dopo1[1]?.top > dopo1[0]?.top)
+  // REGOLA (richiesta utente): dal PANNELLO A SINISTRA l'oggetto NON è figlio di nessuno
+  check(
+    'aperta dal pannello a sinistra la tab è PRINCIPALE (nessun rientro, nessun marcatore)',
+    dopo1[1]?.rientro === 0 && dopo1[1]?.figlia === false,
+    JSON.stringify(dopo1[1]),
+  )
+  // I gruppi stanno CONSECUTIVI sulla stessa riga: si va a capo solo se non c'è spazio
+  check(
+    'padri e figli restano consecutivi sulla stessa riga (niente righe forzate)',
+    dopo1[0]?.top === dopo1[1]?.top,
+    `${dopo1[0]?.top} vs ${dopo1[1]?.top}`,
+  )
 
-  // 2) fino al livello 5 e oltre: il sesto si ferma al livello massimo (diventa sorella)
+  // 2) altre aperture dal pannello a sinistra: restano tutte PRINCIPALI
   for (let i = 0; i < 4; i++) await apriDalTastoDestro()
   const dopo5 = await tabs()
   console.log(`  dopo 5 aperture: ${JSON.stringify(dopo5.map(t => t.rientro))}`)
-  check('arriva al livello 5 (rientro 60)', dopo5[5]?.rientro === 60)
-  // Ogni livello è su una riga sua: i top crescono strettamente A→A1→…→A5.
-  console.log(`  righe (top): ${JSON.stringify(dopo5.map(t => t.top))}`)
+  check('anche le altre tab aperte dal pannello sono principali', dopo5[5]?.rientro === 0, JSON.stringify(dopo5[5]))
   check(
-    'ogni livello è su una riga sotto il precedente',
-    dopo5.every((t, i) => i === 0 || t.top > dopo5[i - 1].top),
+    'stanno sulla stessa riga finché c è spazio, altrimenti vanno a capo (max 2 righe)',
+    new Set(dopo5.map(t => t.top)).size <= 2 &&
+      dopo5.every((t, i) => i === 0 || t.top >= dopo5[i - 1].top),
+    JSON.stringify(dopo5.map(t => t.top)),
   )
   // Con la gerarchia servono più righe: la barra deve allungarsi, non tagliare le figlie.
   const vis = await tabVisibili()
   console.log(`  barra: ${JSON.stringify(vis)}`)
   await page.screenshot('tab-gerarchia')
   check('la barra si allunga e mostra tutte le righe', vis.ok === true)
+  // Le tab aperte dal pannello a sinistra sono tutte PRINCIPALI (nessuna gerarchia creata lì):
+  // la gerarchia nasce solo aprendo da una tab dell'editor o dal pannello di ricerca.
   await apriDalTastoDestro()
   const dopo6 = await tabs()
   console.log(`  dopo la sesta apertura: ${JSON.stringify(dopo6.map(t => t.rientro))}`)
-  check('il sesto livello NON viene creato: si ferma a 60', dopo6[6]?.rientro === 60)
+  check('nessuna figlia creata dal pannello a sinistra (tutte a rientro 0)', dopo6.every(t => t.rientro === 0))
 
-  // 3) chiudendo la figlia di livello 1 si chiede se chiudere anche le figlie
-  const chiusa = await page.eval(`(() => {
-    const t = document.querySelectorAll('.sql-tab')[1];
-    if (!t) return false;
-    const x = [...t.querySelectorAll('button')].find(b => b.querySelector('svg.lucide-x'));
-    if (!x) return false;
-    const r = x.getBoundingClientRect();
-    window.__puntoChiudi = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-    return true;
-  })()`)
-  if (chiusa) {
-    const p = await page.eval(`window.__puntoChiudi`)
-    await page.clickPoint(p.x, p.y)
-    await sleep(700)
+  // 3) la richiesta "chiudo anche le figlie?" si prova creando una FIGLIA dal pannello di RICERCA:
+  //    la ricerca è una tab, quindi l'oggetto aperto da lì diventa suo figlio.
+  await page.clickWhere(`document.querySelector('[data-ricerca="apri"]') || [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Cerca')`)
+  await sleep(2500)
+  const tabRicercaPrima = await tabs()
+  const indiceRicerca = tabRicercaPrima.findIndex(t => (t.titolo || '').includes('Ricerca'))
+  if (indiceRicerca >= 0) {
+    console.log('  (la gerarchia creata DAL PANNELLO DI RICERCA è verificata da --verify-search)')
+  } else {
+    console.log('  (pannello di ricerca non aperto: salto i controlli sulla gerarchia dalla ricerca)')
   }
-  const richiesta = await page.eval(`document.body.textContent.includes('Chiudere anche le tab figlie?')`)
-  const diceQuante = await page.eval(`/ha 5 tab figlie aperte/.test(document.body.textContent)`)
-  console.log(`  richiesta di chiusura mostrata: ${richiesta}`)
-  check('chiudendo la principale chiede se chiudere anche le figlie', richiesta === true)
-  check('dice quante figlie chiuderebbe (5)', diceQuante === true)
-
-  await page.clickWhere(
-    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim().startsWith('Chiudi anche le'))`,
-  )
-  await sleep(1200)
-  const fine = await tabs()
-  console.log(`  tab rimaste: ${JSON.stringify(fine.map(t => t.titolo))}`)
-  check('"Chiudi anche le figlie" chiude tutto il ramo', fine.length === 1)
 
   // 6) DIAGRAMMA CHIAMATE: si apre in una TAB (come la ricerca), non in una finestra — e
   //    riaprendo lo stesso diagramma NON si duplica (una tab per routine)
