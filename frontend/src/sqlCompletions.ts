@@ -7,7 +7,7 @@ import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
 import { isTextOffsetInComment } from './helpers'
 import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, columnsByFragment, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from './helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
-import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, dropColumnSnippet, extractDeclaredVariables, extractRoutineParameters, systemVariablePrefixLen, variablePrefixLen, vincoliCollegati } from './tsqlSnippets'
+import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectEnableDisableTriggerName, detectEnableDisableTriggerOn, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, dropColumnSnippet, extractDeclaredVariables, extractRoutineParameters, systemVariablePrefixLen, variablePrefixLen, vincoliCollegati } from './tsqlSnippets'
 import { extractCteTables, extractDerivedTables, extractLocalTables } from './localTables'
 import { extractLabels } from './labels'
 import { ORDER_DIRECTIONS } from './intellisenseContext'
@@ -481,11 +481,49 @@ export function provideSqlCompletions({
               } else if (objKind === 'function') {
                 for (const f of st.summary.functions) pushObj(qualified(f.schema, f.name), f.type, qualified(f.schema, f.name), monaco.languages.CompletionItemKind.Method)
               } else if (objKind === 'trigger') {
-                for (const tr of st.summary.triggers) pushObj(qualified(tr.schema, tr.name), tr.tableName, qualified(tr.schema, tr.name), monaco.languages.CompletionItemKind.Event)
+                for (const tr of st.summary.triggers) pushObj(qualified(tr.schema, tr.name), `tabella ${tr.tableName}`, qualified(tr.schema, tr.name), monaco.languages.CompletionItemKind.Event)
+                // "DISABLE TRIGGER ALL ON t": la sintassi accetta anche ALL
+                if (detectEnableDisableTriggerName(textBefore)) {
+                  push({
+                    label: 'ALL',
+                    detail: 'tutti i trigger della tabella',
+                    kind: monaco.languages.CompletionItemKind.Keyword,
+                    insertText: 'ALL',
+                    range,
+                    filterText: 'ALL',
+                  })
+                }
               } else if (objKind === 'database') {
                 for (const d of st.summary.databases) pushObj(d.name, 'database', d.name, monaco.languages.CompletionItemKind.Folder)
               }
               return { suggestions }
+            }
+
+            // "ENABLE/DISABLE TRIGGER nome ON " → la tabella del trigger (o ALL/DATABASE/ALL SERVER)
+            if (detectEnableDisableTriggerOn(textBefore)) {
+              const tr = st.summary.triggers
+              const tabelle = [...new Set(tr.map(x => x.tableName))].sort((a, b) => a.localeCompare(b, 'it'))
+              for (const tab of tabelle) {
+                push({
+                  label: tab,
+                  detail: `tabella con trigger (${tr.filter(x => x.tableName === tab).length})`,
+                  kind: monaco.languages.CompletionItemKind.Struct,
+                  insertText: sqlIdent(tab),
+                  range,
+                  filterText: tab,
+                })
+              }
+              for (const kw of ['DATABASE', 'ALL SERVER']) {
+                push({
+                  label: kw,
+                  detail: 'ambito del trigger (a livello di database o di server)',
+                  kind: monaco.languages.CompletionItemKind.Keyword,
+                  insertText: kw,
+                  range,
+                  filterText: kw,
+                })
+              }
+              if (suggestions.length > 0) return { suggestions }
             }
 
             // CREATE TABLE t (id → tipi di dato

@@ -402,8 +402,31 @@ export function detectObjectNameContext(textBefore: string): ObjectKind | null {
   if (m1) return map(m1[1].toUpperCase())
   const m2 = /(?:^|;|\bGO\b|\n)[ \t]*ALTER\s+(PROCEDURE|PROC|FUNCTION|TRIGGER|VIEW)\s*$/i.exec(t)
   if (m2) return map(m2[1].toUpperCase())
+  // ENABLE/DISABLE TRIGGER → i trigger da abilitare/disabilitare (con il loro "ON tabella")
+  const m3 = /(?:^|;|\bGO\b|\n)[ \t]*(?:ENABLE|DISABLE)\s+TRIGGER\s*$/i.exec(t)
+  if (m3) return 'trigger'
   if (/(?:^|;|\bGO\b|\n)[ \t]*USE\s*$/i.test(t)) return 'database'
   return null
+}
+
+// ---------- ENABLE/DISABLE TRIGGER (nome del trigger e "ON tabella") ----------
+
+/**
+ * Dopo "DISABLE TRIGGER " / "ENABLE TRIGGER " (anche con più nomi separati da virgola) → true:
+ * l'elenco dei trigger lo propone il ramo degli oggetti. Dopo il nome serve "ON".
+ */
+export function detectEnableDisableTriggerName(textBefore: string): boolean {
+  const t = textBefore.trimEnd()
+  return /(?:^|;|\bGO\b|\n)[ \t]*(?:ENABLE|DISABLE)\s+TRIGGER\s+[^\n;]*$/i.test(t)
+}
+
+/**
+ * Dopo "ENABLE/DISABLE TRIGGER nome ON " → si propongono le tabelle su cui il trigger è definito
+ * (più ALL, DATABASE e ALL SERVER, che la sintassi accetta al posto dell'oggetto).
+ */
+export function detectEnableDisableTriggerOn(textBefore: string): boolean {
+  const t = textBefore.trimEnd()
+  return /(?:^|;|\bGO\b|\n)[ \t]*(?:ENABLE|DISABLE)\s+TRIGGER\b[^\n;]*\bON\s*$/i.test(t)
 }
 
 // ---------- CREATE TABLE (colonna → tipo) ----------
