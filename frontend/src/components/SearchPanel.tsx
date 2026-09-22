@@ -126,7 +126,23 @@ export function useSqlColorato(righe: string[]): string[] | null {
       return
     }
     void Promise.all(
-      righe.map(r => (r ? monaco.editor.colorize(r, 'sql', {}) : Promise.resolve('')).catch(() => r)),
+      // Il coloratore incapsula l'HTML in blocchi <div>: dentro le righe dell'anteprima servono
+      // INLINE, altrimenti ogni riga eredita i margini dei blocchi e le righe si distanziano
+      // tantissimo (segnalazione utente: "viene una spaziatura tra le righe enorme").
+      righe.map(r =>
+        (r ? monaco.editor.colorize(r, 'sql', {}) : Promise.resolve(''))
+          .then(h =>
+            String(h)
+              .replace(/<div/gi, '<span')
+              .replace(/<\/div>/gi, '</span>')
+              // il coloratore chiude con un ritorno a capo: dentro un <pre> creerebbe una riga
+              // vuota in più (era la "spaziatura enorme" fra le righe dell'anteprima)
+              .replace(/\r?\n/g, '')
+              // e può aggiungere un <br>: dentro un <pre> raddoppierebbe l'altezza della riga
+              .replace(/(<br\s*\/?>)+$/gi, ''),
+          )
+          .catch(() => r),
+      ),
     ).then(risultato => {
       if (!annullato) setHtml(risultato)
     })

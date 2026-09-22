@@ -2608,6 +2608,17 @@ async function verifySearch(page) {
     (anteprima?.token ?? 0) > 0 && (anteprima?.colori ?? 0) >= 3,
     `${anteprima?.token} token colorati, ${anteprima?.colori} colori diversi`,
   )
+  // SPAZIATURA: le righe dell'anteprima devono stare a ~20px, non a 40+ (i blocchi del
+  // coloratore, se non resi inline, allargavano la riga)
+  const passo = await page.eval(`(() => {
+    const righe = [...document.querySelectorAll('[data-ricerca="anteprima"] [data-riga]')].slice(0, 3);
+    if (righe.length < 2) return null;
+    const a = righe[0].getBoundingClientRect().top;
+    const b = righe[1].getBoundingClientRect().top;
+    return Math.round(b - a);
+  })()`)
+  console.log(`  passo fra le righe dell anteprima: ${passo}px`)
+  check('le righe dell anteprima NON hanno spaziatura enorme', passo !== null && passo > 0 && passo < 30, `${passo}px`)
   check('dalla ricerca si può MODIFICARE (pulsante Modifica)', anteprima?.modifica === true)
   check('c è anche "Apri definizione" e il diagramma chiamate', anteprima?.definizione === true && anteprima?.diagramma === true)
 
