@@ -105,10 +105,11 @@ public class MetadataService
                          FOR XML PATH('')), 1, 2, ''), '') AS Cols,
                        -- OPZIONI dell'indice: servono allo script CREATE ("WITH (PAD_INDEX = …, FILLFACTOR = …)")
                        i.fill_factor, i.is_padded, i.ignore_dup_key, i.allow_row_locks, i.allow_page_locks,
+                       -- CONVERT(bit, …): senza il cast l'espressione torna INT e GetBoolean fallisce (era l'errore 500)
                        CASE WHEN COL_LENGTH('sys.indexes', 'optimize_for_sequential_key') IS NULL
-                            THEN 0 ELSE i.optimize_for_sequential_key END,
+                            THEN CONVERT(bit, 0) ELSE i.optimize_for_sequential_key END,
                        ISNULL((SELECT TOP 1 st.no_recompute FROM sys.stats st
-                               WHERE st.object_id = i.object_id AND st.stats_id = i.index_id), 0),
+                               WHERE st.object_id = i.object_id AND st.stats_id = i.index_id), CONVERT(bit, 0)),
                        -- FILEGROUP dell'indice (nell'esempio dell'utente: [SECONDARY])
                        ISNULL(ds.name, '')
                 FROM sys.tables t
@@ -299,8 +300,9 @@ public class MetadataService
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = """
-                SELECT ISNULL(s.name, ''), ISNULL(OBJECT_NAME(tr.parent_id), ''), tr.name
+                SELECT ISNULL(s.name, ''), ISNULL(OBJECT_NAME(tr.parent_id), ''), tr.name, ISNULL(m.definition, '')
                 FROM sys.triggers tr
+                LEFT JOIN sys.sql_modules m ON m.object_id = tr.object_id
                 LEFT JOIN sys.objects o ON tr.parent_id = o.object_id
                 LEFT JOIN sys.schemas s ON o.schema_id = s.schema_id
                 WHERE tr.is_ms_shipped = 0
