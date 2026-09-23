@@ -417,7 +417,7 @@ export default function Sidebar({
             icon: <FileCode2 className="h-3.5 w-3.5" />,
             hint: 'Genera lo script della tabella',
             submenu: [
-              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`CREATE ${qname}`, scriptCreateTable(t)) },
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`CREATE ${qname}`, scriptCreateTable(t, { checks: summary?.checkConstraints, foreignKeys: summary?.foreignKeys, triggers: summary?.triggers })) },
               { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => apriScriptFiglia(`DROP ${qname}`, scriptDropObject('table', hit.schema, hit.name)) },
               { id: 'select', label: 'SELECT', icon: <Rows3 className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`SELECT ${qname}`, scriptSelectTable(t)) },
               { id: 'insert', label: 'INSERT', icon: <Plus className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`INSERT ${qname}`, scriptInsertTable(t)) },

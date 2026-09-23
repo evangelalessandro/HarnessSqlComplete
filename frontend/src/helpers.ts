@@ -1,4 +1,4 @@
-import type { CellValue, ColumnInfo, DatabaseSummary, ForeignKeyInfo, FunctionInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableReportRow, TableUsage } from './types'
+import type { CellValue, CheckConstraintInfo, ColumnInfo, DatabaseSummary, ForeignKeyInfo, FunctionInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableReportRow, TableUsage, TriggerInfo } from './types'
 
 /**
  * Identificatore SQL: restituisce il nome senza parentesi quadre se è "sicuro"
@@ -934,15 +934,90 @@ function columnTypeSql(c: ColumnInfo): string {
   return t
 }
 
-/** Script CREATE TABLE generato dai metadati (colonne, identità, nullabilità). */
-export function scriptCreateTable(table: TableInfo): string {
-  const defs = (table.columns ?? []).map(c => {
+/**
+ * Script CREATE TABLE generato dai metadati: colonne (tipo, IDENTITY, nullabilità), PRIMARY KEY,
+ * vincoli UNIQUE, vincoli CHECK, chiavi esterne e PROPRIETÀ ESTESE (descrizioni).
+ * Richiesta utente: "lo script di creazione di una tabella deve riportare anche proprietà estese,
+ * trigger, constraint, primary key, ecc…".
+ * `extra` porta i vincoli del sommario (CHECK e FK stanno in elenchi a parte, con la tabella e lo
+ * schema di appartenenza). I TRIGGER non hanno il corpo nel sommario: si elencano in coda e la
+ * definizione si prende con "Apri definizione" (o con il diagramma), per non inventare SQL.
+ */
+export function scriptCreateTable(
+  table: TableInfo,
+  extra: { checks?: CheckConstraintInfo[] | null; foreignKeys?: ForeignKeyInfo[] | null; triggers?: TriggerInfo[] | null } = {},
+): string {
+  const colonne = table.columns ?? []
+  const defs: string[] = colonne.map(c => {
     const parts = [`    ${sqlIdent(c.name)}`, columnTypeSql(c)]
     if (c.isIdentity) parts.push('IDENTITY(1,1)')
     if (!c.isNullable) parts.push('NOT NULL')
     return parts.join(' ')
   })
-  return `CREATE TABLE ${qualified(table.schema, table.name)} (\n${defs.join(',\n')}\n);\n`
+
+  const indici = table.indexes ?? []
+  const pk = indici.find(i => i.isPrimaryKey)
+  if (pk && (pk.columns ?? []).length > 0) {
+    defs.push(`    CONSTRAINT ${sqlIdent(pk.name)} PRIMARY KEY (${(pk.columns ?? []).map(sqlIdent).join(', ')})`)
+  }
+  for (const uq of indici.filter(i => !i.isPrimaryKey && i.isUnique && (i.columns ?? []).length > 0)) {
+    defs.push(`    CONSTRAINT ${sqlIdent(uq.name)} UNIQUE (${(uq.columns ?? []).map(sqlIdent).join(', ')})`)
+  }
+
+  // vincoli CHECK della tabella
+  const checks = (extra.checks ?? []).filter(c => c.schema === table.schema && c.tableName === table.name)
+  for (const c of checks) {
+    defs.push(`    ${c.isDisabled ? '-- ⚠ disabilitato: ' : ''}CONSTRAINT ${sqlIdent(c.name)} CHECK ${c.definition}`)
+  }
+
+  // chiavi esterne USCENTI (raggruppate per nome: le composite hanno più righe)
+  const fk = (extra.foreignKeys ?? []).filter(f => f.schema === table.schema && f.table === table.name)
+  const perNome = new Map<string, ForeignKeyInfo[]>()
+  for (const f of fk) {
+    const gruppo = perNome.get(f.name) ?? []
+    gruppo.push(f)
+    perNome.set(f.name, gruppo)
+  }
+  for (const [nome, righe] of perNome) {
+    const colonneLocali = righe.map(r => sqlIdent(r.column)).join(', ')
+    const riferite = righe.map(r => sqlIdent(r.refColumn)).join(', ')
+    defs.push(
+      `    CONSTRAINT ${sqlIdent(nome)} FOREIGN KEY (${colonneLocali}) REFERENCES ${qualified(righe[0].refSchema, righe[0].refTable)} (${riferite})`,
+    )
+  }
+
+  const righe: string[] = [`CREATE TABLE ${qualified(table.schema, table.name)} (`, defs.join(',\n'), ');']
+
+  // PROPRIETÀ ESTESE: descrizione della tabella e delle colonne (MS_Description)
+  const propTabella = (table.extendedProperties ?? []).filter(p => p.value && p.value.trim() !== '')
+  const apici = (s: string) => `N'${s.replace(/'/g, "''")}'`
+  const schemaSql = sqlIdent(table.schema)
+  for (const p of propTabella) {
+    righe.push(
+      '',
+      `EXEC sys.sp_addextendedproperty @name = ${apici(p.name)}, @value = ${apici(p.value)},`,
+      `  @level0type = N'SCHEMA', @level0name = ${schemaSql}, @level1type = N'TABLE', @level1name = ${sqlIdent(table.name)};`,
+    )
+  }
+  for (const c of colonne) {
+    for (const p of (c.extendedProperties ?? []).filter(x => x.value && x.value.trim() !== '')) {
+      righe.push(
+        '',
+        `EXEC sys.sp_addextendedproperty @name = ${apici(p.name)}, @value = ${apici(p.value)},`,
+        `  @level0type = N'SCHEMA', @level0name = ${schemaSql}, @level1type = N'TABLE', @level1name = ${sqlIdent(table.name)},`,
+        `  @level2type = N'COLUMN', @level2name = ${sqlIdent(c.name)};`,
+      )
+    }
+  }
+
+  // TRIGGER: il sommario ha solo il nome; il corpo si prende con "Apri definizione"
+  const trigger = (extra.triggers ?? []).filter(t => t.schema === table.schema && t.tableName === table.name)
+  if (trigger.length > 0) {
+    righe.push('', '-- TRIGGER della tabella (apri ciascuno con "Apri definizione" per il corpo):')
+    for (const t of trigger) righe.push(`--   ${qualified(t.schema, t.name)}`)
+  }
+
+  return righe.join('\n') + '\n'
 }
 
 /** Script ALTER TABLE ... ADD CONSTRAINT ... CHECK: per vedere/modificare un vincolo CHECK esistente. */
