@@ -991,13 +991,18 @@ export function scriptCreateTable(
 
   const indici = table.indexes ?? []
   const pk = indici.find(i => i.isPrimaryKey)
+  // CLUSTERED/NONCLUSTERED come nel database di origine (era il pezzo che mancava rispetto a SSMS):
+  // senza, ricreando la tabella la PRIMARY KEY sarebbe nata CLUSTERED anche se non lo era.
+  const tipoIndice = (i: IndexInfo) => (i.isClustered ? 'CLUSTERED ' : 'NONCLUSTERED ')
   if (pk && (pk.columns ?? []).length > 0) {
     defs.push(
-      `    CONSTRAINT ${sqlIdent(pk.name)} PRIMARY KEY (${(pk.columns ?? []).map(sqlIdent).join(', ')})${opzioniIndice(pk)}`,
+      `    CONSTRAINT ${sqlIdent(pk.name)} PRIMARY KEY ${tipoIndice(pk)}(${(pk.columns ?? []).map(sqlIdent).join(', ')})${opzioniIndice(pk)}`,
     )
   }
   for (const uq of indici.filter(i => !i.isPrimaryKey && i.isUnique && (i.columns ?? []).length > 0)) {
-    defs.push(`    CONSTRAINT ${sqlIdent(uq.name)} UNIQUE (${(uq.columns ?? []).map(sqlIdent).join(', ')})${opzioniIndice(uq)}`)
+    defs.push(
+      `    CONSTRAINT ${sqlIdent(uq.name)} UNIQUE ${tipoIndice(uq)}(${(uq.columns ?? []).map(sqlIdent).join(', ')})${opzioniIndice(uq)}`,
+    )
   }
 
   // vincoli CHECK della tabella
@@ -1025,6 +1030,13 @@ export function scriptCreateTable(
   // il FILEGROUP della tabella (nell'esempio dell'utente: ") ON [SECONDARY]")
   const fgTabella = (indici.find(i => i.isPrimaryKey) ?? indici[0])?.fileGroup
   const righe: string[] = [
+    // intestazione di sessione come lo script di SSMS (le opzioni contano per le colonne calcolate)
+    `-- Oggetto: tabella ${qualified(table.schema, table.name)}`,
+    'SET ANSI_NULLS ON',
+    'GO',
+    'SET QUOTED_IDENTIFIER ON',
+    'GO',
+    '',
     `CREATE TABLE ${qualified(table.schema, table.name)} (`,
     defs.join(',\n'),
     `)${fgTabella ? ` ON ${nomeFilegroup(fgTabella)}` : ''};`,

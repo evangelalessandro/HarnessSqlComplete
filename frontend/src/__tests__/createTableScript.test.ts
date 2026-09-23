@@ -46,6 +46,16 @@ const triggers: TriggerInfo[] = [
 describe('scriptCreateTable: colonne, chiavi, vincoli, proprietà estese, trigger', () => {
   const sql = scriptCreateTable(tabella, { checks, foreignKeys: fk, triggers })
 
+  it('gli indici riportano CLUSTERED/NONCLUSTERED come nel database di origine (e l intestazione SET)', () => {
+    expect(sql).toContain('CONSTRAINT PK_Ordini PRIMARY KEY NONCLUSTERED (id)')
+    expect(sql).toContain('CONSTRAINT UQ_Ordini_Cliente UNIQUE NONCLUSTERED (cliente_id)')
+    const cluster = mkTbl('dbo', 'Cluster', [mkCol('a', 'int')])
+    cluster.indexes = [{ name: 'PK_Cluster', isPrimaryKey: true, isUnique: true, columns: ['a'], isClustered: true }]
+    expect(scriptCreateTable(cluster)).toContain('CONSTRAINT PK_Cluster PRIMARY KEY CLUSTERED (a)')
+    expect(sql).toContain('SET ANSI_NULLS ON')
+    expect(sql).toContain('SET QUOTED_IDENTIFIER ON')
+  })
+
   it('l indice porta le OPZIONI e il FILEGROUP (WITH (… FILLFACTOR = 90 …) ON [SECONDARY])', () => {
     expect(sql).toContain('WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = OFF, FILLFACTOR = 90, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF)')
     expect(sql).toContain('ON [SECONDARY]')
@@ -60,8 +70,8 @@ describe('scriptCreateTable: colonne, chiavi, vincoli, proprietà estese, trigge
   })
 
   it('include la PRIMARY KEY e i vincoli UNIQUE', () => {
-    expect(sql).toContain('CONSTRAINT PK_Ordini PRIMARY KEY (id)')
-    expect(sql).toContain('CONSTRAINT UQ_Ordini_Cliente UNIQUE (cliente_id)')
+    expect(sql).toContain('CONSTRAINT PK_Ordini PRIMARY KEY NONCLUSTERED (id)')
+    expect(sql).toContain('CONSTRAINT UQ_Ordini_Cliente UNIQUE NONCLUSTERED (cliente_id)')
     // un indice NON unico non è un vincolo: non deve comparire
     expect(sql).not.toContain('IX_Ordini_Importo')
   })

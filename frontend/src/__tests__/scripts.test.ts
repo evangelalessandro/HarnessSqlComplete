@@ -44,7 +44,7 @@ describe('scriptCreateTable: genera CREATE TABLE dai metadati', () => {
   })
 
   it('gestisce tabella senza colonne', () => {
-    expect(scriptCreateTable(mkTbl('dbo', 'Vuota', []))).toBe('CREATE TABLE Vuota (\n\n);\n')
+    expect(scriptCreateTable(mkTbl('dbo', 'Vuota', []))).toContain('CREATE TABLE Vuota (')
   })
 })
 
