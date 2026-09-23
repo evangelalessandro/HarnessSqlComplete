@@ -54,7 +54,7 @@ describe('firma: tipi di dato dei parametri incolonnati', () => {
   })
 
   it('store reale: firma con 16 parametri, tipi tutti nella stessa colonna', () => {
-    const out = formatRoutineWithProfile(avvisi, profile)
+    const out = formatRoutineWithProfile(avvisi, profile).replace(/\r\n/g, '\n')
     const colonne = colonneTipo(out)
     expect(colonne.length).toBe(16)
     expect(new Set(colonne).size).toBe(1)

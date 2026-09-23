@@ -75,7 +75,8 @@ describe('INSERT: campi e valori uno per riga', () => {
 })
 
 describe('store reale: dbo.ws_L2_HAVO_IEDUGI_AESIPE', () => {
-  const formattata = formatRoutineWithProfile(avvisi, profile)
+  // il fixture ha fine riga CRLF: il formattatore normalizza a LF, quindi si confronta a parita' di fine riga
+  const formattata = formatRoutineWithProfile(avvisi, profile).replace(/\r\n/g, '\n')
 
   it('l INSERT con 17 campi è impaginato uno per riga', () => {
     const righe = formattata.split('\n')
