@@ -10,6 +10,7 @@ import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
 import { buildTabClosePlan, countClosableTabs, graphTabIndex, insertTabAt, risultatiVisibiliPer, searchTabIndex } from './tabOps'
+import type { MotoreFormattazione, OpzioniSqlFluff } from './formatEngine'
 import {
   MAX_TAB_DEPTH,
   childParentFor,
@@ -295,6 +296,24 @@ export default function App() {
   const zoomFont = useCallback((delta: number) => {
     setSettings(prev => {
       const next: EditorSettings = { ...prev, fontSize: Math.min(40, Math.max(8, prev.fontSize + delta)) }
+      saveSettings(next)
+      return next
+    })
+  }, [])
+
+  /** Motore di formattazione scelto (nostro profilo T-SQL oppure SQLFluff, che gira sul backend). */
+  const setFormatter = useCallback((formatter: MotoreFormattazione) => {
+    setSettings(prev => {
+      const next: EditorSettings = { ...prev, formatter }
+      saveSettings(next)
+      return next
+    })
+  }, [])
+
+  /** Opzioni di SQLFluff (rientri, maiuscole, virgola, larghezza riga). */
+  const setSqlFluffOptions = useCallback((sqlFluff: OpzioniSqlFluff) => {
+    setSettings(prev => {
+      const next: EditorSettings = { ...prev, sqlFluff }
       saveSettings(next)
       return next
     })
@@ -1594,6 +1613,10 @@ export default function App() {
                 onOpenFile={handleOpenFilePicker}
                 fontSize={settings.fontSize}
                 theme={settings.theme}
+                formatter={settings.formatter}
+                onFormatterChange={setFormatter}
+                sqlFluff={settings.sqlFluff}
+                onSqlFluffChange={setSqlFluffOptions}
                 onZoomFont={zoomFont}
                 onToggleTheme={toggleTheme}
                 registerEditor={setEditor}

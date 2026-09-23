@@ -21,7 +21,8 @@ import { provideSqlCompletions } from '../sqlCompletions'
 import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../history'
 import { registerSqlHover } from '../sqlHover'
 import { buildFormatProfile, loadFormatProfileXml } from '../formatProfile'
-import { formatSqlWithProfile } from '../tsqlFormatter'
+import { formattaConMotore, OPZIONI_SQLFLUFF_DEFAULT } from '../formatEngine'
+import type { MotoreFormattazione, OpzioniSqlFluff } from '../formatEngine'
 import { SQL_WORD_SEPARATORS } from '../editorOptions'
 import { BLOCCHI_KEY, opzioniMonaco, parseBlocchi, serializzaBlocchi } from '../blockMode'
 import { azioneCursore, cursoreDaAggiungere } from '../multiCursor'
@@ -52,6 +53,12 @@ interface Props {
   fontSize?: number
   /** Tema Monaco: 'vs' (chiaro) o 'vs-dark'. */
   theme?: 'vs' | 'vs-dark'
+  /** Motore di formattazione scelto (nostro profilo T-SQL oppure SQLFluff via backend). */
+  formatter?: MotoreFormattazione
+  onFormatterChange?: (m: MotoreFormattazione) => void
+  /** Opzioni di SQLFluff (usate quando il motore e' sqlfluff). */
+  sqlFluff?: OpzioniSqlFluff
+  onSqlFluffChange?: (o: OpzioniSqlFluff) => void
   /** Zoom del testo (+1 / -1). */
   onZoomFont?: (delta: number) => void
   /** Alterna tema chiaro/scuro. */
@@ -91,6 +98,10 @@ export default function SqlEditor({
   onOpenFile,
   fontSize = 13,
   theme = 'vs-dark',
+  formatter = 'nostro',
+  onFormatterChange,
+  sqlFluff,
+  onSqlFluffChange,
   onZoomFont,
   onToggleTheme,
   dragonLevel = 0,
@@ -131,6 +142,13 @@ export default function SqlEditor({
   }, [summary, connectionId])
   // Pannello impostazioni di formattazione
   const [profileOpen, setProfileOpen] = useState(false)
+  /** Messaggio dell'ultima formattazione (es. SQLFluff non disponibile). */
+  const [formatError, setFormatError] = useState<string | null>(null)
+  /** Motore e opzioni correnti, letti da handleFormat (che viene registrato una volta sola). */
+  const motoreFormatRef = useRef<MotoreFormattazione>(formatter)
+  motoreFormatRef.current = formatter
+  const sqlFluffRef = useRef<OpzioniSqlFluff>(sqlFluff ?? OPZIONI_SQLFLUFF_DEFAULT)
+  sqlFluffRef.current = sqlFluff ?? OPZIONI_SQLFLUFF_DEFAULT
   // Verifica di sintassi opzionale (errori reali di SQL Server con "Riga N:")
   const [syntaxCheck, setSyntaxCheck] = useState(false)
   /**
@@ -269,7 +287,7 @@ export default function SqlEditor({
     }
   }, [syntaxCheck, connectionId])
 
-  const handleFormat = () => {
+  const handleFormat = async () => {
     const ed = editorRef.current
     const model = ed?.getModel()
     if (!ed || !model) return
@@ -280,9 +298,10 @@ export default function SqlEditor({
       const { text, usesSelection } = pickFormatTarget(selected, model.getValue())
       const profileXml = loadFormatProfileXml()
       const profile = buildFormatProfile(profileXml)
-      const formatted = formatSqlWithProfile(text, profile)
+      const esito = await formattaConMotore(text, motoreFormatRef.current, profile, sqlFluffRef.current)
       const range = usesSelection ? sel! : model.getFullModelRange()
-      ed.executeEdits('format', [{ range, text: formatted }])
+      ed.executeEdits('format', [{ range, text: esito.testo }])
+      setFormatError(esito.errore)
     } catch {
       /* SQL non valido: nessuna azione */
     }
@@ -885,7 +904,25 @@ export default function SqlEditor({
           }}
         />
       </div>
-      {profileOpen && <FormatProfilePanel onClose={() => setProfileOpen(false)} />}
+      {profileOpen && (
+        <FormatProfilePanel
+          onClose={() => setProfileOpen(false)}
+          motore={formatter}
+          onMotoreChange={onFormatterChange}
+          opzioni={sqlFluff}
+          onOpzioniChange={onSqlFluffChange}
+        />
+      )}
+      {formatError && (
+        <div
+          className="absolute bottom-2 left-2 right-2 z-20 cursor-pointer rounded border border-amber-700 bg-amber-950/80 px-2 py-1 text-[11px] text-amber-200"
+          data-formatta="errore"
+          onClick={() => setFormatError(null)}
+          title="Clicca per chiudere"
+        >
+          {formatError} — ho usato il formattatore dell’app.
+        </div>
+      )}
       {previewTarget && connectionId && (
         <DataPreviewModal
           target={previewTarget}
