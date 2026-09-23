@@ -24,13 +24,11 @@ describe('procedura reale già impaginata: formattarla la lascia identica', () =
   const out = formatRoutineWithProfile(perfetta, profile)
 
   /**
-   * OBIETTIVO (richiesta utente: "se formatti questa deve rimanere come è che è perfetta"):
-   * su un testo già impaginato la formattazione non deve cambiare nulla.
-   * Oggi NON è così: la procedura viene riorganizzata (71 righe in meno: la select-list, le
-   * condizioni del CASE e le JOIN vengono rifuse). `it.fails` tiene il test verde finché il
-   * comportamento è quello attuale e AVVISA quando l'obiettivo viene raggiunto.
+   * OBIETTIVO raggiunto (richiesta utente: "se formatti questa deve rimanere come è che è
+   * perfetta"): su un testo già impaginato — una riga per campo, JOIN e clausole a capo — la
+   * formattazione NON cambia nulla, rientri e allineamenti compresi.
    */
-  it.fails('il testo resta IDENTICO (niente righe spostate o riallineate)', () => {
+  it('il testo resta IDENTICO (niente righe spostate o riallineate)', () => {
     const a = atteso.split('\n')
     const b = out.split('\n')
     const diff: string[] = []
