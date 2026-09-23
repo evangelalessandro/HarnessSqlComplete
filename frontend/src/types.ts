@@ -53,6 +53,11 @@ export interface ColumnInfo {
   maxLength: number | null
   description: string | null
   extendedProperties: ExtendedProperty[] | null
+  /** DEFAULT della colonna: testo (es. ((0))) e nome del vincolo, per lo script CREATE. */
+  defaultDefinition?: string | null
+  defaultName?: string | null
+  /** Espressione di una colonna calcolata. */
+  computedDefinition?: string | null
 }
 
 /** Metriche di utilizzo reale di una tabella nel database (per ranking dei suggerimenti). */
@@ -123,6 +128,8 @@ export interface ProcedureInfo {
 }
 
 export interface TriggerInfo {
+  /** Corpo del trigger (CREATE TRIGGER ...): presente nel sommario per lo script CREATE. */
+  definition?: string | null
   schema: string
   tableName: string
   name: string

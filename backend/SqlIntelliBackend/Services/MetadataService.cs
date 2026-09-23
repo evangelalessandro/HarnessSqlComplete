@@ -57,11 +57,16 @@ public class MetadataService
         {
             cmd.CommandText = """
                 SELECT s.name, t.name, c.name, ty.name, c.max_length, c.precision, c.scale,
-                       c.is_nullable, c.is_identity, c.is_computed
+                       c.is_nullable, c.is_identity, c.is_computed,
+                       -- DEFAULT della colonna (testo e nome del vincolo) e colonne calcolate:
+                       -- servono allo script CREATE per rispecchiare il database di origine
+                       dc.definition, dc.name, cc.definition
                 FROM sys.columns c
                 INNER JOIN sys.tables t ON c.object_id = t.object_id
                 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
                 INNER JOIN sys.types ty ON c.user_type_id = ty.user_type_id
+                LEFT JOIN sys.default_constraints dc ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
+                LEFT JOIN sys.computed_columns cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id
                 WHERE t.is_ms_shipped = 0
                 ORDER BY s.name, t.name, c.column_id;
                 """;
@@ -78,7 +83,10 @@ public class MetadataService
                     r.GetBoolean(8),
                     r.GetBoolean(9),
                     r.IsDBNull(4) ? null : (int)r.GetInt16(4),
-                    Description: null));
+                    Description: null,
+                    DefaultDefinition: r.IsDBNull(10) ? null : r.GetString(10),
+                    DefaultName: r.IsDBNull(11) ? null : r.GetString(11),
+                    ComputedDefinition: r.IsDBNull(12) ? null : r.GetString(12)));
             }
         }
 
@@ -300,7 +308,10 @@ public class MetadataService
                 """;
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
-                triggers.Add(new TriggerInfo(r.GetString(0), r.GetString(1), r.GetString(2)));
+                triggers.Add(new TriggerInfo(r.GetString(0), r.GetString(1), r.GetString(2))
+                {
+                    Definition = r.GetString(3) is { Length: > 0 } def ? def : null,
+                });
         }
 
         // Vincoli CHECK (una riga per vincolo: nome, tabella e testo della condizione)

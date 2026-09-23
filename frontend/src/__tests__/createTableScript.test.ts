@@ -82,6 +82,22 @@ describe('scriptCreateTable: colonne, chiavi, vincoli, proprietà estese, trigge
     expect(sql).toMatch(/@level2type = N'COLUMN', @level2name = id;/)
   })
 
+  it('il DEFAULT della colonna e la colonna calcolata sono quelli del database di origine', () => {
+    const t2 = mkTbl('dbo', 'ConDefault', [mkCol('a', 'int'), mkCol('b', 'int')])
+    t2.columns![0].defaultDefinition = '((0))'
+    t2.columns![0].defaultName = 'DF_ConDefault_a'
+    t2.columns![1].isComputed = true
+    t2.columns![1].computedDefinition = '([a]+(1))'
+    const sql2 = scriptCreateTable(t2)
+    expect(sql2).toContain('a int CONSTRAINT DF_ConDefault_a DEFAULT ((0))')
+    expect(sql2).toContain('b AS ([a]+(1))')
+  })
+
+  it('il trigger viene emesso con il CORPO preso dal database di origine', () => {
+    const conCorpo = scriptCreateTable(tabella, { triggers: [{ schema: 'dbo', tableName: 'Ordini', name: 'TR_Ordini_Ins', definition: 'CREATE TRIGGER TR_Ordini_Ins ON Ordini AFTER INSERT AS SELECT 1' }] })
+    expect(conCorpo).toContain('CREATE TRIGGER TR_Ordini_Ins ON Ordini AFTER INSERT AS SELECT 1')
+  })
+
   it('elenca i trigger della tabella (il corpo si prende con "Apri definizione")', () => {
     expect(sql).toContain('-- TRIGGER della tabella')
     expect(sql).toContain('--   TR_Ordini_Ins')

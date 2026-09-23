@@ -977,6 +977,14 @@ export function scriptCreateTable(
   const defs: string[] = colonne.map(c => {
     const parts = [`    ${sqlIdent(c.name)}`, columnTypeSql(c)]
     if (c.isIdentity) parts.push('IDENTITY(1,1)')
+    // colonna CALCOLATA: nel database di origine è un'espressione, non un tipo con DEFAULT
+    if (c.isComputed && c.computedDefinition) return `    ${sqlIdent(c.name)} AS ${c.computedDefinition}`
+    // DEFAULT come sta nel database di origine, con il suo nome (es. CONSTRAINT [DF_x] DEFAULT ((0)))
+    if (c.defaultDefinition) {
+      parts.push(
+        c.defaultName ? `CONSTRAINT ${sqlIdent(c.defaultName)} DEFAULT ${c.defaultDefinition}` : `DEFAULT ${c.defaultDefinition}`,
+      )
+    }
     if (!c.isNullable) parts.push('NOT NULL')
     return parts.join(' ')
   })
@@ -1044,11 +1052,17 @@ export function scriptCreateTable(
     }
   }
 
-  // TRIGGER: il sommario ha solo il nome; il corpo si prende con "Apri definizione"
+  // TRIGGER: con la definizione nel sommario si emette il CREATE TRIGGER così com'è nel database
+  // di origine; se la definizione non c'è, si elencano i nomi (niente SQL inventato).
   const trigger = (extra.triggers ?? []).filter(t => t.schema === table.schema && t.tableName === table.name)
-  if (trigger.length > 0) {
+  const conCorpo = trigger.filter(t => t.definition && t.definition.trim() !== '')
+  const senzaCorpo = trigger.filter(t => !t.definition || t.definition.trim() === '')
+  if (senzaCorpo.length > 0) {
     righe.push('', '-- TRIGGER della tabella (apri ciascuno con "Apri definizione" per il corpo):')
-    for (const t of trigger) righe.push(`--   ${qualified(t.schema, t.name)}`)
+    for (const t of senzaCorpo) righe.push(`--   ${qualified(t.schema, t.name)}`)
+  }
+  for (const t of conCorpo) {
+    righe.push('', `GO`, `-- Trigger ${qualified(t.schema, t.name)}`, t.definition!.replace(/\r\n/g, '\n').trim(), 'GO')
   }
 
   return righe.join('\n') + '\n'

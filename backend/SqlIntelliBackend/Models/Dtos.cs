@@ -65,7 +65,12 @@ public record ColumnInfo(
     bool IsComputed,
     int? MaxLength,
     string? Description,
-    List<ExtendedProperty>? ExtendedProperties = null);
+    List<ExtendedProperty>? ExtendedProperties = null,
+    /// <summary>Testo del DEFAULT della colonna (es. "((0))") e nome del vincolo.</summary>
+    string? DefaultDefinition = null,
+    string? DefaultName = null,
+    /// <summary>Espressione di una colonna calcolata (per lo script CREATE).</summary>
+    string? ComputedDefinition = null);
 
 /// <summary>Indice di una tabella (nome, PK/UNIQUE e colonne chiave in ordine).</summary>
 /// <summary>
@@ -107,7 +112,8 @@ public record ProcedureInfo(
     DateTime? CreateDate,
     List<ProcParamInfo>? Parameters = null);
 
-public record TriggerInfo(string Schema, string TableName, string Name);
+/// <summary>Trigger della tabella. Definition e' il corpo (CREATE TRIGGER ...) per lo script CREATE.</summary>
+public record TriggerInfo(string Schema, string TableName, string Name, string? Definition = null);
 
 /// <summary>Vincolo CHECK di una tabella: nome, tabella di appartenenza e testo della condizione.</summary>
 public record CheckConstraintInfo(
