@@ -13,7 +13,7 @@ import {
 } from '../helpers'
 import { mkCol, mkProc, mkTbl } from './schema'
 
-describe('scriptCreateTable: genera CREATE TABLE dai metadati', () => {
+describe('scriptCreateTable: genera CREATE TABLE dai metadati (stile SSMS)', () => {
   it('include colonne, tipi, IDENTITY e NOT NULL', () => {
     const t = mkTbl('dbo', 'Ordini', [
       mkCol('id', 'int', { isIdentity: true }),
@@ -21,11 +21,13 @@ describe('scriptCreateTable: genera CREATE TABLE dai metadati', () => {
       mkCol('importo', 'decimal'),
     ])
     const sql = scriptCreateTable(t)
-    expect(sql).toContain('CREATE TABLE Ordini')
-    expect(sql).toContain('id int IDENTITY(1,1) NOT NULL')
-    expect(sql).toContain('nome nvarchar(50)')
-    expect(sql).toContain('importo decimal NOT NULL')
-    expect(sql.trim().endsWith(';')).toBe(true)
+    expect(sql).toContain('CREATE TABLE [dbo].[Ordini](')
+    expect(sql).toContain('[id] [int] IDENTITY(1,1) NOT NULL')
+    expect(sql).toContain('[nome] [nvarchar](50) NULL')
+    expect(sql).toContain('[importo] [decimal] NOT NULL')
+    // come SSMS: nessun ";" e la chiusura su riga propria seguita dal batch GO
+    expect(sql).toContain('\n)\nGO')
+    expect(sql).not.toContain(');')
   })
 
   it('usa nvarchar(max) per maxLength -1 e la lunghezza corretta per varchar', () => {
@@ -34,17 +36,17 @@ describe('scriptCreateTable: genera CREATE TABLE dai metadati', () => {
       mkCol('v', 'varchar', { maxLength: 200 }),
     ])
     const sql = scriptCreateTable(t)
-    expect(sql).toContain('big nvarchar(max)')
-    expect(sql).toContain('v varchar(200)')
+    expect(sql).toContain('[big] [nvarchar](max)')
+    expect(sql).toContain('[v] [varchar](200)')
   })
 
   it('qualifica con lo schema quando non è dbo', () => {
     const t = mkTbl('usr', 'T', [mkCol('a', 'int')])
-    expect(scriptCreateTable(t)).toContain('CREATE TABLE usr.T')
+    expect(scriptCreateTable(t)).toContain('CREATE TABLE [usr].[T](')
   })
 
   it('gestisce tabella senza colonne', () => {
-    expect(scriptCreateTable(mkTbl('dbo', 'Vuota', []))).toContain('CREATE TABLE Vuota (')
+    expect(scriptCreateTable(mkTbl('dbo', 'Vuota', []))).toContain('CREATE TABLE [dbo].[Vuota](')
   })
 })
 

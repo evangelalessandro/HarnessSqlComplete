@@ -940,11 +940,12 @@ export function nomeFilegroup(fg: string): string {
 }
 
 /**
- * Coda di un indice/vincolo per lo script CREATE:
- *   WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF,
- *         ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = OFF, FILLFACTOR = 90,
- *         OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [SECONDARY]
+ * Coda di un indice/vincolo per lo script CREATE, scritta come la attacca SSMS:
+ *   )WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF,
+ *          ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = OFF, FILLFACTOR = 90,
+ *          OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [SECONDARY]
  * Le voci senza informazione (fill factor 0, filegroup sconosciuto) vengono omesse.
+ * Il testo NON ha ritorni a capo: la parentesi di chiusura e "WITH" stanno sulla stessa riga.
  */
 export function opzioniIndice(i: IndexInfo): string {
   const voci = [
@@ -957,61 +958,97 @@ export function opzioniIndice(i: IndexInfo): string {
   if (i.fillFactor && i.fillFactor > 0) voci.push(`FILLFACTOR = ${i.fillFactor}`)
   voci.push(`OPTIMIZE_FOR_SEQUENTIAL_KEY = ${i.optimizeForSequentialKey ? 'ON' : 'OFF'}`)
   const filegroup = i.fileGroup ? ` ON ${nomeFilegroup(i.fileGroup)}` : ''
-  return `\n    WITH (${voci.join(', ')})${filegroup}`
+  return `WITH (${voci.join(', ')})${filegroup}`
 }
 
 /**
- * Script CREATE TABLE generato dai metadati: colonne (tipo, IDENTITY, nullabilità), PRIMARY KEY,
- * vincoli UNIQUE, vincoli CHECK, chiavi esterne e PROPRIETÀ ESTESE (descrizioni).
+ * Script CREATE TABLE generato dai metadati, scritto come lo scrive SSMS ("Script tabella →
+ * CREATE"): banner, SET ANSI_NULLS/QUOTED_IDENTIFIER, CREATE TABLE con gli identificatori fra
+ * parentesi quadre, PRIMARY KEY/UNIQUE con le opzioni dell'indice e il filegroup, DEFAULT, CHECK e
+ * chiavi esterne come ALTER TABLE separati, proprietà estese e trigger in coda.
  * Richiesta utente: "lo script di creazione di una tabella deve riportare anche proprietà estese,
- * trigger, constraint, primary key, ecc…".
+ * trigger, constraint, primary key, ecc…" e "fallo identico a SSMS".
  * `extra` porta i vincoli del sommario (CHECK e FK stanno in elenchi a parte, con la tabella e lo
- * schema di appartenenza). I TRIGGER non hanno il corpo nel sommario: si elencano in coda e la
- * definizione si prende con "Apri definizione" (o con il diagramma), per non inventare SQL.
+ * schema di appartenenza); `database` è il database attivo, che SSMS cita con un USE in testa.
+ * I trigger arrivano con il CORPO letto da sys.sql_modules: senza definizione si elencano solo i
+ * nomi, per non inventare SQL.
  */
 export function scriptCreateTable(
   table: TableInfo,
   extra: { checks?: CheckConstraintInfo[] | null; foreignKeys?: ForeignKeyInfo[] | null; triggers?: TriggerInfo[] | null } = {},
+  database?: string | null,
 ): string {
-  const colonne = table.columns ?? []
-  const defs: string[] = colonne.map(c => {
-    const parts = [`    ${sqlIdent(c.name)}`, columnTypeSql(c)]
-    if (c.isIdentity) parts.push('IDENTITY(1,1)')
-    // colonna CALCOLATA: nel database di origine è un'espressione, non un tipo con DEFAULT
-    if (c.isComputed && c.computedDefinition) return `    ${sqlIdent(c.name)} AS ${c.computedDefinition}`
-    // DEFAULT come sta nel database di origine, con il suo nome (es. CONSTRAINT [DF_x] DEFAULT ((0)))
-    if (c.defaultDefinition) {
-      parts.push(
-        c.defaultName ? `CONSTRAINT ${sqlIdent(c.defaultName)} DEFAULT ${c.defaultDefinition}` : `DEFAULT ${c.defaultDefinition}`,
-      )
-    }
-    if (!c.isNullable) parts.push('NOT NULL')
-    return parts.join(' ')
+  /** Identificatore SEMPRE fra parentesi quadre, come lo script di SSMS: [dbo].[Tabella]. */
+  const q = (nome: string) => `[${nome.replace(/]/g, ']]')}]`
+  const target = `${q(table.schema)}.${q(table.name)}`
+  /** Tipo di dato con il nome fra parentesi quadre: [nvarchar](10), [decimal](15, 0). */
+  const tipoBracket = (c: ColumnInfo): string => {
+    const t = columnTypeSql(c)
+    const i = t.indexOf('(')
+    return i === -1 ? q(t) : `${q(t.slice(0, i))}${t.slice(i)}`
+  }
+  const defs: string[] = (table.columns ?? []).map(c => {
+    // colonna CALCOLATA: nel database di origine è un'espressione, non un tipo
+    if (c.isComputed && c.computedDefinition) return `\t${q(c.name)} AS ${c.computedDefinition}`
+    const parti = [`\t${q(c.name)}`, tipoBracket(c)]
+    if (c.isIdentity) parti.push('IDENTITY(1,1)')
+    parti.push(c.isNullable ? 'NULL' : 'NOT NULL')
+    return parti.join(' ')
   })
 
   const indici = table.indexes ?? []
   const pk = indici.find(i => i.isPrimaryKey)
-  // CLUSTERED/NONCLUSTERED come nel database di origine (era il pezzo che mancava rispetto a SSMS):
-  // senza, ricreando la tabella la PRIMARY KEY sarebbe nata CLUSTERED anche se non lo era.
-  const tipoIndice = (i: IndexInfo) => (i.isClustered ? 'CLUSTERED ' : 'NONCLUSTERED ')
-  if (pk && (pk.columns ?? []).length > 0) {
-    defs.push(
-      `    CONSTRAINT ${sqlIdent(pk.name)} PRIMARY KEY ${tipoIndice(pk)}(${(pk.columns ?? []).map(sqlIdent).join(', ')})${opzioniIndice(pk)}`,
-    )
+  /** Blocco di un vincolo di indice, nello stile di SSMS (colonne su righe proprie con ASC). */
+  const bloccoIndice = (i: IndexInfo, tipo: 'PRIMARY KEY' | 'UNIQUE'): string => {
+    const tipo0 = i.isClustered ? 'CLUSTERED' : 'NONCLUSTERED'
+    const colonne = (i.columns ?? []).map(c => `\t${q(c)} ASC`).join(',\n')
+    const opts = opzioniIndice(i)
+    return ` CONSTRAINT ${q(i.name)} ${tipo} ${tipo0} \n(\n${colonne}\n)${opts}`
   }
+  const vincoli: string[] = []
+  if (pk && (pk.columns ?? []).length > 0) vincoli.push(bloccoIndice(pk, 'PRIMARY KEY'))
   for (const uq of indici.filter(i => !i.isPrimaryKey && i.isUnique && (i.columns ?? []).length > 0)) {
-    defs.push(
-      `    CONSTRAINT ${sqlIdent(uq.name)} UNIQUE ${tipoIndice(uq)}(${(uq.columns ?? []).map(sqlIdent).join(', ')})${opzioniIndice(uq)}`,
+    vincoli.push(bloccoIndice(uq, 'UNIQUE'))
+  }
+
+  const fgTabella = (indici.find(i => i.isPrimaryKey) ?? indici[0])?.fileGroup
+  // Come SSMS: fra un batch e l'altro NON c'è nessuna riga vuota, e i vincoli che non stanno
+  // dentro la CREATE TABLE (DEFAULT, CHECK, chiavi esterne) arrivano subito dopo con il loro GO.
+  const righe: string[] = [
+    // SSMS apre lo script con USE [database]: la tab può girare su qualunque connessione
+    ...(database && database.trim() !== '' ? [`USE ${q(database)}`, 'GO'] : []),
+    `/****** Object:  Table ${target} ******/`,
+    'SET ANSI_NULLS ON',
+    'GO',
+    'SET QUOTED_IDENTIFIER ON',
+    'GO',
+    `CREATE TABLE ${target}(`,
+    [...defs, ...vincoli].join(',\n'),
+    `)${fgTabella ? ` ON ${nomeFilegroup(fgTabella)}` : ''}`,
+    'GO',
+  ]
+
+  // DEFAULT: SSMS li aggiunge con un ALTER TABLE per vincolo (due spazi dopo ADD, come SSMS)
+  for (const c of table.columns ?? []) {
+    if (c.isComputed || !c.defaultDefinition) continue
+    const nome = c.defaultName ? `CONSTRAINT ${q(c.defaultName)}  ` : ''
+    righe.push(`ALTER TABLE ${target} ADD  ${nome}DEFAULT ${c.defaultDefinition} FOR ${q(c.name)}`, 'GO')
+  }
+
+  // CHECK: "WITH CHECK ADD" e poi "CHECK CONSTRAINT" (due batch, come SSMS). Un vincolo
+  // DISABILITATO nel database di origine resta disabilitato anche nello script (NOCHECK), perché
+  // lo script deve rispecchiare il database così com'è.
+  for (const c of (extra.checks ?? []).filter(x => x.schema === table.schema && x.tableName === table.name)) {
+    const verifica = c.isDisabled ? 'NOCHECK' : 'CHECK'
+    righe.push(
+      `ALTER TABLE ${target}  WITH ${verifica} ADD  CONSTRAINT ${q(c.name)} CHECK  (${c.definition})`,
+      'GO',
+      `ALTER TABLE ${target} ${verifica} CONSTRAINT ${q(c.name)}`,
+      'GO',
     )
   }
 
-  // vincoli CHECK della tabella
-  const checks = (extra.checks ?? []).filter(c => c.schema === table.schema && c.tableName === table.name)
-  for (const c of checks) {
-    defs.push(`    ${c.isDisabled ? '-- ⚠ disabilitato: ' : ''}CONSTRAINT ${sqlIdent(c.name)} CHECK ${c.definition}`)
-  }
-
-  // chiavi esterne USCENTI (raggruppate per nome: le composite hanno più righe)
+  // CHIAVI ESTERNE uscenti (composite raggruppate per nome): stesso schema dei CHECK
   const fk = (extra.foreignKeys ?? []).filter(f => f.schema === table.schema && f.table === table.name)
   const perNome = new Map<string, ForeignKeyInfo[]>()
   for (const f of fk) {
@@ -1019,48 +1056,33 @@ export function scriptCreateTable(
     gruppo.push(f)
     perNome.set(f.name, gruppo)
   }
-  for (const [nome, righe] of perNome) {
-    const colonneLocali = righe.map(r => sqlIdent(r.column)).join(', ')
-    const riferite = righe.map(r => sqlIdent(r.refColumn)).join(', ')
-    defs.push(
-      `    CONSTRAINT ${sqlIdent(nome)} FOREIGN KEY (${colonneLocali}) REFERENCES ${qualified(righe[0].refSchema, righe[0].refTable)} (${riferite})`,
-    )
-  }
-
-  // il FILEGROUP della tabella (nell'esempio dell'utente: ") ON [SECONDARY]")
-  const fgTabella = (indici.find(i => i.isPrimaryKey) ?? indici[0])?.fileGroup
-  const righe: string[] = [
-    // intestazione di sessione come lo script di SSMS (le opzioni contano per le colonne calcolate)
-    `-- Oggetto: tabella ${qualified(table.schema, table.name)}`,
-    'SET ANSI_NULLS ON',
-    'GO',
-    'SET QUOTED_IDENTIFIER ON',
-    'GO',
-    '',
-    `CREATE TABLE ${qualified(table.schema, table.name)} (`,
-    defs.join(',\n'),
-    `)${fgTabella ? ` ON ${nomeFilegroup(fgTabella)}` : ''};`,
-  ]
-
-  // PROPRIETÀ ESTESE: descrizione della tabella e delle colonne (MS_Description)
-  const propTabella = (table.extendedProperties ?? []).filter(p => p.value && p.value.trim() !== '')
-  const apici = (s: string) => `N'${s.replace(/'/g, "''")}'`
-  const schemaSql = sqlIdent(table.schema)
-  for (const p of propTabella) {
+  for (const [nome, gruppo] of perNome) {
+    const locali = gruppo.map(r => q(r.column)).join(', ')
+    const riferite = gruppo.map(r => q(r.refColumn)).join(', ')
+    const ref = `${q(gruppo[0].refSchema)}.${q(gruppo[0].refTable)}`
     righe.push(
-      '',
-      `EXEC sys.sp_addextendedproperty @name = ${apici(p.name)}, @value = ${apici(p.value)},`,
-      `  @level0type = N'SCHEMA', @level0name = ${schemaSql}, @level1type = N'TABLE', @level1name = ${sqlIdent(table.name)};`,
+      `ALTER TABLE ${target}  WITH CHECK ADD  CONSTRAINT ${q(nome)} FOREIGN KEY(${locali})`,
+      `REFERENCES ${ref} (${riferite})`,
+      'GO',
+      `ALTER TABLE ${target} CHECK CONSTRAINT ${q(nome)}`,
+      'GO',
     )
   }
-  for (const c of colonne) {
+
+  // PROPRIETÀ ESTESE: una sola riga per proprietà, scritta come fa SSMS:
+  //   EXEC sys.sp_addextendedproperty @name=N'MS_Description', @value=N'testo' ,
+  //     @level0type=N'SCHEMA',@level0name=N'dbo', @level1type=N'TABLE',@level1name=N'T'
+  const apici = (s: string) => `N'${s.replace(/'/g, "''")}'`
+  const propRiga = (nome: string, valore: string, colonna?: string): string =>
+    `EXEC sys.sp_addextendedproperty @name=${apici(nome)}, @value=${apici(valore)} , ` +
+    `@level0type=N'SCHEMA',@level0name=${apici(table.schema)}, @level1type=N'TABLE',@level1name=${apici(table.name)}` +
+    (colonna ? `, @level2type=N'COLUMN',@level2name=${apici(colonna)}` : '')
+  for (const p of (table.extendedProperties ?? []).filter(x => x.value && x.value.trim() !== '')) {
+    righe.push(propRiga(p.name, p.value), 'GO')
+  }
+  for (const c of table.columns ?? []) {
     for (const p of (c.extendedProperties ?? []).filter(x => x.value && x.value.trim() !== '')) {
-      righe.push(
-        '',
-        `EXEC sys.sp_addextendedproperty @name = ${apici(p.name)}, @value = ${apici(p.value)},`,
-        `  @level0type = N'SCHEMA', @level0name = ${schemaSql}, @level1type = N'TABLE', @level1name = ${sqlIdent(table.name)},`,
-        `  @level2type = N'COLUMN', @level2name = ${sqlIdent(c.name)};`,
-      )
+      righe.push(propRiga(p.name, p.value, c.name), 'GO')
     }
   }
 
@@ -1070,11 +1092,11 @@ export function scriptCreateTable(
   const conCorpo = trigger.filter(t => t.definition && t.definition.trim() !== '')
   const senzaCorpo = trigger.filter(t => !t.definition || t.definition.trim() === '')
   if (senzaCorpo.length > 0) {
-    righe.push('', '-- TRIGGER della tabella (apri ciascuno con "Apri definizione" per il corpo):')
+    righe.push('-- TRIGGER della tabella (apri ciascuno con "Apri definizione" per il corpo):')
     for (const t of senzaCorpo) righe.push(`--   ${qualified(t.schema, t.name)}`)
   }
   for (const t of conCorpo) {
-    righe.push('', `GO`, `-- Trigger ${qualified(t.schema, t.name)}`, t.definition!.replace(/\r\n/g, '\n').trim(), 'GO')
+    righe.push(`-- Trigger ${qualified(t.schema, t.name)}`, t.definition!.replace(/\r\n/g, '\n').trim(), 'GO')
   }
 
   return righe.join('\n') + '\n'

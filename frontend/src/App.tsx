@@ -1131,7 +1131,7 @@ export default function App() {
     (o: ErrorObjectRef) => {
       if (o.kind === 'table') {
         const t = summary?.tables.find(x => x.name.toLowerCase() === o.name.toLowerCase())
-        if (t) handleOpenScript(`CREATE ${o.schema}.${o.name}`, scriptCreateTable(t), true)
+        if (t) handleOpenScript(`CREATE ${o.schema}.${o.name}`, scriptCreateTable(t, {}, connection?.database), true)
         return
       }
       // la riga dell'errore è quella interna alla procedura: aprendola si va direttamente lì

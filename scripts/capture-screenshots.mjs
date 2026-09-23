@@ -13,6 +13,7 @@
 //   node scripts/capture-screenshots.mjs --verify-alias           (alias. → campi della tabella)
 //   node scripts/capture-screenshots.mjs --verify-labels          (GOTO → label del documento)
 //   node scripts/capture-screenshots.mjs --verify-error-line      (doppio clic sull'errore → riga)
+//   node scripts/capture-screenshots.mjs --verify-create          (script CREATE della tabella = SSMS)
 //   node scripts/capture-screenshots.mjs --measure-typing         (latenza digitando in una store grande)
 //
 // Prerequisiti: backend su :5213 e dev server su :5173 attivi.
@@ -52,6 +53,12 @@ const VERIFY_MERGE = process.argv.includes('--verify-merge')
 const VERIFY_PARAMS = process.argv.includes('--verify-params')
 const VERIFY_MULTIRIGA = process.argv.includes('--verify-multiriga')
 const VERIFY_TEMA = process.argv.includes('--verify-tema')
+const VERIFY_CREATE = process.argv.includes('--verify-create')
+/**
+ * Finestra molto alta per --verify-create: Monaco disegna nel DOM solo le righe VISIBILI, quindi
+ * per leggere tutto lo script CREATE (colonne, vincoli, DEFAULT, trigger) serve un editor alto.
+ */
+const WINDOW_H = VERIFY_CREATE ? 2600 : 1000
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -74,6 +81,18 @@ const ROUTINE_NAME = process.env.SHOT_ROUTINE ?? 'ws_L2_SetCorridoioMiss'
  * serve a controllare che NESSUN campo chiave finisca nell'UPDATE SET.
  */
 const TABELLA_CHIAVE = process.env.SHOT_TABLE ?? 'L1_AZIONI_PERCORSI'
+/**
+ * Tabella usata da --verify-create: è piccola (2 colonne) ma ha TUTTO quello che serve per
+ * confrontare lo script con quello di SSMS: PRIMARY KEY NONCLUSTERED con opzioni e FILLFACTOR,
+ * un vincolo UNIQUE, un DEFAULT, un CHECK e un trigger con il corpo.
+ */
+const TABELLA_CREATE = process.env.SHOT_CREATE_TABLE ?? 'DAT_CLASSI_MERC'
+/** Database attivo della connessione di prova: SSMS apre lo script con "USE [<database>]". */
+const DB_CREATE = process.env.SHOT_CREATE_DB ?? 'WSGSDMALTA'
+/** Opzioni dell'indice di TABELLA_CREATE, lette dai metadati veri (sys.indexes) del database. */
+const OPZIONI_CREATE =
+  'PAD_INDEX = ON, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ' +
+  'ALLOW_PAGE_LOCKS = OFF, FILLFACTOR = 90, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF'
 /**
  * Funzione TABELLARE usata da --verify-alias: con "FROM dbo.<fn>() a" l'intellisense deve
  * proporre i campi che la funzione restituisce (era il caso in cui il popup restava vuoto).
@@ -196,7 +215,7 @@ function launchBrowser() {
       '--no-default-browser-check',
       `--remote-debugging-port=${PORT}`,
       `--user-data-dir=${profileDir}`,
-      '--window-size=1600,1000',
+      `--window-size=1600,${WINDOW_H}`,
       'about:blank',
     ],
     { stdio: 'ignore' },
@@ -599,6 +618,10 @@ async function verifyErrorMessages(page) {
 
   // ---- secondo batch: errore che CITA un oggetto esistente → deve comparire il pulsante ----
   console.log('\n  --- errore che cita una tabella esistente ---')
+  // gli oggetti citati si possono proporre solo con lo SCHEMA caricato: si aspetta (la pagina
+  // può essere ancora su "Caricamento metadati…", e allora il pulsante non compare)
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato (oggetti citati)')
+  await sleep(800)
   await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
   await page.typeText(BATCH_OBJECT_ERROR)
   await sleep(500)
@@ -2239,6 +2262,255 @@ async function verifyMerge(page) {
 }
 
 /**
+ * VERIFICA (--verify-create): lo script CREATE di una tabella deve essere IDENTICO a quello che
+ * scrive SSMS (richiesta utente: "questo è lo script corretto preso da ssms… fallo identico a
+ * SSMS"). Si passa dal menu contestuale del pannello Oggetti ("Script tabella" → "CREATE") e si
+ * confronta RIGA PER RIGA con quello che ci si aspetta dai metadati VERI di dbo.TABELLA_CREATE:
+ *
+ *   banner "Object:  Table [dbo].[x]" + SET ANSI_NULLS / SET QUOTED_IDENTIFIER + GO, senza righe vuote
+ *   CREATE TABLE [dbo].[x](        identificatori SEMPRE fra parentesi quadre
+ *       [col] [tipo](n) NOT NULL,  colonne indentate, NULL/NOT NULL espliciti
+ *    CONSTRAINT [PK_x] PRIMARY KEY NONCLUSTERED … colonne a capo con ASC
+ *   )WITH (…opzioni… FILLFACTOR = 90) ON [filegroup]   la coda sta ATTACCATA alla parentesi
+ *   ) ON [filegroup]               la tabella va sul filegroup di origine
+ *   ALTER TABLE … ADD  CONSTRAINT [DF_…]  DEFAULT (…) FOR [col]
+ *   ALTER TABLE …  WITH CHECK ADD  CONSTRAINT [CK_…] CHECK  (…)
+ *   ALTER TABLE … CHECK CONSTRAINT [CK_…]
+ *   EXEC sys.sp_addextendedproperty @name=N'…', @value=N'…' , @level0type=N'SCHEMA',@level0name=N'dbo', …
+ *   -- Trigger <nome> + corpo del trigger preso dal database
+ */
+async function verifyCreate(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Tabelle')`, 60000, 'schema caricato')
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // il pannello Oggetti può essere chiuso: nel caso lo si riapre dalla barra dei pannelli
+  const campo = `document.querySelector('input[placeholder^="Cerca (spazio"]')`
+  if (!(await page.eval(`!!${campo}`))) {
+    await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '+ Oggetti')`,
+    )
+    await sleep(1500)
+  }
+  if (!(await page.eval(`!!${campo}`))) {
+    throw new Error('pannello Oggetti non disponibile: app non caricata o schema non pronto')
+  }
+
+  // 1) si cerca la tabella nell'elenco Oggetti
+  await page.eval(`(() => {
+    const i = ${campo};
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(i, ${JSON.stringify(TABELLA_CREATE)});
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`)
+  const trovata = await page.waitFor(
+    `[...document.querySelectorAll('span')].some(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(TABELLA_CREATE)})`,
+    15000,
+    'risultato della ricerca in Oggetti',
+  )
+  check('la tabella compare nell elenco Oggetti', trovata)
+  await sleep(600)
+
+  // 2) tasto destro sul nome → menu contestuale (è React: basta l'evento che risale)
+  await page.eval(`(() => {
+    const s = [...document.querySelectorAll('span')]
+      .find(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(TABELLA_CREATE)});
+    if (s) s.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window }));
+  })()`)
+  const menu = await page.waitFor(`document.body.textContent.includes('Script tabella')`, 8000, 'menu contestuale')
+  check('il tasto destro apre il menu dell oggetto', menu)
+  await sleep(400)
+
+  // 3) "Script tabella" apre il SOTTOMENU al passaggio del mouse: si manda un mouseover vero
+  const voce = await page.eval(`(() => {
+    const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Script tabella');
+    if (!b) return null;
+    b.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+    const r = b.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  check('il menu offre "Script tabella"', !!voce)
+  if (!voce) throw new Error('voce "Script tabella" non trovata nel menu contestuale')
+  await page.send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: Math.round(voce.x),
+    y: Math.round(voce.y),
+    buttons: 0,
+  })
+  await sleep(800)
+
+  // 4) "CREATE" nel sottomenu → lo script si apre in una tab
+  const creato = await page.eval(`(() => {
+    const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'CREATE');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  check('il sottomenu offre "CREATE"', !!creato)
+  if (!creato) throw new Error('voce "CREATE" non trovata nel sottomenu di "Script tabella"')
+  await page.clickPoint(creato.x, creato.y)
+  const aperto = await page.waitFor(
+    // Monaco rende gli spazi come spazio unificatore: si normalizza prima di cercare
+    `[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+       .some(l => (l.textContent || '').replace(/\\u00a0/g, ' ').includes('CREATE TABLE [dbo].[${TABELLA_CREATE}]'))`,
+    20000,
+    'script CREATE nella tab',
+  )
+  check('lo script CREATE si apre in una tab', aperto)
+  await sleep(1500)
+
+  /** Righe disegnate da Monaco nell'editor attivo, dall'alto in basso. */
+  const leggiRighe = () =>
+    page.eval(`(() => {
+      const eds = [...document.querySelectorAll('.monaco-editor')].filter(e => {
+        const r = e.getBoundingClientRect();
+        return r.height > 0 && r.width > 0;
+      });
+      const ed = eds[eds.length - 1];
+      if (!ed) return [];
+      return [...ed.querySelectorAll('.view-lines .view-line')]
+        .map(l => ({ top: parseFloat(l.style.top) || 0, testo: (l.textContent || '').replace(/\\u00a0/g, ' ') }))
+        .sort((a, b) => a.top - b.top)
+        .map(l => ({ i: /^[ \\t]/.test(l.testo), t: l.testo.trim() }));
+    })()`)
+
+  // 5) si leggono le righe disegnate da Monaco (finestra alta apposta per --verify-create).
+  //    L'indentazione nel DOM è resa come spazio unificatore: si tiene solo "indentata sì/no".
+  const righe = await leggiRighe()
+
+  const atteso = [
+    { i: false, t: `USE [${DB_CREATE}]` },
+    { i: false, t: 'GO' },
+    { i: false, t: `/****** Object:  Table [dbo].[${TABELLA_CREATE}] ******/` },
+    { i: false, t: 'SET ANSI_NULLS ON' },
+    { i: false, t: 'GO' },
+    { i: false, t: 'SET QUOTED_IDENTIFIER ON' },
+    { i: false, t: 'GO' },
+    { i: false, t: `CREATE TABLE [dbo].[${TABELLA_CREATE}](` },
+    { i: true, t: '[CME_CLASSE_MERC] [nvarchar](20) NOT NULL,' },
+    { i: true, t: '[CME_DES] [nvarchar](50) NOT NULL,' },
+    { i: true, t: `CONSTRAINT [PK_${TABELLA_CREATE}] PRIMARY KEY NONCLUSTERED` },
+    { i: false, t: '(' },
+    { i: true, t: '[CME_CLASSE_MERC] ASC' },
+    { i: false, t: `)WITH (${OPZIONI_CREATE}) ON [SECONDARY],` },
+    { i: true, t: `CONSTRAINT [IX_${TABELLA_CREATE}_DES] UNIQUE NONCLUSTERED` },
+    { i: false, t: '(' },
+    { i: true, t: '[CME_DES] ASC' },
+    { i: false, t: `)WITH (${OPZIONI_CREATE}) ON [SECONDARY]` },
+    { i: false, t: ') ON [SECONDARY]' },
+    { i: false, t: 'GO' },
+    {
+      i: false,
+      t: `ALTER TABLE [dbo].[${TABELLA_CREATE}] ADD  CONSTRAINT [DF_DAT_CATEGORIE_MERC_CME_DES]  DEFAULT ('') FOR [CME_DES]`,
+    },
+    { i: false, t: 'GO' },
+    {
+      i: false,
+      t: `ALTER TABLE [dbo].[${TABELLA_CREATE}]  WITH CHECK ADD  CONSTRAINT [CK_${TABELLA_CREATE}_DES] CHECK  (([CME_DES]<>''))`,
+    },
+    { i: false, t: 'GO' },
+    { i: false, t: `ALTER TABLE [dbo].[${TABELLA_CREATE}] CHECK CONSTRAINT [CK_${TABELLA_CREATE}_DES]` },
+    { i: false, t: 'GO' },
+  ]
+
+  console.log('  --- script generato ---')
+  for (const r of righe) console.log(`  | ${r.i ? '\\t' : ''}${r.t}`)
+  console.log('  -----------------------')
+
+  const testa = righe.slice(0, atteso.length)
+  const diversa = testa.findIndex((r, k) => r.i !== atteso[k].i || r.t !== atteso[k].t)
+  check(
+    'lo script è identico a quello di SSMS (intestazione, colonne, chiavi, DEFAULT, CHECK)',
+    diversa === -1 && righe.length >= atteso.length,
+    diversa === -1
+      ? `righe confrontate: ${atteso.length}`
+      : `riga ${diversa + 1}: atteso ${JSON.stringify(atteso[diversa])} — trovato ${JSON.stringify(testa[diversa] ?? null)}`,
+  )
+  check(
+    'nessun punto e virgola: il CREATE TABLE di SSMS non lo mette',
+    !righe.some(r => r.t === ');'),
+    righe.filter(r => r.t === ');').length ? 'trovato ");"' : 'ok',
+  )
+
+  // 6) le PROPRIETÀ ESTESE, una riga per proprietà, come le scrive SSMS
+  const apici = s => `N'${s.replace(/'/g, "''")}'`
+  const prop = (nome, valore, col) =>
+    `EXEC sys.sp_addextendedproperty @name=${apici(nome)}, @value=${apici(valore)} , ` +
+    `@level0type=N'SCHEMA',@level0name=N'dbo', @level1type=N'TABLE',@level1name=${apici(TABELLA_CREATE)}` +
+    (col ? `, @level2type=N'COLUMN',@level2name=${apici(col)}` : '')
+  const propAttese = [
+    prop('MS_Description', 'Table of goods classes (E.g: mechanics, textiles, ...)'),
+    prop('Description', 'Codice classe merceologica', 'CME_CLASSE_MERC'),
+    prop('MS_Description', 'Goods class code', 'CME_CLASSE_MERC'),
+    prop('Description', 'Descrizione', 'CME_DES'),
+    prop('MS_Description', 'Description', 'CME_DES'),
+  ].sort()
+  const propTrovate = righe.filter(r => r.t.startsWith('EXEC sys.sp_addextendedproperty')).map(r => r.t).sort()
+  const propMancanti = propAttese.filter(p => !propTrovate.includes(p))
+  check(
+    'le proprietà estese sono scritte come SSMS (una riga, @level0name=N\'dbo\')',
+    propMancanti.length === 0 && propTrovate.length === propAttese.length,
+    propMancanti.length ? `mancanti: ${JSON.stringify(propMancanti[0])}` : `${propTrovate.length} proprietà`,
+  )
+
+  // 7) il trigger resta in coda, con il CORPO preso dal database di origine
+  const iTrigger = righe.findIndex(r => r.t === '-- Trigger tr_DAT_CLASSI_MERC')
+  check('il trigger è in coda allo script', iTrigger > 0, iTrigger > 0 ? `riga ${iTrigger + 1}` : 'non trovato')
+  const corpo = iTrigger > 0 ? righe.slice(iTrigger + 1).filter(r => r.t) : []
+  check(
+    'il corpo del trigger è quello del database (CREATE TRIGGER … AS …)',
+    corpo.length > 3 && /^CREATE TRIGGER/.test(corpo[0].t) && corpo.some(r => r.t === 'AS'),
+    corpo.length ? `prima riga: ${corpo[0].t.slice(0, 70)}…` : 'nessun corpo',
+  )
+  // 8) la CODA dello script: Ctrl+End porta in fondo, così si controlla anche la fine del trigger
+  const rectEdit = await editorRect(page)
+  await page.clickPoint(rectEdit.x + 200, rectEdit.y + 40)
+  await sleep(300)
+  await page.press('End', { code: 'End', vk: 35, modifiers: 2 })
+  await sleep(900)
+  const coda = await leggiRighe()
+  const codaPiena = coda.filter(r => r.t)
+  check(
+    'anche la CODA dello script è quella giusta (ultima riga = GO del trigger)',
+    codaPiena.length > 2 && codaPiena[codaPiena.length - 1].t === 'GO',
+    `coda: ${JSON.stringify(codaPiena.slice(-3).map(r => r.t))}`,
+  )
+
+  // lo script ricostruito si salva accanto agli screenshot, per poterlo rileggere con calma
+  const fileSql = join(OUT_DIR, `script-create-${TABELLA_CREATE}.sql`)
+  mkdirSync(OUT_DIR, { recursive: true })
+  writeFileSync(
+    fileSql,
+    `-- Script CREATE generato dall'app per dbo.${TABELLA_CREATE} (letto dalla tab, indentazione resa con tab)\n` +
+      righe.map(r => `${r.i ? '\t' : ''}${r.t}`).join('\n') +
+      '\n',
+  )
+  writeFileSync(
+    join(OUT_DIR, `script-create-${TABELLA_CREATE}-coda.sql`),
+    `-- CODA dello script (Ctrl+End, finestra che non basta a mostrarlo tutto)\n` +
+      coda.map(r => `${r.i ? '\t' : ''}${r.t}`).join('\n') +
+      '\n',
+  )
+  console.log(`  salvato docs/screenshots/script-create-${TABELLA_CREATE}.sql`)
+  await page.screenshot('script-create-tabella')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * VERIFICA (--verify-changes): la finestra "Modifiche agli oggetti" (richiesta utente: "una
  * finestra dove vedo la lista delle cose modificate e quando, tipo una griglia con la store x il
  * giorno ora"). Controlla che la griglia arrivi dai dati VERI del database: date con giorno e ora,
@@ -3762,6 +4034,11 @@ async function main() {
 
     if (VERIFY_TEMA) {
       await verifyTema(page)
+      return
+    }
+
+    if (VERIFY_CREATE) {
+      await verifyCreate(page)
       return
     }
 
