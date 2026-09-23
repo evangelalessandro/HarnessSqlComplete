@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { Eraser, FolderOpen, IndentDecrease, IndentIncrease, MessageSquare, Moon, Play, Save, Settings2, Sun, Table2, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
+import { Eraser, FolderOpen, IndentDecrease, IndentIncrease, Loader2, MessageSquare, Moon, Play, Save, Settings2, Sun, Table2, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
 import monaco from '../monacoSetup'
 import { api } from '../api'
 import { syntaxIssuesFromCheck } from '../syntaxCheck'
@@ -144,6 +144,10 @@ export default function SqlEditor({
   const [profileOpen, setProfileOpen] = useState(false)
   /** Messaggio dell'ultima formattazione (es. SQLFluff non disponibile). */
   const [formatError, setFormatError] = useState<string | null>(null)
+  /** True mentre la formattazione e' in corso (SQLFluff gira sul backend: puo' metterci secondi). */
+  const [formatting, setFormatting] = useState(false)
+  const formattingRef = useRef(false)
+  formattingRef.current = formatting
   /** Motore e opzioni correnti, letti da handleFormat (che viene registrato una volta sola). */
   const motoreFormatRef = useRef<MotoreFormattazione>(formatter)
   motoreFormatRef.current = formatter
@@ -290,8 +294,13 @@ export default function SqlEditor({
   const handleFormat = async () => {
     const ed = editorRef.current
     const model = ed?.getModel()
-    if (!ed || !model) return
+    if (!ed || !model || formattingRef.current) return
     try {
+      setFormatError(null)
+      setFormatting(true)
+      // un attimo di respiro: così l'indicatore "Formattazione…" viene dipinto PRIMA di
+      // aspettare il backend (con SQLFluff la risposta può arrivare dopo qualche secondo)
+      await new Promise(r => window.setTimeout(r, 0))
       // come l'esecuzione: con una selezione si formatta SOLO quella parte
       const sel = ed.getSelection()
       const selected = sel && !sel.isEmpty() ? model.getValueInRange(sel) : null
@@ -304,6 +313,8 @@ export default function SqlEditor({
       setFormatError(esito.errore)
     } catch {
       /* SQL non valido: nessuna azione */
+    } finally {
+      setFormatting(false)
     }
   }
 
@@ -782,8 +793,15 @@ export default function SqlEditor({
           >
             <IndentDecrease className="h-4 w-4" /> Fuori rientro
           </Button>
-          <Button variant="secondary" onClick={handleFormat} title="Formatta (Ctrl+Shift+F) — con una selezione formatta solo quella parte">
-            <Wand2 className="h-4 w-4" /> Formatta
+          <Button
+            variant="secondary"
+            onClick={handleFormat}
+            loading={formatting}
+            disabled={formatting}
+            data-formatta={formatting ? 'in-corso' : 'pronto'}
+            title="Formatta (Ctrl+Shift+F) — con una selezione formatta solo quella parte"
+          >
+            {!formatting && <Wand2 className="h-4 w-4" />} {formatting ? 'Formattazione…' : 'Formatta'}
           </Button>
           <Button
             variant="ghost"
@@ -912,6 +930,15 @@ export default function SqlEditor({
           opzioni={sqlFluff}
           onOpzioniChange={onSqlFluffChange}
         />
+      )}
+      {formatting && (
+        <div
+          className="absolute bottom-2 left-2 right-2 z-20 flex items-center gap-2 rounded border border-sky-700 bg-sky-950/80 px-2 py-1 text-[11px] text-sky-200"
+          data-formatta="in-corso"
+        >
+          <Loader2 className="h-3 w-3 animate-spin" />
+          Formattazione in corso… ({formatter === 'sqlfluff' ? 'SQLFluff' : 'formattatore dell’app'})
+        </div>
       )}
       {formatError && (
         <div
