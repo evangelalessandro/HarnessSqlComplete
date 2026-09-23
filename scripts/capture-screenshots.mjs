@@ -983,6 +983,62 @@ async function verifyFormat(page) {
     righeCase.some(r => r.startsWith(',isnull (rtrim (ORD_DESC)')),
   )
 
+  // SCELTA DEL MOTORE DI FORMATTAZIONE (nostro profilo / libreria sql-formatter): lo stesso testo,
+  // formattato con i due motori, deve uscire DIVERSO; e tornando al nostro si ritorna come prima.
+  const testoProva = 'select a, b, c from dbo.T where a = 1 and b > 2 order by c'
+  const prova1 = await scriviEFormatta(testoProva)
+  const colNostro = prova1.righe.join('\n')
+  const apriProfilo = () =>
+    page.eval(`(() => {
+      const gear = [...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('Impostazioni di formattazione'));
+      if (!gear) return false;
+      gear.click();
+      return true;
+    })()`)
+  await apriProfilo()
+  await sleep(700)
+  const opzioniMotore = await page.eval(`(() => {
+    const s = document.querySelector('[data-format="motore"]');
+    if (!s) return null;
+    const scelte = [...s.options].map(o => o.value);
+    s.value = 'sql-formatter';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+    return scelte;
+  })()`)
+  await sleep(500)
+  await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Chiudi')`)
+  await sleep(500)
+  const prova2 = await scriviEFormatta(testoProva)
+  const colLibreria = prova2.righe.join('\n')
+  console.log('  motore nostro:')
+  colNostro.split('\n').forEach(r => console.log(`    |${r}`))
+  console.log('  motore sql-formatter:')
+  colLibreria.split('\n').forEach(r => console.log(`    |${r}`))
+  check(
+    'il pannello di formattazione offre i DUE motori',
+    JSON.stringify(opzioniMotore) === '["nostro","sql-formatter"]',
+    JSON.stringify(opzioniMotore),
+  )
+  check(
+    'con sql-formatter il risultato cambia (e una formattazione diversa)',
+    colLibreria !== colNostro && colLibreria.trim().length > 0,
+  )
+  check('sql-formatter non perde pezzi del testo', /dbo\.T/i.test(colLibreria) && /order by/i.test(colLibreria))
+  // si torna al motore nostro: la formattazione deve tornare identica a prima
+  await apriProfilo()
+  await sleep(600)
+  await page.eval(`(() => {
+    const s = document.querySelector('[data-format="motore"]');
+    if (s) { s.value = 'nostro'; s.dispatchEvent(new Event('change', { bubbles: true })); }
+    return true;
+  })()`)
+  await sleep(400)
+  await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Chiudi')`)
+  await sleep(400)
+  const prova3 = await scriviEFormatta(testoProva)
+  const colRitorno = prova3.righe.join('\n')
+  check('tornando al motore nostro si ritorna alla formattazione di prima', colRitorno === colNostro)
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

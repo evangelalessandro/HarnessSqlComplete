@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Download, FileUp, RotateCcw, X } from 'lucide-react'
 import type { FormatProfileNode } from '../formatProfile'
+import { etichettaMotore, MOTORI_FORMATTAZIONE } from '../formatEngine'
+import type { MotoreFormattazione } from '../formatEngine'
 import {
   buildFormatProfile,
   flattenFormatOptions,
@@ -59,7 +61,16 @@ function downloadFile(name: string, content: string) {
   URL.revokeObjectURL(url)
 }
 
-export default function FormatProfilePanel({ onClose }: { onClose: () => void }) {
+export default function FormatProfilePanel({
+  onClose,
+  motore = 'nostro',
+  onMotoreChange,
+}: {
+  onClose: () => void
+  /** Motore di formattazione attivo (nostro profilo T-SQL oppure sql-formatter). */
+  motore?: MotoreFormattazione
+  onMotoreChange?: (m: MotoreFormattazione) => void
+}) {
   const [xml, setXml] = useState<string>(() => loadFormatProfileXml())
   const [nodes, setNodes] = useState<FormatProfileNode[]>(() => parseFormatProfileXml(loadFormatProfileXml()))
   const [message, setMessage] = useState<string | null>(null)
@@ -123,6 +134,31 @@ export default function FormatProfilePanel({ onClose }: { onClose: () => void })
           <button onClick={onClose} className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200" title="Chiudi">
             <X className="h-4 w-4" />
           </button>
+        </div>
+
+        {/* SCELTA DEL MOTORE: profilo dell'app oppure la libreria sql-formatter */}
+        <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 bg-zinc-900/60 px-4 py-2.5">
+          <label className="text-xs font-medium text-zinc-300" htmlFor="motore-formattazione">
+            Motore di formattazione
+          </label>
+          <select
+            id="motore-formattazione"
+            data-format="motore"
+            value={motore}
+            onChange={e => onMotoreChange?.(e.target.value as MotoreFormattazione)}
+            className="rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100 focus:border-sky-500 focus:outline-none"
+          >
+            {MOTORI_FORMATTAZIONE.map(m => (
+              <option key={m} value={m}>
+                {etichettaMotore(m)}
+              </option>
+            ))}
+          </select>
+          <span className="text-[11px] text-zinc-500">
+            {motore === 'nostro'
+              ? 'Come finora: profilo e regole dell\u2019app (un testo già impaginato resta identico).'
+              : 'Libreria esterna sql-formatter (dialetto T-SQL): impaginazione diversa, impostazioni del profilo ignorate se non compatibili.'}
+          </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-2">

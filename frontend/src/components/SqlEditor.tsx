@@ -21,7 +21,8 @@ import { provideSqlCompletions } from '../sqlCompletions'
 import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../history'
 import { registerSqlHover } from '../sqlHover'
 import { buildFormatProfile, loadFormatProfileXml } from '../formatProfile'
-import { formatSqlWithProfile } from '../tsqlFormatter'
+import { formattaConMotore } from '../formatEngine'
+import type { MotoreFormattazione } from '../formatEngine'
 import { SQL_WORD_SEPARATORS } from '../editorOptions'
 import { BLOCCHI_KEY, opzioniMonaco, parseBlocchi, serializzaBlocchi } from '../blockMode'
 import { azioneCursore, cursoreDaAggiungere } from '../multiCursor'
@@ -52,6 +53,9 @@ interface Props {
   fontSize?: number
   /** Tema Monaco: 'vs' (chiaro) o 'vs-dark'. */
   theme?: 'vs' | 'vs-dark'
+  /** Motore di formattazione scelto dall'utente (nostro profilo T-SQL o sql-formatter). */
+  formatter?: MotoreFormattazione
+  onFormatterChange?: (m: MotoreFormattazione) => void
   /** Zoom del testo (+1 / -1). */
   onZoomFont?: (delta: number) => void
   /** Alterna tema chiaro/scuro. */
@@ -91,6 +95,8 @@ export default function SqlEditor({
   onOpenFile,
   fontSize = 13,
   theme = 'vs-dark',
+  formatter = 'nostro',
+  onFormatterChange,
   onZoomFont,
   onToggleTheme,
   dragonLevel = 0,
@@ -160,6 +166,9 @@ export default function SqlEditor({
   blocchiRef.current = blocchi
   const toggleBlocchiRef = useRef(toggleBlocchi)
   toggleBlocchiRef.current = toggleBlocchi
+  /** Motore di formattazione corrente, letto da handleFormat (registrato una volta sola). */
+  const motoreFormatRef = useRef<MotoreFormattazione>(formatter ?? 'nostro')
+  motoreFormatRef.current = formatter ?? 'nostro'
   // Accensione/spegnimento: l'opzione di Monaco va aggiornata a editor montato.
   useEffect(() => {
     editorRef.current?.updateOptions(opzioniMonaco(blocchi))
@@ -280,7 +289,7 @@ export default function SqlEditor({
       const { text, usesSelection } = pickFormatTarget(selected, model.getValue())
       const profileXml = loadFormatProfileXml()
       const profile = buildFormatProfile(profileXml)
-      const formatted = formatSqlWithProfile(text, profile)
+      const formatted = formattaConMotore(text, motoreFormatRef.current, profile)
       const range = usesSelection ? sel! : model.getFullModelRange()
       ed.executeEdits('format', [{ range, text: formatted }])
     } catch {
@@ -885,7 +894,13 @@ export default function SqlEditor({
           }}
         />
       </div>
-      {profileOpen && <FormatProfilePanel onClose={() => setProfileOpen(false)} />}
+      {profileOpen && (
+        <FormatProfilePanel
+          onClose={() => setProfileOpen(false)}
+          motore={formatter ?? 'nostro'}
+          onMotoreChange={onFormatterChange}
+        />
+      )}
       {previewTarget && connectionId && (
         <DataPreviewModal
           target={previewTarget}
