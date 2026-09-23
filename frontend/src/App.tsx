@@ -10,7 +10,7 @@ import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
 import { buildTabClosePlan, countClosableTabs, graphTabIndex, insertTabAt, risultatiVisibiliPer, searchTabIndex } from './tabOps'
-import type { MotoreFormattazione } from './formatEngine'
+import type { MotoreFormattazione, OpzioniSqlFormatter } from './formatEngine'
 import {
   MAX_TAB_DEPTH,
   childParentFor,
@@ -313,6 +313,15 @@ export default function App() {
   const setFormatter = useCallback((formatter: MotoreFormattazione) => {
     setSettings(prev => {
       const next: EditorSettings = { ...prev, formatter }
+      saveSettings(next)
+      return next
+    })
+  }, [])
+
+  /** Opzioni della libreria sql-formatter (rientri, maiuscole, larghezza espressioni…). */
+  const setSqlFormatterOptions = useCallback((sqlFormatter: OpzioniSqlFormatter) => {
+    setSettings(prev => {
+      const next: EditorSettings = { ...prev, sqlFormatter }
       saveSettings(next)
       return next
     })
@@ -1606,6 +1615,8 @@ export default function App() {
                 theme={settings.theme}
                 formatter={settings.formatter}
                 onFormatterChange={setFormatter}
+                sqlFormatter={settings.sqlFormatter}
+                onSqlFormatterChange={setSqlFormatterOptions}
                 onZoomFont={zoomFont}
                 onToggleTheme={toggleTheme}
                 registerEditor={setEditor}

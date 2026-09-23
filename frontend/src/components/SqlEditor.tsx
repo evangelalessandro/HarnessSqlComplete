@@ -22,7 +22,7 @@ import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../h
 import { registerSqlHover } from '../sqlHover'
 import { buildFormatProfile, loadFormatProfileXml } from '../formatProfile'
 import { formattaConMotore } from '../formatEngine'
-import type { MotoreFormattazione } from '../formatEngine'
+import type { MotoreFormattazione, OpzioniSqlFormatter } from '../formatEngine'
 import { SQL_WORD_SEPARATORS } from '../editorOptions'
 import { BLOCCHI_KEY, opzioniMonaco, parseBlocchi, serializzaBlocchi } from '../blockMode'
 import { azioneCursore, cursoreDaAggiungere } from '../multiCursor'
@@ -56,6 +56,9 @@ interface Props {
   /** Motore di formattazione scelto dall'utente (nostro profilo T-SQL o sql-formatter). */
   formatter?: MotoreFormattazione
   onFormatterChange?: (m: MotoreFormattazione) => void
+  /** Opzioni della libreria sql-formatter (usate quando il motore e' sql-formatter). */
+  sqlFormatter?: OpzioniSqlFormatter
+  onSqlFormatterChange?: (o: OpzioniSqlFormatter) => void
   /** Zoom del testo (+1 / -1). */
   onZoomFont?: (delta: number) => void
   /** Alterna tema chiaro/scuro. */
@@ -97,6 +100,8 @@ export default function SqlEditor({
   theme = 'vs-dark',
   formatter = 'nostro',
   onFormatterChange,
+  sqlFormatter,
+  onSqlFormatterChange,
   onZoomFont,
   onToggleTheme,
   dragonLevel = 0,
@@ -169,6 +174,9 @@ export default function SqlEditor({
   /** Motore di formattazione corrente, letto da handleFormat (registrato una volta sola). */
   const motoreFormatRef = useRef<MotoreFormattazione>(formatter ?? 'nostro')
   motoreFormatRef.current = formatter ?? 'nostro'
+  /** Opzioni della libreria sql-formatter correnti (lette da handleFormat). */
+  const sqlFormatterRef = useRef<OpzioniSqlFormatter | undefined>(sqlFormatter)
+  sqlFormatterRef.current = sqlFormatter
   // Accensione/spegnimento: l'opzione di Monaco va aggiornata a editor montato.
   useEffect(() => {
     editorRef.current?.updateOptions(opzioniMonaco(blocchi))
@@ -289,7 +297,7 @@ export default function SqlEditor({
       const { text, usesSelection } = pickFormatTarget(selected, model.getValue())
       const profileXml = loadFormatProfileXml()
       const profile = buildFormatProfile(profileXml)
-      const formatted = formattaConMotore(text, motoreFormatRef.current, profile)
+      const formatted = formattaConMotore(text, motoreFormatRef.current, profile, sqlFormatterRef.current)
       const range = usesSelection ? sel! : model.getFullModelRange()
       ed.executeEdits('format', [{ range, text: formatted }])
     } catch {
@@ -899,6 +907,8 @@ export default function SqlEditor({
           onClose={() => setProfileOpen(false)}
           motore={formatter ?? 'nostro'}
           onMotoreChange={onFormatterChange}
+          opzioni={sqlFormatter}
+          onOpzioniChange={onSqlFormatterChange}
         />
       )}
       {previewTarget && connectionId && (

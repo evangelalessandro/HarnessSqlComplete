@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Download, FileUp, RotateCcw, X } from 'lucide-react'
 import type { FormatProfileNode } from '../formatProfile'
-import { etichettaMotore, MOTORI_FORMATTAZIONE } from '../formatEngine'
-import type { MotoreFormattazione } from '../formatEngine'
+import { etichettaMotore, MOTORI_FORMATTAZIONE, normalizzaOpzioniSqlFormatter, OPZIONI_SQLFORMATTER_DEFAULT, OPZIONI_SQLFORMATTER_UI } from '../formatEngine'
+import type { MotoreFormattazione, OpzioniSqlFormatter } from '../formatEngine'
 import {
   buildFormatProfile,
   flattenFormatOptions,
@@ -65,11 +65,16 @@ export default function FormatProfilePanel({
   onClose,
   motore = 'nostro',
   onMotoreChange,
+  opzioni,
+  onOpzioniChange,
 }: {
   onClose: () => void
   /** Motore di formattazione attivo (nostro profilo T-SQL oppure sql-formatter). */
   motore?: MotoreFormattazione
   onMotoreChange?: (m: MotoreFormattazione) => void
+  /** Opzioni della libreria sql-formatter (mostrate solo con quel motore). */
+  opzioni?: OpzioniSqlFormatter
+  onOpzioniChange?: (o: OpzioniSqlFormatter) => void
 }) {
   const [xml, setXml] = useState<string>(() => loadFormatProfileXml())
   const [nodes, setNodes] = useState<FormatProfileNode[]>(() => parseFormatProfileXml(loadFormatProfileXml()))
@@ -157,9 +162,56 @@ export default function FormatProfilePanel({
           <span className="text-[11px] text-zinc-500">
             {motore === 'nostro'
               ? 'Come finora: profilo e regole dell\u2019app (un testo già impaginato resta identico).'
-              : 'Libreria esterna sql-formatter (dialetto T-SQL): impaginazione diversa, impostazioni del profilo ignorate se non compatibili.'}
+              : 'Libreria esterna sql-formatter (dialetto T-SQL): le opzioni qui sotto sono le sue.'}
           </span>
         </div>
+
+        {/* OPZIONI DELLA LIBRERIA (solo con il motore sql-formatter): senza queste l'output
+            resta "piatto", tutto su poche righe con i rientri di default. */}
+        {motore === 'sql-formatter' && (
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 border-b border-zinc-800 bg-zinc-900/40 px-4 py-3" data-format="opzioni-libreria">
+            {OPZIONI_SQLFORMATTER_UI.map(o => {
+              const valore = opzioni ? opzioni[o.key] : OPZIONI_SQLFORMATTER_DEFAULT[o.key]
+              return (
+                <label key={o.key} className="flex items-center justify-between gap-2 text-[11px] text-zinc-400">
+                  <span title={o.aiuto}>{o.label}</span>
+                  {o.tipo === 'numero' ? (
+                    <input
+                      type="number"
+                      min={o.min}
+                      max={o.max}
+                      value={String(valore)}
+                      onChange={e => {
+                        const n = Number(e.target.value)
+                        if (!Number.isFinite(n)) return
+                        onOpzioniChange?.(normalizzaOpzioniSqlFormatter({ ...opzioni, [o.key]: n }))
+                      }}
+                      className="w-20 rounded border border-zinc-700 bg-zinc-950 px-2 py-0.5 text-right text-zinc-100 focus:border-sky-500 focus:outline-none"
+                      data-format={o.key}
+                    />
+                  ) : (
+                    <select
+                      value={String(valore)}
+                      onChange={e => {
+                        const grezzo = e.target.value
+                        const nuovo = o.key === 'denseOperators' || o.key === 'newlineBeforeSemicolon' ? grezzo === 'true' : grezzo
+                        onOpzioniChange?.(normalizzaOpzioniSqlFormatter({ ...opzioni, [o.key]: nuovo }))
+                      }}
+                      className="rounded border border-zinc-700 bg-zinc-950 px-2 py-0.5 text-zinc-100 focus:border-sky-500 focus:outline-none"
+                      data-format={o.key}
+                    >
+                      {(o.scelte ?? []).map(s => (
+                        <option key={s.valore} value={s.valore}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </label>
+              )
+            })}
+          </div>
+        )}
 
         <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-2">
           <Button variant="secondary" onClick={() => fileRef.current?.click()} title="Importa un file formatprofile.xml">
