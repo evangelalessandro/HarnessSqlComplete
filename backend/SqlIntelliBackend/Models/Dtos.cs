@@ -90,6 +90,8 @@ public record IndexInfo(
     bool AllowPageLocks = true,
     bool OptimizeForSequentialKey = false,
     bool StatisticsNoRecompute = false,
+    /// <summary>True se l'indice è CLUSTERED (nello script: PRIMARY KEY CLUSTERED / NONCLUSTERED).</summary>
+    bool IsClustered = false,
     string? FileGroup = null);
 
 public record TableInfo(

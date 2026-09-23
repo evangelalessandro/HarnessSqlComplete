@@ -110,6 +110,8 @@ public class MetadataService
                             THEN CONVERT(bit, 0) ELSE i.optimize_for_sequential_key END,
                        ISNULL((SELECT TOP 1 st.no_recompute FROM sys.stats st
                                WHERE st.object_id = i.object_id AND st.stats_id = i.index_id), CONVERT(bit, 0)),
+                       -- TIPO di indice (CLUSTERED/NONCLUSTERED: cambia la struttura fisica della tabella!)
+                       i.type,
                        -- FILEGROUP dell'indice (nell'esempio dell'utente: [SECONDARY])
                        ISNULL(ds.name, '')
                 FROM sys.tables t
@@ -137,7 +139,10 @@ public class MetadataService
                     AllowPageLocks = r.GetBoolean(10),
                     OptimizeForSequentialKey = r.GetBoolean(11),
                     StatisticsNoRecompute = r.GetBoolean(12),
-                    FileGroup = r.GetString(13) is { Length: > 0 } fg ? fg : null,
+                    // ordine delle colonne nella SELECT: 13 = i.type, 14 = filegroup
+                    // i.type e' TINYINT: GetInt32 non lo legge (era l'errore 500)
+                    IsClustered = Convert.ToInt32(r.GetValue(13)) == 1,
+                    FileGroup = r.GetString(14) is { Length: > 0 } fg ? fg : null,
                 });
             }
         }

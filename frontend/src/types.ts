@@ -92,6 +92,8 @@ export interface IndexInfo {
   allowPageLocks?: boolean
   optimizeForSequentialKey?: boolean
   statisticsNoRecompute?: boolean
+  /** True se l'indice e' CLUSTERED (nello script: PRIMARY KEY CLUSTERED/NONCLUSTERED). */
+  isClustered?: boolean
   fileGroup?: string | null
 }
 
