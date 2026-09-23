@@ -1,4 +1,4 @@
-import type { CellValue, CheckConstraintInfo, ColumnInfo, DatabaseSummary, ForeignKeyInfo, FunctionInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableReportRow, TableUsage, TriggerInfo } from './types'
+import type { CellValue, CheckConstraintInfo, ColumnInfo, DatabaseSummary, ForeignKeyInfo, FunctionInfo, IndexInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableReportRow, TableUsage, TriggerInfo } from './types'
 
 /**
  * Identificatore SQL: restituisce il nome senza parentesi quadre se è "sicuro"
@@ -934,6 +934,32 @@ function columnTypeSql(c: ColumnInfo): string {
   return t
 }
 
+/** Filegroup fra parentesi quadre, come fa SSMS: ON [SECONDARY]. */
+export function nomeFilegroup(fg: string): string {
+  return `[${fg.replace(/]/g, ']]')}]`
+}
+
+/**
+ * Coda di un indice/vincolo per lo script CREATE:
+ *   WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF,
+ *         ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = OFF, FILLFACTOR = 90,
+ *         OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [SECONDARY]
+ * Le voci senza informazione (fill factor 0, filegroup sconosciuto) vengono omesse.
+ */
+export function opzioniIndice(i: IndexInfo): string {
+  const voci = [
+    `PAD_INDEX = ${i.isPadded ? 'ON' : 'OFF'}`,
+    `STATISTICS_NORECOMPUTE = ${i.statisticsNoRecompute ? 'ON' : 'OFF'}`,
+    `IGNORE_DUP_KEY = ${i.ignoreDupKey ? 'ON' : 'OFF'}`,
+    `ALLOW_ROW_LOCKS = ${i.allowRowLocks === false ? 'OFF' : 'ON'}`,
+    `ALLOW_PAGE_LOCKS = ${i.allowPageLocks === false ? 'OFF' : 'ON'}`,
+  ]
+  if (i.fillFactor && i.fillFactor > 0) voci.push(`FILLFACTOR = ${i.fillFactor}`)
+  voci.push(`OPTIMIZE_FOR_SEQUENTIAL_KEY = ${i.optimizeForSequentialKey ? 'ON' : 'OFF'}`)
+  const filegroup = i.fileGroup ? ` ON ${nomeFilegroup(i.fileGroup)}` : ''
+  return `\n    WITH (${voci.join(', ')})${filegroup}`
+}
+
 /**
  * Script CREATE TABLE generato dai metadati: colonne (tipo, IDENTITY, nullabilità), PRIMARY KEY,
  * vincoli UNIQUE, vincoli CHECK, chiavi esterne e PROPRIETÀ ESTESE (descrizioni).
@@ -958,10 +984,12 @@ export function scriptCreateTable(
   const indici = table.indexes ?? []
   const pk = indici.find(i => i.isPrimaryKey)
   if (pk && (pk.columns ?? []).length > 0) {
-    defs.push(`    CONSTRAINT ${sqlIdent(pk.name)} PRIMARY KEY (${(pk.columns ?? []).map(sqlIdent).join(', ')})`)
+    defs.push(
+      `    CONSTRAINT ${sqlIdent(pk.name)} PRIMARY KEY (${(pk.columns ?? []).map(sqlIdent).join(', ')})${opzioniIndice(pk)}`,
+    )
   }
   for (const uq of indici.filter(i => !i.isPrimaryKey && i.isUnique && (i.columns ?? []).length > 0)) {
-    defs.push(`    CONSTRAINT ${sqlIdent(uq.name)} UNIQUE (${(uq.columns ?? []).map(sqlIdent).join(', ')})`)
+    defs.push(`    CONSTRAINT ${sqlIdent(uq.name)} UNIQUE (${(uq.columns ?? []).map(sqlIdent).join(', ')})${opzioniIndice(uq)}`)
   }
 
   // vincoli CHECK della tabella
@@ -986,7 +1014,13 @@ export function scriptCreateTable(
     )
   }
 
-  const righe: string[] = [`CREATE TABLE ${qualified(table.schema, table.name)} (`, defs.join(',\n'), ');']
+  // il FILEGROUP della tabella (nell'esempio dell'utente: ") ON [SECONDARY]")
+  const fgTabella = (indici.find(i => i.isPrimaryKey) ?? indici[0])?.fileGroup
+  const righe: string[] = [
+    `CREATE TABLE ${qualified(table.schema, table.name)} (`,
+    defs.join(',\n'),
+    `)${fgTabella ? ` ON ${nomeFilegroup(fgTabella)}` : ''};`,
+  ]
 
   // PROPRIETÀ ESTESE: descrizione della tabella e delle colonne (MS_Description)
   const propTabella = (table.extendedProperties ?? []).filter(p => p.value && p.value.trim() !== '')

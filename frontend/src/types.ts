@@ -79,6 +79,15 @@ export interface IndexInfo {
   isPrimaryKey: boolean
   isUnique: boolean
   columns: string[] | null
+  /** Opzioni dell'indice, per lo script CREATE (WITH (… FILLFACTOR = 90 …) ON [filegroup]). */
+  fillFactor?: number
+  isPadded?: boolean
+  ignoreDupKey?: boolean
+  allowRowLocks?: boolean
+  allowPageLocks?: boolean
+  optimizeForSequentialKey?: boolean
+  statisticsNoRecompute?: boolean
+  fileGroup?: string | null
 }
 
 export interface TableInfo {

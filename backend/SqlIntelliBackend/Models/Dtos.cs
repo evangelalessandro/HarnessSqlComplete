@@ -68,7 +68,24 @@ public record ColumnInfo(
     List<ExtendedProperty>? ExtendedProperties = null);
 
 /// <summary>Indice di una tabella (nome, PK/UNIQUE e colonne chiave in ordine).</summary>
-public record IndexInfo(string Name, bool IsPrimaryKey, bool IsUnique, List<string>? Columns = null);
+/// <summary>
+/// Indice di una tabella. Le OPZIONI (fill factor, PAD_INDEX, ALLOW_*, IGNORE_DUP_KEY,
+/// STATISTICS_NORECOMPUTE, OPTIMIZE_FOR_SEQUENTIAL_KEY) e il FILEGROUP servono allo script CREATE:
+///   CONSTRAINT PK_x PRIMARY KEY (…) WITH (PAD_INDEX = OFF, …, FILLFACTOR = 90, …) ON [SECONDARY]
+/// </summary>
+public record IndexInfo(
+    string Name,
+    bool IsPrimaryKey,
+    bool IsUnique,
+    List<string>? Columns = null,
+    int FillFactor = 0,
+    bool IsPadded = false,
+    bool IgnoreDupKey = false,
+    bool AllowRowLocks = true,
+    bool AllowPageLocks = true,
+    bool OptimizeForSequentialKey = false,
+    bool StatisticsNoRecompute = false,
+    string? FileGroup = null);
 
 public record TableInfo(
     string Schema,

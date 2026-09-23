@@ -11,7 +11,20 @@ const tabella = mkTbl('dbo', 'Ordini', [
   mkCol('importo', 'decimal', { isNullable: true }),
 ])
 tabella.indexes = [
-  { name: 'PK_Ordini', isPrimaryKey: true, isUnique: true, columns: ['id'] },
+  {
+    name: 'PK_Ordini',
+    isPrimaryKey: true,
+    isUnique: true,
+    columns: ['id'],
+    fillFactor: 90,
+    isPadded: false,
+    ignoreDupKey: false,
+    allowRowLocks: true,
+    allowPageLocks: false,
+    optimizeForSequentialKey: false,
+    statisticsNoRecompute: false,
+    fileGroup: 'SECONDARY',
+  },
   { name: 'UQ_Ordini_Cliente', isPrimaryKey: false, isUnique: true, columns: ['cliente_id'] },
   { name: 'IX_Ordini_Importo', isPrimaryKey: false, isUnique: false, columns: ['importo'] },
 ]
@@ -32,6 +45,13 @@ const triggers: TriggerInfo[] = [
 
 describe('scriptCreateTable: colonne, chiavi, vincoli, proprietà estese, trigger', () => {
   const sql = scriptCreateTable(tabella, { checks, foreignKeys: fk, triggers })
+
+  it('l indice porta le OPZIONI e il FILEGROUP (WITH (… FILLFACTOR = 90 …) ON [SECONDARY])', () => {
+    expect(sql).toContain('WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = OFF, FILLFACTOR = 90, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF)')
+    expect(sql).toContain('ON [SECONDARY]')
+    // e la TABELLA stessa finisce sul filegroup
+    expect(sql).toContain(') ON [SECONDARY];')
+  })
 
   it('crea la tabella con le colonne (identità e nullabilità)', () => {
     expect(sql).toContain('CREATE TABLE Ordini (')

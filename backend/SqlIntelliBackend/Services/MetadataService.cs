@@ -94,10 +94,19 @@ public class MetadataService
                          INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
                          WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0
                          ORDER BY ic.key_ordinal
-                         FOR XML PATH('')), 1, 2, ''), '') AS Cols
+                         FOR XML PATH('')), 1, 2, ''), '') AS Cols,
+                       -- OPZIONI dell'indice: servono allo script CREATE ("WITH (PAD_INDEX = …, FILLFACTOR = …)")
+                       i.fill_factor, i.is_padded, i.ignore_dup_key, i.allow_row_locks, i.allow_page_locks,
+                       CASE WHEN COL_LENGTH('sys.indexes', 'optimize_for_sequential_key') IS NULL
+                            THEN 0 ELSE i.optimize_for_sequential_key END,
+                       ISNULL((SELECT TOP 1 st.no_recompute FROM sys.stats st
+                               WHERE st.object_id = i.object_id AND st.stats_id = i.index_id), 0),
+                       -- FILEGROUP dell'indice (nell'esempio dell'utente: [SECONDARY])
+                       ISNULL(ds.name, '')
                 FROM sys.tables t
                 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
                 INNER JOIN sys.indexes i ON i.object_id = t.object_id
+                LEFT JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
                 WHERE t.is_ms_shipped = 0 AND i.index_id > 0
                 ORDER BY s.name, t.name, i.index_id;
                 """;
@@ -110,7 +119,17 @@ public class MetadataService
                 var cols = r.GetString(5)
                     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .ToList();
-                list.Add(new IndexInfo(r.GetString(2), r.GetBoolean(3), r.GetBoolean(4), cols));
+                list.Add(new IndexInfo(r.GetString(2), r.GetBoolean(3), r.GetBoolean(4), cols)
+                {
+                    FillFactor = r.IsDBNull(6) ? 0 : Convert.ToInt32(r.GetValue(6)),
+                    IsPadded = r.GetBoolean(7),
+                    IgnoreDupKey = r.GetBoolean(8),
+                    AllowRowLocks = r.GetBoolean(9),
+                    AllowPageLocks = r.GetBoolean(10),
+                    OptimizeForSequentialKey = r.GetBoolean(11),
+                    StatisticsNoRecompute = r.GetBoolean(12),
+                    FileGroup = r.GetString(13) is { Length: > 0 } fg ? fg : null,
+                });
             }
         }
 
