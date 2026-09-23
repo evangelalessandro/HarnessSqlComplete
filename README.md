@@ -63,9 +63,7 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   **Salva con nome** (Ctrl+Shift+S) sceglie dove.
 - **Zoom** con Ctrl+rotella e **tema** chiaro/scuro su tutta la pagina.
 - **Formattatore T-SQL** (Ctrl+Shift+F) con profilo configurabile: pannello impostazioni, import/export di
-  `formatprofile.xml`; formattazione **idempotente** e che non perde un solo token. Nel pannello si sceglie il
-  **motore**: *Nostro* (profilo e regole dell'app; un testo già impaginato resta identico) oppure
-  [**sql-formatter**](https://github.com/sql-formatter-org/sql-formatter) (libreria esterna, dialetto T-SQL).
+  `formatprofile.xml`; formattazione **idempotente** e che non perde un solo token.
 - **Selezione della parola** con doppio clic che comprende i prefissi T-SQL: `@var`, `@@ROWCOUNT`, `#tmp`,
   `##globale`.
 

@@ -1,8 +1,5 @@
-// Impostazioni dell'editor (dimensione testo, tema, posizione delle nuove tab, motore di
-// formattazione) in localStorage.
+// Impostazioni dell'editor (dimensione testo, tema, posizione delle nuove tab) in localStorage.
 import type { NewTabPosition } from './tabOps'
-import type { MotoreFormattazione, OpzioniSqlFormatter } from './formatEngine'
-import { MOTORI_FORMATTAZIONE, normalizzaOpzioniSqlFormatter } from './formatEngine'
 
 const KEY = 'sqlIntelli.settings.v1'
 
@@ -11,19 +8,9 @@ export interface EditorSettings {
   theme: 'vs' | 'vs-dark'
   /** Dove aprire le nuove tab: a sinistra ('start'), dopo quella attiva o in fondo. */
   newTabPosition: NewTabPosition
-  /** Motore di formattazione: 'nostro' (profilo dell'app) o 'sql-formatter' (libreria esterna). */
-  formatter: MotoreFormattazione
-  /** Opzioni della libreria sql-formatter (rientri, maiuscole, larghezza espressioni…). */
-  sqlFormatter: OpzioniSqlFormatter
 }
 
-const DEFAULTS: EditorSettings = {
-  fontSize: 13,
-  theme: 'vs-dark',
-  newTabPosition: 'end',
-  formatter: 'nostro',
-  sqlFormatter: normalizzaOpzioniSqlFormatter(undefined),
-}
+const DEFAULTS: EditorSettings = { fontSize: 13, theme: 'vs-dark', newTabPosition: 'end' }
 
 /** Posizioni valide per le nuove tab (usato per validare il valore salvato). */
 const TAB_POSITIONS: NewTabPosition[] = ['start', 'afterActive', 'end']
@@ -41,10 +28,6 @@ export function loadSettings(): EditorSettings {
       newTabPosition: TAB_POSITIONS.includes(p.newTabPosition as NewTabPosition)
         ? (p.newTabPosition as NewTabPosition)
         : DEFAULTS.newTabPosition,
-      formatter: MOTORI_FORMATTAZIONE.includes(p.formatter as MotoreFormattazione)
-        ? (p.formatter as MotoreFormattazione)
-        : DEFAULTS.formatter,
-      sqlFormatter: normalizzaOpzioniSqlFormatter(p.sqlFormatter),
     }
   } catch {
     return { ...DEFAULTS }
