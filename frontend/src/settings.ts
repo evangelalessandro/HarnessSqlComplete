@@ -10,7 +10,7 @@ export interface EditorSettings {
   newTabPosition: NewTabPosition
 }
 
-const DEFAULTS: EditorSettings = { fontSize: 13, theme: 'vs-dark', newTabPosition: 'afterActive' }
+const DEFAULTS: EditorSettings = { fontSize: 13, theme: 'vs-dark', newTabPosition: 'end' }
 
 /** Posizioni valide per le nuove tab (usato per validare il valore salvato). */
 const TAB_POSITIONS: NewTabPosition[] = ['start', 'afterActive', 'end']

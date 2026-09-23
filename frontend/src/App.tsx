@@ -1488,14 +1488,14 @@ export default function App() {
                   false,
                   null,
                   undefined,
-                  e.shiftKey ? 'start' : 'afterActive',
+                  e.shiftKey ? 'start' : 'end',
                 )
               }
               onAuxClick={e => {
                 if (e.button === 1) newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, 'start')
               }}
               className="inline-flex h-7 shrink-0 items-center gap-1 rounded px-2 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-              title="Nuova query (a destra, dopo quella attiva) — Shift+clic o clic col tasto centrale per aprirla a sinistra"
+              title="Nuova query in fondo (tutto a destra) — Shift+clic o clic col tasto centrale per aprirla come PRIMA tab"
             >
               <Plus className="h-3.5 w-3.5" />
               Nuova

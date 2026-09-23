@@ -472,13 +472,14 @@ async function verifyTabPositions(page) {
     JSON.stringify(afterMiddle),
   )
 
-  // 3. clic normale: la nuova tab va DOPO quella attiva (non in fondo, non a sinistra)
+  // 3. clic normale: la nuova tab va TUTTO A DESTRA (in fondo), non accanto a quella attiva
   await clickNew()
   await sleep(400)
   const afterNormal = await tabs()
   check(
-    '"Nuova" apre dopo quella attiva',
-    afterNormal.length === afterMiddle.length + 1 && afterNormal[0] === afterMiddle[0],
+    '"Nuova" apre la tab TUTTO A DESTRA (in fondo, non accanto a quella attiva)',
+    afterNormal.length === afterMiddle.length + 1 &&
+      !afterMiddle.includes(afterNormal[afterNormal.length - 1]),
     JSON.stringify(afterNormal),
   )
 
