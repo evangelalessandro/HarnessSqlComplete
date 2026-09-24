@@ -95,6 +95,8 @@ export interface IndexInfo {
   /** True se l'indice e' CLUSTERED (nello script: PRIMARY KEY CLUSTERED/NONCLUSTERED). */
   isClustered?: boolean
   fileGroup?: string | null
+  /** Colonne chiave DISCENDENTI: nello script vanno scritte [col] DESC invece di ASC. */
+  descendingColumns?: string[] | null
 }
 
 export interface TableInfo {
@@ -106,6 +108,11 @@ export interface TableInfo {
   usage: TableUsage | null
   extendedProperties: ExtendedProperty[] | null
   indexes?: IndexInfo[] | null
+  /**
+   * FILEGROUP dei dati LOB della tabella: SSMS lo scrive in coda alla CREATE
+   * (") ON [SECONDARY] TEXTIMAGE_ON [SECONDARY]"). Assente se la tabella non ha dati LOB.
+   */
+  lobFileGroup?: string | null
 }
 
 export interface ViewInfo {

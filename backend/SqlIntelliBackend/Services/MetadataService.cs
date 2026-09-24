@@ -41,15 +41,21 @@ public class MetadataService
         {
             cmd.CommandText = """
                 SELECT s.name, t.name, t.create_date, t.modify_date,
-                       (SELECT COUNT(*) FROM sys.columns c WHERE c.object_id = t.object_id) AS ColumnCount
+                       (SELECT COUNT(*) FROM sys.columns c WHERE c.object_id = t.object_id) AS ColumnCount,
+                       -- FILEGROUP dei dati LOB: SSMS lo scrive in coda alla CREATE (TEXTIMAGE_ON […])
+                       ISNULL(ds.name, '')
                 FROM sys.tables t
                 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+                LEFT JOIN sys.data_spaces ds ON ds.data_space_id = t.lob_data_space_id
                 WHERE t.is_ms_shipped = 0
                 ORDER BY s.name, t.name;
                 """;
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
-                tables.Add(new TableInfo(r.GetString(0), r.GetString(1), r.GetInt32(4), r.GetDateTime(2)));
+                tables.Add(new TableInfo(r.GetString(0), r.GetString(1), r.GetInt32(4), r.GetDateTime(2))
+                {
+                    LobFileGroup = r.GetString(5) is { Length: > 0 } lob ? lob : null,
+                });
         }
 
         // Colonne (una sola query per tutte le tabelle)
@@ -103,6 +109,15 @@ public class MetadataService
                          WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0
                          ORDER BY ic.key_ordinal
                          FOR XML PATH('')), 1, 2, ''), '') AS Cols,
+                       -- Colonne chiave in ordine DISCENDENTE: nello script vanno scritte [col] DESC
+                       ISNULL(STUFF((
+                         SELECT ', ' + c.name
+                         FROM sys.index_columns ic
+                         INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                         WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id
+                               AND ic.is_included_column = 0 AND ic.is_descending_key = 1
+                         ORDER BY ic.key_ordinal
+                         FOR XML PATH('')), 1, 2, ''), '') AS ColsDesc,
                        -- OPZIONI dell'indice: servono allo script CREATE ("WITH (PAD_INDEX = …, FILLFACTOR = …)")
                        i.fill_factor, i.is_padded, i.ignore_dup_key, i.allow_row_locks, i.allow_page_locks,
                        -- CONVERT(bit, …): senza il cast l'espressione torna INT e GetBoolean fallisce (era l'errore 500)
@@ -130,19 +145,23 @@ public class MetadataService
                 var cols = r.GetString(5)
                     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .ToList();
+                var colsDesc = r.GetString(6)
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .ToList();
                 list.Add(new IndexInfo(r.GetString(2), r.GetBoolean(3), r.GetBoolean(4), cols)
                 {
-                    FillFactor = r.IsDBNull(6) ? 0 : Convert.ToInt32(r.GetValue(6)),
-                    IsPadded = r.GetBoolean(7),
-                    IgnoreDupKey = r.GetBoolean(8),
-                    AllowRowLocks = r.GetBoolean(9),
-                    AllowPageLocks = r.GetBoolean(10),
-                    OptimizeForSequentialKey = r.GetBoolean(11),
-                    StatisticsNoRecompute = r.GetBoolean(12),
-                    // ordine delle colonne nella SELECT: 13 = i.type, 14 = filegroup
+                    FillFactor = r.IsDBNull(7) ? 0 : Convert.ToInt32(r.GetValue(7)),
+                    IsPadded = r.GetBoolean(8),
+                    IgnoreDupKey = r.GetBoolean(9),
+                    AllowRowLocks = r.GetBoolean(10),
+                    AllowPageLocks = r.GetBoolean(11),
+                    OptimizeForSequentialKey = r.GetBoolean(12),
+                    StatisticsNoRecompute = r.GetBoolean(13),
+                    // ordine delle colonne nella SELECT: 14 = i.type, 15 = filegroup
                     // i.type e' TINYINT: GetInt32 non lo legge (era l'errore 500)
-                    IsClustered = Convert.ToInt32(r.GetValue(13)) == 1,
-                    FileGroup = r.GetString(14) is { Length: > 0 } fg ? fg : null,
+                    IsClustered = Convert.ToInt32(r.GetValue(14)) == 1,
+                    FileGroup = r.GetString(15) is { Length: > 0 } fg ? fg : null,
+                    DescendingColumns = colsDesc.Count > 0 ? colsDesc : null,
                 });
             }
         }

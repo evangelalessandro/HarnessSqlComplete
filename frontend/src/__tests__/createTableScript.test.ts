@@ -91,6 +91,30 @@ describe('scriptCreateTable: stile SSMS (colonne, chiavi, vincoli, proprietà es
     expect(sql).not.toContain('IX_Ordini_Importo')
   })
 
+  it('le colonne chiave in ordine DISCENDENTE si scrivono DESC, come nel database di origine', () => {
+    const desc = mkTbl('dbo', 'ConDesc', [mkCol('a', 'int'), mkCol('b', 'int')])
+    desc.indexes = [
+      {
+        name: 'PK_ConDesc',
+        isPrimaryKey: true,
+        isUnique: true,
+        columns: ['a', 'b'],
+        isClustered: true,
+        descendingColumns: ['b'],
+      },
+    ]
+    expect(scriptCreateTable(desc)).toContain(' CONSTRAINT [PK_ConDesc] PRIMARY KEY CLUSTERED \n(\n\t[a] ASC,\n\t[b] DESC\n)WITH (')
+  })
+
+  it('con colonne LOB la coda porta TEXTIMAGE_ON [filegroup], come SSMS', () => {
+    const lob = mkTbl('dbo', 'ConXml', [mkCol('id', 'int'), mkCol('xml', 'varbinary', { maxLength: -1 })])
+    lob.indexes = [{ name: 'PK_ConXml', isPrimaryKey: true, isUnique: true, columns: ['id'], isClustered: true, fileGroup: 'SECONDARY' }]
+    lob.lobFileGroup = 'SECONDARY'
+    expect(scriptCreateTable(lob)).toContain(') ON [SECONDARY] TEXTIMAGE_ON [SECONDARY]\nGO')
+    // tabella SENZA dati LOB: nessun TEXTIMAGE_ON
+    expect(scriptCreateTable(tabella, {})).not.toContain('TEXTIMAGE_ON')
+  })
+
   it('la coda dell indice è ")WITH (… opzioni …) ON [filegroup]", come SSMS', () => {
     expect(sql).toContain(`)WITH (${OPZIONI_PK}) ON [SECONDARY]`)
     // l'ultimo vincolo non ha la virgola: subito dopo chiude la tabella

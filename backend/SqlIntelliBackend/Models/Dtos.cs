@@ -92,7 +92,9 @@ public record IndexInfo(
     bool StatisticsNoRecompute = false,
     /// <summary>True se l'indice è CLUSTERED (nello script: PRIMARY KEY CLUSTERED / NONCLUSTERED).</summary>
     bool IsClustered = false,
-    string? FileGroup = null);
+    string? FileGroup = null,
+    /// <summary>Colonne chiave in ordine DISCENDENTE (nello script: [col] DESC invece di ASC).</summary>
+    List<string>? DescendingColumns = null);
 
 public record TableInfo(
     string Schema,
@@ -102,7 +104,13 @@ public record TableInfo(
     List<ColumnInfo>? Columns = null,
     TableUsage? Usage = null,
     List<ExtendedProperty>? ExtendedProperties = null,
-    List<IndexInfo>? Indexes = null);
+    List<IndexInfo>? Indexes = null,
+    /// <summary>
+    /// FILEGROUP dei dati LOB (TEXTIMAGE_ON [filegroup]) quando la tabella ha colonne
+    /// text/ntext/image o (n)varchar(max): è quello che scrive SSMS nello script CREATE.
+    /// Null quando la tabella non ha dati LOB (sys.tables.lob_data_space_id = 0).
+    /// </summary>
+    string? LobFileGroup = null);
 
 public record ViewInfo(string Schema, string Name, DateTime? CreateDate);
 

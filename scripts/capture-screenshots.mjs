@@ -87,6 +87,11 @@ const TABELLA_CHIAVE = process.env.SHOT_TABLE ?? 'L1_AZIONI_PERCORSI'
  * un vincolo UNIQUE, un DEFAULT, un CHECK e un trigger con il corpo.
  */
 const TABELLA_CREATE = process.env.SHOT_CREATE_TABLE ?? 'DAT_CLASSI_MERC'
+/**
+ * Seconda tabella usata da --verify-create: ha una colonna `varbinary(max)`, quindi lo script deve
+ * chiudere con ") ON [SECONDARY] TEXTIMAGE_ON [SECONDARY]" come fa SSMS.
+ */
+const TABELLA_CREATE_LOB = process.env.SHOT_CREATE_TABLE_LOB ?? 'UTI_LINGUA_XML'
 /** Database attivo della connessione di prova: SSMS apre lo script con "USE [<database>]". */
 const DB_CREATE = process.env.SHOT_CREATE_DB ?? 'WSGSDMALTA'
 /** Opzioni dell'indice di TABELLA_CREATE, lette dai metadati veri (sys.indexes) del database. */
@@ -2273,6 +2278,8 @@ async function verifyMerge(page) {
  *    CONSTRAINT [PK_x] PRIMARY KEY NONCLUSTERED … colonne a capo con ASC
  *   )WITH (…opzioni… FILLFACTOR = 90) ON [filegroup]   la coda sta ATTACCATA alla parentesi
  *   ) ON [filegroup]               la tabella va sul filegroup di origine
+ *   ) ON [filegroup] TEXTIMAGE_ON [filegroup]   se la tabella ha colonne text/image/(max)
+ *   … [col] ASC / [col] DESC       l'ordine della chiave è quello del database di origine
  *   ALTER TABLE … ADD  CONSTRAINT [DF_…]  DEFAULT (…) FOR [col]
  *   ALTER TABLE …  WITH CHECK ADD  CONSTRAINT [CK_…] CHECK  (…)
  *   ALTER TABLE … CHECK CONSTRAINT [CK_…]
@@ -2308,67 +2315,77 @@ async function verifyCreate(page) {
   }
 
   // 1) si cerca la tabella nell'elenco Oggetti
-  await page.eval(`(() => {
-    const i = ${campo};
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setter.call(i, ${JSON.stringify(TABELLA_CREATE)});
-    i.dispatchEvent(new Event('input', { bubbles: true }));
-  })()`)
-  const trovata = await page.waitFor(
-    `[...document.querySelectorAll('span')].some(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(TABELLA_CREATE)})`,
-    15000,
-    'risultato della ricerca in Oggetti',
-  )
-  check('la tabella compare nell elenco Oggetti', trovata)
-  await sleep(600)
+  /**
+   * Apre lo script CREATE di una tabella dal menu contestuale del pannello Oggetti
+   * ("Script tabella" → "CREATE") e aspetta che nella tab compaia la CREATE TABLE.
+   */
+  const apriCreate = async nome => {
+    await page.eval(`(() => {
+      const i = ${campo};
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(i, ${JSON.stringify(nome)});
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`)
+    const trovata = await page.waitFor(
+      `[...document.querySelectorAll('span')].some(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(nome)})`,
+      15000,
+      'risultato della ricerca in Oggetti',
+    )
+    await sleep(600)
 
-  // 2) tasto destro sul nome → menu contestuale (è React: basta l'evento che risale)
-  await page.eval(`(() => {
-    const s = [...document.querySelectorAll('span')]
-      .find(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(TABELLA_CREATE)});
-    if (s) s.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window }));
-  })()`)
-  const menu = await page.waitFor(`document.body.textContent.includes('Script tabella')`, 8000, 'menu contestuale')
-  check('il tasto destro apre il menu dell oggetto', menu)
-  await sleep(400)
+    // 2) tasto destro sul nome → menu contestuale (è React: basta l'evento che risale)
+    await page.eval(`(() => {
+      const s = [...document.querySelectorAll('span')]
+        .find(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(nome)});
+      if (s) s.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window }));
+    })()`)
+    const menu = await page.waitFor(`document.body.textContent.includes('Script tabella')`, 8000, 'menu contestuale')
+    await sleep(400)
 
-  // 3) "Script tabella" apre il SOTTOMENU al passaggio del mouse: si manda un mouseover vero
-  const voce = await page.eval(`(() => {
-    const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Script tabella');
-    if (!b) return null;
-    b.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
-    const r = b.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  })()`)
-  check('il menu offre "Script tabella"', !!voce)
-  if (!voce) throw new Error('voce "Script tabella" non trovata nel menu contestuale')
-  await page.send('Input.dispatchMouseEvent', {
-    type: 'mouseMoved',
-    x: Math.round(voce.x),
-    y: Math.round(voce.y),
-    buttons: 0,
-  })
-  await sleep(800)
+    // 3) "Script tabella" apre il SOTTOMENU al passaggio del mouse: si manda un mouseover vero
+    const voce = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Script tabella');
+      if (!b) return null;
+      b.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (voce) {
+      await page.send('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: Math.round(voce.x),
+        y: Math.round(voce.y),
+        buttons: 0,
+      })
+      await sleep(800)
+    }
 
-  // 4) "CREATE" nel sottomenu → lo script si apre in una tab
-  const creato = await page.eval(`(() => {
-    const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'CREATE');
-    if (!b) return null;
-    const r = b.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  })()`)
-  check('il sottomenu offre "CREATE"', !!creato)
-  if (!creato) throw new Error('voce "CREATE" non trovata nel sottomenu di "Script tabella"')
-  await page.clickPoint(creato.x, creato.y)
-  const aperto = await page.waitFor(
-    // Monaco rende gli spazi come spazio unificatore: si normalizza prima di cercare
-    `[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
-       .some(l => (l.textContent || '').replace(/\\u00a0/g, ' ').includes('CREATE TABLE [dbo].[${TABELLA_CREATE}]'))`,
-    20000,
-    'script CREATE nella tab',
-  )
-  check('lo script CREATE si apre in una tab', aperto)
-  await sleep(1500)
+    // 4) "CREATE" nel sottomenu → lo script si apre in una tab
+    const creato = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'CREATE');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (creato) await page.clickPoint(creato.x, creato.y)
+    const aperto = await page.waitFor(
+      // Monaco rende gli spazi come spazio unificatore: si normalizza prima di cercare
+      `[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+         .some(l => (l.textContent || '').replace(/\\u00a0/g, ' ')
+           .includes('CREATE TABLE [dbo].[' + ${JSON.stringify(nome)} + ']'))`,
+      20000,
+      `script CREATE di ${nome} nella tab`,
+    )
+    await sleep(1500)
+    return { trovata, menu, voce: !!voce, creato: !!creato, aperto }
+  }
+
+  const prima = await apriCreate(TABELLA_CREATE)
+  check('la tabella compare nell elenco Oggetti', prima.trovata)
+  check('il tasto destro apre il menu dell oggetto', prima.menu)
+  check('il menu offre "Script tabella"', prima.voce)
+  check('il sottomenu offre "CREATE"', prima.creato)
+  check('lo script CREATE si apre in una tab', prima.aperto)
 
   /** Righe disegnate da Monaco nell'editor attivo, dall'alto in basso. */
   const leggiRighe = () =>
@@ -2487,6 +2504,34 @@ async function verifyCreate(page) {
     `coda: ${JSON.stringify(codaPiena.slice(-3).map(r => r.t))}`,
   )
 
+  // 9) una tabella SENZA dati LOB non deve avere TEXTIMAGE_ON nella coda
+  check(
+    'la tabella senza colonne LOB non ha TEXTIMAGE_ON',
+    !righe.some(r => r.t.includes('TEXTIMAGE_ON')),
+    righe.filter(r => r.t.includes('TEXTIMAGE_ON')).length ? 'trovato TEXTIMAGE_ON' : 'ok',
+  )
+
+  // 10) SECONDA tabella, con colonne LOB: la coda deve portare TEXTIMAGE_ON [filegroup]
+  console.log(`\n  --- seconda tabella, con dati LOB: ${TABELLA_CREATE_LOB} ---`)
+  const lob = await apriCreate(TABELLA_CREATE_LOB)
+  check(`lo script di ${TABELLA_CREATE_LOB} si apre in una tab`, lob.aperto)
+  const righeLob = await leggiRighe()
+  const attesaLob = [
+    { i: true, t: '[ULX_TIPOLINGUA] [nvarchar](5) NOT NULL,' },
+    { i: true, t: '[ULX_XML] [varbinary](max) NOT NULL,' },
+    { i: true, t: `CONSTRAINT [PK_${TABELLA_CREATE_LOB}] PRIMARY KEY CLUSTERED` },
+    { i: false, t: `)WITH (${OPZIONI_CREATE}) ON [SECONDARY]` },
+    { i: false, t: ') ON [SECONDARY] TEXTIMAGE_ON [SECONDARY]' },
+  ]
+  const lobMancanti = attesaLob.filter(a => !righeLob.some(r => r.i === a.i && r.t === a.t))
+  console.log(`  --- script di ${TABELLA_CREATE_LOB} ---`)
+  for (const r of righeLob) console.log(`  | ${r.i ? '\\t' : ''}${r.t}`)
+  check(
+    'con le colonne LOB la coda è ") ON [filegroup] TEXTIMAGE_ON [filegroup]", come SSMS',
+    lobMancanti.length === 0,
+    lobMancanti.length ? `mancante: ${JSON.stringify(lobMancanti[0])}` : `${attesaLob.length} righe confrontate`,
+  )
+
   // lo script ricostruito si salva accanto agli screenshot, per poterlo rileggere con calma
   const fileSql = join(OUT_DIR, `script-create-${TABELLA_CREATE}.sql`)
   mkdirSync(OUT_DIR, { recursive: true })
@@ -2500,6 +2545,12 @@ async function verifyCreate(page) {
     join(OUT_DIR, `script-create-${TABELLA_CREATE}-coda.sql`),
     `-- CODA dello script (Ctrl+End, finestra che non basta a mostrarlo tutto)\n` +
       coda.map(r => `${r.i ? '\t' : ''}${r.t}`).join('\n') +
+      '\n',
+  )
+  writeFileSync(
+    join(OUT_DIR, `script-create-${TABELLA_CREATE_LOB}.sql`),
+    `-- Script CREATE generato dall'app per dbo.${TABELLA_CREATE_LOB} (tabella con dati LOB)\n` +
+      righeLob.map(r => `${r.i ? '\t' : ''}${r.t}`).join('\n') +
       '\n',
   )
   console.log(`  salvato docs/screenshots/script-create-${TABELLA_CREATE}.sql`)

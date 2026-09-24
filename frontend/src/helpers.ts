@@ -998,10 +998,12 @@ export function scriptCreateTable(
 
   const indici = table.indexes ?? []
   const pk = indici.find(i => i.isPrimaryKey)
-  /** Blocco di un vincolo di indice, nello stile di SSMS (colonne su righe proprie con ASC). */
+  /** Blocco di un vincolo di indice, nello stile di SSMS (colonne su righe proprie con ASC/DESC). */
   const bloccoIndice = (i: IndexInfo, tipo: 'PRIMARY KEY' | 'UNIQUE'): string => {
     const tipo0 = i.isClustered ? 'CLUSTERED' : 'NONCLUSTERED'
-    const colonne = (i.columns ?? []).map(c => `\t${q(c)} ASC`).join(',\n')
+    // l'ordine della chiave è quello del database di origine: DESC dove è DESC
+    const discendenti = new Set((i.descendingColumns ?? []).map(c => c.toLowerCase()))
+    const colonne = (i.columns ?? []).map(c => `\t${q(c)} ${discendenti.has(c.toLowerCase()) ? 'DESC' : 'ASC'}`).join(',\n')
     const opts = opzioniIndice(i)
     return ` CONSTRAINT ${q(i.name)} ${tipo} ${tipo0} \n(\n${colonne}\n)${opts}`
   }
@@ -1012,6 +1014,11 @@ export function scriptCreateTable(
   }
 
   const fgTabella = (indici.find(i => i.isPrimaryKey) ?? indici[0])?.fileGroup
+  // TABELLA: filegroup dei dati e, se la tabella ha colonne LOB, TEXTIMAGE_ON [filegroup LOB]
+  // (è quello che scrive SSMS: ") ON [SECONDARY] TEXTIMAGE_ON [SECONDARY]")
+  const codaTabella =
+    `${fgTabella ? ` ON ${nomeFilegroup(fgTabella)}` : ''}` +
+    `${table.lobFileGroup ? ` TEXTIMAGE_ON ${nomeFilegroup(table.lobFileGroup)}` : ''}`
   // Come SSMS: fra un batch e l'altro NON c'è nessuna riga vuota, e i vincoli che non stanno
   // dentro la CREATE TABLE (DEFAULT, CHECK, chiavi esterne) arrivano subito dopo con il loro GO.
   const righe: string[] = [
@@ -1024,7 +1031,7 @@ export function scriptCreateTable(
     'GO',
     `CREATE TABLE ${target}(`,
     [...defs, ...vincoli].join(',\n'),
-    `)${fgTabella ? ` ON ${nomeFilegroup(fgTabella)}` : ''}`,
+    `)${codaTabella}`,
     'GO',
   ]
 
