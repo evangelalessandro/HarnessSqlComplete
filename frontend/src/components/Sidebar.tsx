@@ -683,6 +683,7 @@ export default function Sidebar({
             onClick={() => setReportOpen(true)}
             className="flex w-full items-center justify-center gap-1.5 rounded border border-zinc-700 px-2 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-sky-700 hover:bg-sky-950/30 hover:text-sky-300"
             title="Report utilizzo tabelle: spazio riservato/usato, dati, indici, righe e accessi — ordinabile per colonna"
+            data-report="apri"
           >
             <Rows3 className="h-3.5 w-3.5 text-sky-400" /> Report utilizzo tabelle
           </button>
@@ -1291,9 +1292,14 @@ export default function Sidebar({
         </>
       )}
 
-      {/* Report utilizzo tabelle (ordinabile per colonna) */}
+      {/* Report utilizzo tabelle (ordinabile per colonna); lo script di svuotamento si apre in
+          una tab figlia, come le altre voci "script" */}
       {reportOpen && connectionId && (
-        <TableReportModal connectionId={connectionId} onClose={() => setReportOpen(false)} />
+        <TableReportModal
+          connectionId={connectionId}
+          onClose={() => setReportOpen(false)}
+          onOpenScript={apriScriptFiglia}
+        />
       )}
 
       {/* Modifiche agli oggetti: griglia con giorno e ora dell'ultima modifica */}

@@ -1315,6 +1315,66 @@ export function sortTableReport(
   return [...rows].sort((a, b) => compareTableReport(a, b, key) * mult)
 }
 
+/** KB → MB/GB con una cifra decimale (come nel report tabelle). */
+export function fmtKb(kb: number): string {
+  if (kb >= 1 << 20) return `${(kb / (1 << 20)).toFixed(1)} GB`
+  if (kb >= 1 << 10) return `${(kb / (1 << 10)).toFixed(1)} MB`
+  return `${kb} KB`
+}
+
+/** Numero con i separatori italiani (1.234). */
+export function fmtNum(n: number): string {
+  return n.toLocaleString('it-IT')
+}
+
+/**
+ * Le N tabelle PIÙ PESANTI del report (spazio riservato su disco), dalla più grande: serve
+ * all'istogramma del report tabelle. A parità di spazio si ordina per nome, così l'istogramma
+ * non "salta" fra un caricamento e l'altro.
+ */
+export function topTablesBySize(rows: TableReportRow[], n = 20): TableReportRow[] {
+  return [...rows]
+    .filter(r => r.reservedKb > 0)
+    .sort(
+      (a, b) =>
+        b.reservedKb - a.reservedKb ||
+        `${a.schema}.${a.name}`.localeCompare(`${b.schema}.${b.name}`),
+    )
+    .slice(0, Math.max(0, n))
+}
+
+/**
+ * Script per SVUOTARE il contenuto delle tabelle selezionate nel report tabelle (richiesta utente:
+ * "la possibilità di selezionarle e fare una delete del contenuto, attraverso script generato che
+ * apre nuova tab"): un DELETE FROM per tabella, preceduto dall'elenco di quello che si cancella.
+ * Non si usa TRUNCATE perché il DELETE passa dai trigger e dalle chiavi esterne, come ci si
+ * aspetta da uno script che "svuota" delle tabelle in produzione.
+ */
+export function scriptDeleteTablesContent(
+  rows: { schema: string; name: string; rowCount?: number; dataKb?: number; reservedKb?: number }[],
+): string {
+  if (rows.length === 0) return ''
+  // Sempre [schema].[tabella]: è uno script che CANCELLA dati, il nome non deve dipendere dallo
+  // schema di default della connessione.
+  const nome = (r: { schema: string; name: string }) =>
+    `[${r.schema.replace(/]/g, ']]')}].[${r.name.replace(/]/g, ']]')}]`
+  const elenco = rows.map(
+    r =>
+      `   ${nome(r)}  ${fmtNum(r.rowCount ?? 0)} righe` +
+      `${r.dataKb != null ? ` · ${fmtKb(r.dataKb)} di dati` : ''}` +
+      `${r.reservedKb != null ? ` · ${fmtKb(r.reservedKb)} su disco` : ''}`,
+  )
+  return (
+    `/* Svuota il contenuto di ${rows.length} tabell${rows.length === 1 ? 'a' : 'e'}:\n` +
+    `${elenco.join('\n')}\n\n` +
+    `   ATTENZIONE: i dati vengono eliminati e non si possono recuperare.\n` +
+    `   Se una tabella ha chiavi esterne entranti il DELETE può fallire: svuota prima le figlie\n` +
+    `   oppure usa TRUNCATE TABLE (non passa dai trigger e non è permesso con FK entranti). */\n` +
+    rows.map(r => `DELETE FROM ${nome(r)};`).join('\n') +
+    '\n'
+  )
+}
+
 // ---------- Script "as" stile SSMS (tasto destro) ----------
 
 export type ScriptableKind = 'table' | 'view' | 'procedure' | 'function' | 'trigger'

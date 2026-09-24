@@ -15,6 +15,8 @@
 //   node scripts/capture-screenshots.mjs --verify-error-line      (doppio clic sull'errore → riga)
 //   node scripts/capture-screenshots.mjs --verify-create          (script CREATE della tabella = SSMS)
 //   node scripts/capture-screenshots.mjs --verify-set             (direttive SET nell'intellisense)
+//   node scripts/capture-screenshots.mjs --verify-copia           (Copia SQL a sinistra + tasto destro)
+//   node scripts/capture-screenshots.mjs --verify-report          (istogramma tabelle + DELETE contenuto)
 //   node scripts/capture-screenshots.mjs --measure-typing         (latenza digitando in una store grande)
 //
 // Prerequisiti: backend su :5213 e dev server su :5173 attivi.
@@ -56,6 +58,8 @@ const VERIFY_MULTIRIGA = process.argv.includes('--verify-multiriga')
 const VERIFY_TEMA = process.argv.includes('--verify-tema')
 const VERIFY_CREATE = process.argv.includes('--verify-create')
 const VERIFY_SET = process.argv.includes('--verify-set')
+const VERIFY_COPIA = process.argv.includes('--verify-copia')
+const VERIFY_REPORT = process.argv.includes('--verify-report')
 /**
  * Finestra molto alta per --verify-create: Monaco disegna nel DOM solo le righe VISIBILI, quindi
  * per leggere tutto lo script CREATE (colonne, vincoli, DEFAULT, trigger) serve un editor alto.
@@ -2269,6 +2273,252 @@ async function verifyMerge(page) {
 }
 
 /**
+ * VERIFICA (--verify-copia): il pulsante "Copia SQL" del pannello script sta a SINISTRA della
+ * barra del generatore e la stessa copia si può fare col TASTO DESTRO sullo script (richieste
+ * utente: "the copy button from the pannel of script that there is already, move on the left, and
+ * also in right click"). Si usa l'anteprima dati (F4) come per la MERGE.
+ */
+async function verifyCopia(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  // la copia negli appunti serve davvero: si dà il permesso al browser
+  try {
+    await page.send('Browser.grantPermissions', {
+      origin: APP_URL.replace(/\/$/, ''),
+      permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+    })
+  } catch (e) {
+    console.log(`  (permesso appunti non concesso: ${e.message})`)
+  }
+  await sleep(1200)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // si apre l'anteprima dati della tabella con chiave composita (come --verify-merge)
+  const rect = await editorRect(page)
+  await page.clickPoint(rect.x + 160, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(`SELECT * FROM dbo.${TABELLA_CHIAVE}`)
+  await sleep(400)
+  for (let i = 0; i < 5; i++) await page.press('ArrowLeft', { code: 'ArrowLeft', vk: 37 })
+  await sleep(300)
+  await page.press('F4', { code: 'F4', vk: 115 })
+  await page.waitFor(`document.body.textContent.includes('Anteprima dati —')`, 30000, 'anteprima dati')
+  await sleep(2000)
+
+  // tutte le righe selezionate: così lo script generato non è vuoto
+  const box = await page.eval(`(() => {
+    const h = [...document.querySelectorAll('h2')].find(x => (x.textContent || '').includes('Anteprima dati'));
+    const mod = h && h.closest('div.fixed');
+    const c = mod && mod.querySelector('input[title="Seleziona tutte le righe"]');
+    if (!c) return null;
+    c.scrollIntoView({ block: 'center' });
+    const r = c.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (!box) throw new Error('casella "Seleziona tutte le righe" non trovata nell anteprima')
+  await page.clickPoint(box.x, box.y)
+  await sleep(900)
+
+  /** Posizione e testo dei comandi della barra del generatore. */
+  const barra = await page.eval(`(() => {
+    const b = document.querySelector('[data-generatore="barra"]');
+    if (!b) return null;
+    const voci = [...b.querySelectorAll('button, label, input')].map(e => {
+      const r = e.getBoundingClientRect();
+      return { testo: (e.textContent || e.getAttribute('placeholder') || '').trim().slice(0, 24), left: Math.round(r.left) };
+    });
+    const copia = b.querySelector('[data-copia="pulsante"]');
+    return { voci, copiaLeft: copia ? Math.round(copia.getBoundingClientRect().left) : null };
+  })()`)
+  console.log(`  barra del generatore: ${JSON.stringify(barra?.voci.slice(0, 4))}`)
+  check('la barra del generatore si vede', !!barra)
+  check('il pulsante "Copia SQL" è il PRIMO comando a sinistra', barra?.voci?.[0]?.testo === 'Copia SQL', JSON.stringify(barra?.voci?.[0]))
+  check(
+    'nessun altro comando sta più a sinistra della copia',
+    (barra?.voci ?? []).every(v => v.left >= (barra?.copiaLeft ?? 0)),
+  )
+
+  // copia dal PULSANTE
+  await page.clickWhere(`document.querySelector('[data-copia="pulsante"]')`)
+  await sleep(900)
+  const dopoPulsante = await page.eval(`(document.querySelector('[data-copia="pulsante"]') || {}).textContent || ''`)
+  check('il pulsante copia davvero (diventa "Copiato!")', dopoPulsante.includes('Copiato!'), dopoPulsante.trim())
+
+  // copia col TASTO DESTRO sullo script
+  const script = await page.eval(`(() => {
+    const p = [...document.querySelectorAll('pre')].find(x => (x.textContent || '').includes('INSERT INTO'));
+    if (!p) return null;
+    const r = p.getBoundingClientRect();
+    return { x: r.left + 80, y: r.top + 20 };
+  })()`)
+  check('lo script generato è visibile', !!script)
+  if (script) await page.clickPoint(script.x, script.y, 'right')
+  await sleep(700)
+  const menu = await page.eval(`[...document.querySelectorAll('button')]
+    .map(b => (b.textContent || '').trim()).filter(t => t === 'Copia SQL' || t === 'Copiato!')`)
+  console.log(`  voci del menu col tasto destro: ${JSON.stringify(menu)}`)
+  check('col tasto destro compare "Copia SQL"', menu.length > 0)
+  await page.clickWhere(`[...document.querySelectorAll('button')].find(b => /^(Copia SQL|Copiato!)$/.test((b.textContent || '').trim()))`)
+  await sleep(900)
+  const dopoMenu = await page.eval(`(document.querySelector('[data-copia="pulsante"]') || {}).textContent || ''`)
+  check('la copia dal tasto destro funziona', dopoMenu.includes('Copiato!'), dopoMenu.trim())
+  const menuChiuso = await page.eval(
+    `![...document.querySelectorAll('button')].some(b => (b.textContent || '').trim() === 'Copia SQL')`,
+  )
+  check('dopo la copia il menu si chiude', menuChiuso)
+
+  await page.screenshot('copia-script-pannello')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-report): report utilizzo tabelle con ISTOGRAMMA delle 20 tabelle più pesanti
+ * e SVUOTAMENTO del contenuto delle selezionate (richiesta utente: "anche un istogramma con quelle
+ * 20 più pesanti, e poi la possibilità di selezionarle e fare una delete del contenuto, attraverso
+ * script generato che apre nuova tab").
+ */
+async function verifyReport(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Tabelle')`, 60000, 'schema caricato')
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // il pannello Oggetti può essere chiuso: nel caso lo si riapre
+  if (!(await page.eval(`!!document.querySelector('input[placeholder^="Cerca (spazio"]')`))) {
+    await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '+ Oggetti')`,
+    )
+    await sleep(1200)
+  }
+
+  // 1) si apre il report tabelle dal pannello DATABASE
+  const apri = await page.clickWhere(`document.querySelector('[data-report="apri"]')`)
+  check('il pulsante del report tabelle si trova', apri === true)
+  const finestra = await page.waitFor(
+    `document.querySelector('[data-report="istogramma"]') || document.body.textContent.includes('Report utilizzo tabelle')`,
+    60000,
+    'report tabelle',
+  )
+  check('la finestra del report si apre', finestra === true)
+  await page.waitFor(`document.querySelectorAll('[data-report="barra"]').length > 0`, 90000, 'istogramma caricato')
+  await sleep(1200)
+
+  // 2) ISTOGRAMMA: 20 barre, dalla più pesante, con la prima al 100%
+  const istogramma = await page.eval(`(() => {
+    const box = document.querySelector('[data-report="istogramma"]');
+    const barre = [...document.querySelectorAll('[data-report="barra"]')];
+    const misure = barre.map(b => {
+      const pezzi = [...b.querySelectorAll('span[style]')].map(s => parseFloat(s.style.width) || 0);
+      return {
+        nome: (b.querySelector('span') || {}).textContent || '',
+        totale: Math.round(pezzi.reduce((a, x) => a + x, 0) * 10) / 10,
+        dati: Math.round((pezzi[0] || 0) * 10) / 10,
+        titolo: b.getAttribute('title') || '',
+      };
+    });
+    return { visibile: !!box, quante: barre.length, misure };
+  })()`)
+  console.log(`  istogramma: ${istogramma.quante} barre, la prima ${JSON.stringify(istogramma.misure[0])}`)
+  check("l'istogramma c'è", istogramma.visibile === true)
+  check('mostra 20 tabelle', istogramma.quante === 20, `${istogramma.quante} barre`)
+  check('la prima barra è quella più pesante (100%)', istogramma.misure[0]?.totale >= 99.5, `prima = ${istogramma.misure[0]?.totale}%`)
+  const decrescente = istogramma.misure.every((m, i) => i === 0 || m.totale <= istogramma.misure[i - 1].totale + 0.01)
+  check('le barre sono in ordine decrescente di spazio', decrescente, JSON.stringify(istogramma.misure.map(m => m.totale).slice(0, 5)))
+  check(
+    'il tooltip dice righe, dati e indici',
+    /righe/.test(istogramma.misure[0]?.titolo ?? '') && /dati/.test(istogramma.misure[0]?.titolo ?? '') && /indici/.test(istogramma.misure[0]?.titolo ?? ''),
+    istogramma.misure[0]?.titolo,
+  )
+  await page.screenshot('report-tabelle-istogramma')
+
+  // 3) SELEZIONE cliccando due barre
+  const clicked = await page.eval(`(() => {
+    const barre = [...document.querySelectorAll('[data-report="barra"]')].slice(0, 2);
+    let n = 0;
+    for (const b of barre) {
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        b.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+      }
+      n++;
+    }
+    return n;
+  })()`)
+  await sleep(700)
+  const stato = await page.eval(`(() => {
+    const sel = document.querySelector('[data-report="selezionate"]');
+    const n = parseInt((sel && sel.textContent) || '0', 10) || 0;
+    const nomi = [...document.querySelectorAll('[data-report="barra"]')]
+      .filter(b => { const i = b.querySelector('input[type=checkbox]'); return i && i.checked; })
+      .map(b => (b.querySelector('span') || {}).textContent || '');
+    const bottone = [...document.querySelectorAll('button')]
+      .map(b => (b.textContent || '').trim()).find(t => t.startsWith('Svuota il contenuto')) || '';
+    return { n, nomi, bottone };
+  })()`)
+  const N = stato.n
+  console.log(`  cliccate ${clicked} barre → ${N} selezionate ${JSON.stringify(stato.nomi)} · "${stato.bottone}"`)
+  check('cliccando le barre le tabelle si selezionano', N >= 2 && stato.nomi.length === N, `${N} selezionate`)
+  check('il pulsante dice quante tabelle si svuotano', stato.bottone === `Svuota il contenuto (${N})`, stato.bottone)
+
+  // 4) SVUOTA: script generato in una NUOVA TAB
+  const premuto = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Svuota il contenuto'))`,
+  )
+  check('il pulsante "Svuota il contenuto" è attivo', premuto === true)
+  await sleep(1500)
+  const tab = await page.eval(`(() => {
+    const re = new RegExp('DELETE contenuto \\\\(' + ${N} + ' tabell');
+    return [...document.querySelectorAll('*')]
+      .some(e => e.children.length === 0 && re.test((e.textContent || '').trim()));
+  })()`)
+  check('si apre una nuova tab con lo script', tab === true)
+  const script = await page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+    .map(l => (l.textContent || '').replace(/\\u00a0/g, ' '))`)
+  const testo = script.join('\n')
+  console.log('  --- script generato ---')
+  for (const r of script) console.log(`  | ${r}`)
+  check('lo script dice quante tabelle sta svuotando', new RegExp(`Svuota il contenuto di ${N} tabell`).test(testo))
+  check(
+    'c\'è un DELETE FROM per ogni tabella selezionata',
+    (testo.match(/DELETE FROM \[/g) || []).length === N,
+    `${(testo.match(/DELETE FROM \[/g) || []).length} DELETE su ${N} selezionate`,
+  )
+  check('avvisa che i dati non si recuperano', /non si possono recuperare/.test(testo))
+  // la finestra si chiude: si guarda la FINESTRA (l'istogramma), non il testo (il pulsante nel
+  // pannello Database si chiama allo stesso modo)
+  const modalChiuso = await page.eval(`!document.querySelector('[data-report="istogramma"]')`)
+  check('la finestra del report si chiude', modalChiuso === true)
+  await page.screenshot('report-tabelle-delete')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * VERIFICA (--verify-set): le DIRETTIVE SET si compilano con l'intellisense (richiesta utente:
  * "aggiungi che possa anche compilare con l'intellisense queste direttive e anche quelle
  * rimanenti — SET NOCOUNT ON / SET XACT_ABORT ON"). Si scrive in una tab e si legge il popup:
@@ -2789,7 +3039,9 @@ async function verifyChanges(page) {
     `${soleStore.length} store`,
   )
 
-  // 5) filtro per periodo: ultime 24 ore (le date devono essere di oggi)
+  // 5) filtro per periodo: "Ultime 24 ore" è una FINESTRA SCORREVOLE (adesso − 24h), quindi
+  //    comprende anche la sera di ieri: non si controlla il giorno, ma che nessuna riga esca
+  //    dalla finestra (il controllo "solo le date di oggi" falliva di sera/sera-Notte).
   await page.eval(`(() => {
     const s = document.querySelector('[data-modifiche="periodo"]');
     s.value = '1';
@@ -2798,13 +3050,17 @@ async function verifyChanges(page) {
   await sleep(800)
   const oggi = await righe()
   const adesso = new Date()
-  const due = n => String(n).padStart(2, '0')
-  const oggiStr = `${due(adesso.getDate())}/${due(adesso.getMonth() + 1)}/${adesso.getFullYear()}`
+  const limite = adesso.getTime() - 24 * 3600 * 1000
+  const quando = s => {
+    const m = /^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2})$/.exec(s)
+    return m ? new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]), Number(m[4]), Number(m[5])).getTime() : NaN
+  }
+  const fuoriFinestra = oggi.filter(r => !(quando(r.data) >= limite - 60000))
   console.log(`  ultime 24 ore: ${oggi.length} store — ${JSON.stringify(oggi.slice(0, 3).map(r => r.nome))}`)
   check(
-    'il filtro "ultime 24 ore" tiene solo le modifiche di oggi',
-    oggi.every(r => r.data.startsWith(oggiStr)),
-    `${oggi.length} righe, oggi=${oggiStr}`,
+    'il filtro "ultime 24 ore" tiene solo le modifiche dentro la finestra',
+    oggi.length > 0 && fuoriFinestra.length === 0,
+    fuoriFinestra.length ? `fuori finestra: ${JSON.stringify(fuoriFinestra.slice(0, 2).map(r => r.data))}` : `${oggi.length} righe dentro le 24 ore`,
   )
   await page.screenshot('modifiche-oggetti')
 
@@ -4215,6 +4471,16 @@ async function main() {
 
     if (VERIFY_SET) {
       await verifySet(page)
+      return
+    }
+
+    if (VERIFY_COPIA) {
+      await verifyCopia(page)
+      return
+    }
+
+    if (VERIFY_REPORT) {
+      await verifyReport(page)
       return
     }
 
