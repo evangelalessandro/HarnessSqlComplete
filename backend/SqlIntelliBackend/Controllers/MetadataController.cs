@@ -214,10 +214,10 @@ public class MetadataController(
                    SUM(CASE WHEN i.index_id > 1 THEN a.used_pages ELSE 0 END) * 8 AS IndexKb,
                    SUM(a.total_pages - a.used_pages) * 8 AS UnusedKb,
                    COUNT(DISTINCT i.index_id) AS IndexCount,
-                   COALESCE(us.Reads, 0) AS Reads,
-                   COALESCE(us.Writes, 0) AS Writes,
-                   CONVERT(varchar(30), us.LastRead, 126) AS LastRead,
-                   CONVERT(varchar(30), us.LastWrite, 126) AS LastWrite
+                   COALESCE(MAX(us.Reads), 0) AS Reads,
+                   COALESCE(MAX(us.Writes), 0) AS Writes,
+                   CONVERT(varchar(30), MAX(us.LastRead), 126) AS LastRead,
+                   CONVERT(varchar(30), MAX(us.LastWrite), 126) AS LastWrite
             FROM sys.tables t
             INNER JOIN sys.schemas s ON s.schema_id = t.schema_id
             INNER JOIN sys.partitions p ON p.object_id = t.object_id
@@ -234,7 +234,11 @@ public class MetadataController(
                 GROUP BY object_id
             ) us ON us.object_id = t.object_id
             WHERE t.is_ms_shipped = 0
-            GROUP BY s.name, t.name, t.create_date, us.Reads, us.Writes, us.LastRead, us.LastWrite
+            -- La tabella è il gruppo: (schema, nome) è la chiave di sys.tables, quindi UNA riga per
+            -- tabella. Le colonne di us vanno AGGREGATE (MAX), non messe nella GROUP BY: mettendole
+            -- lì la stessa tabella poteva finire in due gruppi con somme PARZIALI (es. 11.194 +
+            -- 22.388 righe invece di 33.582) e il report mostrava la tabella due volte.
+            GROUP BY s.name, t.name, t.create_date
             ORDER BY s.name, t.name;
             """;
 

@@ -387,7 +387,7 @@ export interface EditorTab {
    * GENERALE nel database) oppure `graph` (il DIAGRAMMA delle chiamate di una routine).
    * Ricerca e diagrammi vivono in tab come gli altri strumenti, non in finestre.
    */
-  kind?: 'query' | 'search' | 'graph'
+  kind?: 'query' | 'search' | 'graph' | 'report'
   /** Routine mostrata nella tab `graph`. */
   routine?: { schema: string; name: string; kind: 'procedure' | 'function' }
 }

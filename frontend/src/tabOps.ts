@@ -125,6 +125,14 @@ export function searchTabIndex(tabs: EditorTab[]): number {
 }
 
 /**
+ * Indice della tab del REPORT utilizzo tabelle già aperta (-1 se non c'è): anche il report vive in
+ * una tab (richiesta utente) e non va duplicato — se c'è, lo si riporta in primo piano.
+ */
+export function reportTabIndex(tabs: EditorTab[]): number {
+  return tabs.findIndex(t => t.kind === 'report')
+}
+
+/**
  * Indice della tab con il DIAGRAMMA della stessa routine (-1 se non c'è): riaprendo il diagramma
  * si torna su quella tab invece di duplicarla.
  */

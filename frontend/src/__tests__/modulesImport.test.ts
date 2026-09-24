@@ -12,7 +12,7 @@ import HelpPage from '../components/HelpPage'
 import DataPreviewModal from '../components/DataPreviewModal'
 import SelectableResultGrid from '../components/SelectableResultGrid'
 import FormatProfilePanel from '../components/FormatProfilePanel'
-import TableReportModal from '../components/TableReportModal'
+import TableReportPanel from '../components/TableReportPanel'
 import LoginScreen from '../components/LoginScreen'
 import * as formatter from '../tsqlFormatter'
 import * as localTables from '../localTables'
@@ -29,7 +29,7 @@ describe('moduli dell\'app: import senza errori di sintassi', () => {
     expect(typeof DataPreviewModal).toBe('function')
     expect(typeof SelectableResultGrid).toBe('function')
     expect(typeof FormatProfilePanel).toBe('function')
-    expect(typeof TableReportModal).toBe('function')
+    expect(typeof TableReportPanel).toBe('function')
     expect(typeof LoginScreen).toBe('function')
     expect(typeof DEFAULT_SQL).toBe('string')
   })

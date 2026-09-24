@@ -7,6 +7,7 @@ import {
   insertTabAt,
   newTabIndex,
   newTabIndexFor,
+  reportTabIndex,
   risultatiVisibiliPer,
   searchTabIndex,
 } from '../tabOps'
@@ -25,6 +26,22 @@ describe('tab di RICERCA (la ricerca si apre in una tab, non in una finestra)', 
 
   it('una tab di query (kind assente) non viene scambiata per la ricerca', () => {
     expect(searchTabIndex([{ ...tab('A'), kind: 'query' }, tab('B')])).toBe(-1)
+  })
+
+  it('reportTabIndex trova la tab del report tabelle (che non va duplicata)', () => {
+    const tabs = [tab('A'), { ...tab('R'), kind: 'report' as const }, { ...tab('S'), kind: 'search' as const }]
+    expect(reportTabIndex(tabs)).toBe(1)
+    expect(reportTabIndex([tab('A'), tab('B')])).toBe(-1)
+    expect(reportTabIndex([])).toBe(-1)
+  })
+
+  it('App: il report tabelle vive in una tab, non in una finestra modale', () => {
+    // richiesta utente: "la form si apre come le tab"
+    expect(appSource).toContain('activeTabIsReport')
+    expect(appSource).toContain('<TableReportPanel')
+    expect(appSource).toContain('reportTabIndex(editorTabs) >= 0')
+    // niente più finestra modale del report
+    expect(appSource).not.toContain('TableReportModal')
   })
 
   it('App: la ricerca vive in una tab e non in una finestra modale', () => {

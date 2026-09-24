@@ -1344,6 +1344,17 @@ export function topTablesBySize(rows: TableReportRow[], n = 20): TableReportRow[
 }
 
 /**
+ * Righe del report che corrispondono al filtro per nome ("Filtra per nome…"): si cerca in
+ * "schema.nome". Serve sia all'elenco sia all'ISTOGRAMMA, che deve mostrare solo le tabelle
+ * filtrate (richiesta utente: il grafico deve filtrare con la ricerca).
+ */
+export function filtraTabelleReport(rows: TableReportRow[], filtro: string): TableReportRow[] {
+  const f = filtro.trim().toLowerCase()
+  if (!f) return rows
+  return rows.filter(r => `${r.schema}.${r.name}`.toLowerCase().includes(f))
+}
+
+/**
  * Script per SVUOTARE il contenuto delle tabelle selezionate nel report tabelle (richiesta utente:
  * "la possibilità di selezionarle e fare una delete del contenuto, attraverso script generato che
  * apre nuova tab"): un DELETE FROM per tabella, preceduto dall'elenco di quello che si cancella.

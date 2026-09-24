@@ -158,6 +158,26 @@ const BATCH_ERROR_AND_RESULTS =
 const TAB1_SQL = 'SELECT 1 AS uno;\nSELECT 2 AS due;\nSELECT 3 AS tre;\nSELECT 4 AS quattro;'
 
 /**
+ * ACCESSO all'app con un paio di tentativi: mentre Vite ricompila i moduli la pagina può
+ * ricaricarsi e il clic sulla login andare perso (era il motivo dei fallimenti "a freddo" dei modi
+ * di verifica appena dopo una modifica al codice). Aspetta editor e schema pronti.
+ */
+async function accediApp(page, attesa = `document.body.textContent.includes('Schema:')`) {
+  for (let tentativo = 1; tentativo <= 3; tentativo++) {
+    await page.waitFor(`document.querySelector('input')`, 30000, 'pagina pronta')
+    await page.clickWhere(
+      `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+         .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    )
+    if (await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, `editor pronto (${tentativo})`)) {
+      if (await page.waitFor(attesa, 60000, `schema caricato (${tentativo})`)) return true
+    }
+    await sleep(1500)
+  }
+  throw new Error('app non caricata: editor o schema non pronti dopo 3 tentativi')
+}
+
+/**
  * Rettangolo dell'area di testo dell'editor: serve a cliccare "dentro" l'editor con un
  * evento del mouse vero (l'app non espone window.monaco, quindi niente API interna).
  */
@@ -2392,19 +2412,14 @@ async function verifyCopia(page) {
 }
 
 /**
- * VERIFICA (--verify-report): report utilizzo tabelle con ISTOGRAMMA delle 20 tabelle più pesanti
- * e SVUOTAMENTO del contenuto delle selezionate (richiesta utente: "anche un istogramma con quelle
- * 20 più pesanti, e poi la possibilità di selezionarle e fare una delete del contenuto, attraverso
- * script generato che apre nuova tab").
+ * VERIFICA (--verify-report): il REPORT utilizzo tabelle si apre in una TAB (non in una finestra),
+ * l'ISTOGRAMMA delle 20 tabelle più pesanti sta SOTTO l'elenco e SEGUE il filtro per nome, e le
+ * tabelle selezionate generano lo script di svuotamento in una nuova tab (richieste utente:
+ * "il grafico, fallo che si filtra con la ricerca, e che sta sotto alla lista e la form si apre
+ * come le tab").
  */
 async function verifyReport(page) {
-  await page.waitFor(`document.querySelector('input')`, 10000)
-  await page.clickWhere(
-    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
-       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
-  )
-  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
-  await page.waitFor(`document.body.textContent.includes('Tabelle')`, 60000, 'schema caricato')
+  await accediApp(page)
   await sleep(2000)
 
   const esiti = []
@@ -2421,39 +2436,92 @@ async function verifyReport(page) {
     await sleep(1200)
   }
 
-  // 1) si apre il report tabelle dal pannello DATABASE
+  // 1) si apre il report tabelle dal pannello DATABASE: deve diventare una TAB
   const apri = await page.clickWhere(`document.querySelector('[data-report="apri"]')`)
   check('il pulsante del report tabelle si trova', apri === true)
-  const finestra = await page.waitFor(
-    `document.querySelector('[data-report="istogramma"]') || document.body.textContent.includes('Report utilizzo tabelle')`,
-    60000,
-    'report tabelle',
-  )
-  check('la finestra del report si apre', finestra === true)
+  const inTab = await page.waitFor(`document.querySelector('[data-report="pannello"]')`, 60000, 'pannello del report')
+  check('il report si apre in una TAB (pannello nell area editor)', inTab === true)
+  const tabReport = await page.eval(`(() => {
+    const t = [...document.querySelectorAll('*')].filter(e => e.children.length === 0 && (e.textContent || '').trim() === 'Report tabelle');
+    return t.length > 0;
+  })()`)
+  check('la barra delle tab mostra "Report tabelle"', tabReport === true)
+  const senzaFinestraModale = await page.eval(`(() => {
+    // la vecchia finestra era un overlay a tutto schermo con lo sfondo nero
+    const p = document.querySelector('[data-report="pannello"]');
+    return !!p && !p.closest('div.fixed');
+  })()`)
+  check('non è più una finestra modale', senzaFinestraModale === true)
   await page.waitFor(`document.querySelectorAll('[data-report="barra"]').length > 0`, 90000, 'istogramma caricato')
+  // il pannello può caricare i dati due volte (doppio effetto in sviluppo): si aspetta che
+  // l'istogramma sia STABILE (20 barre e nessun nodo di troppo) prima di misurarlo
+  await page.waitFor(
+    `(() => {
+       const c = document.querySelector('[data-report="istogramma"]');
+       if (!c || !c.lastElementChild) return false;
+       const barre = c.querySelectorAll('[data-report="barra"]').length;
+       const figli = c.lastElementChild.children.length;
+       return barre > 0 && barre === figli && barre <= 20 && document.querySelectorAll('[data-report="barra"]').length === barre;
+     })()`,
+    30000,
+    'istogramma stabile',
+  )
   await sleep(1200)
 
-  // 2) ISTOGRAMMA: 20 barre, dalla più pesante, con la prima al 100%
-  const istogramma = await page.eval(`(() => {
-    const box = document.querySelector('[data-report="istogramma"]');
-    const barre = [...document.querySelectorAll('[data-report="barra"]')];
-    const misure = barre.map(b => {
-      const pezzi = [...b.querySelectorAll('span[style]')].map(s => parseFloat(s.style.width) || 0);
-      return {
-        nome: (b.querySelector('span') || {}).textContent || '',
-        totale: Math.round(pezzi.reduce((a, x) => a + x, 0) * 10) / 10,
-        dati: Math.round((pezzi[0] || 0) * 10) / 10,
-        titolo: b.getAttribute('title') || '',
-      };
-    });
-    return { visibile: !!box, quante: barre.length, misure };
+  // 2) ISTOGRAMMA SOPRA O SOTTO? Deve stare SOTTO l'elenco
+  const posizioni = await page.eval(`(() => {
+    const elenco = document.querySelector('[data-report="elenco"]');
+    const ist = document.querySelector('[data-report="istogramma"]');
+    if (!elenco || !ist) return null;
+    return { topElenco: Math.round(elenco.getBoundingClientRect().top), topIstogramma: Math.round(ist.getBoundingClientRect().top) };
   })()`)
+  console.log(`  posizioni: elenco ${posizioni?.topElenco}, istogramma ${posizioni?.topIstogramma}`)
+  check("l'istogramma sta SOTTO l'elenco", (posizioni?.topIstogramma ?? 0) > (posizioni?.topElenco ?? 0), JSON.stringify(posizioni))
+
+  /** Misure delle barre dell'istogramma: nome, larghezza totale in % del massimo e tooltip. */
+  const misureBarre = () =>
+    page.eval(`(() => {
+      const barre = [...document.querySelectorAll('[data-report="barra"]')];
+      const misure = barre.map(b => {
+        const pezzi = [...b.querySelectorAll('span[style]')].map(s => parseFloat(s.style.width) || 0);
+        return {
+          nome: (b.querySelector('span') || {}).textContent || '',
+          totale: Math.round(pezzi.reduce((a, x) => a + x, 0) * 10) / 10,
+          titolo: b.getAttribute('title') || '',
+        };
+      });
+      return { quante: barre.length, misure };
+    })()`)
+  const istogramma = await misureBarre()
+
+  // 2b) UNA RIGA PER TABELLA (difetto segnalato: "le tabelle non sono univoche" — la stessa
+  //     tabella compariva due volte con somme PARZIALI, es. MAG_CELLE 11.194 + 22.388 righe)
+  const univoche = await page.eval(`(() => {
+    const p = document.querySelector('[data-report="pannello"]');
+    const righe = [...p.querySelectorAll('[data-report="riga"]')];
+    const nomi = righe.map(t => {
+      const td = t.querySelector('td[title]');
+      return td ? td.getAttribute('title') : '';
+    });
+    const totali = (p.querySelector('[data-report="totali"]') || {}).textContent || '';
+    const m = totali.match(/([\\d.]+)\\s*tabelle/);
+    const tabelle = m ? parseInt(m[1].replace(/\\./g, ''), 10) : 0;
+    return { righe: righe.length, nomiDistinti: new Set(nomi).size, tabelle, totali };
+  })()`)
+  console.log(`  righe del report: ${JSON.stringify(univoche)}`)
+  check(
+    'una riga per tabella, senza doppioni',
+    univoche.tabelle > 0 && univoche.righe === univoche.tabelle && univoche.nomiDistinti === univoche.righe,
+    JSON.stringify(univoche),
+  )
   console.log(`  istogramma: ${istogramma.quante} barre, la prima ${JSON.stringify(istogramma.misure[0])}`)
-  check("l'istogramma c'è", istogramma.visibile === true)
   check('mostra 20 tabelle', istogramma.quante === 20, `${istogramma.quante} barre`)
   check('la prima barra è quella più pesante (100%)', istogramma.misure[0]?.totale >= 99.5, `prima = ${istogramma.misure[0]?.totale}%`)
-  const decrescente = istogramma.misure.every((m, i) => i === 0 || m.totale <= istogramma.misure[i - 1].totale + 0.01)
-  check('le barre sono in ordine decrescente di spazio', decrescente, JSON.stringify(istogramma.misure.map(m => m.totale).slice(0, 5)))
+  check(
+    'le barre sono in ordine decrescente di spazio',
+    istogramma.misure.every((m, i) => i === 0 || m.totale <= istogramma.misure[i - 1].totale + 0.01),
+    JSON.stringify(istogramma.misure.map(m => m.totale).slice(0, 5)),
+  )
   check(
     'il tooltip dice righe, dati e indici',
     /righe/.test(istogramma.misure[0]?.titolo ?? '') && /dati/.test(istogramma.misure[0]?.titolo ?? '') && /indici/.test(istogramma.misure[0]?.titolo ?? ''),
@@ -2461,7 +2529,42 @@ async function verifyReport(page) {
   )
   await page.screenshot('report-tabelle-istogramma')
 
-  // 3) SELEZIONE cliccando due barre
+  // 3) IL FILTRO DEVE FILTRARE ANCHE L'ISTOGRAMMA
+  const filtro = await page.eval(`(() => {
+    const i = document.querySelector('[data-report="filtro"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(i, 'DAT_');
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+    return i.value;
+  })()`)
+  await sleep(900)
+  const filtrato = await page.eval(`(() => {
+    const barre = [...document.querySelectorAll('[data-report="barra"]')].map(b => (b.querySelector('span') || {}).textContent || '');
+    const righe = document.querySelectorAll('[data-report="riga"]').length;
+    const campo = document.querySelector('[data-report="filtro"]');
+    return { barre, righe, quante: barre.length, filtro: campo ? campo.value : '(nessun campo)' };
+  })()`)
+  console.log(`  filtro "${filtro}" (campo="${filtrato.filtro}"): ${filtrato.righe} righe, istogramma ${JSON.stringify(filtrato.barre.slice(0, 4))}`)
+  check(
+    "l'istogramma mostra SOLO le tabelle del filtro",
+    filtrato.quante > 0 && filtrato.barre.every(n => n.toLowerCase().includes('dat_')),
+    JSON.stringify(filtrato.barre.slice(0, 3)),
+  )
+  check(
+    "anche l'elenco è filtrato",
+    filtrato.righe > 0 && filtrato.righe < 340,
+    `${filtrato.righe} righe`,
+  )
+  // si toglie il filtro: torna tutto
+  await page.eval(`(() => {
+    const i = document.querySelector('[data-report="filtro"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(i, '');
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`)
+  await sleep(800)
+
+  // 4) SELEZIONE cliccando due barre
   const clicked = await page.eval(`(() => {
     const barre = [...document.querySelectorAll('[data-report="barra"]')].slice(0, 2);
     let n = 0;
@@ -2489,7 +2592,7 @@ async function verifyReport(page) {
   check('cliccando le barre le tabelle si selezionano', N >= 2 && stato.nomi.length === N, `${N} selezionate`)
   check('il pulsante dice quante tabelle si svuotano', stato.bottone === `Svuota il contenuto (${N})`, stato.bottone)
 
-  // 4) SVUOTA: script generato in una NUOVA TAB
+  // 5) SVUOTA: script generato in una NUOVA TAB
   const premuto = await page.clickWhere(
     `[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Svuota il contenuto'))`,
   )
@@ -2513,10 +2616,6 @@ async function verifyReport(page) {
     `${(testo.match(/DELETE FROM \[/g) || []).length} DELETE su ${N} selezionate`,
   )
   check('avvisa che i dati non si recuperano', /non si possono recuperare/.test(testo))
-  // la finestra si chiude: si guarda la FINESTRA (l'istogramma), non il testo (il pulsante nel
-  // pannello Database si chiama allo stesso modo)
-  const modalChiuso = await page.eval(`!document.querySelector('[data-report="istogramma"]')`)
-  check('la finestra del report si chiude', modalChiuso === true)
   await page.screenshot('report-tabelle-delete')
 
   const falliti = esiti.filter(e => !e).length
@@ -3086,13 +3185,7 @@ async function verifyChanges(page) {
  * l'elenco sotto (richiesta utente: "mi lasci la ricerca fissa in alto e non la far scorrere").
  */
 async function verifySidebar(page) {
-  await page.waitFor(`document.querySelector('input')`, 10000)
-  await page.clickWhere(
-    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
-       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
-  )
-  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
-  await page.waitFor(`document.body.textContent.includes('Tabelle')`, 40000, 'schema caricato')
+  await accediApp(page, `document.body.textContent.includes('Tabelle')`)
   await sleep(2000)
 
   const esiti = []

@@ -9,7 +9,7 @@ import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
-import { buildTabClosePlan, countClosableTabs, graphTabIndex, insertTabAt, risultatiVisibiliPer, searchTabIndex } from './tabOps'
+import { buildTabClosePlan, countClosableTabs, graphTabIndex, insertTabAt, reportTabIndex, risultatiVisibiliPer, searchTabIndex } from './tabOps'
 import type { MotoreFormattazione, OpzioniSqlFluff } from './formatEngine'
 import {
   MAX_TAB_DEPTH,
@@ -40,6 +40,7 @@ import { hasErrorMessage, messageRevealLine, errorObjectsFor, routineStartLine }
 import type { ErrorObjectRef } from './sqlMessages'
 import CallGraphPanel from './components/CallGraphPanel'
 import SearchPanel from './components/SearchPanel'
+import TableReportPanel from './components/TableReportPanel'
 import LoginScreen from './components/LoginScreen'
 import Sidebar from './components/Sidebar'
 import SqlEditor, { DEFAULT_SQL } from './components/SqlEditor'
@@ -568,12 +569,39 @@ export default function App() {
     setActiveEditorTab(tab.id)
   }, [editorTabs, activeEditorTab, connection, saveActiveEditor, switchEditorTab])
 
+  /**
+   * REPORT UTILIZZO TABELLE: si apre in una TAB come la Ricerca (richiesta utente: "la form si
+   * apre come le tab"). Se la tab del report esiste già la si riporta in primo piano.
+   */
+  const openReportTab = useCallback(() => {
+    const idx = reportTabIndex(editorTabs)
+    if (idx >= 0) {
+      switchEditorTab(editorTabs[idx].id)
+      return
+    }
+    saveActiveEditor()
+    if (editorTabs.length === 0) tabCounter.current = 1
+    const tab: EditorTab = {
+      id: `tab-${tabCounter.current++}`,
+      title: 'Report tabelle',
+      icon: '📊',
+      sql: '',
+      pinned: false,
+      database: connection?.database ?? '',
+      kind: 'report',
+    }
+    setEditorTabs(prev => insertTabAt(prev, tab, activeEditorTab, newTabPositionRef.current))
+    setActiveEditorTab(tab.id)
+  }, [editorTabs, activeEditorTab, connection, saveActiveEditor, switchEditorTab])
+
   /** La tab attiva è il pannello di ricerca? (nell'area editor si mostra lui, non Monaco) */
   const activeTabIsSearch = editorTabs.find(t => t.id === activeEditorTab)?.kind === 'search'
   /** La tab attiva è un diagramma delle chiamate? (occupa tutta l'area editor) */
   const activeTabIsGraph = editorTabs.find(t => t.id === activeEditorTab)?.kind === 'graph'
+  /** La tab attiva è il report utilizzo tabelle? (anche lui vive in una tab, non in una finestra) */
+  const activeTabIsReport = editorTabs.find(t => t.id === activeEditorTab)?.kind === 'report'
   /** In queste tab Monaco non si vede: va nascosto, altrimenti spinge il pannello fuori posto. */
-  const pannelloAlPostoDiMonaco = activeTabIsSearch || activeTabIsGraph
+  const pannelloAlPostoDiMonaco = activeTabIsSearch || activeTabIsGraph || activeTabIsReport
 
   /**
    * PANNELLO RISULTATI legato alla TAB ATTIVA: ognuna ricorda se lo vuole visibile o no
@@ -1354,6 +1382,7 @@ export default function App() {
               onInsertText={handleInsertText}
               onPreviewInEditor={handlePreviewInEditor}
               onOpenScript={handleOpenScript}
+              onOpenReport={openReportTab}
               onOpenObject={(kind, schema, name, mode) =>
                 void handleOpenObject(kind, schema, name, mode, undefined, false)
               }
@@ -1651,6 +1680,18 @@ export default function App() {
                     void handleOpenObject(kind, schema, name, mode, undefined, true)
                   }
                   onShowCallGraph={(schema, name, kind) => openCallGraph(schema, name, kind)}
+                />
+              </div>
+            )}
+
+            {/* REPORT UTILIZZO TABELLE: vive in una tab (non in una finestra), con elenco,
+                istogramma delle più pesanti e script di svuotamento in una nuova tab */}
+            {reportTabIndex(editorTabs) >= 0 && connection && (
+              <div className={`h-full min-h-0 ${activeTabIsReport ? '' : 'hidden'}`}>
+                <TableReportPanel
+                  connectionId={connection.connectionId}
+                  database={connection.database}
+                  onOpenScript={(title, sql) => handleOpenScript(title, sql, true)}
                 />
               </div>
             )}

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { compareTableReport, scriptDeleteTablesContent, sortTableReport, topTablesBySize } from '../helpers'
+import {
+  compareTableReport,
+  filtraTabelleReport,
+  scriptDeleteTablesContent,
+  sortTableReport,
+  topTablesBySize,
+} from '../helpers'
 import type { TableReportRow } from '../types'
 
 function mkRow(name: string, partial: Partial<TableReportRow> = {}): TableReportRow {
@@ -82,6 +88,29 @@ describe('Report tabelle: istogramma delle più pesanti', () => {
     const rows = [mkRow('A', { reservedKb: 3 }), mkRow('B', { reservedKb: 2 })]
     expect(topTablesBySize(rows, 1).map(r => r.name)).toEqual(['A'])
     expect(topTablesBySize(rows, 0)).toEqual([])
+  })
+
+  // Richiesta utente: "il grafico, fallo che si filtra con la ricerca" — l'istogramma usa le
+  // stesse righe filtrate dell'elenco (filtro per nome, anche "schema.nome").
+  it('il filtro per nome alimenta sia l elenco sia l istogramma', () => {
+    const rows = [
+      mkRow('DAT_UDC', { reservedKb: 900 }),
+      mkRow('MAG_CELLE', { reservedKb: 500 }),
+      mkRow('DAT_UDC_CEL', { reservedKb: 300 }),
+      { ...mkRow('ALTRO', { reservedKb: 100 }), schema: 'staging' },
+    ]
+    const filtrate = filtraTabelleReport(rows, 'dat_udc')
+    expect(filtrate.map(r => r.name)).toEqual(['DAT_UDC', 'DAT_UDC_CEL'])
+    expect(topTablesBySize(filtrate).map(r => r.name)).toEqual(['DAT_UDC', 'DAT_UDC_CEL'])
+    // si può filtrare anche con lo schema
+    expect(filtraTabelleReport(rows, 'staging.altro').map(r => r.name)).toEqual(['ALTRO'])
+  })
+
+  it('filtro vuoto (o solo spazi) = tutte le tabelle', () => {
+    const rows = [mkRow('A', { reservedKb: 1 }), mkRow('B', { reservedKb: 2 })]
+    expect(filtraTabelleReport(rows, '')).toHaveLength(2)
+    expect(filtraTabelleReport(rows, '   ')).toHaveLength(2)
+    expect(filtraTabelleReport(rows, 'zzz')).toEqual([])
   })
 })
 

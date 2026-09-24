@@ -61,7 +61,6 @@ import { DEFAULT_PANEL_STATE, dockSideFromDrop, normalizePanelState, resolveRigh
 import type { PanelSize, PanelState } from '../panelLayout'
 import { ColumnHoverCard, TableHoverCard } from './HoverCards'
 import type { HoverRect, HoverTarget } from './HoverCards'
-import TableReportModal from './TableReportModal'
 import ChangesModal from './ChangesModal'
 
 interface Props {
@@ -75,6 +74,11 @@ interface Props {
   onPreviewInEditor?: (sql: string) => void
   /** Apre uno script generato (CREATE/MERGE) in una nuova tab con titolo. */
   onOpenScript?: (title: string, sql: string, asChild?: boolean) => void
+  /**
+   * Apre il REPORT utilizzo tabelle: vive in una TAB (come la Ricerca), non in una finestra
+   * (richiesta utente: "la form si apre come le tab").
+   */
+  onOpenReport?: () => void
   /** Cambia il database attivo (nuova connessione con lo stesso server). */
   onSwitchDatabase?: (database: string) => void
   /** Colori personalizzati per database. */
@@ -132,6 +136,7 @@ export default function Sidebar({
   onInsertText,
   onPreviewInEditor,
   onOpenScript,
+  onOpenReport,
   onOpenObject,
   onShowCallGraph,
   onSwitchDatabase,
@@ -278,9 +283,6 @@ export default function Sidebar({
   const [objectMenu, setObjectMenu] = useState<{ hit: SearchHit; x: number; y: number } | null>(null)
   // Nodo del database attivo: true = oggetti nascosti (nodo chiuso)
   const [collapsedDb, setCollapsedDb] = useState(false)
-
-  // Report utilizzo tabelle (modale)
-  const [reportOpen, setReportOpen] = useState(false)
 
   // Modifiche agli oggetti (modale): griglia con giorno e ora dell'ultima modifica
   const [changesOpen, setChangesOpen] = useState(false)
@@ -680,9 +682,9 @@ export default function Sidebar({
       {connectionId && (
         <div className="shrink-0 space-y-1 border-t border-zinc-800 p-2">
           <button
-            onClick={() => setReportOpen(true)}
+            onClick={() => onOpenReport?.()}
             className="flex w-full items-center justify-center gap-1.5 rounded border border-zinc-700 px-2 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-sky-700 hover:bg-sky-950/30 hover:text-sky-300"
-            title="Report utilizzo tabelle: spazio riservato/usato, dati, indici, righe e accessi — ordinabile per colonna"
+            title="Report utilizzo tabelle: spazio riservato/usato, dati, indici, righe e accessi — si apre in una tab"
             data-report="apri"
           >
             <Rows3 className="h-3.5 w-3.5 text-sky-400" /> Report utilizzo tabelle
@@ -1246,11 +1248,11 @@ export default function Sidebar({
             {colorMenu.db === activeDatabase && (
               <button
                 onClick={() => {
-                  setReportOpen(true)
+                  onOpenReport?.()
                   setColorMenu(null)
                 }}
                 className="mt-2 flex w-full items-center gap-1.5 rounded border-t border-zinc-800 px-2 pt-1.5 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-sky-300"
-                title="Report utilizzo tabelle del database attivo"
+                title="Report utilizzo tabelle del database attivo (si apre in una tab)"
               >
                 <Rows3 className="h-3.5 w-3.5 text-sky-400" /> Report utilizzo tabelle…
               </button>
@@ -1290,16 +1292,6 @@ export default function Sidebar({
             onClose={() => setObjectMenu(null)}
           />
         </>
-      )}
-
-      {/* Report utilizzo tabelle (ordinabile per colonna); lo script di svuotamento si apre in
-          una tab figlia, come le altre voci "script" */}
-      {reportOpen && connectionId && (
-        <TableReportModal
-          connectionId={connectionId}
-          onClose={() => setReportOpen(false)}
-          onOpenScript={apriScriptFiglia}
-        />
       )}
 
       {/* Modifiche agli oggetti: griglia con giorno e ora dell'ultima modifica */}
