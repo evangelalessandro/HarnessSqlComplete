@@ -135,7 +135,8 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   proprietà estese.
 - **Tasto destro stile SSMS**: per le tabelle "Seleziona le prime 1000 righe" e gli script per ogni
   operazione (CREATE, DROP, SELECT, INSERT, UPDATE, DELETE, MERGE); per procedure/funzioni/viste/trigger
-  "Modifica" (CREATE OR ALTER), "Apri definizione", "Script" ed **EXEC con parametri**.
+  "Modifica" (CREATE OR ALTER), "Script" (CREATE / CREATE OR ALTER / DROP / EXECUTE) e
+  "Diagramma chiamate".
 - **Ricerca** su tabelle, viste, procedure, funzioni e trigger (gli spazi valgono come `%`).
 - **Ricerca generale** (pulsante "Cerca" in alto, stile Redgate SQL Search): un testo qualunque cercato
   nei **nomi** e nelle **definizioni** delle strutture (tabelle, viste, routine, vincoli, colonne
@@ -143,7 +144,7 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   **anteprima sotto** (script con il match evidenziato e la riga trovata, colonne della tabella, riga di
   dati trovata). Da un risultato su procedura/funzione/vista/trigger si può **modificare** l'oggetto
   (pulsante "Modifica", doppio clic o tasto destro → menu: CREATE OR ALTER in una tab, figlia di quella
-  attiva; più "Apri definizione" e "Diagramma chiamate"). Resta dentro il **database attivo** e la
+  attiva; c'è anche "Diagramma chiamate"). Resta dentro il **database attivo** e la
   scansione dei dati è limitata (tabelle, tempo, righe per tabella) per non appesantire il database.
 - **Report utilizzo tabelle**: spazio riservato/usato, righe, indici, accessi.
 - **Modifiche agli oggetti**: la finestra con la griglia di store, funzioni, viste, tabelle e trigger e
@@ -438,7 +439,7 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
   "anche nei dati" — in the **values** of text columns. Results on top and a **preview below** (script with
   the match highlighted and the matching line, table columns, matching data row). From a
   procedure/function/view/trigger result you can **edit** the object ("Modifica" button, double click or
-  right-click menu: CREATE OR ALTER in a tab, child of the active one; plus "Apri definizione" and
+  right-click menu: CREATE OR ALTER in a tab, child of the active one; there is also
   "Diagramma chiamate"). It stays inside the **active database**, and the data scan is bounded (tables,
   time, rows per table) to keep the database responsive.
 - **Table usage report**: reserved/used space, rows, indexes, reads and writes.

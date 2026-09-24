@@ -7,7 +7,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Database as DbIcon,
-  FileCode2,
   History,
   Loader2,
   Pencil,
@@ -216,15 +215,17 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
   )
 
   /**
-   * MODIFICA dalla ricerca: apre la stored procedure / funzione / vista / trigger in una tab,
-   * con la stessa azione della voce "Modifica" del tasto destro nell'albero
-   * ('alter' = CREATE OR ALTER, 'open' = definizione originale). La tab nasce figlia di quella attiva.
+   * MODIFICA dalla ricerca: apre la stored procedure / funzione / vista / trigger in una tab con
+   * CREATE OR ALTER (stessa azione della voce "Modifica" del tasto destro nell'albero). La tab
+   * nasce figlia di quella attiva.
+   * La vecchia voce "Apri definizione" (che apriva lo stesso oggetto con il CREATE originale) è
+   * stata tolta: era lo stesso comando, cambiava solo la parola CREATE/CREATE OR ALTER.
    */
   const apri = useCallback(
-    (hit: TextSearchHit, mode: 'alter' | 'open') => {
+    (hit: TextSearchHit) => {
       const kind = editableKind(hit.kind)
       if (!kind) return
-      onOpenObject(kind, hit.schema, hit.name, mode)
+      onOpenObject(kind, hit.schema, hit.name, 'alter')
     },
     [onOpenObject],
   )
@@ -437,7 +438,7 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
                   key={hitKey(h)}
                   data-ricerca="riga"
                   onClick={() => setScelto(h)}
-                  onDoubleClick={() => apri(h, 'alter')}
+                  onDoubleClick={() => apri(h)}
                   onContextMenu={e => {
                     e.preventDefault()
                     setScelto(h)
@@ -484,24 +485,14 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
                 <div className="mb-2 flex flex-wrap items-center gap-2">
                   <span className="font-mono text-xs text-zinc-300">{hitTitle(scelto)}</span>
                   {canEdit(scelto.kind) && (
-                    <>
-                      <button
-                        data-ricerca="modifica"
-                        onClick={() => apri(scelto, 'alter')}
-                        className="flex items-center gap-1 rounded bg-sky-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-sky-500"
-                        title="Modifica: apre CREATE OR ALTER in una nuova tab (figlia di quella attiva)"
-                      >
-                        <Pencil className="h-3 w-3" /> Modifica
-                      </button>
-                      <button
-                        data-ricerca="definizione"
-                        onClick={() => apri(scelto, 'open')}
-                        className="flex items-center gap-1 rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 hover:bg-zinc-800"
-                        title="Apre la definizione originale (CREATE) in una nuova tab"
-                      >
-                        <FileCode2 className="h-3 w-3" /> Apri definizione
-                      </button>
-                    </>
+                    <button
+                      data-ricerca="modifica"
+                      onClick={() => apri(scelto)}
+                      className="flex items-center gap-1 rounded bg-sky-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-sky-500"
+                      title="Modifica: apre CREATE OR ALTER in una nuova tab (figlia di quella attiva)"
+                    >
+                      <Pencil className="h-3 w-3" /> Modifica
+                    </button>
                   )}
                   {onShowCallGraph && (scelto.kind === 'procedure' || scelto.kind === 'function') && (
                     <button
@@ -649,21 +640,10 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
                     onClick={() => {
                       const h = menu.hit
                       setMenu(null)
-                      apri(h, 'alter')
+                      apri(h)
                     }}
                   >
                     <Pencil className="h-3.5 w-3.5" /> Modifica (CREATE OR ALTER)
-                  </button>
-                  <button
-                    data-ricerca="menu-definizione"
-                    className={VOCE_MENU}
-                    onClick={() => {
-                      const h = menu.hit
-                      setMenu(null)
-                      apri(h, 'open')
-                    }}
-                  >
-                    <FileCode2 className="h-3.5 w-3.5" /> Apri definizione
                   </button>
                   {(menu.hit.kind === 'procedure' || menu.hit.kind === 'function') && onShowCallGraph && (
                     <button

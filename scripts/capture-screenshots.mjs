@@ -3445,6 +3445,7 @@ async function verifySearch(page) {
       evidenziati: p.querySelectorAll('mark').length,
       rigaInRisalto: righeScript.some(r => (r.className || '').includes('bg-amber')),
       modifica: !!p.querySelector('[data-ricerca="modifica"]'),
+      // "Apri definizione" è stato tolto: era lo stesso comando di "Modifica"
       definizione: !!p.querySelector('[data-ricerca="definizione"]'),
       diagramma: !!p.querySelector('[data-ricerca="diagramma"]'),
       // SINTASSI A COLORI: il coloratore di Monaco produce span con classi mtk*
@@ -3475,7 +3476,11 @@ async function verifySearch(page) {
   console.log(`  passo fra le righe dell anteprima: ${passo}px`)
   check('le righe dell anteprima NON hanno spaziatura enorme', passo !== null && passo > 0 && passo < 30, `${passo}px`)
   check('dalla ricerca si può MODIFICARE (pulsante Modifica)', anteprima?.modifica === true)
-  check('c è anche "Apri definizione" e il diagramma chiamate', anteprima?.definizione === true && anteprima?.diagramma === true)
+  check(
+    'NON c è più "Apri definizione" (era lo stesso comando di Modifica) e resta il diagramma chiamate',
+    anteprima?.definizione === false && anteprima?.diagramma === true,
+    `definizione=${anteprima?.definizione} diagramma=${anteprima?.diagramma}`,
+  )
 
   // MODIFICA dall'anteprima: si apre CREATE OR ALTER in una tab FIGLIA di quella attiva
   const tabsPrima = await page.eval(`document.querySelectorAll('.sql-tab').length`)
