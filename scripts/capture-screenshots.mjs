@@ -14,6 +14,7 @@
 //   node scripts/capture-screenshots.mjs --verify-labels          (GOTO → label del documento)
 //   node scripts/capture-screenshots.mjs --verify-error-line      (doppio clic sull'errore → riga)
 //   node scripts/capture-screenshots.mjs --verify-create          (script CREATE della tabella = SSMS)
+//   node scripts/capture-screenshots.mjs --verify-set             (direttive SET nell'intellisense)
 //   node scripts/capture-screenshots.mjs --measure-typing         (latenza digitando in una store grande)
 //
 // Prerequisiti: backend su :5213 e dev server su :5173 attivi.
@@ -54,6 +55,7 @@ const VERIFY_PARAMS = process.argv.includes('--verify-params')
 const VERIFY_MULTIRIGA = process.argv.includes('--verify-multiriga')
 const VERIFY_TEMA = process.argv.includes('--verify-tema')
 const VERIFY_CREATE = process.argv.includes('--verify-create')
+const VERIFY_SET = process.argv.includes('--verify-set')
 /**
  * Finestra molto alta per --verify-create: Monaco disegna nel DOM solo le righe VISIBILI, quindi
  * per leggere tutto lo script CREATE (colonne, vincoli, DEFAULT, trigger) serve un editor alto.
@@ -2267,6 +2269,124 @@ async function verifyMerge(page) {
 }
 
 /**
+ * VERIFICA (--verify-set): le DIRETTIVE SET si compilano con l'intellisense (richiesta utente:
+ * "aggiungi che possa anche compilare con l'intellisense queste direttive e anche quelle
+ * rimanenti — SET NOCOUNT ON / SET XACT_ABORT ON"). Si scrive in una tab e si legge il popup:
+ *  1) "SET " → TUTTE le opzioni del manuale, con NOCOUNT e XACT_ABORT per prime;
+ *  2) il caso segnalato: su una riga nuova SOTTO "SET NOCOUNT ON" il popup deve riaprirsi
+ *     (prima restava chiuso perché la direttiva precedente sembrava uno statement aperto);
+ *  3) "SET NO" → NOCOUNT filtrato;
+ *  4) "SET XACT_ABORT " → ON/OFF;
+ *  5) accettando il suggerimento si scrive la direttiva COMPLETA ("SET XACT_ABORT ON").
+ */
+async function verifySet(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1800)
+  }
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').replace(/\\u00a0/g, ' ').trim())`)
+  const righeEditor = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, ''))`)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+  const minuscole = v => v.map(x => x.toLowerCase())
+
+  // 1) "SET " → tutte le opzioni, con NOCOUNT e XACT_ABORT in testa
+  await scrivi('SET ')
+  const vociSet = await vociPopup()
+  console.log(`  dopo "SET ": ${vociSet.length} voci — ${JSON.stringify(vociSet.slice(0, 4))}`)
+  check('dopo "SET " il popup si apre', vociSet.length > 0)
+  check('propone SET NOCOUNT ON', vociSet.includes('SET NOCOUNT ON'))
+  check('propone SET XACT_ABORT ON', vociSet.includes('SET XACT_ABORT ON'))
+  check('propone SET ANSI_NULLS ON', vociSet.includes('SET ANSI_NULLS ON'))
+
+  // 1b) le ALTRE direttive del manuale: il popup disegna solo le righe visibili, quindi si
+  //     filtra scrivendo l'inizio del nome (come fa chi digita) e si controlla la voce attesa
+  for (const [inizio, attesa] of [
+    ['SET ANSI_D', 'SET ANSI_DEFAULTS ON'],
+    ['SET CONCAT', 'SET CONCAT_NULL_YIELDS_NULL ON'],
+    ['SET REM', 'SET REMOTE_PROC_TRANSACTIONS ON'],
+    ['SET FORCE', 'SET FORCEPLAN ON'],
+    ['SET SHOWPLAN_X', 'SET SHOWPLAN_XML ON'],
+    ['SET STATISTICS X', 'SET STATISTICS XML ON'],
+    ['SET TEXT', 'SET TEXTSIZE'],
+    ['SET OFFS', 'SET OFFSETS ON'],
+    ['SET CONTEXT', 'SET CONTEXT_INFO'],
+    ['SET TRANSACTION ISOLATION', 'SET TRANSACTION ISOLATION LEVEL'],
+    ['SET LOCK', 'SET LOCK_TIMEOUT'],
+    ['SET QUERY_GOV', 'SET QUERY_GOVERNOR_COST_LIMIT'],
+    ['SET IDENTITY_INSERT', 'SET IDENTITY_INSERT'],
+  ]) {
+    await scrivi(inizio)
+    const voci = await vociPopup()
+    check(`propone ${attesa}`, voci.includes(attesa), `scrivendo "${inizio}": ${JSON.stringify(voci.slice(0, 3))}`)
+  }
+
+  // 2) CASO SEGNALATO: la direttiva sotto un'altra direttiva SET
+  await scrivi('SET NOCOUNT ON\n  SET XACT_ABORT ON\n  SET ')
+  const vociDopo = await vociPopup()
+  console.log(`  dopo due direttive SET: ${vociDopo.length} voci — ${JSON.stringify(vociDopo.slice(0, 3))}`)
+  check('sotto "SET NOCOUNT ON" / "SET XACT_ABORT ON" il popup si riapre', vociDopo.length > 0)
+  check('e propone di nuovo tutte le opzioni', vociDopo.includes('SET NOCOUNT ON') && vociDopo.includes('SET XACT_ABORT ON'))
+
+  // 3) filtro: "SET NO" → NOCOUNT (e non le altre)
+  await scrivi('SET NO')
+  const vociNo = await vociPopup()
+  console.log(`  dopo "SET NO": ${JSON.stringify(vociNo.slice(0, 5))}`)
+  check('mentre si scrive "SET NO" propone SET NOCOUNT ON', vociNo.includes('SET NOCOUNT ON'), JSON.stringify(vociNo.slice(0, 3)))
+
+  // 4) "SET XACT_ABORT " → ON/OFF
+  await scrivi('SET XACT_ABORT ')
+  const vociValori = minuscole(await vociPopup())
+  console.log(`  dopo "SET XACT_ABORT ": ${JSON.stringify(vociValori.slice(0, 4))}`)
+  check('dopo "SET XACT_ABORT " propone ON', vociValori.includes('on'))
+  check('dopo "SET XACT_ABORT " propone OFF', vociValori.includes('off'))
+
+  // 5) accettando "ON" la direttiva è COMPLETA e compilabile
+  await page.press('Enter', { code: 'Enter', vk: 13 })
+  await sleep(900)
+  const riga = (await righeEditor()).map(r => r.trim()).filter(Boolean).pop() ?? ''
+  console.log(`  riga dopo la conferma: ${JSON.stringify(riga)}`)
+  check('accettando ON si ottiene "SET XACT_ABORT ON"', /^SET XACT_ABORT ON$/i.test(riga), riga)
+
+  // 6) accettando il NOME dell'opzione si ottiene già la direttiva completa
+  await scrivi('SET NOC')
+  await sleep(1600)
+  const vociNoc = await vociPopup()
+  await page.press('Enter', { code: 'Enter', vk: 13 })
+  await sleep(900)
+  const riga2 = (await righeEditor()).map(r => r.trim()).filter(Boolean).pop() ?? ''
+  console.log(`  dopo "SET NOC" → ${JSON.stringify(vociNoc.slice(0, 2))} → ${JSON.stringify(riga2)}`)
+  check('accettando l opzione si ottiene "SET NOCOUNT ON"', /^SET NOCOUNT ON$/i.test(riga2), riga2)
+
+  await page.screenshot('direttive-set-intellisense')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * VERIFICA (--verify-create): lo script CREATE di una tabella deve essere IDENTICO a quello che
  * scrive SSMS (richiesta utente: "questo è lo script corretto preso da ssms… fallo identico a
  * SSMS"). Si passa dal menu contestuale del pannello Oggetti ("Script tabella" → "CREATE") e si
@@ -4090,6 +4210,11 @@ async function main() {
 
     if (VERIFY_CREATE) {
       await verifyCreate(page)
+      return
+    }
+
+    if (VERIFY_SET) {
+      await verifySet(page)
       return
     }
 

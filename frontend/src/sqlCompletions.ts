@@ -7,7 +7,7 @@ import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
 import { isTextOffsetInComment } from './helpers'
 import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, columnsByFragment, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from './helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
-import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectEnableDisableTriggerName, detectEnableDisableTriggerOn, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, dropColumnSnippet, extractDeclaredVariables, extractRoutineParameters, systemVariablePrefixLen, variablePrefixLen, vincoliCollegati } from './tsqlSnippets'
+import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectEnableDisableTriggerName, detectEnableDisableTriggerOn, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, dropColumnSnippet, extractDeclaredVariables, extractRoutineParameters, setOptionInsertText, setOptionLabel, systemVariablePrefixLen, variablePrefixLen, vincoliCollegati } from './tsqlSnippets'
 import { extractCteTables, extractDerivedTables, extractLocalTables } from './localTables'
 import { extractLabels } from './labels'
 import { ORDER_DIRECTIONS } from './intellisenseContext'
@@ -224,16 +224,38 @@ export function provideSqlCompletions({
             const setCtx = detectSetContext(textBefore)
             if (setCtx) {
               if (setCtx.kind === 'options') {
-                for (const opt of TSQL_SET_OPTIONS) {
-                  push({
-                    label: opt.name,
-                    detail: opt.detail,
-                    kind: monaco.languages.CompletionItemKind.Keyword,
-                    insertText: opt.name,
-                    range,
-                    filterText: opt.name,
-                  })
+                // si propongono le opzioni che iniziano con quanto già digitato ("SET NO" →
+                // NOCOUNT); l'etichetta è la direttiva intera ("SET NOCOUNT ON") e accettandola si
+                // scrive la direttiva COMPLETA: il "SET" è già nel documento, quindi si inserisce
+                // il resto ("NOCOUNT ON"). Per le opzioni che vogliono un valore si inserisce solo
+                // il nome e i valori arrivano subito dopo, come prima.
+                const filtro = setCtx.prefisso.toUpperCase()
+                const opzioni = filtro ? TSQL_SET_OPTIONS.filter(o => o.name.toUpperCase().startsWith(filtro)) : TSQL_SET_OPTIONS
+                if (opzioni.length > 0) {
+                  // le opzioni di più parole ("STATISTICS IO") si sostituiscono da capo: il
+                  // suggerimento riporta tutta la direttiva, non solo l'ultima parola
+                  const rangeSet =
+                    setCtx.sostituisci > 0
+                      ? new monaco.Range(
+                          position.lineNumber,
+                          Math.max(1, position.column - setCtx.sostituisci),
+                          position.lineNumber,
+                          position.column,
+                        )
+                      : range
+                  for (const opt of opzioni) {
+                    push({
+                      label: setOptionLabel(opt),
+                      detail: opt.detail,
+                      kind: monaco.languages.CompletionItemKind.Keyword,
+                      insertText: setOptionInsertText(opt),
+                      range: rangeSet,
+                      filterText: opt.name,
+                    })
+                  }
+                  return { suggestions }
                 }
+                // nessuna opzione SET con questo inizio: si prosegue con gli altri suggerimenti
               } else {
                 const opt = TSQL_SET_OPTIONS.find(o => o.name.toUpperCase() === setCtx.option) ?? {
                   name: setCtx.option,
@@ -250,8 +272,8 @@ export function provideSqlCompletions({
                     filterText: v,
                   })
                 }
+                return { suggestions }
               }
-              return { suggestions }
             }
 
             // ALTER TABLE <tabella> DROP [COLUMN|CONSTRAINT] → colonne e vincoli della tabella

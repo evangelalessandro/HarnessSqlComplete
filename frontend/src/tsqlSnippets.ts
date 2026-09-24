@@ -51,39 +51,79 @@ export interface SetOptionSuggestion {
   name: string
   detail: string
   values: string[]
+  /**
+   * Valore con cui la direttiva si scrive normalmente (es. NOCOUNT → ON): accettando il
+   * suggerimento l'opzione si completa da sola ("SET NOCOUNT ON") invece di lasciare la riga a
+   * metà. Manca dove il valore va scelto di volta in volta (DATEFORMAT, LOCK_TIMEOUT,
+   * TRANSACTION ISOLATION LEVEL…): in quel caso si propongono i valori dopo lo spazio.
+   */
+  predefinito?: string
 }
 
-/** Opzioni SET (statement SET a inizio statement) con i valori possibili. */
+/**
+ * Opzioni SET (elenco completo delle istruzioni SET di SQL Server, dal manuale Microsoft:
+ * "SET Statements (Transact-SQL)"), con i valori possibili e il valore con cui la direttiva si
+ * scrive di solito. Le prime due sono quelle che aprono quasi tutte le stored procedure.
+ */
 export const TSQL_SET_OPTIONS: SetOptionSuggestion[] = [
-  { name: 'NOCOUNT', detail: 'evita il messaggio "righe interessate"', values: ['ON', 'OFF'] },
-  { name: 'XACT_ABORT', detail: 'rollback automatico su errore runtime', values: ['ON', 'OFF'] },
-  { name: 'ANSI_NULLS', detail: 'confronti con NULL secondo lo standard', values: ['ON', 'OFF'] },
-  { name: 'QUOTED_IDENTIFIER', detail: 'identificatori tra doppi apici', values: ['ON', 'OFF'] },
-  { name: 'ANSI_PADDING', detail: 'spaziatura dei valori', values: ['ON', 'OFF'] },
-  { name: 'ANSI_WARNINGS', detail: 'avvisi standard (divisione per zero…)', values: ['ON', 'OFF'] },
-  { name: 'ANSI_NULL_DFLT_ON', detail: 'colonne NULL per default', values: ['ON', 'OFF'] },
-  { name: 'ANSI_NULL_DFLT_OFF', detail: 'colonne NOT NULL per default', values: ['ON', 'OFF'] },
-  { name: 'ARITHABORT', detail: 'termina la query su errore aritmetico', values: ['ON', 'OFF'] },
-  { name: 'ARITHIGNORE', detail: 'ignora gli errori aritmetici', values: ['ON', 'OFF'] },
-  { name: 'CONCAT_NULL_YIELDS_NULL', detail: 'concatenazione con NULL → NULL', values: ['ON', 'OFF'] },
-  { name: 'CURSOR_CLOSE_ON_COMMIT', detail: 'chiude i cursori al COMMIT', values: ['ON', 'OFF'] },
-  { name: 'IMPLICIT_TRANSACTIONS', detail: 'transazioni implicite', values: ['ON', 'OFF'] },
-  { name: 'NUMERIC_ROUNDABORT', detail: 'errore su arrotondamento', values: ['ON', 'OFF'] },
-  { name: 'NOEXEC', detail: 'compila ma non esegue', values: ['ON', 'OFF'] },
-  { name: 'PARSEONLY', detail: 'solo controllo sintassi', values: ['ON', 'OFF'] },
-  { name: 'FMTONLY', detail: 'solo metadati', values: ['ON', 'OFF'] },
-  { name: 'STATISTICS IO', detail: 'attività I/O', values: ['ON', 'OFF'] },
-  { name: 'STATISTICS TIME', detail: 'tempi di esecuzione', values: ['ON', 'OFF'] },
-  { name: 'STATISTICS PROFILE', detail: 'profilo di esecuzione', values: ['ON', 'OFF'] },
-  { name: 'IDENTITY_INSERT', detail: 'inserimento esplicito di valori identity', values: ['ON', 'OFF'] },
+  { name: 'NOCOUNT', detail: 'evita il messaggio "righe interessate"', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'XACT_ABORT', detail: 'rollback automatico su errore runtime', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ANSI_NULLS', detail: 'confronti con NULL secondo lo standard', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'QUOTED_IDENTIFIER', detail: 'identificatori tra doppi apici', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ANSI_PADDING', detail: 'spaziatura dei valori', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ANSI_WARNINGS', detail: 'avvisi standard (divisione per zero…)', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ANSI_NULL_DFLT_ON', detail: 'colonne NULL per default', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ANSI_NULL_DFLT_OFF', detail: 'colonne NOT NULL per default', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ANSI_DEFAULTS', detail: 'attiva in blocco le opzioni ISO (ANSI_NULLS, ANSI_PADDING…)', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ARITHABORT', detail: 'termina la query su errore aritmetico', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ARITHIGNORE', detail: 'ignora gli errori aritmetici', values: ['ON', 'OFF'], predefinito: 'OFF' },
+  { name: 'CONCAT_NULL_YIELDS_NULL', detail: 'concatenazione con NULL → NULL', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'CURSOR_CLOSE_ON_COMMIT', detail: 'chiude i cursori al COMMIT', values: ['ON', 'OFF'], predefinito: 'OFF' },
+  { name: 'IMPLICIT_TRANSACTIONS', detail: 'transazioni implicite', values: ['ON', 'OFF'], predefinito: 'OFF' },
+  { name: 'NUMERIC_ROUNDABORT', detail: 'errore su arrotondamento', values: ['ON', 'OFF'], predefinito: 'OFF' },
+  { name: 'REMOTE_PROC_TRANSACTIONS', detail: 'transazione distribuita per le procedure remote', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'NOEXEC', detail: 'compila ma non esegue', values: ['ON', 'OFF'], predefinito: 'OFF' },
+  { name: 'PARSEONLY', detail: 'solo controllo sintassi', values: ['ON', 'OFF'], predefinito: 'OFF' },
+  { name: 'FMTONLY', detail: 'solo metadati (deprecata)', values: ['ON', 'OFF'], predefinito: 'OFF' },
+  { name: 'FORCEPLAN', detail: 'rispetta l\'ordine dei JOIN nella FROM', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'SHOWPLAN_ALL', detail: 'piano di esecuzione stimato, in formato testo', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'SHOWPLAN_TEXT', detail: 'piano di esecuzione stimato, in testo semplice', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'SHOWPLAN_XML', detail: 'piano di esecuzione stimato, in XML', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'OFFSETS', detail: 'offset delle colonne nei comandi DB-Library (deprecata)', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'FIPS_FLAGGER', detail: 'controllo di conformità FIPS (deprecata)', values: ['OFF', 'ENTRY', 'INTERMEDIATE', 'FULL'], predefinito: 'OFF' },
+  { name: 'STATISTICS IO', detail: 'attività I/O', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'STATISTICS TIME', detail: 'tempi di esecuzione', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'STATISTICS PROFILE', detail: 'profilo di esecuzione', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'STATISTICS XML', detail: 'piano di esecuzione reale, in XML', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'IDENTITY_INSERT', detail: 'inserimento esplicito di valori identity (serve la tabella: SET IDENTITY_INSERT dbo.T ON)', values: ['ON', 'OFF'] },
   { name: 'LOCK_TIMEOUT', detail: 'millisecondi di attesa sui lock (-1 = infinito)', values: ['-1', '0', '5000'] },
   { name: 'ROWCOUNT', detail: 'numero massimo di righe processate', values: ['0', '100', '1000'] },
+  { name: 'TEXTSIZE', detail: 'dimensione massima dei dati text/ntext/image restituiti', values: ['0', '4096', '64512', '2147483647'] },
+  { name: 'QUERY_GOVERNOR_COST_LIMIT', detail: 'costo massimo stimato di una query', values: ['0', '100', '1000'] },
   { name: 'DATEFORMAT', detail: 'ordine giorno/mese/anno', values: ['dmy', 'mdy', 'ymd', 'dym', 'myd', 'ydm'] },
   { name: 'DATEFIRST', detail: 'primo giorno della settimana', values: ['1', '7'] },
   { name: 'LANGUAGE', detail: 'lingua delle sessioni', values: ["'Italian'", "'English'", "'German'", "'French'", "'Spanish'"] },
   { name: 'DEADLOCK_PRIORITY', detail: 'priorità nei deadlock', values: ['LOW', 'NORMAL', 'HIGH'] },
+  { name: 'CONTEXT_INFO', detail: 'valore binario di sessione (fino a 128 byte)', values: ['0x0'] },
   { name: 'TRANSACTION ISOLATION LEVEL', detail: 'livello di isolamento', values: ['READ COMMITTED', 'READ UNCOMMITTED', 'REPEATABLE READ', 'SNAPSHOT', 'SERIALIZABLE'] },
 ]
+
+/**
+ * Direttiva completa da inserire accettando il suggerimento di un'opzione SET:
+ * "NOCOUNT ON" (il "SET" davanti è già scritto nel documento), oppure solo il nome quando il
+ * valore va scelto ("DATEFORMAT", "TRANSACTION ISOLATION LEVEL").
+ */
+export function setOptionInsertText(opt: SetOptionSuggestion): string {
+  return opt.predefinito ? `${opt.name} ${opt.predefinito}` : opt.name
+}
+
+/** Etichetta del suggerimento: la direttiva intera, come la si legge nel documento. */
+export function setOptionLabel(opt: SetOptionSuggestion): string {
+  return `SET ${setOptionInsertText(opt)}`
+}
+
+/** Nomi delle opzioni SET in forma di regex ("STATISTICS IO" → "STATISTICS\s+IO"). */
+const SET_OPTION_NAMES = TSQL_SET_OPTIONS.map(o => o.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')).join('|')
 
 export interface AlterTableSnippet {
   label: string
@@ -117,13 +157,24 @@ export function detectDeclareTypeContext(textBefore: string): boolean {
   return /^@[A-Za-z_][\w]*(\s+AS)?(\s+[A-Za-z_][\w]*)?$/i.test(tail)
 }
 
-export type SetContext = { kind: 'options' } | { kind: 'values'; option: string }
+export type SetContext =
+  /**
+   * Dopo "SET " (anche con l'opzione scritta a metà: "SET NO", "SET STATISTICS I") si propongono
+   * le opzioni. `prefisso` è il testo già digitato (maiuscolo, senza spazi ai bordi) e
+   * `sostituisci` quanti caratteri sostituire accettando il suggerimento: così anche le opzioni di
+   * due parole ("STATISTICS IO") si completano senza duplicare quello che c'è già.
+   */
+  | { kind: 'options'; prefisso: string; sostituisci: number }
+  /** Dopo "SET <opzione> " (spazio finale) si propongono i VALORI dell'opzione. */
+  | { kind: 'values'; option: string }
 
 /**
- * Contesto SET a inizio statement: dopo "SET " → nomi opzioni; dopo "SET <opzione> " → valori (ON/OFF…).
+ * Contesto SET a inizio statement: dopo "SET " → opzioni; dopo "SET <opzione> " → valori (ON/OFF…).
  * Il SET è "a inizio statement" anche quando è su una riga NUOVA solo se la riga precedente
- * chiude uno statement (vuota, ';', GO/BEGIN/END/AS/ELSE…): NON se continua un UPDATE
- * ("UPDATE dbo.T\nSET " deve proporre le colonne della tabella, non le opzioni SET).
+ * chiude uno statement (vuota, ';', GO/BEGIN/END/AS/ELSE…, oppure una direttiva SET già scritta:
+ * due SET di fila, "SET NOCOUNT ON" e sotto "SET XACT_ABORT ON", sono due statement distinti):
+ * NON se continua un UPDATE ("UPDATE dbo.T\nSET " deve proporre le colonne della tabella, non le
+ * opzioni SET).
  */
 export function detectSetContext(textBefore: string): SetContext | null {
   const lastNl = textBefore.lastIndexOf('\n')
@@ -134,17 +185,29 @@ export function detectSetContext(textBefore: string): SetContext | null {
     const closesStatement =
       prevLine === '' ||
       /;$/.test(prevLine) ||
-      /^(?:GO|BEGIN|END|ELSE|AS|THEN|DO|TRY|CATCH)\b/i.test(prevLine)
+      /^\s*(?:GO|BEGIN|END|ELSE|AS|THEN|DO|TRY|CATCH)\b/i.test(prevLine) ||
+      // direttiva SET già scritta ("SET NOCOUNT ON", "SET ANSI_NULLS, QUOTED_IDENTIFIER ON")
+      new RegExp(`^SET\\s+(?:${SET_OPTION_NAMES})\\b`, 'i').test(prevLine.trimStart())
     if (!closesStatement) {
       // la riga precedente continua lo statement: il SET non è un'opzione
       eff = before + ' ' + textBefore.slice(lastNl + 1)
     }
   }
   const boundary = '(?:^|;|\\bGO\\b|\\n)[ \\t]*'
-  if (new RegExp(boundary + 'SET\\s*$', 'i').test(eff)) return { kind: 'options' }
-  const m = new RegExp(boundary + 'SET\\s+([A-Za-z_@][\\w]*)\\s*$', 'i').exec(eff)
-  if (m) return { kind: 'values', option: m[1].toUpperCase() }
-  return null
+  const m = new RegExp(boundary + 'SET\\b([ \\t]*)([^\\n;]*)$', 'i').exec(eff)
+  if (!m) return null
+  const resto = m[2]
+  const senzaSpaziFinali = resto.replace(/[ \t]+$/, '')
+  const testo = senzaSpaziFinali.trim().toUpperCase()
+  // un'opzione SET è una sequenza di lettere (anche su più parole): qualunque altra cosa
+  // ("SET @x = 1", "SET NOCOUNT = 1") non è una direttiva e la lasciano gestire agli altri
+  // suggerimenti (es. le variabili dopo "SET @")
+  if (testo !== '' && !/^[A-Z_][A-Z0-9_ ]*$/.test(testo)) return null
+  // "SET NOCOUNT " (spazio dopo un'opzione completa) → si propongono i valori
+  if (testo !== '' && resto.length > senzaSpaziFinali.length && TSQL_SET_OPTIONS.some(o => o.name.toUpperCase() === testo)) {
+    return { kind: 'values', option: testo }
+  }
+  return { kind: 'options', prefisso: testo, sostituisci: testo.length }
 }
 
 /** True subito dopo "ALTER TABLE <tabella> " (per proporre gli snippet). */
