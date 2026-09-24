@@ -25,7 +25,7 @@ import { formattaConMotore, OPZIONI_SQLFLUFF_DEFAULT } from '../formatEngine'
 import type { MotoreFormattazione, OpzioniSqlFluff } from '../formatEngine'
 import { SQL_WORD_SEPARATORS } from '../editorOptions'
 import { BLOCCHI_KEY, opzioniMonaco, parseBlocchi, serializzaBlocchi } from '../blockMode'
-import { azioneCursore, cursoreDaAggiungere } from '../multiCursor'
+import { azioneCursore, cursoreDaAggiungere, cursoreDaNeutralizzare } from '../multiCursor'
 import FormatProfilePanel from './FormatProfilePanel'
 import { Badge, Button, Spinner, Toggle } from './ui'
 
@@ -351,18 +351,14 @@ export default function SqlEditor({
     }
 
     /**
-     * Ctrl+Alt+Su/Giù DEVE aggiungere un cursore sopra/sotto, mai copiare o spostare la riga
-     * (segnalazione utente: "con ctrl+alt+giù si sta copiando la riga corrente", poi "ctrl+alt+giù
-     * non va in modalità multi cursore"). L'evento viene intercettato in fase di CAPTURA, prima di
-     * Monaco, e la combinazione si riconosce da code/key/keyCode + modificatori (AltGr compreso):
-     * quando la tastiera passa per AltGr il browser può non riportare key/code e la combinazione
-     * sembrerebbe non premuta.
+     * MAIUSC+ALT+Su/Giù (Shift+Alt) DEVE aggiungere un cursore sopra/sotto, mai copiare o spostare
+     * la riga (richiesta utente: "deve funzionare con il maius + alt e non CTRL + Alt"). L'evento
+     * viene intercettato in fase di CAPTURA, prima di Monaco, e la combinazione si riconosce da
+     * code/key/keyCode + modificatori.
      */
     const domNodeTasti = editor.getDomNode()
     const onTasti = (ev: KeyboardEvent) => {
-      // AltGr non è una proprietà dell'evento: si legge con getModifierState (su Windows
-      // Ctrl+Alt e AltGr coincidono e alcuni browser lo riportano solo così).
-      const direzione = cursoreDaAggiungere({
+      const tasto = {
         code: ev.code,
         key: ev.key,
         keyCode: ev.keyCode,
@@ -372,7 +368,15 @@ export default function SqlEditor({
         altKey: ev.altKey,
         shiftKey: ev.shiftKey,
         altGraph: ev.getModifierState?.('AltGraph') ?? false,
-      })
+      }
+      // Ctrl+Alt+Su/Giù (e AltGr, che su Windows è Ctrl+Alt) non deve fare NULLA: in Monaco è la
+      // combinazione predefinita dei cursori e continuerebbe ad aggiungerli.
+      if (cursoreDaNeutralizzare(tasto)) {
+        ev.preventDefault()
+        ev.stopPropagation()
+        return
+      }
+      const direzione = cursoreDaAggiungere(tasto)
       if (!direzione) return
       ev.preventDefault()
       ev.stopPropagation()
@@ -389,27 +393,28 @@ export default function SqlEditor({
     for (const direzione of ['sopra', 'sotto'] as const) {
       const freccia = direzione === 'sotto' ? monaco.KeyCode.DownArrow : monaco.KeyCode.UpArrow
       editor.addCommand(
-        monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | freccia,
-        () => aggiungiCursore(direzione),
-        'sqlIntelliMultiCursor',
-      )
-      editor.addCommand(
-        monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyMod.Shift | freccia,
+        monaco.KeyMod.Shift | monaco.KeyMod.Alt | freccia,
         () => aggiungiCursore(direzione),
         'sqlIntelliMultiCursor',
       )
     }
+    // Ctrl+Alt+Su/Giù NON deve più aggiungere cursori (si usa Maiusc+Alt): Monaco ha la stessa
+    // combinazione fra i suoi comandi predefiniti, quindi si registra un comando VUOTO con lo
+    // stesso tasto (i comandi dinamici hanno peso maggiore) per neutralizzarla.
+    for (const freccia of [monaco.KeyCode.DownArrow, monaco.KeyCode.UpArrow]) {
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | freccia, () => {}, 'sqlIntelliMultiCursor')
+    }
     // ...e nella tendina del tasto destro, per chi non ricorda la scorciatoia
     editor.addAction({
       id: 'sql-intelli-cursore-sotto',
-      label: 'Aggiungi cursore sotto (Ctrl+Alt+Giù)',
+      label: 'Aggiungi cursore sotto (Maiusc+Alt+Giù)',
       contextMenuGroupId: 'sql-intelli-righe',
       contextMenuOrder: 1,
       run: () => aggiungiCursore('sotto'),
     })
     editor.addAction({
       id: 'sql-intelli-cursore-sopra',
-      label: 'Aggiungi cursore sopra (Ctrl+Alt+Su)',
+      label: 'Aggiungi cursore sopra (Maiusc+Alt+Su)',
       contextMenuGroupId: 'sql-intelli-righe',
       contextMenuOrder: 2,
       run: () => aggiungiCursore('sopra'),
@@ -860,7 +865,7 @@ export default function SqlEditor({
             checked={blocchi}
             onChange={toggleBlocchi}
             label="Scrittura su più righe"
-            title="Selezione a BLOCCHI come in SSMS (Alt+C): trascina col mouse un rettangolo di testo e quello che scrivi va su TUTTE le righe selezionate. Per più cursori: Alt+clic oppure Ctrl+Alt+Giù / Ctrl+Alt+Su."
+            title="Selezione a BLOCCHI come in SSMS (Alt+C): trascina col mouse un rettangolo di testo e quello che scrivi va su TUTTE le righe selezionate. Per più cursori: Alt+clic oppure Maiusc+Alt+Giù / Maiusc+Alt+Su."
             data-multiriga="blocchi"
           />
           <Badge tone={aiConfigured ? 'emerald' : 'amber'}>{aiStatusText}</Badge>

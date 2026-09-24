@@ -1893,20 +1893,20 @@ async function verifyMultiriga(page) {
     await sleep(600)
   }
 
-  // ---------------------------------------------------------------- 1. più cursori (Ctrl+Alt+Giù)
+  // ------------------------------------- 1. più cursori (MAIUSC+ALT+Giù, richiesta utente)
   await scrivi(['SELECT 1', 'SELECT 2', 'SELECT 3'].join('\n'))
   await page.clickPoint(rect.x + 200, rect.y + 18) // riga 1
   await page.press('Home', { code: 'Home', vk: 36 })
   await sleep(300)
   const prima = await cursori()
-  // Ctrl(2) + Alt(1) = modifiers 3 → "aggiungi cursore sotto"
-  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 3 })
+  // Shift(8) + Alt(1) = modifiers 9 → "aggiungi cursore sotto"
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
   await sleep(400)
-  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 3 })
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
   await sleep(400)
   const dopo = await cursori()
-  console.log(`  cursori: prima ${prima}, dopo Ctrl+Alt+Giù ${dopo}`)
-  check('Ctrl+Alt+Giù aggiunge un cursore per riga', dopo >= 3, `${dopo} cursori`)
+  console.log(`  cursori: prima ${prima}, dopo Maiusc+Alt+Giù ${dopo}`)
+  check('Maiusc+Alt+Giù aggiunge un cursore per riga', dopo >= 3, `${dopo} cursori`)
   await page.typeText('X')
   await sleep(600)
   const scritte = await righeEditor()
@@ -1917,47 +1917,49 @@ async function verifyMultiriga(page) {
     JSON.stringify(scritte.slice(0, 3)),
   )
 
-  // --------------------- 1b. REGRESSIONE: "con ctrl+alt+giù si sta copiando la riga corrente".
-  // La combinazione va riconosciuta anche quando il browser consegna l'evento in modo anomalo
-  // (AltGr su Windows: keyCode 229 e getModifierState('AltGraph') = true): cursore aggiunto e
-  // NESSUNA riga copiata.
+  // 1a) anche la freccia SU: cursore aggiunto sopra, si scrive su entrambe le righe
+  await scrivi(['SELECT 1', 'SELECT 2', 'SELECT 3'].join('\n'))
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await clicRiga(1) // seconda riga
+  await page.press('Home', { code: 'Home', vk: 36 })
+  await sleep(300)
+  await page.press('ArrowUp', { code: 'ArrowUp', vk: 38, modifiers: 9 })
+  await sleep(400)
+  const cursoriSu = await cursori()
+  await page.typeText('Y')
+  await sleep(600)
+  const righeSu = await righeEditor()
+  console.log(`  Maiusc+Alt+Su: cursori=${cursoriSu}, righe=${JSON.stringify(righeSu)}`)
+  check('Maiusc+Alt+Su aggiunge un cursore sopra', cursoriSu >= 2, `${cursoriSu} cursori`)
+  check(
+    'scrivendo si scrive sulla riga sopra e su quella di partenza',
+    righeSu[0]?.startsWith('Y') && righeSu[1]?.startsWith('Y') && !righeSu[2]?.startsWith('Y'),
+    JSON.stringify(righeSu),
+  )
+
+  // ------------- 1b. CTRL+ALT (e AltGr, che su Windows è Ctrl+Alt) NON deve più aggiungere cursori
+  // (richiesta utente: "deve funzionare con il maius + alt e non CTRL + Alt").
   await scrivi(['uno', 'due', 'tre'].join('\n'))
   await page.press('Escape', { code: 'Escape', vk: 27 })
   await clicRiga(0)
   const primaDelCaso = await cursori()
-  // dispatchEvent restituisce false se l'evento è stato annullato: la nostra intercettazione
-  // (fase di cattura) deve prenderlo in carico PRIMA che Monaco faccia altro.
-  const nonAnnullato = await page.eval(`(() => {
-    const dom = document.querySelector('.monaco-editor textarea') || document.querySelector('.monaco-editor');
-    const ev = new KeyboardEvent('keydown', {
-      key: 'ArrowDown', code: 'ArrowDown', keyCode: 229, which: 229,
-      ctrlKey: true, altKey: true, bubbles: true, cancelable: true, view: window,
-    });
-    Object.defineProperty(ev, 'getModifierState', { value: (k) => k === 'AltGraph' });
-    return dom.dispatchEvent(ev);
-  })()`)
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 3 }) // Ctrl(2) + Alt(1)
   await sleep(500)
-  const cursoriAltGr = await cursori()
-  await page.typeText('W')
-  await sleep(600)
-  const righeAltGr = await righeEditor()
-  console.log(`  Ctrl+Alt+Giù con AltGr: annullato=${!nonAnnullato} cursori=${cursoriAltGr} righe=${JSON.stringify(righeAltGr)}`)
+  const cursoriCtrlAlt = await cursori()
+  const righeCtrlAlt = await righeEditor()
+  console.log(`  Ctrl+Alt+Giù: cursori ${primaDelCaso} → ${cursoriCtrlAlt}, righe=${JSON.stringify(righeCtrlAlt)}`)
   check(
-    'Ctrl+Alt+Giù è preso in carico da noi (evento annullato) anche con AltGr',
-    nonAnnullato === false && primaDelCaso === 1,
-    `dispatchEvent → ${nonAnnullato}, cursori prima: ${primaDelCaso}`,
+    'Ctrl+Alt+Giù NON aggiunge più cursori',
+    cursoriCtrlAlt === primaDelCaso,
+    `${primaDelCaso} → ${cursoriCtrlAlt} cursori`,
   )
-  check(
-    'Ctrl+Alt+Giù aggiunge un cursore e NON copia la riga (caso AltGr)',
-    cursoriAltGr >= 2 && righeAltGr.filter(r => r.includes('W')).length >= 2 && righeAltGr.length === 3,
-    `${cursoriAltGr} cursori, ${righeAltGr.length} righe`,
-  )
+  check('Ctrl+Alt+Giù non copia nemmeno la riga', righeCtrlAlt.length === 3, `${righeCtrlAlt.length} righe`)
 
-  // 1c) varianti con cui la tastiera può consegnare AltGr: solo altGraph (senza altKey) e
-  //     keyCode senza key/code. Segnalazione utente: "ctrl+alt+giù non va in modalità multi cursore".
+  // 1c) varianti con cui la tastiera può consegnare la combinazione (senza key/code, o con
+  //     AltGr riportato solo da getModifierState)
   for (const variante of [
-    { nome: 'solo altGraph', evento: `{ key: 'ArrowDown', code: 'ArrowDown', altKey: false, ctrlKey: false, altGraph: true }` },
-    { nome: 'solo keyCode 40', evento: `{ keyCode: 40, which: 40, ctrlKey: true, altKey: true }` },
+    { nome: 'solo altKey+shiftKey senza code', evento: `{ key: 'ArrowDown', code: '', shiftKey: true, altKey: true }` },
+    { nome: 'solo keyCode 40', evento: `{ keyCode: 40, which: 40, shiftKey: true, altKey: true }` },
   ]) {
     await scrivi(['uno', 'due', 'tre'].join('\n'))
     await page.press('Escape', { code: 'Escape', vk: 27 })
@@ -1975,21 +1977,25 @@ async function verifyMultiriga(page) {
     })()`)
     await sleep(500)
     const c = await cursori()
-    console.log(`  Ctrl+Alt+Giù (${variante.nome}): cursori=${c}`)
-    check(`Ctrl+Alt+Giù riconosciuto anche con "${variante.nome}"`, c >= 2, `${c} cursori`)
+    console.log(`  Maiusc+Alt+Giù (${variante.nome}): cursori=${c}`)
+    check(`Maiusc+Alt+Giù riconosciuto anche con "${variante.nome}"`, c >= 2, `${c} cursori`)
   }
 
-  // Shift+Alt+Giù resta "copia riga sotto" (la nostra intercettazione non lo tocca)
+  // 1d) Maiusc+Alt+Giù non deve COPIARE la riga (in Monaco era "copia riga sotto"): il cursore
+  //     viene aggiunto e il numero di righe resta lo stesso.
   await scrivi(['uno', 'due', 'tre'].join('\n'))
   await page.press('Escape', { code: 'Escape', vk: 27 })
   await clicRiga(0)
-  const primaCopia = await cursori()
-  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 }) // Alt(1) + Shift(8)
-  await sleep(600)
-  const righeCopia = await righeEditor()
-  const copiata = righeCopia.length === 4 && righeCopia.some((r, i) => i > 0 && r === righeCopia[i - 1])
-  console.log(`  Shift+Alt+Giù (cursori ${primaCopia}): ${JSON.stringify(righeCopia)}`)
-  check('Shift+Alt+Giù continua a copiare la riga sotto', copiata, JSON.stringify(righeCopia))
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+  await sleep(400)
+  const righeMulti = await righeEditor()
+  const cursoriMulti = await cursori()
+  console.log(`  Maiusc+Alt+Giù (cursori ${cursoriMulti}): ${JSON.stringify(righeMulti)}`)
+  check(
+    'Maiusc+Alt+Giù aggiunge il cursore e NON copia la riga',
+    cursoriMulti >= 2 && righeMulti.length === 3,
+    `${cursoriMulti} cursori, ${righeMulti.length} righe`,
+  )
 
   // ------------------------------------------------------- 2. selezione a BLOCCHI (Alt+C, stile SSMS)
   /** Stato dell'interruttore "Scrittura su più righe". */

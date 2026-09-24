@@ -153,7 +153,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Scrivere su più righe',
         detail:
-          'Due modi, come in SSMS/VS Code. 1) PIÙ CURSORI: Ctrl+Alt+Giù (o Ctrl+Alt+Su) aggiunge un cursore alla riga sotto/sopra, Alt+clic ne aggiunge uno dove clicchi, Ctrl+D seleziona l\u2019occorrenza successiva: quello che scrivi finisce su TUTTI i cursori, e incollando più righe il testo si distribuisce su un cursore per riga. 2) SELEZIONE A BLOCCHI (pulsante "Scrittura su più righe" in alto, oppure Alt+C): trascinando col mouse si seleziona un RETTANGOLO di testo e quello che scrivi va su tutte le righe selezionate, nella stessa colonna; la scelta resta salvata anche dopo il riavvio. Per COPIAre una riga sotto resta Shift+Alt+Giù (Ctrl+Alt+Giù aggiunge solo il cursore, non copia la riga).',
+          'Due modi, come in SSMS/Visual Studio. 1) PIÙ CURSORI: Maiusc+Alt+Giù (o Maiusc+Alt+Su) aggiunge un cursore alla riga sotto/sopra, Alt+clic ne aggiunge uno dove clicchi, Ctrl+D seleziona l\u2019occorrenza successiva: quello che scrivi finisce su TUTTI i cursori, e incollando più righe il testo si distribuisce su un cursore per riga. (Ctrl+Alt+Su/Giù non fa più nulla: su Windows Ctrl+Alt è AltGr, la combinazione del multi cursore è Maiusc+Alt.) 2) SELEZIONE A BLOCCHI (pulsante "Scrittura su più righe" in alto, oppure Alt+C): trascinando col mouse si seleziona un RETTANGOLO di testo e quello che scrivi va su tutte le righe selezionate, nella stessa colonna; la scelta resta salvata anche dopo il riavvio. Per copiare una riga sotto usa Ctrl+C / Ctrl+V.',
       },
       {
         title: 'Alias delle tabelle',

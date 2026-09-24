@@ -19,7 +19,7 @@ export function serializzaBlocchi(accesa: boolean): string {
 /**
  * Opzioni Monaco da applicare quando la modalità a blocchi è accesa/spenta.
  * `columnSelection` è la voce che rende il trascinamento "a rettangolo".
- * `multiCursorModifier: 'alt'` tiene Alt+clic per aggiungere cursori (Ctrl+Alt+Giù per più righe).
+ * `multiCursorModifier: 'alt'` tiene Alt+clic per aggiungere cursori (Maiusc+Alt+Giù per più righe).
  */
 export function opzioniMonaco(accesa: boolean): { columnSelection: boolean; multiCursorModifier: 'alt' } {
   return { columnSelection: accesa, multiCursorModifier: 'alt' }

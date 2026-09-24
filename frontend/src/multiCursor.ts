@@ -1,11 +1,13 @@
-// SCRITTURA SU PIÙ RIGHE: la combinazione Ctrl+Alt+Su/Giù deve SEMPRE aggiungere un cursore
-// sopra/sotto (come in VS Code), mai copiare o spostare la riga.
+// SCRITTURA SU PIÙ RIGHE: la combinazione Maiusc+Alt+Su/Giù (Shift+Alt) aggiunge un cursore
+// sopra/sotto, come in Visual Studio. Richiesta utente: "deve funzionare con il maius + alt e non
+// CTRL + Alt": su Windows Ctrl+Alt è la stessa cosa di AltGr (produce caratteri accentati/€) e in
+// Monaco Ctrl+Alt+Su/Giù è già la combinazione predefinita per i cursori, quindi qui si usa
+// MAIUSC+ALT e Ctrl/AltGr vengono rifiutati.
 //
-// Perché serve un intervento esplicito: su Windows Ctrl+Alt e AltGr sono la stessa cosa e a
-// seconda di come il browser/tastiera consegna l'evento la combinazione può finire su un'altra
-// azione di Monaco (es. copia riga). Qui la combinazione viene riconosciuta dall'evento stesso
-// (codice del tasto + modificatori, senza guardare keyCode/key che possono variare) e viene
-// eseguita direttamente l'azione "aggiungi cursore". Logica pura e testabile.
+// Perché serve un intervento esplicito: l'evento va riconosciuto dal codice del tasto e dai
+// modificatori (senza guardare keyCode/key, che con alcune tastiere arrivano vuoti) e l'azione va
+// eseguita direttamente, altrimenti Maiusc+Alt+Giù finirebbe su un'altra azione di Monaco
+// ("copia riga sotto"). Logica pura e testabile.
 
 export type DirezioneCursore = 'sopra' | 'sotto'
 
@@ -14,33 +16,28 @@ export interface TastoPremuto {
   code?: string
   key?: string
   /** Codice "storico" del tasto (40 = freccia giù, 38 = freccia su): unico dato affidabile
-   *  quando la tastiera consegna l'evento come AltGr/IME e `key`/`code` sono vuoti o "Process". */
+   *  quando la tastiera consegna l'evento senza `key`/`code` (keyCode 229/0). */
   keyCode?: number
   which?: number
   ctrlKey?: boolean
   metaKey?: boolean
   altKey?: boolean
   shiftKey?: boolean
-  /** AltGr segnalato dal browser: su Windows è Ctrl+Alt, ma alcuni browser lo riportano solo qui. */
+  /** AltGr segnalato dal browser: su Windows è Ctrl+Alt e NON deve attivare il multi cursore. */
   altGraph?: boolean
 }
 
-/** True se i modificatori sono quelli di "aggiungi cursore" (Ctrl+Alt, Cmd+Alt, AltGr…). */
+/**
+ * True se i modificatori sono quelli di "aggiungi cursore": MAIUSC+ALT, senza Ctrl (né AltGr,
+ * che su Windows è Ctrl+Alt). Il tasto Cmd/Meta del Mac è ammesso.
+ */
 function modificatoriCursore(e: TastoPremuto): boolean {
-  const cmd = !!e.ctrlKey || !!e.metaKey || !!e.altGraph
-  // AltGr da solo vale come Ctrl+Alt: alcuni browser lo riportano solo come altGraph (senza altKey)
-  return cmd && (!!e.altKey || !!e.altGraph)
+  if (!e.altKey || !e.shiftKey) return false
+  return !e.ctrlKey && !e.altGraph
 }
 
-/**
- * Direzione del cursore da aggiungere, oppure null se la combinazione non è quella.
- * Accetta Ctrl+Alt (o Cmd+Alt su Mac, o AltGr su Windows) con la freccia Su/Giù, con o senza
- * Shift. Il tasto si riconosce da `code`, da `key` OPPURE da `keyCode`: quando la tastiera passa
- * per AltGr il browser può non riportare `key`/`code` (keyCode 229) e la combinazione sembrerebbe
- * non premuta — era il motivo per cui "ctrl+alt+giù" non aggiungeva il cursore.
- */
-export function cursoreDaAggiungere(e: TastoPremuto): DirezioneCursore | null {
-  if (!modificatoriCursore(e)) return null
+/** Direzione della freccia premuta (Su/Giù, anche PageUp/PageDown), oppure null. */
+function direzioneFreccia(e: TastoPremuto): DirezioneCursore | null {
   const tasto = e.code || e.key || ''
   if (tasto === 'ArrowDown' || tasto === 'Down') return 'sotto'
   if (tasto === 'ArrowUp' || tasto === 'Up') return 'sopra'
@@ -48,6 +45,29 @@ export function cursoreDaAggiungere(e: TastoPremuto): DirezioneCursore | null {
   if (codice === 40 || codice === 34) return 'sotto'
   if (codice === 38 || codice === 33) return 'sopra'
   return null
+}
+
+/**
+ * Direzione del cursore da aggiungere, oppure null se la combinazione non è quella.
+ * La combinazione è Maiusc+Alt con la freccia Su/Giù (anche col Cmd in più su Mac, ma su Windows
+ * Ctrl+Alt è AltGr e viene rifiutato). Il tasto si riconosce da `code`, da `key` OPPURE da
+ * `keyCode`: con alcune tastiere il browser non riporta `key`/`code` e la combinazione sembrerebbe
+ * non premuta.
+ */
+export function cursoreDaAggiungere(e: TastoPremuto): DirezioneCursore | null {
+  if (!modificatoriCursore(e)) return null
+  return direzioneFreccia(e)
+}
+
+/**
+ * True se è la VECCHIA combinazione (Ctrl/Cmd+Alt + freccia, cioè anche AltGr su Windows): non
+ * deve più aggiungere cursori e va neutralizzata, perché in Monaco Ctrl+Alt+Su/Giù è la
+ * combinazione predefinita dei cursori e altrimenti continuerebbe a funzionare.
+ */
+export function cursoreDaNeutralizzare(e: TastoPremuto): boolean {
+  if (!e.altKey) return false
+  if (!(e.ctrlKey || e.metaKey || e.altGraph)) return false
+  return direzioneFreccia(e) !== null
 }
 
 /** Nome dell'azione di Monaco da eseguire. */
