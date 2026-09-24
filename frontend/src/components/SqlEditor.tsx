@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { Eraser, FolderOpen, IndentDecrease, IndentIncrease, Loader2, MessageSquare, Moon, Play, Save, Settings2, Sun, Table2, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
+import { Eraser, FolderOpen, IndentDecrease, IndentIncrease, Loader2, MessageSquare, Moon, Play, Save, Settings2, Sun, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
 import monaco from '../monacoSetup'
 import { api } from '../api'
 import { syntaxIssuesFromCheck } from '../syntaxCheck'
@@ -434,7 +434,8 @@ export default function SqlEditor({
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS, () => onSaveAsRef.current?.())
     // Formatta: Ctrl+Shift+F
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF, handleFormat)
-    // Anteprima dati della tabella sotto il cursore: F4 (e pulsante toolbar)
+    // Anteprima dati della tabella sotto il cursore: F4 (e il link nella scheda di hover; il
+    // pulsante in toolbar è stato tolto — richiesta utente: "toglilo tanto c'è il tasto sotto")
     const openPreviewUnderCursor = () => {
       const model = editor.getModel()
       const pos = editor.getPosition()
@@ -807,24 +808,6 @@ export default function SqlEditor({
             title="Formatta (Ctrl+Shift+F) — con una selezione formatta solo quella parte"
           >
             {!formatting && <Wand2 className="h-4 w-4" />} {formatting ? 'Formattazione…' : 'Formatta'}
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={() => {
-              // apre l'anteprima della tabella sotto il cursore (come F4)
-              const ed = editorRef.current
-              const model = ed?.getModel()
-              const pos = ed?.getPosition()
-              const sm = stateRef.current.summary
-              if (!ed || !model || !pos || !sm) return
-              const resolved = resolveTokenAt(model.getValue(), model.getOffsetAt(pos), sm)
-              if (resolved?.kind === 'table') {
-                setPreviewTarget({ schema: resolved.table.schema, table: resolved.table.name })
-              }
-            }}
-            title="Anteprima dati della tabella sotto il cursore (F4) — genera INSERT/UPDATE/MERGE/DELETE/#tmp"
-          >
-            <Table2 className="h-4 w-4" /> Anteprima
           </Button>
           <Button
             variant="ghost"
