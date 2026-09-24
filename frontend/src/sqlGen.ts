@@ -2,13 +2,56 @@
 // (finestra "Anteprima dati"): in base alle righe e colonne selezionate dall'utente.
 // Logica PURA e testabile.
 
-import type { CellValue } from './types'
+import type { CellValue, DatabaseSummary, TableInfo } from './types'
 import { qualified } from './helpers'
 
 export interface GenColumn {
   name: string
   dataType?: string
   isIdentity?: boolean
+}
+
+/**
+ * Tabella dello schema attivo a partire dal nome scritto nel generatore ("T", "dbo.T",
+ * "[dbo].[T]"): null se non c'è. Serve a ricavare la CHIAVE della MERGE per la tabella target.
+ */
+export function trovaTabella(
+  summary: DatabaseSummary | null | undefined,
+  nome: string,
+): TableInfo | null {
+  const pulito = nome
+    .trim()
+    .split('.')
+    .map(p => p.trim().replace(/^\[|\]$/g, '').toLowerCase())
+    .filter(Boolean)
+  if (pulito.length === 0) return null
+  const tabella = pulito[pulito.length - 1]
+  const schema = pulito.length > 1 ? pulito[pulito.length - 2] : ''
+  const tabelle = summary?.tables ?? []
+  return (
+    tabelle.find(
+      t => t.name.toLowerCase() === tabella && (!schema || t.schema.toLowerCase() === schema),
+    ) ??
+    tabelle.find(t => t.name.toLowerCase() === tabella) ??
+    null
+  )
+}
+
+/**
+ * Colonne CHIAVE (PRIMARY KEY, anche COMPOSITA: sono tutte, non solo la prima) e colonne identity
+ * della tabella target del generatore. Richiesta utente: "quando fai la merge, la chiave potrebbe
+ * essere multipla" — la condizione ON della MERGE deve usare TUTTE le colonne della chiave.
+ */
+export function chiaviDellaTabella(
+  summary: DatabaseSummary | null | undefined,
+  nome: string,
+): { keyColumns: string[]; identityColumns: string[] } {
+  const t = trovaTabella(summary, nome)
+  if (!t) return { keyColumns: [], identityColumns: [] }
+  return {
+    keyColumns: (t.indexes ?? []).filter(i => i.isPrimaryKey).flatMap(i => i.columns ?? []),
+    identityColumns: (t.columns ?? []).filter(c => c.isIdentity).map(c => c.name),
+  }
 }
 
 /**

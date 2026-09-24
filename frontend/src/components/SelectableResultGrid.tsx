@@ -12,10 +12,11 @@ import {
   buildMergeSql,
   buildUpdateSql,
   chiaveTabella,
+  chiaviDellaTabella,
   parseTargetTable,
 } from '../sqlGen'
 import type { GenColumn } from '../sqlGen'
-import type { CellValue } from '../types'
+import type { CellValue, DatabaseSummary } from '../types'
 import { Button } from './ui'
 import ResultDataTable from './ResultDataTable'
 import type { ResultColumnSpec } from './ResultDataTable'
@@ -32,10 +33,17 @@ interface Props {
   /** Nomi delle colonne identity (chiave del MERGE/DELETE). */
   identityColumns?: string[]
   /**
-   * Colonne CHIAVE della tabella (primary key, anche composita): sono quelle della condizione ON
+   * Colonne CHIAVE della tabella (primary key, anche COMPOSITA): sono quelle della condizione ON
    * della MERGE e non finiscono MAI nell'UPDATE SET. Se assenti si usano le identity.
    */
   keyColumns?: string[]
+  /**
+   * Schema caricato: se c'è, la chiave e le identity si ricavano dalla tabella target SCRITTA NEL
+   * GENERATORE (anche se l'utente la cambia a mano), così la MERGE usa TUTTE le colonne della
+   * primary key composita — richiesta utente: "quando fai la merge, la chiave potrebbe essere
+   * multipla".
+   */
+  summary?: DatabaseSummary | null
   /** Numero della prima riga mostrata (paginazione). Default 1. */
   firstRowNumber?: number
 }
@@ -46,6 +54,7 @@ export default function SelectableResultGrid({
   initialTarget,
   identityColumns,
   keyColumns,
+  summary,
   firstRowNumber = 1,
 }: Props) {
   const [targetTable, setTargetTable] = useState(initialTarget ?? '')
@@ -56,6 +65,16 @@ export default function SelectableResultGrid({
   const [copied, setCopied] = useState(false)
   /** Menu del tasto destro sullo script generato (richiesta utente: "Copia" anche col tasto destro). */
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+
+  /** Chiave e identity della tabella target corrente (dallo schema, se disponibile). */
+  const chiaviTarget = useMemo(() => {
+    const dalSchema = chiaviDellaTabella(summary, targetTable)
+    return {
+      keyColumns: dalSchema.keyColumns.length > 0 ? dalSchema.keyColumns : (keyColumns ?? []),
+      identityColumns:
+        dalSchema.identityColumns.length > 0 ? dalSchema.identityColumns : (identityColumns ?? []),
+    }
+  }, [summary, targetTable, keyColumns, identityColumns])
 
   // quando cambiano le colonne (nuova query): tutte selezionate di default, righe vuote
   useEffect(() => {
@@ -70,9 +89,9 @@ export default function SelectableResultGrid({
       columns.map(c => ({
         name: c.name,
         dataType: c.dataType,
-        isIdentity: identityColumns?.includes(c.name) ?? false,
+        isIdentity: chiaviTarget.identityColumns.includes(c.name),
       })),
-    [columns, identityColumns],
+    [columns, chiaviTarget],
   )
 
   const selColIndexes = useMemo(() => [...selectedCols].sort((a, b) => a - b), [selectedCols])
@@ -85,8 +104,9 @@ export default function SelectableResultGrid({
 
   const output = useMemo(() => {
     if (!table || selCols.length === 0 || selRows.length === 0) return ''
-    // chiave: la primary key della tabella se nota, altrimenti le identity
-    const keys = chiaveTabella(genColumns, keyColumns ?? identityColumns)
+    // chiave: TUTTE le colonne della primary key della tabella target (anche composita),
+    // altrimenti le identity
+    const keys = chiaveTabella(genColumns, chiaviTarget.keyColumns.length > 0 ? chiaviTarget.keyColumns : chiaviTarget.identityColumns)
     try {
       switch (kind) {
         case 'INSERT':

@@ -238,6 +238,9 @@ export default function DataPreviewModal({ target, connectionId, summary, theme 
               initialTarget={`${target.schema}.${target.table}`}
               identityColumns={identityColumns}
               keyColumns={pkColumns}
+              /* la chiave si rilegge dallo schema sulla tabella SCRITTA NEL GENERATORE: la primary
+                 key può essere COMPOSITA (più colonne nella condizione ON della MERGE) */
+              summary={summary}
             />
           )}
         </div>

@@ -2293,6 +2293,70 @@ async function verifyMerge(page) {
   )
   await page.screenshot('merge-senza-chiavi')
 
+  // ---------------------------------------------------------------- 3) MERGE dai RISULTATI
+  // Richiesta utente: "quando fai la merge, la chiave potrebbe essere multipla" — vale anche per
+  // il generatore dei RISULTATI (pannello in basso): la chiave dell'ON deve essere tutta la
+  // primary key della tabella target, non solo la prima colonna.
+  console.log('  3) MERGE dal generatore dei RISULTATI')
+  // prima si chiude la finestra dell'anteprima dati (ha il focus)
+  await page.clickWhere(`(() => {
+    const h = [...document.querySelectorAll('h2')].find(x => (x.textContent || '').includes('Anteprima dati'));
+    const mod = h && h.closest('div.fixed');
+    return mod ? mod.querySelector('button.ml-auto') : null;
+  })()`)
+  await page.waitFor(`!document.body.textContent.includes('Anteprima dati —')`, 8000, 'anteprima chiusa')
+  await sleep(600)
+  const rect2 = await editorRect(page)
+  await page.clickPoint(rect2.x + 160, rect2.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(`SELECT * FROM dbo.${TABELLA_CHIAVE}`)
+  await sleep(400)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await page.waitFor(`document.body.textContent.includes('per pagina')`, 40000, 'griglia dei risultati')
+  await sleep(1500)
+  const inGeneratore = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => /Genera SQL|Generatore attivo/.test((b.textContent || '').trim()))`,
+  )
+  check('il generatore dei risultati si apre', inGeneratore === true)
+  await sleep(1200)
+  // tutte le righe + MERGE
+  const casella = await page.eval(`(() => {
+    const c = document.querySelector('input[title="Seleziona tutte le righe"]');
+    if (!c) return null;
+    c.scrollIntoView({ block: 'center' });
+    const r = c.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (casella) await page.clickPoint(casella.x, casella.y)
+  await sleep(700)
+  const mergeRisultati = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'MERGE')`,
+  )
+  await sleep(1000)
+  const analisiRisultati = await page.eval(`(() => {
+    const barra = document.querySelector('[data-generatore="barra"]');
+    const pre = barra && barra.parentElement ? barra.parentElement.querySelector('pre') : null;
+    const testo = pre ? pre.textContent : '';
+    if (!testo || !testo.includes('MERGE INTO')) return null;
+    const on = (testo.match(/ON ([\\s\\S]*?)\\nWHEN/) || [])[1] || '';
+    const chiavi = [...on.matchAll(/tgt\\.\\[([^\\]]+)\\]/g)].map(m => m[1]);
+    const set = (testo.split('UPDATE SET')[1] || '').split('WHEN NOT MATCHED')[0];
+    return { chiavi, set };
+  })()`)
+  console.log(`  chiave ON dal generatore dei risultati: ${JSON.stringify(analisiRisultati?.chiavi)}`)
+  check(
+    'anche dai RISULTATI la chiave è tutta la primary key (composita)',
+    (analisiRisultati?.chiavi.length ?? 0) >= 2,
+    `${analisiRisultati?.chiavi.length ?? 0} colonne di chiave`,
+  )
+  check(
+    'e nessun campo chiave finisce nell\'UPDATE SET',
+    !(analisiRisultati?.chiavi ?? []).some(c => (analisiRisultati?.set ?? '').includes(`[${c}]`)),
+    JSON.stringify(analisiRisultati?.chiavi),
+  )
+  await page.screenshot('merge-risultati-chiave-composita')
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

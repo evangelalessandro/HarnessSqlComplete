@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { buildDeleteSql, buildInsertIntoTempSql, buildInsertSql, buildMergeSql, buildUpdateSql, chiaveTabella, parseTargetTable, sqlLiteral } from '../sqlGen'
+import { buildDeleteSql, buildInsertIntoTempSql, buildInsertSql, buildMergeSql, buildUpdateSql, chiaveTabella, chiaviDellaTabella, parseTargetTable, sqlLiteral, trovaTabella } from '../sqlGen'
 import type { GenColumn } from '../sqlGen'
+import { mkCol, mkTbl } from './schema'
 
 describe('parseTargetTable: "schema.tabella" → coppia', () => {
   it('con schema e senza schema (default dbo)', () => {
@@ -161,6 +162,62 @@ describe('chiaveTabella: primary key, altrimenti identity', () => {
     expect(chiaveTabella(cols, ['NOME', 'inesistente'])).toEqual(['NOME'])
     expect(chiaveTabella([{ name: 'a' }, { name: 'b' }], ['a'])).toEqual(['a'])
     expect(chiaveTabella([{ name: 'a' }, { name: 'b' }])).toEqual([])
+  })
+})
+
+// Richiesta utente: "quando fai la merge, la chiave potrebbe essere multipla" — la chiave della
+// MERGE (condizione ON) si ricava dalla tabella target dello schema e sono TUTTE le colonne della
+// primary key composita, non solo la prima.
+describe('chiaviDellaTabella: chiave composita dal nome della tabella target', () => {
+  const tabella = mkTbl('dbo', 'L1_AZIONI_PERCORSI', [mkCol('AZP_AZIONE', 'int'), mkCol('AZP_PERCORSO', 'int'), mkCol('AZP_NOTE', 'nvarchar')], {
+    indexes: [
+      {
+        name: 'PK_L1_AZIONI_PERCORSI',
+        isPrimaryKey: true,
+        isUnique: true,
+        columns: ['AZP_AZIONE', 'AZP_PERCORSO'],
+      },
+    ],
+  })
+  const conIdentity = mkTbl('dbo', 'Clienti', [mkCol('id', 'int', { isIdentity: true }), mkCol('nome', 'nvarchar')])
+  const summary = { tables: [tabella, conIdentity], views: [], procedures: [], triggers: [], functions: [], foreignKeys: [], databases: [] }
+
+  it('trova la tabella con o senza schema e con le parentesi quadre', () => {
+    expect(trovaTabella(summary, 'L1_AZIONI_PERCORSI')?.name).toBe('L1_AZIONI_PERCORSI')
+    expect(trovaTabella(summary, 'dbo.L1_AZIONI_PERCORSI')?.name).toBe('L1_AZIONI_PERCORSI')
+    expect(trovaTabella(summary, '[dbo].[L1_AZIONI_PERCORSI]')?.name).toBe('L1_AZIONI_PERCORSI')
+    expect(trovaTabella(summary, 'INESISTENTE')).toBeNull()
+    expect(trovaTabella(null, 'Clienti')).toBeNull()
+  })
+
+  it('restituisce TUTTE le colonne della primary key composita', () => {
+    expect(chiaviDellaTabella(summary, 'dbo.L1_AZIONI_PERCORSI').keyColumns).toEqual(['AZP_AZIONE', 'AZP_PERCORSO'])
+  })
+
+  it('dove non c\'è la primary key restituisce le identity (e le chiavi vuote)', () => {
+    expect(chiaviDellaTabella(summary, 'Clienti')).toEqual({ keyColumns: [], identityColumns: ['id'] })
+    expect(chiaviDellaTabella(summary, 'Sconosciuta')).toEqual({ keyColumns: [], identityColumns: [] })
+  })
+
+  it('la MERGE generata usa la chiave composita nella ON e non la mette nell\'UPDATE SET', () => {
+    const sql = buildMergeSql(
+      'dbo',
+      'L1_AZIONI_PERCORSI',
+      [
+        { name: 'AZP_AZIONE' },
+        { name: 'AZP_PERCORSO' },
+        { name: 'AZP_NOTE' },
+      ],
+      [[1, 2, 'x']],
+      chiaviDellaTabella(summary, 'dbo.L1_AZIONI_PERCORSI').keyColumns,
+    )
+    // la condizione ON porta ENTRAMBE le colonne della chiave (una per riga)
+    expect(sql).toContain('ON tgt.[AZP_AZIONE] = src.[AZP_AZIONE] AND')
+    expect(sql).toContain('tgt.[AZP_PERCORSO] = src.[AZP_PERCORSO]')
+    const set = sql.split('UPDATE SET')[1].split('WHEN NOT MATCHED')[0]
+    expect(set).not.toContain('AZP_AZIONE')
+    expect(set).not.toContain('AZP_PERCORSO')
+    expect(set).toContain('AZP_NOTE')
   })
 })
 

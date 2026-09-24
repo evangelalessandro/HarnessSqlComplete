@@ -133,6 +133,9 @@ export default function ResultsPanel({
             columns={activeSet.columns}
             rows={pageRows as CellValue[][]}
             initialTarget={suggestedTargets[setIndex] || suggestedTargets.find(t => t !== '') || ''}
+            /* lo schema serve a usare TUTTE le colonne della primary key (anche composita) nella
+               condizione ON della MERGE: la chiave non è detto che sia una sola */
+            summary={summary}
             firstRowNumber={start}
           />
         </div>
