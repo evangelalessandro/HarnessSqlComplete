@@ -63,9 +63,22 @@ export function matchLabel(matchIn: TextSearchHit['matchIn']): string {
   }
 }
 
-/** Chiave stabile di un risultato (per l'elenco e la selezione). */
+/**
+ * Chiave stabile di un risultato (per l'elenco e la selezione).
+ *
+ * Per colonne, vincoli e colonne calcolate il "nome" da solo NON identifica l'oggetto: due tabelle
+ * possono avere una colonna con lo stesso nome (es. UDC_UDC in BCKUP_UDC e in DAT_UDC) e le due
+ * righe finivano con la STESSA chiave. React segnalava "Encountered two children with the same key"
+ * e non riusciva a riconciliare l'elenco: le righe vecchie restavano visibili anche dopo una nuova
+ * ricerca (risultati che sembrano duplicati/accumulati). Qui si aggiunge la TABELLA proprietaria e,
+ * per gli hit sui DATI, i valori della riga (lo stesso testo può comparire in più righe).
+ */
 export function hitKey(hit: TextSearchHit): string {
-  return `${hit.kind}|${hit.schema}|${hit.name}|${hit.matchIn}|${hit.line ?? ''}`
+  const perTabella = hit.kind === 'column' || hit.kind === 'constraint' || hit.kind === 'computed'
+  const proprietario = perTabella ? tableOfHit(hit) || hit.name : hit.name
+  const parti = [hit.kind, hit.schema, proprietario, hit.name, hit.matchIn, String(hit.line ?? '')]
+  if (hit.kind === 'data' && hit.row) parti.push(hit.row.values.map(v => String(v)).join('\u0001'))
+  return parti.join('|')
 }
 
 /** Nome qualificato da mostrare (per i dati e le colonne è già tutto in `name`/`detail`). */

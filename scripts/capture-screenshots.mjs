@@ -91,6 +91,11 @@ const ROUTINE_NAME = process.env.SHOT_ROUTINE ?? 'ws_L2_SetCorridoioMiss'
 const TRIGGER_TABLE = process.env.SHOT_TRIGGER_TABLE ?? 'DAT_CLASSI_MERC'
 const TRIGGER_NAME = process.env.SHOT_TRIGGER ?? `tr_${TRIGGER_TABLE}`
 /**
+ * Store usata da --verify-search per il controllo "nessun doppione": cercandone il NOME deve
+ * comparire UNA volta sola (non anche come match nella sua definizione).
+ */
+const STORE_UNICA = process.env.SHOT_STORE_UNICA ?? 'ws_CUSTOM_TRANSFER'
+/**
  * Tabella con PRIMARY KEY COMPOSITA usata dalla verifica della MERGE (--verify-merge):
  * serve a controllare che NESSUN campo chiave finisca nell'UPDATE SET.
  */
@@ -3919,6 +3924,100 @@ async function verifySearch(page) {
   const valoreInput = await page.eval(`document.querySelector('[data-ricerca="testo"]').value`)
   console.log(`  freccia su nell input: ${JSON.stringify(valoreInput)}`)
   check('freccia su: ripesca l ultima parola cercata', valoreInput === 'MIS_MISSIONE')
+
+  // NESSUN DOPPIONE: cercando il NOME di una store, l'oggetto non deve comparire due volte (una
+  // per il nome e una per la definizione, che comincia con la CREATE che contiene il nome).
+  // Segnalazione utente: "la ricerca per nome store procedure ritorna 2 elementi".
+  await page.eval(`document.querySelector('[data-ricerca="testo"]').focus()`)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(STORE_UNICA)
+  // "anche nei dati" va spento: i dati di altre tabelle che CITANO la store non c'entrano con il
+  // controllo "una sola riga per oggetto" (e la scansione dei dati può limitare i risultati)
+  await page.eval(`(() => {
+    const c = document.querySelector('[data-ricerca="dati"]');
+    if (c && c.checked) c.click();
+  })()`)
+  await sleep(400)
+  await page.clickWhere(`document.querySelector('[data-ricerca="cerca"]')`)
+  // si aspetta che la ricerca sia FINITA (niente "limite raggiunto") e che l'elenco sia stabile
+  await page.waitFor(
+    `(() => {
+       const m = document.querySelector('[data-ricerca="meta"]');
+       const t = m ? (m.textContent || '') : '';
+       return t.includes('risultat') && !t.includes('limite raggiunto');
+     })()`,
+    30000,
+    'ricerca conclusa',
+  )
+  await sleep(1200)
+  const perNome = await page.eval(`(() => {
+    const righe = [...document.querySelectorAll('[data-ricerca="riga"]')];
+    const oggetti = righe.map(r => r.getAttribute('data-ricerca-nome') || '');
+    // gli hit sui DATI sono RIGHE (lo stesso valore può stare in più righe): non sono "oggetti
+    // ripetuti", quindi restano fuori dal controllo dei doppioni
+    const soloOggetti = oggetti.filter(o => !o.startsWith('data|'));
+    const conteggi = {};
+    for (const o of soloOggetti) conteggi[o] = (conteggi[o] || 0) + 1;
+    const doppi = Object.entries(conteggi).filter(([, n]) => n > 1);
+    return {
+      righe: righe.length,
+      oggetti,
+      doppi,
+      campo: (document.querySelector('[data-ricerca="testo"]') || {}).value,
+      meta: ((document.querySelector('[data-ricerca="meta"]') || {}).textContent || '').trim(),
+    };
+  })()`)
+  const quanteStore = perNome.oggetti.filter(o => o.endsWith(`.${STORE_UNICA}`.toLowerCase())).length
+  await page.screenshot('ricerca-store-una-riga')
+  // le righe vecchie non devono restare nell'elenco (chiavi React duplicate → liste "sporche"):
+  // si fa una ricerca SENZA risultati e l'elenco deve svuotarsi
+  await page.eval(`document.querySelector('[data-ricerca="testo"]').focus()`)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText('zzz_inesistente_xyz')
+  await page.clickWhere(`document.querySelector('[data-ricerca="cerca"]')`)
+  await sleep(2500)
+  const dopoVuoto = await page.eval(`(() => {
+    const p = document.querySelector('[data-ricerca="pannello"]');
+    const cont = p.querySelector('[data-ricerca="risultati"]');
+    return {
+      righe: p.querySelectorAll('[data-ricerca="riga"]').length,
+      figli: cont.children.length,
+      meta: ((p.querySelector('[data-ricerca="meta"]') || {}).textContent || '').trim().slice(0, 40),
+    };
+  })()`)
+  console.log(`  ricerca senza risultati: ${JSON.stringify(dopoVuoto)}`)
+  const debugPannelli = await page.eval(`(() => {
+    const pannelli = [...document.querySelectorAll('[data-ricerca="pannello"]')];
+    return pannelli.map((p, i) => ({
+      i,
+      nascosto: !!p.closest('div.hidden'),
+      righe: p.querySelectorAll('[data-ricerca="riga"]').length,
+      neiRisultati: p.querySelectorAll('[data-ricerca="risultati"] [data-ricerca="riga"]').length,
+      contenitori: p.querySelectorAll('[data-ricerca="risultati"]').length,
+      meta: ((p.querySelector('[data-ricerca="meta"]') || {}).textContent || '').trim().slice(0, 60),
+      campo: ((p.querySelector('[data-ricerca="testo"]') || {}).value || ''),
+      prime: [...p.querySelectorAll('[data-ricerca="riga"]')].slice(0, 3)
+        .map(r => (r.textContent || '').trim().slice(0, 40)),
+      padre: (() => { const r = p.querySelector('[data-ricerca="riga"]'); return r && r.parentElement ? r.parentElement.className.slice(0, 60) : null; })(),
+    }));
+  })()`)
+  console.log(`  DEBUG pannelli: ${JSON.stringify(debugPannelli)}`)
+  console.log(
+    `  ricerca "${perNome.campo}": ${perNome.righe} righe (${perNome.meta}) — oggetti: ${JSON.stringify(perNome.oggetti.slice(0, 4))}`,
+  )
+  check(`la store "${STORE_UNICA}" compare UNA sola volta`, quanteStore === 1, `${quanteStore} righe`)
+  check(
+    'nessun oggetto ripetuto nei risultati (nome + definizione)',
+    perNome.doppi.length === 0,
+    JSON.stringify(perNome.doppi.slice(0, 3)),
+  )
+  // e una ricerca SENZA risultati deve svuotare l'elenco (prima le righe vecchie restavano: chiavi
+  // React duplicate fra colonne omonime di tabelle diverse)
+  check(
+    'una ricerca senza risultati svuota l elenco',
+    dopoVuoto.righe === 0 && dopoVuoto.meta.startsWith('0 risultati'),
+    JSON.stringify(dopoVuoto),
+  )
 
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)

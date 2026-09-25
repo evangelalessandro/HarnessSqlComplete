@@ -84,7 +84,16 @@ public class SearchService(ILogger<SearchService> logger)
         // --- STRUTTURE ---
         var pending = new List<PendingHit>();
         await CollectNameHitsAsync(conn, pat, pending, ct);
-        await CollectDefinitionHitsAsync(conn, pat, q, pending, ct);
+        // Un oggetto già trovato per NOME non genera anche l'hit sulla DEFINIZIONE: la prima riga
+        // della definizione E' la CREATE con il nome, quindi lo stesso oggetto comparirebbe due
+        // volte nei risultati (segnalazione utente: "la ricerca per nome store procedure ritorna 2
+        // elementi, tipo ws_CUSTOM_TRANSFER"). Gli hit sulle definizioni restano per gli oggetti
+        // che NON hanno il testo nel nome (es. la colonna usata nel corpo di una store).
+        var trovatiPerNome = pending
+            .Where(h => h.Hit.MatchIn == "name")
+            .Select(h => ChiaveOggetto(h.Hit.Kind, h.Hit.Schema, h.Hit.Name))
+            .ToHashSet(StringComparer.Ordinal);
+        await CollectDefinitionHitsAsync(conn, pat, q, pending, trovatiPerNome, ct);
 
         // Ordine: prima i match nel NOME, poi quelli nelle definizioni; a parità, per tipo e nome.
         var ordered = pending
@@ -177,10 +186,13 @@ public class SearchService(ILogger<SearchService> logger)
     /// Hit sulle DEFINIZIONI: moduli SQL (viste, procedure, funzioni, trigger), vincoli CHECK e
     /// DEFAULT e colonne calcolate, tutti con <c>LIKE @pat</c>. Per ogni definizione che contiene il
     /// testo si riporta la PRIMA occorrenza (riga + snippet), così un oggetto non genera decine di
-    /// hit identici.
+    /// hit identici. Gli oggetti già trovati per nome (<paramref name="trovatiPerNome"/>) vengono
+    /// saltati: la definizione comincia con la CREATE che contiene il nome, quindi comparirebbero
+    /// due volte.
     /// </summary>
     private static async Task CollectDefinitionHitsAsync(
-        SqlConnection conn, string pat, string q, List<PendingHit> pending, CancellationToken ct)
+        SqlConnection conn, string pat, string q, List<PendingHit> pending,
+        HashSet<string> trovatiPerNome, CancellationToken ct)
     {
         await using (var cmd = conn.CreateCommand())
         {
@@ -203,6 +215,7 @@ public class SearchService(ILogger<SearchService> logger)
                 if (kind is null) continue;
                 var schema = r.GetString(0);
                 var name = r.GetString(1);
+                if (trovatiPerNome.Contains(ChiaveOggetto(kind, schema, name))) continue;
                 AddDefinitionHit(pending, kind, schema, name, TypeLabel(kind), r.GetString(3), q);
             }
         }
@@ -445,6 +458,10 @@ public class SearchService(ILogger<SearchService> logger)
     }
 
     // ---------- SUPPORTO ----------
+
+    /// <summary>Chiave di un oggetto per capire se è già stato trovato (kind|schema|nome).</summary>
+    private static string ChiaveOggetto(string kind, string schema, string name) =>
+        $"{kind}|{schema.ToLowerInvariant()}|{name.ToLowerInvariant()}";
 
     /// <summary>Hit in attesa dell'ordinamento finale (prima i nomi, poi le definizioni, poi i dati).</summary>
     private sealed record PendingHit(int MatchRank, int KindRank, string Schema, string Name, SearchHit Hit);

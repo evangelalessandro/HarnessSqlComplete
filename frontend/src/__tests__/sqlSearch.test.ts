@@ -135,6 +135,32 @@ describe('titolo, chiave e anteprima', () => {
     expect(hitKey(hit({ line: 3 }))).toBe(hitKey(hit({ line: 3 })))
   })
 
+  // Bug visto dall'utente ("la ricerca ritorna 2 elementi" / righe che restavano nell'elenco):
+  // due COLONNE omonime in tabelle diverse avevano la STESSA chiave React → React non riconciliava
+  // l'elenco e le righe vecchie restavano. La chiave deve contenere la TABELLA proprietaria.
+  it('due colonne omonime in tabelle diverse hanno chiavi DIVERSE', () => {
+    const a = hit({ kind: 'column', name: 'UDC_UDC', detail: 'colonna di dbo.BCKUP_UDC', matchIn: 'column' })
+    const b = hit({ kind: 'column', name: 'UDC_UDC', detail: 'colonna di dbo.DAT_UDC', matchIn: 'column' })
+    expect(hitKey(a)).not.toBe(hitKey(b))
+    expect(hitKey(a)).toContain('BCKUP_UDC')
+    // vincoli e colonne calcolate: stessa cosa
+    const k1 = hit({ kind: 'constraint', name: 'CK_X', detail: 'vincolo CHECK di dbo.T1', matchIn: 'definition' })
+    const k2 = hit({ kind: 'constraint', name: 'CK_X', detail: 'vincolo CHECK di dbo.T2', matchIn: 'definition' })
+    expect(hitKey(k1)).not.toBe(hitKey(k2))
+  })
+
+  it('due hit sui DATI con lo stesso valore in righe diverse hanno chiavi diverse', () => {
+    const riga = (valore: string) =>
+      hit({
+        kind: 'data',
+        name: 'dbo.T · COL',
+        detail: 'dbo.T · COL = x',
+        matchIn: 'data',
+        row: { columns: ['COL'], values: [valore] },
+      })
+    expect(hitKey(riga('x'))).not.toBe(hitKey(riga('y')))
+  })
+
   it('la definizione si può mostrare per gli oggetti con script', () => {
     expect(canPreviewDefinition('procedure')).toBe(true)
     expect(canPreviewDefinition('view')).toBe(true)

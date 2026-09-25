@@ -431,12 +431,24 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
                 {esito.message ? esito.message : `Nessun risultato per “${testo}”.`}
               </p>
             )}
-            {esito?.hits.map(h => {
+            {esito?.hits.map((h, indice) => {
               const attivo = scelto && hitKey(scelto) === hitKey(h)
+              // identità dell'OGGETTO della riga: per colonne/vincoli/calcolate conta anche la
+              // tabella (due tabelle possono avere una colonna con lo stesso nome)
+              const perTabella = h.kind === 'column' || h.kind === 'constraint' || h.kind === 'computed'
+              const oggetto = perTabella
+                ? `${h.kind}|${h.schema}.${tableOfHit(h)}|${h.name}`.toLowerCase()
+                : `${h.kind}|${h.schema}.${h.name}`.toLowerCase()
               return (
                 <button
-                  key={hitKey(h)}
+                  /* chiave React: hitKey + posizione, perché due hit sui DATI possono essere
+                     identici (stesso valore in due righe) e con chiavi uguali React sbagliava la
+                     riconciliazione (righe vecchie che restavano nell'elenco) */
+                  key={`${hitKey(h)}#${indice}`}
                   data-ricerca="riga"
+                  /* oggetto della riga: serve a controllare che non compaia due volte (una per il
+                     nome e una per la definizione dello stesso oggetto) */
+                  data-ricerca-nome={oggetto}
                   onClick={() => setScelto(h)}
                   onDoubleClick={() => apri(h)}
                   onContextMenu={e => {
