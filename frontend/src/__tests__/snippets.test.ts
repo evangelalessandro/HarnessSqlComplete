@@ -26,14 +26,11 @@ describe('buildStatementSnippets: template statement (stile Visual Studio)', () 
     const dis = buildStatementSnippets('dis')
     expect(dis.some(s => s.label === 'DISABLE TRIGGER')).toBe(true)
     expect(dis.some(s => s.label === 'DISABLE TRIGGER ALL')).toBe(true)
-    expect(dis.find(s => s.label === 'DISABLE TRIGGER')!.insertText).toBe(
-      'DISABLE TRIGGER ${1:[schema.]trigger} ON ${2:[schema.]tabella};\n',
-    )
+    // segnaposto VUOTI: fermandosi lì l'intellisense propone i trigger veri e la loro tabella
+    expect(dis.find(s => s.label === 'DISABLE TRIGGER')!.insertText).toBe('DISABLE TRIGGER ${1} ON ${2};\n')
     const ena = buildStatementSnippets('ena')
     expect(ena.some(s => s.label === 'ENABLE TRIGGER')).toBe(true)
-    expect(ena.find(s => s.label === 'ENABLE TRIGGER ALL')!.insertText).toBe(
-      'ENABLE TRIGGER ALL ON ${1:[schema.]tabella};\n',
-    )
+    expect(ena.find(s => s.label === 'ENABLE TRIGGER ALL')!.insertText).toBe('ENABLE TRIGGER ALL ON ${1};\n')
   })
 
   // Richiesta utente: "deve essere come le altre tipo EXEC, una parola chiave, blue" — queste

@@ -3,6 +3,7 @@
 // quindi i subpath vanno scritti relativi a "esm/vs" (es. "editor/editor.worker").
 import * as monaco from 'monaco-editor'
 import { loader } from '@monaco-editor/react'
+import { language as sqlLanguage } from 'monaco-editor/languages/definitions/sql/sql'
 import editorWorker from 'monaco-editor/editor/editor.worker?worker'
 import jsonWorker from 'monaco-editor/language/json/json.worker?worker'
 import cssWorker from 'monaco-editor/language/css/css.worker?worker'
@@ -61,5 +62,25 @@ monaco.languages.setLanguageConfiguration('sql', {
     { beforeText: /^\s*end\b/i, action: { indentAction: monaco.languages.IndentAction.Outdent } },
   ],
 })
+
+/**
+ * PAROLE CHIAVE DEL COLORATORE.
+ * L'elenco di Monaco per il SQL non contiene ENABLE e DISABLE (ha TRIGGER e INSTEAD), quindi
+ * "DISABLE TRIGGER ..." restava scritto in nero invece che blu come le altre parole chiave
+ * (segnalazione utente: "DISABLE e ENABLE rimangono scritte in nero e non blu").
+ * Si registra la lingua SQL con l'elenco esteso: il resto della definizione (tokenizer, operatori,
+ * funzioni) resta quello di Monaco.
+ */
+const PAROLE_CHIAVE_IN_PIU = ['ENABLE', 'DISABLE']
+
+/** Applica l'elenco esteso delle parole chiave al coloratore SQL (idempotente). */
+export function estendiParoleChiaveSql(): void {
+  monaco.languages.setMonarchTokensProvider('sql', {
+    ...sqlLanguage,
+    keywords: [...(sqlLanguage.keywords ?? []), ...PAROLE_CHIAVE_IN_PIU],
+  })
+}
+
+estendiParoleChiaveSql()
 
 export default monaco

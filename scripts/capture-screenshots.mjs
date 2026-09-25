@@ -2418,6 +2418,19 @@ async function verifyInizio(page) {
     check(`a foglio vuoto propone ${k}`, vuoto.some(v => v.toUpperCase() === k), JSON.stringify(vuoto.slice(0, 6)))
   }
   // le voci oltre le ~12 righe visibili si controllano digitandone l'inizio
+  // (l'elenco COMPLETO a foglio vuoto è quello appena letto: solo parole chiave)
+  const inizioSoloKeyword = await page.eval(`(() => {
+    const righe = [...document.querySelectorAll('.suggest-widget .monaco-list-row')];
+    const testi = righe.map(r => ((r.querySelector('.label-name') || r).textContent || '').replace(/\\u00a0/g, ' ').trim());
+    const estranee = testi.filter(t => /\\./.test(t) || /^(SUM|AVG|COUNT|FLOOR|FORMAT|GETDATE|ISNULL)$/i.test(t) || /^[A-Z]{2,}_/.test(t));
+    return { quante: testi.length, testi: testi.slice(0, 8), estranee: estranee.slice(0, 4) };
+  })()`)
+  console.log(`  a foglio vuoto (elenco completo): ${JSON.stringify(inizioSoloKeyword)}`)
+  check(
+    'a foglio vuoto NON compaiono tabelle/funzioni/store: solo parole chiave',
+    inizioSoloKeyword.quante > 0 && inizioSoloKeyword.estranee.length === 0,
+    JSON.stringify(inizioSoloKeyword.estranee),
+  )
   await scrivi('MER')
   const vociMer = await apriPopup()
   check('digitando "MER" esce MERGE', vociMer.some(v => v.toUpperCase() === 'MERGE'), JSON.stringify(vociMer.slice(0, 4)))
@@ -2490,6 +2503,12 @@ async function verifyTrigger(page) {
     page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
       .map(r => ((r.querySelector('.label-name') || r).textContent || '').replace(/\\u00a0/g, ' ').trim())`)
   const minuscole = v => v.map(x => x.toLowerCase())
+  /** Ctrl+Spazio: popup senza digitare nulla (per vedere cosa propone "da fermo"). */
+  const apriPopupTrigger = async () => {
+    await page.press(' ', { code: 'Space', vk: 32, modifiers: 2 })
+    await sleep(1400)
+    return voci()
+  }
   /** Classe dell'icona della voce con quel testo (keyword = blu, snippet = altra icona). */
   const iconaDi = async testo =>
     page.eval(`(() => {
@@ -2537,10 +2556,11 @@ async function verifyTrigger(page) {
   const vociDopoDisable = await voci()
   console.log(`  dopo "DISABLE ": ${JSON.stringify(vociDopoDisable.slice(0, 4))}`)
   check('dopo "DISABLE " propone TRIGGER', minuscole(vociDopoDisable).includes('trigger'), JSON.stringify(vociDopoDisable.slice(0, 3)))
-  // accettando lo snippet si ottiene la direttiva completa con i segnaposto
+  // accettando lo snippet si ottiene la direttiva completa, con i due segnaposto VUOTI: fermandosi
+  // lì l'intellisense propone i trigger veri e poi la tabella di quel trigger
   await scrivi('DIS')
   await page.press('Enter', { code: 'Enter', vk: 13 })
-  await sleep(800)
+  await sleep(900)
   const rigaSnippet = await page.eval(`(() => {
     const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
       .map(l => (l.textContent || '').replace(/\\u00a0/g, ' '));
@@ -2549,8 +2569,21 @@ async function verifyTrigger(page) {
   console.log(`  snippet accettato: ${JSON.stringify(rigaSnippet)}`)
   check(
     'accettando lo snippet esce "DISABLE TRIGGER <trigger> ON <tabella>"',
-    /DISABLE TRIGGER .+ ON /i.test(rigaSnippet),
+    /DISABLE TRIGGER .* ON /i.test(rigaSnippet),
     rigaSnippet,
+  )
+  check(
+    'lo snippet NON lascia il testo fisso "[schema.]trigger" (che bloccherebbe il popup)',
+    !/\[schema\.\]/i.test(rigaSnippet),
+    rigaSnippet,
+  )
+  // e con il cursore nel segnaposto del nome l'intellisense propone i TRIGGER veri
+  const vociNelSegnaposto = await apriPopupTrigger()
+  console.log(`  popup dentro il segnaposto: ${JSON.stringify(vociNelSegnaposto.slice(0, 3))}`)
+  check(
+    'dentro il segnaposto del nome l intellisense propone i trigger',
+    vociNelSegnaposto.some(v => /^tr_/i.test(v)),
+    JSON.stringify(vociNelSegnaposto.slice(0, 3)),
   )
 
   // 1) elenco dei trigger (e ALL)
@@ -2615,6 +2648,31 @@ async function verifyTrigger(page) {
     'con ALTER TABLE propone i trigger di QUELLA tabella',
     vociAlter.some(v => v.toLowerCase().includes(TRIGGER_NAME.toLowerCase())),
     JSON.stringify(vociAlter.slice(0, 3)),
+  )
+
+  // 6) COLORI: ENABLE/DISABLE devono essere colorate come le altre parole chiave (blu), non nere
+  await scrivi('SELECT 1;\nDISABLE TRIGGER tr_X ON dbo.T;\nENABLE TRIGGER tr_X ON dbo.T;')
+  const colori = await page.eval(`(() => {
+    const coloreDi = parola => {
+      for (const l of document.querySelectorAll('.monaco-editor .view-lines .view-line')) {
+        for (const s of l.querySelectorAll('span[class*="mtk"]')) {
+          if ((s.textContent || '').trim().toUpperCase() === parola) return getComputedStyle(s).color;
+        }
+      }
+      return null;
+    };
+    return { select: coloreDi('SELECT'), disable: coloreDi('DISABLE'), enable: coloreDi('ENABLE'), trigger: coloreDi('TRIGGER') };
+  })()`)
+  console.log(`  colori: SELECT=${colori.select} DISABLE=${colori.disable} ENABLE=${colori.enable} TRIGGER=${colori.trigger}`)
+  check(
+    'DISABLE è colorata come le altre parole chiave (blu, come SELECT)',
+    !!colori.disable && colori.disable === colori.select,
+    `${colori.disable} vs SELECT ${colori.select}`,
+  )
+  check(
+    'ENABLE è colorata come le altre parole chiave (blu, come SELECT)',
+    !!colori.enable && colori.enable === colori.select,
+    `${colori.enable} vs SELECT ${colori.select}`,
   )
 
   await page.screenshot('intellisense-trigger')

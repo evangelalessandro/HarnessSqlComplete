@@ -1182,17 +1182,26 @@ export function provideSqlCompletions({
             const inizioStatement = (ctx.kind === 'statementStart' || ctx.statementStart) && !isTablePosition
             let keywordsProposte = false
             if (inizioStatement) {
-              for (const k of filterKeywordsForContext(ctx, SQL_KEYWORDS)) {
-                push({
-                  label: k,
-                  detail: 'inizio di uno statement',
-                  kind: monaco.languages.CompletionItemKind.Keyword,
-                  insertText: k,
-                  range,
-                  filterText: k,
-                })
+              // Solo le PAROLE CHIAVE di statement: a inizio statement non può cominciare
+              // nient'altro (tabelle, funzioni e procedure si propongono dopo FROM/EXEC…).
+              // Se però il testo digitato non è una keyword (es. una tabella scritta a mano) si
+              // prosegue con i suggerimenti normali, così il popup non resta mai vuoto.
+              const keywordStatement = filterKeywordsForContext(ctx, SQL_KEYWORDS)
+              const digitato = word.word.toUpperCase()
+              const filtrate = digitato ? keywordStatement.filter(k => k.toUpperCase().startsWith(digitato)) : keywordStatement
+              if (filtrate.length > 0) {
+                for (const k of filtrate) {
+                  push({
+                    label: k,
+                    detail: 'inizio di uno statement',
+                    kind: monaco.languages.CompletionItemKind.Keyword,
+                    insertText: k,
+                    range,
+                    filterText: k,
+                  })
+                }
+                return { suggestions }
               }
-              keywordsProposte = true
             }
             // Posizione FROM/INTO/UPDATE/TABLE o inizio statement: clausola NUOVA →
             // si propongono TUTTE le tabelle per utilizzo reale (le query precedenti
