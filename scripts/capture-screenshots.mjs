@@ -60,6 +60,7 @@ const VERIFY_CREATE = process.argv.includes('--verify-create')
 const VERIFY_SET = process.argv.includes('--verify-set')
 const VERIFY_COPIA = process.argv.includes('--verify-copia')
 const VERIFY_TRIGGER = process.argv.includes('--verify-trigger')
+const VERIFY_INIZIO = process.argv.includes('--verify-inizio')
 const VERIFY_REPORT = process.argv.includes('--verify-report')
 /**
  * Finestra molto alta per --verify-create: Monaco disegna nel DOM solo le righe VISIBILI, quindi
@@ -2363,6 +2364,95 @@ async function verifyMerge(page) {
     JSON.stringify(analisiRisultati?.chiavi),
   )
   await page.screenshot('merge-risultati-chiave-composita')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-inizio): a FOGLIO VUOTO (o a inizio statement) l'intellisense deve proporre
+ * per prime le PAROLE CHIAVE con cui si comincia una query (SELECT, INSERT, UPDATE, DELETE, MERGE,
+ * CREATE, ALTER, DROP, EXEC…), non le tabelle (segnalazione utente: "a foglio vuoto mi propone le
+ * tabelle e non le chiavi per cominciare una query").
+ */
+async function verifyInizio(page) {
+  await accediApp(page)
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+  const voci = async () =>
+    page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').replace(/\\u00a0/g, ' ').trim())`)
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(300)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    if (sql === '') await page.press('Delete', { code: 'Delete', vk: 46 })
+    else await page.typeText(sql)
+    await sleep(900)
+  }
+  /** Ctrl+Spazio: apre il popup senza digitare nulla. */
+  const apriPopup = async () => {
+    await page.press(' ', { code: 'Space', vk: 32, modifiers: 2 })
+    await sleep(1500)
+    return voci()
+  }
+
+  // 1) foglio VUOTO: le prime voci sono le keyword di statement
+  await scrivi('')
+  const vuoto = await apriPopup()
+  console.log(`  foglio vuoto: ${JSON.stringify(vuoto.slice(0, 8))}`)
+  check('a foglio vuoto il popup si apre', vuoto.length > 0)
+  check(
+    'a foglio vuoto il PRIMO suggerimento è SELECT',
+    (vuoto[0] ?? '').toUpperCase() === 'SELECT',
+    vuoto[0],
+  )
+  for (const k of ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP', 'EXEC']) {
+    check(`a foglio vuoto propone ${k}`, vuoto.some(v => v.toUpperCase() === k), JSON.stringify(vuoto.slice(0, 6)))
+  }
+  // le voci oltre le ~12 righe visibili si controllano digitandone l'inizio
+  await scrivi('MER')
+  const vociMer = await apriPopup()
+  check('digitando "MER" esce MERGE', vociMer.some(v => v.toUpperCase() === 'MERGE'), JSON.stringify(vociMer.slice(0, 4)))
+  check(
+    'a foglio vuoto le TABELLE non stanno in cima',
+    !vuoto.slice(0, 6).some(v => /^dbo\.|^DAT_|^MAG_|^CFG_/i.test(v)),
+    JSON.stringify(vuoto.slice(0, 6)),
+  )
+
+  // 2) dopo uno statement chiuso (SELECT 1; + a capo) vale lo stesso
+  await scrivi('SELECT 1;\n')
+  const dopoStatement = await apriPopup()
+  console.log(`  dopo "SELECT 1;": ${JSON.stringify(dopoStatement.slice(0, 5))}`)
+  check(
+    'dopo uno statement chiuso si riparte dalle keyword',
+    (dopoStatement[0] ?? '').toUpperCase() === 'SELECT',
+    dopoStatement[0],
+  )
+
+  // 3) a METÀ statement (dopo WHERE) le keyword di inizio NON vanno in cima: servono le colonne
+  await scrivi('SELECT * FROM dbo.DAT_UDC\nWHERE ')
+  const meta = await apriPopup()
+  console.log(`  a metà statement (WHERE): ${JSON.stringify(meta.slice(0, 5))}`)
+  check(
+    'a metà statement non si propone SELECT in cima',
+    (meta[0] ?? '').toUpperCase() !== 'SELECT',
+    meta[0],
+  )
+  check(
+    'a metà statement si propongono le colonne della tabella',
+    meta.some(v => /^UDC_/i.test(v)),
+    JSON.stringify(meta.slice(0, 5)),
+  )
+
+  await page.screenshot('intellisense-inizio-statement')
 
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
@@ -4821,6 +4911,11 @@ async function main() {
 
     if (VERIFY_TRIGGER) {
       await verifyTrigger(page)
+      return
+    }
+
+    if (VERIFY_INIZIO) {
+      await verifyInizio(page)
       return
     }
 

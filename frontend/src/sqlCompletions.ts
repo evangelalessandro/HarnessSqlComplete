@@ -1172,6 +1172,28 @@ export function provideSqlCompletions({
             const contextTableInfos = contextTables
               .map(name => summaryTables.find(x => x.name.toLowerCase() === name))
               .filter((x): x is TableInfo => x !== undefined)
+            /**
+             * A INIZIO STATEMENT (foglio vuoto, dopo ';' o GO) si comincia con le PAROLE CHIAVE —
+             * SELECT, INSERT, UPDATE, DELETE, MERGE, CREATE, ALTER, DROP, EXEC… — non con le
+             * tabelle: prima le keyword finivano in fondo all'elenco e il popup era pieno di
+             * tabelle e procedure (segnalazione utente: "a foglio vuoto mi propone le tabelle e non
+             * le chiavi per cominciare una query").
+             */
+            const inizioStatement = (ctx.kind === 'statementStart' || ctx.statementStart) && !isTablePosition
+            let keywordsProposte = false
+            if (inizioStatement) {
+              for (const k of filterKeywordsForContext(ctx, SQL_KEYWORDS)) {
+                push({
+                  label: k,
+                  detail: 'inizio di uno statement',
+                  kind: monaco.languages.CompletionItemKind.Keyword,
+                  insertText: k,
+                  range,
+                  filterText: k,
+                })
+              }
+              keywordsProposte = true
+            }
             // Posizione FROM/INTO/UPDATE/TABLE o inizio statement: clausola NUOVA →
             // si propongono TUTTE le tabelle per utilizzo reale (le query precedenti
             // non devono nascondere tabelle riscrivibili, es. RUN_MISSIONI).
@@ -1382,8 +1404,9 @@ export function provideSqlCompletions({
                 }
               }
 
-              // Keyword filtrate per contesto (dopo "FROM t " solo clausole, all'inizio solo statement)
-              if (ctx.allowed.includes('keywords')) {
+              // Keyword filtrate per contesto (dopo "FROM t " solo clausole, all'inizio solo
+              // statement). A inizio statement sono già state proposte PRIMA delle tabelle.
+              if (ctx.allowed.includes('keywords') && !keywordsProposte) {
                 // "order" (o prefisso) → "ORDER BY" come voce unica (non serve cercare BY a parte)
                 if (isOrderWordTyped(word.word)) {
                   push({
