@@ -3,6 +3,8 @@
 // DUE pezzi — il nome (o ALL) e poi "ON <tabella>" — e la tabella deve essere quella SU CUI il
 // trigger è definito: proponendone un'altra si scrive un'istruzione che SQL Server rifiuta.
 import { describe, expect, it } from 'vitest'
+import completionsSource from '../sqlCompletions.ts?raw'
+import { buildStatementSnippets } from '../helpers'
 import {
   detectAlterTableTrigger,
   detectEnableDisableTriggerName,
@@ -73,5 +75,20 @@ describe('ENABLE/DISABLE TRIGGER: riconoscimento del contesto', () => {
     expect(detectAlterTableTrigger('ALTER TABLE dbo.T DISABLE TRIGGER tr_x')).toBeNull()
     expect(detectAlterTableTrigger('DISABLE TRIGGER tr_x ON ')).toBeNull()
     expect(detectAlterTableTrigger('ALTER TABLE dbo.T ADD COLUMN ')).toBeNull()
+  })
+})
+
+// Segnalazione utente: "la parola enable o disable non viene fuori dall'intellisense".
+describe('ENABLE/DISABLE TRIGGER: parole e snippet proposti', () => {
+  it('le parole ENABLE, DISABLE e TRIGGER sono fra le keyword dell intellisense', () => {
+    // il modulo importa Monaco (non eseguibile nei test): si guarda il sorgente
+    expect(completionsSource).toContain("'ENABLE', 'DISABLE', 'TRIGGER'")
+  })
+
+  it('digitando "dis"/"ena" esce la direttiva completa (nome + ON tabella)', () => {
+    expect(buildStatementSnippets('dis').some(s => s.label === 'DISABLE TRIGGER')).toBe(true)
+    expect(buildStatementSnippets('ena').some(s => s.label === 'ENABLE TRIGGER')).toBe(true)
+    expect(buildStatementSnippets('dis').some(s => s.label === 'DISABLE TRIGGER ALL')).toBe(true)
+    expect(buildStatementSnippets('ena').some(s => s.label === 'ENABLE TRIGGER ALL')).toBe(true)
   })
 })

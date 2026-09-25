@@ -21,6 +21,21 @@ describe('buildStatementSnippets: template statement (stile Visual Studio)', () 
     expect(buildStatementSnippets('mer').some(s => s.label === 'MERGE INTO')).toBe(true)
   })
 
+  // Segnalazione utente: "la parola enable o disable non viene fuori dall'intellisense".
+  it('digitando "dis"/"ena" propone le direttive sui TRIGGER (con nome e ON tabella)', () => {
+    const dis = buildStatementSnippets('dis')
+    expect(dis.some(s => s.label === 'DISABLE TRIGGER')).toBe(true)
+    expect(dis.some(s => s.label === 'DISABLE TRIGGER ALL')).toBe(true)
+    expect(dis.find(s => s.label === 'DISABLE TRIGGER')!.insertText).toBe(
+      'DISABLE TRIGGER ${1:[schema.]trigger} ON ${2:[schema.]tabella};\n',
+    )
+    const ena = buildStatementSnippets('ena')
+    expect(ena.some(s => s.label === 'ENABLE TRIGGER')).toBe(true)
+    expect(ena.find(s => s.label === 'ENABLE TRIGGER ALL')!.insertText).toBe(
+      'ENABLE TRIGGER ALL ON ${1:[schema.]tabella};\n',
+    )
+  })
+
   it('con meno di 2 caratteri non propone nulla', () => {
     expect(buildStatementSnippets('i')).toEqual([])
     expect(buildStatementSnippets('')).toEqual([])

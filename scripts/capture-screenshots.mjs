@@ -2401,6 +2401,38 @@ async function verifyTrigger(page) {
       .map(r => ((r.querySelector('.label-name') || r).textContent || '').replace(/\\u00a0/g, ' ').trim())`)
   const minuscole = v => v.map(x => x.toLowerCase())
 
+  // 0) le PAROLE "ENABLE"/"DISABLE" devono uscire dall'intellisense (segnalazione utente), con
+  //    lo snippet completo della direttiva (nome + ON tabella)
+  await scrivi('DIS')
+  const vociDis = await voci()
+  console.log(`  dopo "DIS": ${JSON.stringify(vociDis.slice(0, 4))}`)
+  check('digitando "DIS" esce "DISABLE TRIGGER"', vociDis.some(v => v.toUpperCase() === 'DISABLE TRIGGER'), JSON.stringify(vociDis.slice(0, 3)))
+  check('digitando "DIS" esce anche "DISABLE TRIGGER ALL"', vociDis.some(v => v.toUpperCase() === 'DISABLE TRIGGER ALL'))
+  await scrivi('ENA')
+  const vociEna = await voci()
+  console.log(`  dopo "ENA": ${JSON.stringify(vociEna.slice(0, 4))}`)
+  check('digitando "ENA" esce "ENABLE TRIGGER"', vociEna.some(v => v.toUpperCase() === 'ENABLE TRIGGER'), JSON.stringify(vociEna.slice(0, 3)))
+  // dopo la parola, "TRIGGER" deve essere proposto
+  await scrivi('DISABLE ')
+  const vociDopoDisable = await voci()
+  console.log(`  dopo "DISABLE ": ${JSON.stringify(vociDopoDisable.slice(0, 4))}`)
+  check('dopo "DISABLE " propone TRIGGER', minuscole(vociDopoDisable).includes('trigger'), JSON.stringify(vociDopoDisable.slice(0, 3)))
+  // accettando lo snippet si ottiene la direttiva completa con i segnaposto
+  await scrivi('DIS')
+  await page.press('Enter', { code: 'Enter', vk: 13 })
+  await sleep(800)
+  const rigaSnippet = await page.eval(`(() => {
+    const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' '));
+    return linee.find(l => l.toUpperCase().includes('DISABLE TRIGGER')) || '';
+  })()`)
+  console.log(`  snippet accettato: ${JSON.stringify(rigaSnippet)}`)
+  check(
+    'accettando lo snippet esce "DISABLE TRIGGER <trigger> ON <tabella>"',
+    /DISABLE TRIGGER .+ ON /i.test(rigaSnippet),
+    rigaSnippet,
+  )
+
   // 1) elenco dei trigger (e ALL)
   await scrivi('DISABLE TRIGGER ')
   const vociTrigger = await voci()

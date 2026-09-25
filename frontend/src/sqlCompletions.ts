@@ -39,6 +39,9 @@ const SQL_KEYWORDS = [
   'REFERENCES', 'CONSTRAINT', 'INDEX', 'UNIQUE', 'CHECK', 'DEFAULT', 'OVER', 'PARTITION', 'ROW_NUMBER',
   'RANK', 'DENSE_RANK', 'OUTPUT', 'MERGE', 'OPTION', 'RECOMPILE', 'NOCOUNT', 'TRANSACTION', 'COMMIT',
   'ROLLBACK', 'SAVE', 'WAITFOR', 'RAISERROR',
+  // Trigger: servono per scrivere "DISABLE TRIGGER <nome> ON <tabella>" (il nome del trigger e
+  // "ON" li propone l'intellisense degli oggetti, ma le PAROLE vanno proposte anche qui)
+  'ENABLE', 'DISABLE', 'TRIGGER', 'INSTEAD',
   // Statement e language elements ufficiali (riferimento Microsoft T-SQL)
   'BACKUP', 'RESTORE', 'GRANT', 'REVOKE', 'DENY', 'BULK', 'DBCC', 'CHECKPOINT', 'KILL',
   'RECONFIGURE', 'SHUTDOWN', 'IF', 'WHILE', 'BREAK', 'CONTINUE', 'GOTO', 'OPEN', 'CLOSE', 'FETCH',
@@ -565,6 +568,20 @@ export function provideSqlCompletions({
                 insertText: 'ON',
                 range,
                 filterText: 'ON',
+              })
+              return { suggestions }
+            }
+
+            // "ENABLE " / "DISABLE " a inizio statement → l'unica continuazione è TRIGGER:
+            // si propone quella, invece di lasciarla in fondo a un elenco di tabelle
+            if (/(?:^|;|\bGO\b|\n)[ \t]*(?:ENABLE|DISABLE)\s+$/i.test(textBefore)) {
+              push({
+                label: 'TRIGGER',
+                detail: 'ENABLE/DISABLE TRIGGER <nome> ON <tabella>',
+                kind: monaco.languages.CompletionItemKind.Keyword,
+                insertText: 'TRIGGER',
+                range,
+                filterText: 'TRIGGER',
               })
               return { suggestions }
             }

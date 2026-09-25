@@ -1485,6 +1485,28 @@ const STATEMENT_SNIPPETS: StatementSnippet[] = [
     detail: 'MERGE INTO ... USING ... (upsert)',
     insertText: 'MERGE INTO ${1:[schema.]tabella} AS tgt\nUSING ${2:sorgente} AS src\nON ${3:/* condizione */}\nWHEN MATCHED THEN UPDATE SET ${4:col = src.col}\nWHEN NOT MATCHED THEN INSERT (${5:colonne})\nVALUES (${6:src.colonne});\n',
   },
+  // TRIGGER: la sintassi ha DUE pezzi (il nome e "ON <tabella>"), quello che si dimentica più
+  // spesso — segnalazione utente: "la parola enable o disable non viene fuori dall'intellisense"
+  {
+    label: 'DISABLE TRIGGER',
+    detail: 'disabilita un trigger: DISABLE TRIGGER <trigger> ON <tabella>',
+    insertText: 'DISABLE TRIGGER ${1:[schema.]trigger} ON ${2:[schema.]tabella};\n',
+  },
+  {
+    label: 'DISABLE TRIGGER ALL',
+    detail: 'disabilita TUTTI i trigger di una tabella',
+    insertText: 'DISABLE TRIGGER ALL ON ${1:[schema.]tabella};\n',
+  },
+  {
+    label: 'ENABLE TRIGGER',
+    detail: 'abilita un trigger: ENABLE TRIGGER <trigger> ON <tabella>',
+    insertText: 'ENABLE TRIGGER ${1:[schema.]trigger} ON ${2:[schema.]tabella};\n',
+  },
+  {
+    label: 'ENABLE TRIGGER ALL',
+    detail: 'abilita TUTTI i trigger di una tabella',
+    insertText: 'ENABLE TRIGGER ALL ON ${1:[schema.]tabella};\n',
+  },
 ]
 
 /** Snippet statement che corrispondono al testo digitato (prefisso della keyword). */

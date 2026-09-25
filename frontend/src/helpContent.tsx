@@ -146,6 +146,11 @@ export const HELP_SECTIONS: HelpSection[] = [
           'I suggerimenti dipendono dalla posizione: dopo FROM/JOIN solo tabelle e viste, dopo EXEC solo stored procedure, nella select-list e in WHERE/ON/GROUP/ORDER solo colonne e funzioni, dopo un alias (r.) le colonne qualificate di quella tabella. Nella ORDER BY le direzioni ASC/DESC compaiono solo dopo aver scelto il campo.',
       },
       {
+        title: 'Abilitare o disabilitare un trigger',
+        detail:
+          'Le direttive sui trigger si scrivono con l\u2019intellisense: digitando "DIS" (o "ENA") a inizio statement esce lo snippet "DISABLE TRIGGER <trigger> ON <tabella>" (e la variante ALL), e dopo "DISABLE " la parola TRIGGER. Dopo il nome del trigger il popup propone "ON <tabella>" con la tabella SU CUI quel trigger è definito, e dopo ON propone solo le tabelle giuste (più DATABASE / ALL SERVER / ALL): così non si scrivono istruzioni che SQL Server rifiuta, come "DISABLE TRIGGER tr_X ON <altra tabella>". Anche la forma "ALTER TABLE t DISABLE TRIGGER " propone i trigger di quella tabella.',
+      },
+      {
         title: 'Parametri e variabili della routine che stai modificando',
         detail:
           'Mentre modifichi una stored procedure o una funzione (CREATE OR ALTER), scrivendo "@" l\u2019intellisense propone i PARAMETRI della firma (con il tipo, es. "nvarchar(255) · parametro della routine") INSIEME alle variabili dichiarate nel corpo (DECLARE): funziona con i parametri fra parentesi o senza, su più righe, con i valori di default, con lo stile "@param as tipo" e anche quando fra i parametri ci sono commenti (es. "/* da usare as default */"). Le voci si filtrano digitando parte del nome (@mI → @mId).',
