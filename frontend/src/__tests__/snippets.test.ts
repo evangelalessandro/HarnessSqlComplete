@@ -36,6 +36,16 @@ describe('buildStatementSnippets: template statement (stile Visual Studio)', () 
     )
   })
 
+  // Richiesta utente: "deve essere come le altre tipo EXEC, una parola chiave, blue" — queste
+  // voci si presentano come KEYWORD (icona blu), non con l'icona "snippet".
+  it('le direttive sui trigger sono marcate come parola chiave', () => {
+    for (const s of buildStatementSnippets('dis')) expect(s.keyword).toBe(true)
+    for (const s of buildStatementSnippets('ena')) expect(s.keyword).toBe(true)
+    // gli altri snippet restano snippet
+    expect(buildStatementSnippets('sel').every(s => !s.keyword)).toBe(true)
+    expect(buildStatementSnippets('mer').every(s => !s.keyword)).toBe(true)
+  })
+
   it('con meno di 2 caratteri non propone nulla', () => {
     expect(buildStatementSnippets('i')).toEqual([])
     expect(buildStatementSnippets('')).toEqual([])

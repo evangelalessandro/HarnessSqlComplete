@@ -796,7 +796,11 @@ export function provideSqlCompletions({
                   push({
                     label: sn.label,
                     detail: sn.detail,
-                    kind: monaco.languages.CompletionItemKind.Snippet,
+                    // le direttive sui trigger si presentano come PAROLE CHIAVE (icona blu come
+                    // EXEC), pur inserendo il testo con i segnaposto
+                    kind: sn.keyword
+                      ? monaco.languages.CompletionItemKind.Keyword
+                      : monaco.languages.CompletionItemKind.Snippet,
                     insertText: sn.insertText,
                     insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                     range,
@@ -1411,7 +1415,9 @@ export function provideSqlCompletions({
               push({
                 label: sn.label,
                 detail: sn.detail,
-                kind: monaco.languages.CompletionItemKind.Snippet,
+                kind: sn.keyword
+                  ? monaco.languages.CompletionItemKind.Keyword
+                  : monaco.languages.CompletionItemKind.Snippet,
                 insertText: sn.insertText,
                 insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                 range,

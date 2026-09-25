@@ -2400,6 +2400,17 @@ async function verifyTrigger(page) {
     page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
       .map(r => ((r.querySelector('.label-name') || r).textContent || '').replace(/\\u00a0/g, ' ').trim())`)
   const minuscole = v => v.map(x => x.toLowerCase())
+  /** Classe dell'icona della voce con quel testo (keyword = blu, snippet = altra icona). */
+  const iconaDi = async testo =>
+    page.eval(`(() => {
+      const righe = [...document.querySelectorAll('.suggest-widget .monaco-list-row')];
+      const r = righe.find(x => ((x.querySelector('.label-name') || x).textContent || '').trim().toUpperCase() === ${JSON.stringify(testo.toUpperCase())});
+      if (!r) return null;
+      const ic = r.querySelector('.icon, .codicon, [class*="symbol-"]');
+      // il "kind" del suggerimento è nel nome della classe (codicon-symbol-keyword / -snippet…)
+      const codicon = r.querySelector('[class*="codicon-symbol-"]');
+      return JSON.stringify({ icona: ic ? ic.className : null, codicon: codicon ? codicon.className : null, html: r.innerHTML.slice(0, 120) });
+    })()`)
 
   // 0) le PAROLE "ENABLE"/"DISABLE" devono uscire dall'intellisense (segnalazione utente), con
   //    lo snippet completo della direttiva (nome + ON tabella)
@@ -2408,6 +2419,25 @@ async function verifyTrigger(page) {
   console.log(`  dopo "DIS": ${JSON.stringify(vociDis.slice(0, 4))}`)
   check('digitando "DIS" esce "DISABLE TRIGGER"', vociDis.some(v => v.toUpperCase() === 'DISABLE TRIGGER'), JSON.stringify(vociDis.slice(0, 3)))
   check('digitando "DIS" esce anche "DISABLE TRIGGER ALL"', vociDis.some(v => v.toUpperCase() === 'DISABLE TRIGGER ALL'))
+  // richiesta utente: "deve essere come le altre tipo EXEC, una parola chiave, blue" → l'icona
+  // della voce deve essere quella delle PAROLE CHIAVE (come "TRIGGER" proposto dopo "DISABLE ")
+  const iconaTrigger = await iconaDi('DISABLE TRIGGER')
+  await scrivi('DISABLE ')
+  const iconaParola = await iconaDi('TRIGGER')
+  console.log(`  icone: DISABLE TRIGGER = ${iconaTrigger} · TRIGGER (parola chiave) = ${iconaParola}`)
+  const kindDi = testo => {
+    if (!testo) return null
+    try {
+      return JSON.parse(testo).codicon
+    } catch {
+      return null
+    }
+  }
+  check(
+    'la voce è una PAROLA CHIAVE (stessa icona blu di TRIGGER, non quella degli snippet)',
+    !!kindDi(iconaTrigger) && kindDi(iconaTrigger) === kindDi(iconaParola) && /keyword/i.test(kindDi(iconaTrigger)),
+    `${kindDi(iconaTrigger)} vs ${kindDi(iconaParola)}`,
+  )
   await scrivi('ENA')
   const vociEna = await voci()
   console.log(`  dopo "ENA": ${JSON.stringify(vociEna.slice(0, 4))}`)

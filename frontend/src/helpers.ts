@@ -1457,6 +1457,12 @@ export interface StatementSnippet {
   label: string
   detail: string
   insertText: string
+  /**
+   * True per gli snippet che devono comparire come PAROLA CHIAVE (icona blu, come EXEC) invece che
+   * con l'icona "snippet" — richiesta utente: "deve essere come le altre tipo EXEC, una parola
+   * chiave, blue". Inseriscono comunque il testo con i segnaposto (tab-stop).
+   */
+  keyword?: boolean
 }
 
 const STATEMENT_SNIPPETS: StatementSnippet[] = [
@@ -1491,21 +1497,25 @@ const STATEMENT_SNIPPETS: StatementSnippet[] = [
     label: 'DISABLE TRIGGER',
     detail: 'disabilita un trigger: DISABLE TRIGGER <trigger> ON <tabella>',
     insertText: 'DISABLE TRIGGER ${1:[schema.]trigger} ON ${2:[schema.]tabella};\n',
+    keyword: true,
   },
   {
     label: 'DISABLE TRIGGER ALL',
     detail: 'disabilita TUTTI i trigger di una tabella',
     insertText: 'DISABLE TRIGGER ALL ON ${1:[schema.]tabella};\n',
+    keyword: true,
   },
   {
     label: 'ENABLE TRIGGER',
     detail: 'abilita un trigger: ENABLE TRIGGER <trigger> ON <tabella>',
     insertText: 'ENABLE TRIGGER ${1:[schema.]trigger} ON ${2:[schema.]tabella};\n',
+    keyword: true,
   },
   {
     label: 'ENABLE TRIGGER ALL',
     detail: 'abilita TUTTI i trigger di una tabella',
     insertText: 'ENABLE TRIGGER ALL ON ${1:[schema.]tabella};\n',
+    keyword: true,
   },
 ]
 
