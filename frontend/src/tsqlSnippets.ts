@@ -492,6 +492,59 @@ export function detectEnableDisableTriggerOn(textBefore: string): boolean {
   return /(?:^|;|\bGO\b|\n)[ \t]*(?:ENABLE|DISABLE)\s+TRIGGER\b[^\n;]*\bON\s*$/i.test(t)
 }
 
+/**
+ * Nomi di trigger già digitati dopo "ENABLE/DISABLE TRIGGER " (anche più nomi separati da virgola):
+ * serve a sapere su QUALE tabella va completata la direttiva. null se non siamo in quel punto.
+ * Dopo "ON" restituisce comunque i nomi scritti prima di ON (le tabelle vengono dopo).
+ */
+export function nomiTriggerDigitati(textBefore: string): string[] | null {
+  const m = /(?:^|;|\bGO\b|\n)[ \t]*(?:ENABLE|DISABLE)\s+TRIGGER\s+([^\n;]*)$/i.exec(textBefore.trimEnd())
+  if (!m) return null
+  // si tiene solo la parte PRIMA di ON: dopo ON ci sono le tabelle
+  const prima = m[1].split(/\bON\b/i)[0].trim()
+  if (prima === '') return null
+  return prima
+    .split(',')
+    .map(s => s.trim().replace(/^\[|\]$/g, ''))
+    .filter(Boolean)
+}
+
+/**
+ * Tabella su cui è definito un trigger, dal nome scritto dall'utente (anche "schema.nome" o
+ * "[schema].[nome]"). Vuoto se il trigger non si trova: in quel caso non si sa dove va il "ON".
+ */
+export function tabellaDelTrigger(
+  triggers: { schema: string; name: string; tableName: string }[],
+  nome: string,
+): string {
+  const pulito = nome.trim()
+  const parti = pulito.split('.').map(p => p.trim().replace(/^\[|\]$/g, ''))
+  const tab = parti[parti.length - 1]
+  const schema = parti.length > 1 ? parti[parti.length - 2] : ''
+  const t = triggers.find(
+    x =>
+      x.name.toLowerCase() === tab.toLowerCase() &&
+      (!schema || x.schema.toLowerCase() === schema.toLowerCase()),
+  )
+  return t?.tableName ?? ''
+}
+
+/**
+ * "ALTER TABLE <tabella> ENABLE|DISABLE TRIGGER " → la tabella di cui proporre i trigger
+ * (forma ALTER TABLE, diversa da "DISABLE TRIGGER nome ON tabella").
+ */
+export function detectAlterTableTrigger(textBefore: string): { schema: string; table: string } | null {
+  const m =
+    /(?:^|;|\bGO\b|\n)[ \t]*ALTER\s+TABLE\s+((?:\[[^\]]+\]|[A-Za-z_][\w]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][\w]*))?)\s+(?:ENABLE|DISABLE)\s+TRIGGER\s*$/i.exec(
+      textBefore.trimEnd(),
+    )
+  if (!m) return null
+  const parti = m[1].split('.').map(p => p.trim().replace(/^\[|\]$/g, ''))
+  return parti.length > 1
+    ? { schema: parti[0], table: parti[1] }
+    : { schema: '', table: parti[0] }
+}
+
 // ---------- CREATE TABLE (colonna → tipo) ----------
 
 /** True dopo "CREATE TABLE t (id " (nome colonna dentro le parentesi): propone i tipi di dato. */

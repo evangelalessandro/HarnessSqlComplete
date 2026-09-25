@@ -59,6 +59,7 @@ const VERIFY_TEMA = process.argv.includes('--verify-tema')
 const VERIFY_CREATE = process.argv.includes('--verify-create')
 const VERIFY_SET = process.argv.includes('--verify-set')
 const VERIFY_COPIA = process.argv.includes('--verify-copia')
+const VERIFY_TRIGGER = process.argv.includes('--verify-trigger')
 const VERIFY_REPORT = process.argv.includes('--verify-report')
 /**
  * Finestra molto alta per --verify-create: Monaco disegna nel DOM solo le righe VISIBILI, quindi
@@ -82,6 +83,12 @@ const QUERY =
 const EXEC_LINE = process.env.SHOT_EXEC ?? 'EXEC dbo.ws_L2_SetCorridoioMiss @idMissione = 1'
 /** Routine di cui mostrare il diagramma delle chiamate. */
 const ROUTINE_NAME = process.env.SHOT_ROUTINE ?? 'ws_L2_SetCorridoioMiss'
+/**
+ * Tabella e trigger usati da --verify-trigger: si abilita/disabilita il trigger di una tabella
+ * reale del database di prova.
+ */
+const TRIGGER_TABLE = process.env.SHOT_TRIGGER_TABLE ?? 'DAT_CLASSI_MERC'
+const TRIGGER_NAME = process.env.SHOT_TRIGGER ?? `tr_${TRIGGER_TABLE}`
 /**
  * Tabella con PRIMARY KEY COMPOSITA usata dalla verifica della MERGE (--verify-merge):
  * serve a controllare che NESSUN campo chiave finisca nell'UPDATE SET.
@@ -2356,6 +2363,109 @@ async function verifyMerge(page) {
     JSON.stringify(analisiRisultati?.chiavi),
   )
   await page.screenshot('merge-risultati-chiave-composita')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-trigger): l'intellisense deve aiutare a scrivere BENE l'abilitazione e la
+ * disabilitazione di un trigger (segnalazione utente: "l'intellisense non mi aiuta a scrivere
+ * correttamente l'abilitazione o disabilitazione di un trigger"). Si controlla il popup:
+ *  1) dopo "DISABLE TRIGGER "            → i trigger della tabella + ALL
+ *  2) dopo "DISABLE TRIGGER <nome> "     → "ON <tabella>" (la tabella SU CUI è definito)
+ *  3) dopo "DISABLE TRIGGER <nome> ON "  → la tabella di QUEL trigger (non un elenco lungo)
+ *  4) dopo "ENABLE TRIGGER ALL ON "      → tutte le tabelle con trigger + DATABASE / ALL SERVER
+ *  5) dopo "ALTER TABLE <t> DISABLE TRIGGER " → i trigger di quella tabella (forma ALTER TABLE)
+ */
+async function verifyTrigger(page) {
+  await accediApp(page)
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(300)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1700)
+  }
+  const voci = async () =>
+    page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').replace(/\\u00a0/g, ' ').trim())`)
+  const minuscole = v => v.map(x => x.toLowerCase())
+
+  // 1) elenco dei trigger (e ALL)
+  await scrivi('DISABLE TRIGGER ')
+  const vociTrigger = await voci()
+  console.log(`  dopo "DISABLE TRIGGER ": ${JSON.stringify(vociTrigger.slice(0, 4))}`)
+  check('dopo "DISABLE TRIGGER " propone i trigger', vociTrigger.some(v => v.toLowerCase().startsWith('tr_')))
+  // "ALL": dopo ALL serve comunque "ON <tabella>", quindi si verifica il pezzo successivo
+  await scrivi('DISABLE TRIGGER ALL ')
+  const vociAllNome = await voci()
+  console.log(`  dopo "DISABLE TRIGGER ALL ": ${JSON.stringify(vociAllNome.slice(0, 3))}`)
+  check('dopo "DISABLE TRIGGER ALL " propone ON', minuscole(vociAllNome).includes('on'), JSON.stringify(vociAllNome.slice(0, 3)))
+
+  // 2) dopo il NOME serve "ON <tabella>": è l'errore tipico
+  await scrivi(`DISABLE TRIGGER ${TRIGGER_NAME} `)
+  const vociDopoNome = await voci()
+  console.log(`  dopo "DISABLE TRIGGER ${TRIGGER_NAME} ": ${JSON.stringify(vociDopoNome.slice(0, 4))}`)
+  check(
+    'dopo il nome propone "ON <tabella>" (non ripropone i trigger)',
+    vociDopoNome.some(v => new RegExp(`^ON\\b.*${TRIGGER_TABLE}`, 'i').test(v)),
+    JSON.stringify(vociDopoNome.slice(0, 3)),
+  )
+
+  // 3) dopo "ON " la tabella di QUEL trigger
+  await scrivi(`DISABLE TRIGGER ${TRIGGER_NAME} ON `)
+  const vociOn = await voci()
+  console.log(`  dopo "... ${TRIGGER_NAME} ON ": ${JSON.stringify(vociOn.slice(0, 4))}`)
+  check(
+    'dopo "ON " propone per prima la tabella di quel trigger',
+    (vociOn[0] ?? '').toLowerCase().includes(TRIGGER_TABLE.toLowerCase()),
+    vociOn[0],
+  )
+  check('dopo "ON " propone anche DATABASE e ALL SERVER', minuscole(vociOn).includes('database') && minuscole(vociOn).includes('all server'))
+
+  // 3b) completando la tabella la riga diventa corretta
+  await scrivi(`DISABLE TRIGGER ${TRIGGER_NAME} ON `)
+  await page.press('Enter', { code: 'Enter', vk: 13 })
+  await sleep(800)
+  const riga = await page.eval(`(() => {
+    const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' '));
+    return linee.find(l => l.toUpperCase().includes('DISABLE TRIGGER')) || '';
+  })()`)
+  console.log(`  riga completata: ${JSON.stringify(riga)}`)
+  check(
+    'accettando si ottiene "DISABLE TRIGGER <trigger> ON <tabella>"',
+    new RegExp(`DISABLE TRIGGER ${TRIGGER_NAME} ON (\\[?dbo\\]?\\.)?\\[?${TRIGGER_TABLE}\\]?`, 'i').test(riga),
+    riga,
+  )
+
+  // 4) ALL ON → tutte le tabelle con trigger
+  await scrivi('ENABLE TRIGGER ALL ON ')
+  const vociAll = await voci()
+  console.log(`  dopo "ENABLE TRIGGER ALL ON ": ${JSON.stringify(vociAll.slice(0, 4))}`)
+  check('dopo "TRIGGER ALL ON " propone le tabelle con trigger', vociAll.length > 3, `${vociAll.length} voci`)
+
+  // 5) forma ALTER TABLE ... DISABLE TRIGGER
+  await scrivi(`ALTER TABLE dbo.${TRIGGER_TABLE} DISABLE TRIGGER `)
+  const vociAlter = await voci()
+  console.log(`  dopo "ALTER TABLE dbo.${TRIGGER_TABLE} DISABLE TRIGGER ": ${JSON.stringify(vociAlter.slice(0, 4))}`)
+  check(
+    'con ALTER TABLE propone i trigger di QUELLA tabella',
+    vociAlter.some(v => v.toLowerCase().includes(TRIGGER_NAME.toLowerCase())),
+    JSON.stringify(vociAlter.slice(0, 3)),
+  )
+
+  await page.screenshot('intellisense-trigger')
 
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
@@ -4644,6 +4754,11 @@ async function main() {
 
     if (VERIFY_COPIA) {
       await verifyCopia(page)
+      return
+    }
+
+    if (VERIFY_TRIGGER) {
+      await verifyTrigger(page)
       return
     }
 

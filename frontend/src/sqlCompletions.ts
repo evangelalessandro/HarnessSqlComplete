@@ -7,7 +7,7 @@ import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
 import { isTextOffsetInComment } from './helpers'
 import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, columnsByFragment, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from './helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
-import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectEnableDisableTriggerName, detectEnableDisableTriggerOn, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, dropColumnSnippet, extractDeclaredVariables, extractRoutineParameters, setOptionInsertText, setOptionLabel, systemVariablePrefixLen, variablePrefixLen, vincoliCollegati } from './tsqlSnippets'
+import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectAlterTableTrigger, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectEnableDisableTriggerName, detectEnableDisableTriggerOn, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, dropColumnSnippet, extractDeclaredVariables, extractRoutineParameters, nomiTriggerDigitati, setOptionInsertText, setOptionLabel, systemVariablePrefixLen, tabellaDelTrigger, variablePrefixLen, vincoliCollegati } from './tsqlSnippets'
 import { extractCteTables, extractDerivedTables, extractLocalTables } from './localTables'
 import { extractLabels } from './labels'
 import { ORDER_DIRECTIONS } from './intellisenseContext'
@@ -477,6 +477,98 @@ export function provideSqlCompletions({
               }
             }
 
+            // ALTER TABLE <t> ENABLE|DISABLE TRIGGER → i trigger di QUELLA tabella (+ ALL)
+            const alterTrigger = detectAlterTableTrigger(textBefore)
+            if (alterTrigger) {
+              const tab = alterTrigger.table.toLowerCase()
+              for (const tr of st.summary.triggers.filter(x => x.tableName.toLowerCase() === tab)) {
+                push({
+                  label: qualified(tr.schema, tr.name),
+                  detail: `trigger di ${tr.tableName}`,
+                  kind: monaco.languages.CompletionItemKind.Event,
+                  insertText: sqlIdent(tr.name),
+                  range,
+                  filterText: tr.name,
+                })
+              }
+              push({
+                label: 'ALL',
+                detail: `tutti i trigger di ${alterTrigger.table}`,
+                kind: monaco.languages.CompletionItemKind.Keyword,
+                insertText: 'ALL',
+                range,
+                filterText: 'ALL',
+              })
+              return { suggestions }
+            }
+
+            /**
+             * ENABLE/DISABLE TRIGGER ha DUE pezzi: il nome (o ALL) e poi "ON <tabella>".
+             * Dopo il nome si propone "ON <tabella>" — la tabella SU CUI è definito il trigger —
+             * perché è l'errore tipico dimenticarlo, e dopo "ON" si propongono SOLO le tabelle di
+             * quei trigger: proponendo altre tabelle si scriverebbe un'istruzione che SQL Server
+             * rifiuta (il trigger non è definito lì).
+             */
+            const nomiTrigger = nomiTriggerDigitati(textBefore)
+            const elencoTrigger = st.summary.triggers
+            if (detectEnableDisableTriggerOn(textBefore)) {
+              const tabelleTrigger = [
+                ...new Set(nomiTrigger?.map(n => tabellaDelTrigger(elencoTrigger, n)).filter(Boolean) ?? []),
+              ]
+              // se il trigger scritto non si conosce, si ripiega su tutte le tabelle con trigger
+              const tabelle =
+                tabelleTrigger.length > 0
+                  ? tabelleTrigger
+                  : [...new Set(elencoTrigger.map(x => x.tableName))].sort((a, b) => a.localeCompare(b, 'it'))
+              for (const tab of tabelle) {
+                push({
+                  label: sqlIdent(tab),
+                  detail:
+                    tabelleTrigger.length > 0
+                      ? 'tabella su cui è definito il trigger'
+                      : `tabella con trigger (${elencoTrigger.filter(x => x.tableName === tab).length})`,
+                  kind: monaco.languages.CompletionItemKind.Struct,
+                  insertText: sqlIdent(tab),
+                  range,
+                  filterText: tab,
+                })
+              }
+              for (const kw of ['DATABASE', 'ALL SERVER', 'ALL']) {
+                push({
+                  label: kw,
+                  detail: 'ambito del trigger (database intero, tutto il server, tutte le tabelle)',
+                  kind: monaco.languages.CompletionItemKind.Keyword,
+                  insertText: kw,
+                  range,
+                  filterText: kw,
+                })
+              }
+              if (suggestions.length > 0) return { suggestions }
+            } else if (nomiTrigger && nomiTrigger.length > 0) {
+              // nome (o nomi) scritti ma manca "ON": si completa la direttiva
+              for (const nome of nomiTrigger) {
+                const tab = tabellaDelTrigger(elencoTrigger, nome)
+                if (!tab) continue
+                push({
+                  label: `ON ${sqlIdent(tab)}`,
+                  detail: 'tabella su cui è definito il trigger',
+                  kind: monaco.languages.CompletionItemKind.Struct,
+                  insertText: `ON ${sqlIdent(tab)}`,
+                  range,
+                  filterText: `ON ${tab}`,
+                })
+              }
+              push({
+                label: 'ON',
+                detail: 'manca "ON <tabella>": la tabella su cui il trigger è definito',
+                kind: monaco.languages.CompletionItemKind.Keyword,
+                insertText: 'ON',
+                range,
+                filterText: 'ON',
+              })
+              return { suggestions }
+            }
+
             // Oggetti dopo DROP/TRUNCATE/ALTER/USE (niente tabelle generiche)
             const objKind = detectObjectNameContext(textBefore)
             if (objKind) {
@@ -504,7 +596,8 @@ export function provideSqlCompletions({
                 for (const f of st.summary.functions) pushObj(qualified(f.schema, f.name), f.type, qualified(f.schema, f.name), monaco.languages.CompletionItemKind.Method)
               } else if (objKind === 'trigger') {
                 for (const tr of st.summary.triggers) pushObj(qualified(tr.schema, tr.name), `tabella ${tr.tableName}`, qualified(tr.schema, tr.name), monaco.languages.CompletionItemKind.Event)
-                // "DISABLE TRIGGER ALL ON t": la sintassi accetta anche ALL
+                // "DISABLE TRIGGER ALL ON t": la sintassi accetta anche ALL (scrivendo "ALL"
+                // l'elenco si filtra da solo, quindi può stare in coda ai trigger)
                 if (detectEnableDisableTriggerName(textBefore)) {
                   push({
                     label: 'ALL',
