@@ -61,6 +61,7 @@ const VERIFY_SET = process.argv.includes('--verify-set')
 const VERIFY_COPIA = process.argv.includes('--verify-copia')
 const VERIFY_TRIGGER = process.argv.includes('--verify-trigger')
 const VERIFY_INIZIO = process.argv.includes('--verify-inizio')
+const VERIFY_CURSORI_CORTI = process.argv.includes('--verify-cursori-corti')
 const VERIFY_REPORT = process.argv.includes('--verify-report')
 /**
  * Finestra molto alta per --verify-create: Monaco disegna nel DOM solo le righe VISIBILI, quindi
@@ -2369,6 +2370,213 @@ async function verifyMerge(page) {
     JSON.stringify(analisiRisultati?.chiavi),
   )
   await page.screenshot('merge-risultati-chiave-composita')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-cursori-corti): multi cursore con righe di lunghezza DIVERSA
+ * (segnalazione utente: "il multicursore non funziona bene quando ci sono righe che sono più
+ * corte"). Si controlla dove finiscono i cursori aggiunti e cosa si scrive:
+ *
+ *   AAAA
+ *   BB
+ *   CCCC
+ *
+ * cursore a fine riga 1 (colonna 5) e Maiusc+Alt+Giù due volte. Il comportamento giusto (come
+ * Visual Studio / VS Code) è che la COLONNA VOLUTA resti 5: la riga corta riceve il cursore a fine
+ * riga e la riga 3 torna alla colonna 5 → scrivendo "X" si ottiene AAAAA / BBX / CCCCX; se invece
+ * il cursore "scivola" sulla riga corta si ottiene AAAAA / BBX / CCXCC.
+ */
+async function verifyCursoriCorti(page) {
+  await accediApp(page)
+  await sleep(1200)
+  const rect = await editorRect(page)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(300)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(600)
+  }
+  const righeEditor = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => ({ top: l.getBoundingClientRect().top, testo: (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, '') }))
+      .sort((a, b) => a.top - b.top)
+      .map(l => l.testo)`)
+  const cursori = () => page.eval(`document.querySelectorAll('.monaco-editor .cursors-layer .cursor').length`)
+  /** Posizione di ogni cursore: riga (dall'alto) e pixel a sinistra. */
+  const posizioniCursori = () =>
+    page.eval(`(() => {
+      const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+        .map(l => l.getBoundingClientRect()).sort((a, b) => a.top - b.top);
+      const cur = [...document.querySelectorAll('.monaco-editor .cursors-layer .cursor')];
+      return cur.map(c => {
+        const r = c.getBoundingClientRect();
+        const riga = linee.findIndex(l => Math.abs(l.top - r.top) < 4);
+        return { riga: riga + 1, left: Math.round(r.left), top: Math.round(r.top) };
+      }).sort((a, b) => a.top - b.top || a.left - b.left);
+    })()`)
+
+  // 1) righe di lunghezza diversa: cursore a FINE riga 1 (Ctrl+Home poi End: niente clic a
+  // coordinate, che possono cadere fuori dall'editor), poi due "aggiungi cursore sotto"
+  await scrivi('AAAA\nBB\nCCCC')
+  await page.press('Home', { code: 'Home', vk: 36, modifiers: 2 })
+  await sleep(250)
+  await page.press('End', { code: 'End', vk: 35 })
+  await sleep(300)
+  const prima = await cursori()
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+  await sleep(400)
+  const dopoUno = await posizioniCursori()
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+  await sleep(400)
+  const dopoDue = await posizioniCursori()
+  console.log(`  cursori: prima ${prima} · dopo 1: ${JSON.stringify(dopoUno)} · dopo 2: ${JSON.stringify(dopoDue)}`)
+  check(
+    'Maiusc+Alt+Giù aggiunge un cursore per volta',
+    dopoUno.length === 2 && dopoDue.length === 3,
+    `${prima} → ${dopoUno.length} → ${dopoDue.length}`,
+  )
+
+  // 2) quello che si SCRIVE: la colonna voluta (fine riga 1) deve valere anche per la riga 3
+  await page.typeText('X')
+  await sleep(700)
+  const scritte = await righeEditor()
+  console.log(`  righe dopo aver scritto "X": ${JSON.stringify(scritte.slice(0, 3))}`)
+  check('la riga 1 riceve la X a fine riga', /^AAAAX$/.test(scritte[0] ?? ''), scritte[0])
+  check('la riga CORTA riceve la X a fine riga', /^BBX$/.test(scritte[1] ?? ''), scritte[1])
+  check('la terza riga torna alla COLONNA VOLUTA (non scivola)', /^CCCCX$/.test(scritte[2] ?? ''), scritte[2])
+
+  // 3) cursore a METÀ riga lunga, con una riga corta in mezzo
+  await scrivi('AAAA\nBB\nCCCC')
+  await page.press('Home', { code: 'Home', vk: 36, modifiers: 2 })
+  await sleep(200)
+  for (let i = 0; i < 2; i++) await page.press('ArrowRight', { code: 'ArrowRight', vk: 39 })
+  await sleep(300)
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+  await sleep(350)
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+  await sleep(350)
+  await page.typeText('X')
+  await sleep(700)
+  const aMeta = await righeEditor()
+  console.log(`  cursore a metà riga (colonna 3): ${JSON.stringify(aMeta.slice(0, 3))}`)
+  check(
+    'colonna 3 su tutte le righe (riga corta a fine riga)',
+    /^AAXAA$/.test(aMeta[0] ?? '') && /^BBX$/.test(aMeta[1] ?? '') && /^CCXCC$/.test(aMeta[2] ?? ''),
+    JSON.stringify(aMeta.slice(0, 3)),
+  )
+
+  // 4) cursori verso l'ALTO con righe corte sopra
+  await scrivi('AAAA\nBB\nCCCC')
+  await page.press('End', { code: 'End', vk: 35, modifiers: 2 })
+  await sleep(300)
+  await page.press('ArrowUp', { code: 'ArrowUp', vk: 38, modifiers: 9 })
+  await sleep(350)
+  await page.press('ArrowUp', { code: 'ArrowUp', vk: 38, modifiers: 9 })
+  await sleep(350)
+  const sopra = await cursori()
+  await page.typeText('Y')
+  await sleep(700)
+  const aSopra = await righeEditor()
+  console.log(`  cursori verso l alto: ${sopra} — righe: ${JSON.stringify(aSopra.slice(0, 3))}`)
+  check('Maiusc+Alt+Su aggiunge un cursore per riga (verso l alto)', sopra === 3, `${sopra} cursori`)
+  check(
+    'colonna 5 mantenuta anche salendo sopra la riga corta',
+    /^AAAAY$/.test(aSopra[0] ?? '') && /^BBY$/.test(aSopra[1] ?? '') && /^CCCCY$/.test(aSopra[2] ?? ''),
+    JSON.stringify(aSopra.slice(0, 3)),
+  )
+
+  // 5) con una SELEZIONE su una riga lunga e una riga corta sotto: si aggiunge un cursore
+  //    (o una selezione) sotto, senza rompere il testo
+  await scrivi('AAAA\nBB\nCCCC')
+  await page.press('Home', { code: 'Home', vk: 36, modifiers: 2 })
+  await sleep(200)
+  // seleziona "AA" (2 caratteri) sulla riga 1
+  await page.press('ArrowRight', { code: 'ArrowRight', vk: 39, modifiers: 8 })
+  await page.press('ArrowRight', { code: 'ArrowRight', vk: 39, modifiers: 8 })
+  await sleep(300)
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+  await sleep(450)
+  const conSelezione = await cursori()
+  await page.typeText('Z')
+  await sleep(700)
+  const aSelezione = await righeEditor()
+  console.log(`  con selezione: cursori ${conSelezione} — righe: ${JSON.stringify(aSelezione.slice(0, 3))}`)
+  check('con una selezione il cursore si aggiunge sotto', conSelezione >= 2, `${conSelezione} cursori`)
+  check(
+    'la scrittura con selezione non rompe le righe corte (3 righe, testo sensato)',
+    aSelezione.length === 3 && aSelezione.every(r => /^[A-Z]+$/.test(r)) && (aSelezione[1] ?? '').startsWith('Z'),
+    JSON.stringify(aSelezione.slice(0, 3)),
+  )
+
+  // 6) caso limite: TRE righe corte in mezzo a due lunghe (lo "scivolamento" si vedrebbe sulla
+  //    quarta riga: DXDDDDD invece di DDDDDDX)
+  await scrivi('AAAAAA\nB\nC\nDDDDDD')
+  await page.press('Home', { code: 'Home', vk: 36, modifiers: 2 })
+  await sleep(250)
+  await page.press('End', { code: 'End', vk: 35 })
+  await sleep(300)
+  for (let i = 0; i < 3; i++) {
+    await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+    await sleep(350)
+  }
+  const molti = await cursori()
+  await page.typeText('X')
+  await sleep(800)
+  const aMolti = await righeEditor()
+  console.log(`  ${molti} cursori su righe corte in mezzo: ${JSON.stringify(aMolti.slice(0, 4))}`)
+  check('quattro cursori (uno per riga)', molti === 4, `${molti} cursori`)
+  check(
+    'nessuno scivolamento: la colonna voluta vale anche dopo le righe corte',
+    /^AAAAAAX$/.test(aMolti[0] ?? '') &&
+      /^BX$/.test(aMolti[1] ?? '') &&
+      /^CX$/.test(aMolti[2] ?? '') &&
+      /^DDDDDDX$/.test(aMolti[3] ?? ''),
+    JSON.stringify(aMolti.slice(0, 4)),
+  )
+
+  // 7) SELEZIONE A BLOCCHI (Alt+C) su righe di lunghezza diversa: rettangolo di 3 colonne sulle
+  //    prime righe e scrittura di 3 caratteri; la riga corta non deve rompere niente
+  await scrivi('AAAA\nBB\nCCCC')
+  if (!(await page.eval(`/bg-sky-600/.test((document.querySelector('[data-multiriga="blocchi"]') || {}).innerHTML || '')`))) {
+    await page.clickWhere(`document.querySelector('[data-multiriga="blocchi"]')`)
+    await sleep(500)
+  }
+  const rettangolo = await page.eval(`(() => {
+    const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+    const a = linee[0], c = linee[2];
+    if (!a || !c) return null;
+    const ra = a.getBoundingClientRect(), rc = c.getBoundingClientRect();
+    const passo = ra.height > 0 ? 8 : 8; // ~larghezza di un carattere in Cascadia/Consolas 13px
+    return { x1: ra.left + 3, y1: ra.top + ra.height / 2, x2: rc.left + 3 + passo * 3, y2: rc.top + rc.height / 2 };
+  })()`)
+  if (rettangolo) await page.dragPoint(rettangolo.x1, rettangolo.y1, rettangolo.x2, rettangolo.y2, 0)
+  await sleep(500)
+  await page.typeText('XYZ')
+  await sleep(800)
+  const aBlocchi = await righeEditor()
+  console.log(`  selezione a blocchi su righe diverse: ${JSON.stringify(aBlocchi.slice(0, 3))}`)
+  check(
+    'la selezione a blocchi su righe corte non rompe il testo (3 righe, nessun carattere strano)',
+    aBlocchi.length === 3 && aBlocchi.every(r => /^[A-Z]+$/.test(r)) && aBlocchi[1].length >= 2,
+    JSON.stringify(aBlocchi.slice(0, 3)),
+  )
+  // si spegne la modalità a blocchi
+  await page.clickWhere(`document.querySelector('[data-multiriga="blocchi"]')`)
+  await sleep(400)
+
+  await page.screenshot('multicursore-righe-corte')
 
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
@@ -5073,6 +5281,11 @@ async function main() {
 
     if (VERIFY_INIZIO) {
       await verifyInizio(page)
+      return
+    }
+
+    if (VERIFY_CURSORI_CORTI) {
+      await verifyCursoriCorti(page)
       return
     }
 
