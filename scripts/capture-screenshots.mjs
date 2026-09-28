@@ -1066,6 +1066,83 @@ async function verifyFormat(page) {
     righeCase.some(r => r.startsWith(',isnull (rtrim (ORD_DESC)')),
   )
 
+  // ---------------------------------------------------------------------------------------
+  // "FORMATTA SEMPRE" (segnalazione utente: "la formattazione non fa più nulla, prova questa").
+  // Un testo scritto a mano — una riga per campo, virgole in testa, clausole a capo — veniva
+  // lasciato IDENTICO dalla vecchia regola "già impaginato": ora la formattazione deve
+  // intervenire comunque (CASE espanso, parole chiave in maiuscolo).
+  const stile = [
+    'CREATE PROCEDURE p',
+    'AS',
+    '  select',
+    '     @txtError = case',
+    '                     when A = 1',
+    "                       then 'x'",
+    "                     else ''",
+    '                end',
+    '    ,@b = 2',
+    '    ,@c = 3',
+    '    ,@d = 4',
+    '  from dbo.T',
+    '  where A = 1',
+  ].join('\n')
+  const s = await scriviEFormatta(stile)
+  const primaStile = s.righePrima.map(r => r.replace(/\s+$/, ''))
+  const dopoStile = s.righe.map(r => r.replace(/\s+$/, ''))
+  console.log('  testo scritto a mano, dopo "Formatta":')
+  dopoStile.forEach(r => console.log(`    |${r}`))
+  check(
+    'testo scritto a mano: "Formatta" CAMBIA il testo (prima restava identico)',
+    JSON.stringify(primaStile) !== JSON.stringify(dopoStile),
+  )
+  const iCaseStile = dopoStile.findIndex(r => r.trim() === 'CASE')
+  const iWhenStile = dopoStile.findIndex(r => r.trim() === 'WHEN A = 1')
+  check(
+    'testo scritto a mano: il CASE viene espanso e rientrato',
+    iCaseStile > -1 && iWhenStile === iCaseStile + 1,
+    `CASE=${iCaseStile} WHEN=${iWhenStile}`,
+  )
+
+  // la store VERA della segnalazione (fixture identica a quella incollata dall'utente):
+  // il testo è lungo, quindi si legge la TESTA (Ctrl+Home) prima e dopo la formattazione
+  const storeUtente = await page.eval(
+    `(async () => (await import('/src/__tests__/fixtures/routine_ws_L2_CUSTOM_CELL_TO_CELL.sql?raw')).default)()`,
+  )
+  const testaDallInizio = async () => {
+    await page.press('Home', { code: 'Home', vk: 36, modifiers: 2 }) // Ctrl+Home
+    await sleep(600)
+    return (await righeEditor()).map(r => r.replace(/\s+$/, ''))
+  }
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(storeUtente)
+  await sleep(900)
+  const testaPrima = await testaDallInizio()
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(400)
+  const premutoStore = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Formatta')`,
+  )
+  await sleep(1500)
+  const testaDopo = await testaDallInizio()
+  console.log('  store della segnalazione, testa prima:')
+  testaPrima.slice(0, 6).forEach(r => console.log(`    >${r}`))
+  console.log('  store della segnalazione, testa dopo "Formatta":')
+  testaDopo.slice(0, 14).forEach(r => console.log(`    |${r}`))
+  check('store della segnalazione: il pulsante "Formatta" è stato premuto', premutoStore === true)
+  check(
+    'store della segnalazione: "Formatta" CAMBIA il testo (prima restava identico)',
+    JSON.stringify(testaPrima) !== JSON.stringify(testaDopo) && testaPrima.length > 0,
+  )
+  check(
+    'store della segnalazione: nome routine e parole chiave in maiuscolo',
+    testaDopo.some(r => r.includes('CREATE OR ALTER PROCEDURE [dbo].[ws_L2_CUSTOM_CELL_TO_CELL]')) &&
+      testaDopo.some(r => r.trim() === 'SET NOCOUNT ON'),
+    JSON.stringify(testaDopo.slice(0, 3)),
+  )
+  await page.screenshot('formatta-sempre-store-utente')
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

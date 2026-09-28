@@ -7,7 +7,6 @@
 //     EXEC con parametri allineati, DECLARE, label a margine, GO.
 
 import type { FormatProfile } from './formatProfile'
-import { stripSqlNoise } from './sqlGen'
 
 type Token =
   | { type: 'word'; text: string; blank?: number }
@@ -379,8 +378,9 @@ function needsStatementLayout(sql: string): boolean {
  * Formatta una query semplice secondo il profilo (motore query: clausole su righe proprie).
  */
 export function formatSqlWithProfile(sql: string, profile: FormatProfile): string {
-  // GIÀ IMPAGINATO (una riga per campo, JOIN e clausole a capo): si conserva alla lettera.
-  if (statementGiaImpaginato(sql)) return testoConservato(sql)
+  // La formattazione interviene SEMPRE (richiesta utente: "la formattazione non fa più nulla").
+  // La vecchia regola "testo già impaginato → lascialo identico" è stata tolta: due store scritte
+  // nello stesso stile venivano trattate in modo diverso, e l'utente non capiva perché.
   if (isRoutineText(sql)) return formatRoutineWithProfile(sql, profile)
   // statement "a blocchi" senza parole procedurali (es. selezione di un CTE o di una
   // SELECT TOP n @a=…): il motore delle routine ha il layout CTE/assegnazioni/condizioni
@@ -740,60 +740,12 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
 }
 
 /**
- * True se il testo è GIÀ impaginato da chi lo ha scritto: ogni campo della select-list apre
- * riga (virgola in testa) e le clausole FROM/WHERE/JOIN stanno ciascuna su una riga propria.
- * In quel caso la formattazione NON deve toccarlo (richiesta utente: "se formatti questa deve
- * rimanere come è che è perfetta"): l'impaginazione automatica serve a chi non ce l'ha.
- */
-export function statementGiaImpaginato(sql: string): boolean {
-  const code = stripSqlNoise(sql)
-  if (code.split('\n').length < 3) return false
-  /** True se il carattere prima dell'indice (saltando spazi) è un fine riga. */
-  const apreRiga = (index: number): boolean => {
-    let j = index - 1
-    while (j >= 0 && (code[j] === ' ' || code[j] === '\t')) j--
-    return j >= 0 && code[j] === '\n'
-  }
-  let virgole = 0
-  let virgoleACapo = 0
-  let livello = 0
-  for (let i = 0; i < code.length; i++) {
-    const ch = code[i]
-    if (ch === '(') livello++
-    else if (ch === ')') livello = Math.max(0, livello - 1)
-    else if (ch === ',' && livello === 0) {
-      virgole++
-      if (apreRiga(i)) virgoleACapo++
-    }
-  }
-  // almeno qualche campo e quasi tutti già a capo (le eccezioni sono i campi raggruppati a mano)
-  if (virgole < 3 || virgoleACapo / virgole < 0.8) return false
-  const clausole = [
-    ...code.matchAll(
-      /\b(FROM|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|INNER\s+JOIN|LEFT\s+(?:OUTER\s+)?JOIN|RIGHT\s+(?:OUTER\s+)?JOIN|FULL\s+(?:OUTER\s+)?JOIN|CROSS\s+JOIN)\b/gi,
-    ),
-  ]
-  if (clausole.length === 0) return false
-  // quasi tutte le clausole a inizio riga: qualche JOIN attaccato alla riga sopra è una scelta
-  // di chi ha scritto il codice e non basta a dire "non è impaginato"
-  const clauseACapo = clausole.filter(m => apreRiga(m.index ?? 0)).length
-  return clauseACapo / clausole.length >= 0.8
-}
-
-/** Testo conservato alla lettera, normalizzato come fa il formattatore (fine riga LF + a capo). */
-function testoConservato(sql: string): string {
-  return sql.replace(/\r\n/g, '\n').trimEnd() + '\n'
-}
-
-/**
  * Formatta una routine (procedura/funzione/trigger) con indentazione a blocchi,
  * nello stile dell'esempio Redgate: firma con parametri allineati e virgola iniziale,
  * AS su riga propria, corpo indentato, BEGIN/END, IF/ELSE, WHILE, CASE/WHEN/THEN/END,
  * EXEC con parametri allineati, DECLARE con virgola iniziale, label a margine.
  */
 export function formatRoutineWithProfile(sql: string, profile: FormatProfile): string {
-  // GIÀ IMPAGINATA dall'utente: si conserva alla lettera (rientri e allineamenti compresi).
-  if (statementGiaImpaginato(sql)) return testoConservato(sql)
   const tokens = tokenizeSqlText(sql)
   if (tokens.length === 0) return sql
 
