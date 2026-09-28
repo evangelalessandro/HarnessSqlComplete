@@ -38,20 +38,30 @@ function skipNoise(text: string, i: number): number {
   return i
 }
 
-/** Indice della prossima '(' fuori da stringhe/commenti (o -1). */
-function findOpenParen(text: string, from: number): number {
-  const n = text.length
+/**
+ * Indice della prossima '(' fuori da stringhe/commenti, anche a capo (o -1).
+ * Nelle store di questo database la lista delle colonne comincia sulla riga DOPO il nome
+ * ("create table #t\n  ("): una ricerca che si ferma al primo a capo lasciava la temporanea
+ * senza colonne e l'intellisense non ne proponeva i campi.
+ * Fra il nome e la parentesi sono ammessi SOLO spazi, a capo e commenti: se il primo
+ * carattere "vero" non è una parentesi non c'è nessuna lista e non si va a prendere la
+ * parentesi di un altro statement.
+ */
+function findOpenParenMultiRiga(text: string, from: number): number {
+  const limite = Math.min(text.length, from + 4000)
   let i = from
-  while (i < n) {
+  while (i < limite) {
     const skipped = skipNoise(text, i)
     if (skipped !== i) {
       i = skipped
       continue
     }
     const ch = text[i]
-    if (ch === '(') return i
-    if (ch === ';' || ch === ')' || ch === '\n') return -1
-    i++
+    if (/\s/.test(ch)) {
+      i++
+      continue
+    }
+    return ch === '(' ? i : -1
   }
   return -1
 }
@@ -269,9 +279,9 @@ export function parseSelectListNames(list: string): string[] {
   return selectListInfo(list).names
 }
 
-/** Trova l'indice del token '(' della lista, se il segmento è "nome (" (senza righe di mezzo). */
+/** Trova l'indice della '(' della lista colonne, anche se è sulla riga successiva al nome. */
 function columnListOf(text: string, nameTokEnd: number): ColumnInfo[] {
-  const open = findOpenParen(text, nameTokEnd)
+  const open = findOpenParenMultiRiga(text, nameTokEnd)
   if (open === -1) return []
   const close = matchParen(text, open)
   if (close === -1) return []
@@ -629,7 +639,7 @@ export function extractLocalTables(text: string, knownTables: TableInfo[] = []):
       const insName = nameTok ? nameAt(text, nameTok) : ''
       if (nameTok && isLocalTableName(insName)) {
         const table = ensure(insName)
-        const open = findOpenParen(text, nameTok.end)
+        const open = findOpenParenMultiRiga(text, nameTok.end)
         if (open !== -1) {
           const close = matchParen(text, open)
           if (close !== -1) {

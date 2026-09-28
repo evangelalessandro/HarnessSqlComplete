@@ -1393,6 +1393,99 @@ async function verifyLocalTables(page) {
   const mission = (colonneStore || []).find(t => t.nome === '#tmpMission')
   check('store reale: #tmpMission riconosciuta', !!mission)
   check('store reale: #tmpMission ha TUTTE le colonne (CTE comprese)', JSON.stringify(mission?.colonne) === JSON.stringify(attese))
+
+  // ---------------------------------------------------------------------------------------
+  // CASO UTENTE (segnalazione): "alla riga 69 quando faccio l'update non vedo i campi della
+  // tabella #tbl_CC_Kitting_St1". Nella store la lista dei campi della temporanea comincia
+  // sulla riga DOPO il nome e la ricerca della "(" si fermava al primo a capo: la temporanea
+  // restava senza colonne. Qui si riproduce lo stesso testo (creazione su più righe + UPDATE
+  // con SET dal join) e si legge il popup vero.
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1200)
+  }
+  /** Clic in fondo alla riga che contiene `frammento`, poi digita `lettera` per aprire il popup. */
+  const apriPopupSuRiga = async (frammento, lettera) => {
+    const punto = await page.eval(`(() => {
+      const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')];
+      // Monaco rende gli spazi come "&nbsp;": si normalizzano, altrimenti la ricerca non trova nulla
+      const riga = linee.find(l => (l.textContent || '').replace(/\\u00a0/g, ' ').includes(${JSON.stringify(frammento)}));
+      if (!riga) return null;
+      const spans = [...riga.querySelectorAll('span')];
+      const s = spans[spans.length - 1];
+      if (!s) return null;
+      const r = s.getBoundingClientRect();
+      return { x: r.right - 1, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) {
+      console.log(`  (riga "${frammento}" non trovata nel editor)`)
+      return []
+    }
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(400)
+    await page.typeText(lettera)
+    await sleep(1600)
+    return await vociPopup()
+  }
+  const minuscole = v => v.map(x => x.toLowerCase())
+  /** Testo della temporanea ESATTAMENTE come nella store dell'utente (parentesi a capo). */
+  const TEMP_MULTIRIGA = [
+    'create table #tbl_CC_Kitting_St1',
+    '(',
+    '            X_UDC nvarchar(50),',
+    '            X_CELL_DEST nvarchar(50),',
+    '            X_COR_DEST nvarchar(50),',
+    ')',
+  ].join('\n')
+
+  // 2a) nella WHERE della temporanea
+  await scrivi(`${TEMP_MULTIRIGA}\nselect * from #tbl_CC_Kitting_St1 where `)
+  const vociWhere = await apriPopupSuRiga('#tbl_CC_Kitting_St1 where', 'X')
+  console.log(`  popup nella WHERE della temporanea: ${JSON.stringify(vociWhere.slice(0, 8))}`)
+  check('temporanea con la "(" a capo: propone X_UDC nella WHERE', minuscole(vociWhere).includes('x_udc'))
+
+  // 2b) la riga 69 della store: "set UDC_CELLA=x_udc" con il join alla temporanea
+  await scrivi(
+    [
+      TEMP_MULTIRIGA,
+      'update DAT_UDC',
+      'set UDC_CELLA=',
+      'from DAT_UDC inner join #tbl_CC_Kitting_St1 ON 1=1',
+      'where  DAT_UDC.UDC_UDC=1',
+    ].join('\n'),
+  )
+  const vociSet = await apriPopupSuRiga('set UDC_CELLA=', 'X')
+  console.log(`  popup dopo "set UDC_CELLA=" (riga dell update): ${JSON.stringify(vociSet.slice(0, 8))}`)
+  const setMin = minuscole(vociSet)
+  check(
+    'UPDATE/SET: propone i campi della temporanea del join (X_UDC)',
+    setMin.includes('x_udc'),
+    JSON.stringify(vociSet.slice(0, 4)),
+  )
+  check(
+    'UPDATE/SET: propone TUTTI i campi della temporanea',
+    ['x_udc', 'x_cell_dest', 'x_cor_dest'].every(c => setMin.includes(c)),
+  )
+
+  // 2c) l'alias della temporanea nel FROM ("left join #tbl_CC_Kitting_St1 x on 1 = 1" → "x.")
+  await scrivi(
+    [
+      TEMP_MULTIRIGA,
+      'select 1 from DAT_UDC',
+      '  left join #tbl_CC_Kitting_St1 x on 1 = 1',
+      'where x.',
+    ].join('\n'),
+  )
+  const vociAlias = await apriPopupSuRiga('where x.', 'X')
+  console.log(`  popup dopo "x." (alias della temporanea): ${JSON.stringify(vociAlias.slice(0, 8))}`)
+  check('alias della temporanea: "x." propone X_UDC', minuscole(vociAlias).includes('x_udc'))
+  await page.press('Escape', { code: 'Escape', vk: 27 })
   await page.press('Escape', { code: 'Escape', vk: 27 })
 
   const falliti = esiti.filter(e => !e).length
