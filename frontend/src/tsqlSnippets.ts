@@ -803,9 +803,9 @@ export function extractRoutineParameters(text: string): DeclaredVariable[] {
 
   const out: DeclaredVariable[] = []
   const signature = firmaDellaRoutine(code, last.index + last[0].length)
-  // nome@(eventuale AS) tipo(con lunghezza opzionale tipo "nvarchar(50)")
+  // nome@(eventuale AS) tipo(con lunghezza opzionale "nvarchar(50)", max compreso: "nvarchar(max)")
   const paramRe =
-    /@([A-Za-z_][A-Za-z0-9_]*)\s+(?:(?:AS\s+)?)((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\(\s*\d+(?:\s*,\s*\d+)?\s*\))?)/gi
+    /@([A-Za-z_][A-Za-z0-9_]*)\s+(?:(?:AS\s+)?)((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\(\s*(?:\d+(?:\s*,\s*\d+)?|max)\s*\))?)/gi
   let p: RegExpExecArray | null
   while ((p = paramRe.exec(signature)) !== null) {
     out.push({ name: `@${p[1]}`, dataType: p[2].replace(/\[|\]/g, '') })

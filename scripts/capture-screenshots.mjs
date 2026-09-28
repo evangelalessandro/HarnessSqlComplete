@@ -63,11 +63,12 @@ const VERIFY_TRIGGER = process.argv.includes('--verify-trigger')
 const VERIFY_INIZIO = process.argv.includes('--verify-inizio')
 const VERIFY_CURSORI_CORTI = process.argv.includes('--verify-cursori-corti')
 const VERIFY_REPORT = process.argv.includes('--verify-report')
+const VERIFY_HOVER = process.argv.includes('--verify-hover')
 /**
  * Finestra molto alta per --verify-create: Monaco disegna nel DOM solo le righe VISIBILI, quindi
  * per leggere tutto lo script CREATE (colonne, vincoli, DEFAULT, trigger) serve un editor alto.
  */
-const WINDOW_H = VERIFY_CREATE ? 2600 : 1000
+const WINDOW_H = VERIFY_CREATE ? 2600 : VERIFY_HOVER ? 1400 : 1000
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -140,6 +141,20 @@ const ROUTINE_PARAMS = (process.env.SHOT_PARAMS ?? '@mId,@nNoBack,@fExist,@Error
   .filter(Boolean)
 /** Quanti caratteri spostare il cursore per finire DENTRO il nome della routine ("EXEC dbo." = 9). */
 const EXEC_NAME_OFFSET = Number(process.env.SHOT_EXEC_OFFSET ?? 13)
+/**
+ * Store usata da --verify-hover: ha il COMMENTO di testata (blocco di commento prima della CREATE),
+ * 23 parametri e un parametro OUTPUT con lunghezza esatta (@errore nvarchar(255) OUTPUT).
+ */
+const STORE_HOVER = process.env.SHOT_HOVER_STORE ?? 'ws_L2_GenMissIng'
+/** Numero di parametri della firma di STORE_HOVER (letta da sys.parameters del database). */
+const STORE_HOVER_PARAMS = Number(process.env.SHOT_HOVER_PARAMS ?? 23)
+/**
+ * FUNZIONE usata da --verify-hover: le funzioni del sommario NON hanno i parametri, quindi qui si
+ * controlla che vengano letti dalla DEFINIZIONE (10 parametri, commento di testata in blocco).
+ */
+const FUNZIONE_HOVER = process.env.SHOT_HOVER_FUNCTION ?? 'fn_APS_Detect_ErrBF'
+/** Parametri della firma di FUNZIONE_HOVER (senza il valore di ritorno: sys.parameters ha una riga con nome NULL). */
+const FUNZIONE_HOVER_PARAMS = Number(process.env.SHOT_HOVER_FUNCTION_PARAMS ?? 10)
 
 /**
  * Batch usato dalla verifica degli errori: crea una procedura TEMPORANEA (vive solo nella
@@ -3009,6 +3024,180 @@ async function verifyCopia(page) {
 }
 
 /**
+ * VERIFICA (--verify-hover): la TOOLTIP di una stored procedure mostra il COMMENTO di testata e i
+ * PARAMETRI della firma (richiesta utente: "nella tooltip di una store mi puoi fare vedere commento
+ * e parametri?"). Si scrive una EXEC nel editor e si passa il mouse sul nome: si legge la tooltip
+ * vera dal DOM (provider asincrono incluso), non una funzione interna.
+ */
+async function verifyHover(page) {
+  await accediApp(page)
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  /**
+   * Tooltip VISIBILE: in pagina possono restare più elementi .monaco-hover (uno per editor) e
+   * quello vecchio resta nel DOM ma nascosto, quindi si prende il più grande con area > 0.
+   */
+  const HOVER_VISIBILE = `[...document.querySelectorAll('.monaco-hover')]
+    .map(h => ({ h, r: h.getBoundingClientRect() }))
+    .filter(x => x.r.width > 2 && x.r.height > 2)
+    .sort((a, b) => b.r.width * b.r.height - a.r.width * a.r.height)[0]?.h`
+
+  /** Testo della tooltip attualmente mostrata (null se non c'è). */
+  const leggiTooltip = () =>
+    page.eval(`(() => {
+      const h = ${HOVER_VISIBILE};
+      if (!h) return null;
+      return (h.innerText || '').replace(/\\u00a0/g, ' ').trim();
+    })()`)
+
+  /** Struttura HTML della tooltip: serve a provare che il markdown è RENDERIZZATO (non testo grezzo). */
+  const strutturaTooltip = () =>
+    page.eval(`(() => {
+      const h = ${HOVER_VISIBILE};
+      if (!h) return null;
+      return {
+        voci: h.querySelectorAll('li').length,
+        titoli: [...h.querySelectorAll('h1,h2,h3,h4')].map(e => (e.textContent || '').trim()),
+        grassetti: [...h.querySelectorAll('strong')].map(e => (e.textContent || '').trim()),
+        citazioni: h.querySelectorAll('blockquote').length,
+        codice: [...h.querySelectorAll('code')].map(e => (e.textContent || '').trim()),
+      };
+    })()`)
+
+  /** Testo della tooltip dopo aver portato il mouse su un pezzo di codice. */
+  const hoverSu = async testo => {
+    const punto = await page.eval(`(() => {
+      const cercato = ${JSON.stringify(testo)};
+      const spans = [...document.querySelectorAll('.monaco-editor .view-lines .view-line span')]
+        .filter(s => s.children.length === 0 && (s.textContent || '').includes(cercato));
+      if (!spans.length) return null;
+      const span = spans[0];
+      const i = (span.textContent || '').indexOf(cercato);
+      const range = document.createRange();
+      range.setStart(span.firstChild, i);
+      range.setEnd(span.firstChild, i + cercato.length);
+      const r = range.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2, riga: span.textContent };
+    })()`)
+    if (!punto) return { punto: null, testo: null, struttura: null }
+    // 1) il mouse ESCE dal editor: la tooltip precedente può coprire il token da guardare (è un
+    //    pannello "sticky": finché il mouse resta dentro l'editor non sparisce) e si aspetta che se ne vada
+    const fuori = await page.eval(`({ x: innerWidth - 24, y: 6 })`)
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(fuori.x), y: Math.round(fuori.y), button: 'none', buttons: 0 })
+    for (let i = 0; i < 20; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      if ((await leggiTooltip()) === null) break
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(150)
+    }
+    // 2) ora il mouse va sul token (la tooltip compare sul movimento, non sul riposo)
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(punto.x), y: Math.round(punto.y), button: 'none', buttons: 0 })
+    // la tooltip si aspetta finché non è QUELLA giusta: la precedente resta in pagina per un po'
+    let testoLetto = null
+    const scaduto = Date.now() + 15000
+    while (Date.now() < scaduto) {
+      // eslint-disable-next-line no-await-in-loop
+      testoLetto = await leggiTooltip()
+      if (testoLetto && testoLetto.includes(testo)) break
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(300)
+    }
+    return { punto, testo: testoLetto, struttura: await strutturaTooltip() }
+  }
+
+  // 1) si scrive nel editor la chiamata alla store vera (23 parametri, commento in testa)
+  const rect = await editorRect(page)
+  await page.clickPoint(rect.x + 200, rect.y + 30)
+  await sleep(300)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 }) // Ctrl+A
+  await sleep(200)
+  await page.typeText(
+    `SELECT UDC_UDC, UDC_TIPOUDC\nFROM dbo.DAT_UDC;\nEXEC dbo.${STORE_HOVER};\nSELECT dbo.${FUNZIONE_HOVER}(0,0,0,0,0,0,1,1,0,0);`,
+  )
+  await sleep(1200)
+
+  const tooltip = await hoverSu(STORE_HOVER)
+  console.log(`  tooltip della store:\n${(tooltip.testo || '(nessuna tooltip)').split('\n').map(r => `    | ${r}`).join('\n')}`)
+  check('la tooltip della store compare', tooltip.punto !== null && (tooltip.testo || '').length > 0)
+
+  const t = tooltip.testo || ''
+  check('dice che è una stored procedure', t.includes(STORE_HOVER) && /stored procedure/i.test(t), t.split('\n')[0])
+  check('mostra la sezione PARAMETRI', /Parametri \(\d+\)/.test(t), (t.match(/Parametri \(\d+\)/) || [])[0])
+  // ogni parametro è una riga "- @nome · tipo": il numero deve essere quello vero della firma
+  const righeParam = t.match(/^[-•*]?\s*@[A-Za-z_][A-Za-z0-9_]* · /gm) || []
+  check(
+    `elenca TUTTI i ${STORE_HOVER_PARAMS} parametri della firma`,
+    righeParam.length === STORE_HOVER_PARAMS,
+    `${righeParam.length} righe di parametro`,
+  )
+  check('i parametri sono scritti con la chiocciola', /\B@s_Piazzola\b/.test(t) && /\B@errore\b/.test(t))
+  check(
+    'il parametro OUTPUT mostra tipo esatto e OUTPUT',
+    /^[-•*]?\s*@errore · nvarchar\(255\) · \*\*?OUTPUT/m.test(t) || /@errore · nvarchar\(255\) · OUTPUT/.test(t),
+    (t.match(/@errore[^\n]*/) || [])[0],
+  )
+  check('mostra il COMMENTO di testata', /Commento/.test(t), (t.match(/Commento[^\n]*/) || [])[0])
+  check(
+    'il commento è quello vero della store',
+    t.includes('Routine per generazione missione'),
+    (t.split('\n').find(r => r.includes('Routine per generazione')) || '').trim(),
+  )
+
+  // il markdown deve essere RENDERIZZATO: voci di elenco, titoli, grassetto, citazione e codice
+  const st = tooltip.struttura || {}
+  console.log(`  struttura tooltip: ${JSON.stringify(st)}`)
+  check('i parametri sono un ELENCO (23 voci)', st.voci === STORE_HOVER_PARAMS, `${st.voci} voci`)
+  check(
+    'i titoli sono renderizzati (Parametri + Commento)',
+    (st.titoli || []).includes(`Parametri (${STORE_HOVER_PARAMS})`) && (st.titoli || []).includes('Commento'),
+    JSON.stringify(st.titoli),
+  )
+  check('OUTPUT è in GRASSETTO', (st.grassetti || []).includes('OUTPUT'), JSON.stringify(st.grassetti))
+  check('il commento è una CITAZIONE', (st.citazioni || 0) > 0, `${st.citazioni} citazioni`)
+  check(
+    'nomi e tipi sono in stile CODICE',
+    (st.codice || []).includes('@s_Piazzola') && (st.codice || []).includes('nvarchar(255)'),
+    JSON.stringify((st.codice || []).slice(0, 4)),
+  )
+  await page.screenshot('tooltip-store-commento-parametri')
+
+  // 2) regressione: la tooltip di una COLONNA non deve diventare quella della routine
+  const colonna = await hoverSu('UDC_UDC')
+  console.log(`  tooltip della colonna:\n${(colonna.testo || '(nessuna tooltip)').split('\n').slice(0, 6).map(r => `    | ${r}`).join('\n')}`)
+  const tc = colonna.testo || ''
+  check('la tooltip della colonna continua a funzionare', tc.includes('UDC_UDC') && /decimal/i.test(tc), tc.split('\n')[0])
+  check('la tooltip della colonna NON mostra i parametri di una store', !/Parametri \(\d+\)/.test(tc))
+
+  // 3) FUNZIONE: il sommario non ha i suoi parametri, quindi devono arrivare dalla definizione
+  const funzione = await hoverSu(FUNZIONE_HOVER)
+  const tf = funzione.testo || ''
+  // se la tooltip non compare, l'errore del provider (se c'è) si legge qui
+  if (!tf.includes(FUNZIONE_HOVER)) console.log(`  errori in console: ${JSON.stringify(page.consoleLogs('rror').slice(-4))}`)
+  console.log(`  tooltip della funzione:\n${tf.split('\n').slice(0, 8).map(r => `    | ${r}`).join('\n')}`)
+  const righeFun = tf.match(/^[-•*]?\s*@[A-Za-z_][A-Za-z0-9_]* · /gm) || []
+  check('la tooltip della funzione compare', funzione.punto !== null && tf.length > 0)
+  check('dice che è una funzione', tf.includes(FUNZIONE_HOVER) && /funzione/i.test(tf), tf.split('\n')[0])
+  check(
+    `i parametri della funzione arrivano dalla definizione (${FUNZIONE_HOVER_PARAMS})`,
+    righeFun.length === FUNZIONE_HOVER_PARAMS,
+    `${righeFun.length} righe di parametro`,
+  )
+  check('il valore di ritorno (riga senza nome) NON compare come parametro', !/·\s*bit\s*·\s*\*\*?OUTPUT/.test(tf))
+  check('anche la funzione mostra il COMMENTO', /Commento/.test(tf), (tf.match(/Commento[^\n]*/) || [])[0])
+  await page.screenshot('tooltip-funzione-parametri')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * VERIFICA (--verify-report): il REPORT utilizzo tabelle si apre in una TAB (non in una finestra),
  * l'ISTOGRAMMA delle 20 tabelle più pesanti sta SOTTO l'elenco e SEGUE il filtro per nome, e le
  * tabelle selezionate generano lo script di svuotamento in una nuova tab (richieste utente:
@@ -5291,6 +5480,11 @@ async function main() {
 
     if (VERIFY_REPORT) {
       await verifyReport(page)
+      return
+    }
+
+    if (VERIFY_HOVER) {
+      await verifyHover(page)
       return
     }
 
