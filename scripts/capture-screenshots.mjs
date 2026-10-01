@@ -1804,6 +1804,49 @@ async function verifyAlias(page) {
     vociFunzione.length > 0 && normali(vociFunzione).includes(FUNZIONE_TABELLARE_CAMPO.toLowerCase()),
   )
 
+  // 11) JOIN con sotto-query sulla STESSA tabella (segnalazione utente: "l'intellisense mi
+  // aggiunge ancora nome tabella quando si fa il join, anche se il nome colonna è univoco").
+  // Lo statement cita DAT_UDC due volte (JOIN con alias "du" + EXISTS senza alias): i campi
+  // univoci NON devono uscire qualificati ("du.UDC_UBIUDC"), ma col solo nome.
+  await scrivi(
+    [
+      'SELECT ',
+      'FROM RUN_MISSIONI rm',
+      '  INNER JOIN DAT_UDC du ON rm.MIS_UDC = du.UDC_UDC',
+      "WHERE EXISTS (SELECT 1 FROM DAT_UDC WHERE UDC_CODICE = 'x')",
+    ].join('\n'),
+  )
+  // cursore alla fine della riga "SELECT " (prima riga)
+  const puntoSelect = await page.eval(`(() => {
+    const linea = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].find(l => (l.textContent || '').trim() === 'SELECT');
+    if (!linea) return null;
+    const spans = [...linea.querySelectorAll('span')];
+    const s = spans[spans.length - 1];
+    if (!s) return null;
+    const r = s.getBoundingClientRect();
+    return { x: r.right - 1, y: r.top + r.height / 2 };
+  })()`)
+  let rigaJoin = ''
+  let vociJoin = []
+  if (puntoSelect) {
+    await page.clickPoint(puntoSelect.x, puntoSelect.y)
+    await sleep(400)
+    await page.typeText('UDC_UBI')
+    await sleep(1800)
+    vociJoin = await vociPopup()
+    console.log(`  popup (JOIN + sotto-query stessa tabella): ${JSON.stringify(vociJoin.slice(0, 6))}`)
+    await page.press('Enter', { code: 'Enter', vk: 13 })
+    await sleep(900)
+    rigaJoin = (await righeEditor())[0] ?? ''
+  }
+  console.log(`  riga dopo la conferma: ${JSON.stringify(rigaJoin)}`)
+  check('JOIN: il popup propone il campo univoco', normali(vociJoin).some(v => v.startsWith('udc_ubi')))
+  check(
+    'JOIN con sotto-query sulla stessa tabella: il campo univoco NON viene qualificato',
+    /UDC_UBIUDC/i.test(rigaJoin) && !/du\.UDC_UBIUDC/i.test(rigaJoin),
+  )
+  await page.screenshot('intellisense-join-senza-qualifica')
+
   await page.press('Escape', { code: 'Escape', vk: 27 })
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)

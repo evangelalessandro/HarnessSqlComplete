@@ -1894,6 +1894,53 @@ export function fkColumnNames(foreignKeys: ForeignKeyInfo[]): Set<string> {
   return set
 }
 
+/** Proprietario di una colonna nello statement: la tabella e l'alias con cui è scritta (o null). */
+interface ColOwner {
+  table: TableInfo
+  alias: string | null
+}
+
+/**
+ * Chiave di un riferimento di tabella: tabella + alias scritto. Serve a NON contare due volte la
+ * stessa tabella quando lo statement la cita più volte (es. `FROM DAT_UDC du … WHERE EXISTS
+ * (SELECT 1 FROM DAT_UDC)`): erano proprietari "in più" che facevano sembrare condivisa una
+ * colonna univoca, e l'intellisense ci aggiungeva il nome tabella (segnalazione utente).
+ */
+function refKey(table: TableInfo, alias: string | null): string {
+  return `${table.schema}.${table.name}#${(alias ?? '').toLowerCase()}`
+}
+
+/** Tabella di un riferimento, deduplicata per tabella+alias (l'ordine di scrittura è mantenuto). */
+export function dedupRefs<T extends { r: StatementTableRef; table: TableInfo }>(refs: T[]): T[] {
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const x of refs) {
+    const key = refKey(x.table, x.r.alias)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(x)
+  }
+  return out
+}
+
+/**
+ * True se la colonna va QUALIFICATA (alias.col / tabella.col):
+ * - esiste in due tabelle DIVERSE dello statement; oppure
+ * - la STESSA tabella compare con due ALIAS espliciti diversi (self-join: `FROM T a JOIN T b`).
+ * Un secondo riferimento alla stessa tabella senza alias — tipico delle sotto-query
+ * (`EXISTS (SELECT 1 FROM T)`) — NON rende ambigua la colonna: prima bastava quello per
+ * aggiungere il nome tabella anche a colonne univoche.
+ */
+function colonnaCondivisa(owners: ColOwner[]): boolean {
+  if (owners.length < 2) return false
+  const tabelle = new Set(owners.map(o => `${o.table.schema}.${o.table.name}`))
+  if (tabelle.size > 1) return true
+  const aliasEspliciti = new Set(
+    owners.map(o => o.alias?.toLowerCase()).filter((a): a is string => !!a),
+  )
+  return aliasEspliciti.size > 1
+}
+
 /**
  * Elenco ordinato di colonne per il contesto colonna corrente:
  * - se c'è una colonna sinistra in "ON/WHERE ... = " → prima le sue controparti (FK, poi token);
@@ -1911,19 +1958,24 @@ export function buildColumnContextSuggestions(
     .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
     .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined)
 
-  // proprietari per nome colonna (label = alias o nome tabella) e chiave per alias/tabella
-  const colOwners = new Map<string, { col: ColumnInfo; table: TableInfo; label: string }[]>()
+  // proprietari per nome colonna (label = alias o nome tabella) e chiave per alias/tabella.
+  // I riferimenti ripetuti alla STESSA tabella+alias non contano due volte (sotto-query).
+  const colOwners = new Map<string, { col: ColumnInfo; table: TableInfo; label: string; alias: string | null }[]>()
   const aliasToKey = new Map<string, string>()
-  for (const { r, table } of refTables) {
+  for (const { r, table } of dedupRefs(refTables)) {
     const label = r.alias ?? table.name
     aliasToKey.set(label.toLowerCase(), `${table.schema}.${table.name}`)
     for (const c of table.columns ?? []) {
       const lower = c.name.toLowerCase()
+      const entry = { col: c, table, label, alias: r.alias ?? null }
       const list = colOwners.get(lower)
-      if (list) list.push({ col: c, table, label })
-      else colOwners.set(lower, [{ col: c, table, label }])
+      if (list) list.push(entry)
+      else colOwners.set(lower, [entry])
     }
   }
+  /** True se la colonna di quel nome va qualificata (vedi colonnaCondivisa). */
+  const condivisa = (colName: string): boolean =>
+    colonnaCondivisa(colOwners.get(colName.toLowerCase()) ?? [])
 
   const statementTables = refTables.map(x => x.table)
 
@@ -1947,20 +1999,23 @@ export function buildColumnContextSuggestions(
   for (const cp of counterpartList) counterpartKey.add(`${cp.table.schema}.${cp.table.name}.${cp.column.name}`)
 
   const insertTextFor = (c: ColumnInfo, t: TableInfo): string => {
+    if (!condivisa(c.name)) return sqlIdent(c.name)
     const owners = colOwners.get(c.name.toLowerCase()) ?? []
-    const shared = owners.length > 1
-    if (!shared) return sqlIdent(c.name)
     const entry = owners.find(o => `${o.table.schema}.${o.table.name}` === `${t.schema}.${t.name}`)
     return `${sqlIdent(entry?.label ?? t.name)}.${sqlIdent(c.name)}`
   }
 
   const docFor = (c: ColumnInfo, t: TableInfo): string => {
     const owners = colOwners.get(c.name.toLowerCase()) ?? []
-    return columnInfoMarkdown(
-      t,
-      c,
-      owners.map(o => ({ table: o.table, alias: o.label !== o.table.name ? o.label : null })),
-    )
+    const visti = new Set<string>()
+    const elenco: { table: TableInfo; alias: string | null }[] = []
+    for (const o of owners) {
+      const key = refKey(o.table, o.alias)
+      if (visti.has(key)) continue
+      visti.add(key)
+      elenco.push({ table: o.table, alias: o.alias })
+    }
+    return columnInfoMarkdown(t, c, elenco)
   }
 
   const out: ColumnContextSuggestion[] = []
@@ -1975,7 +2030,7 @@ export function buildColumnContextSuggestions(
       isNullable: cp.column.isNullable,
       isIdentity: cp.column.isIdentity,
       ownerLabel: `${cp.table.schema}.${cp.table.name}${cp.viaFk ? ' · FK' : ' · corrispondente'}`,
-      shared: (colOwners.get(cp.column.name.toLowerCase()) ?? []).length > 1,
+      shared: condivisa(cp.column.name),
       documentation: docFor(cp.column, cp.table),
       score: cp.score,
       counterpart: true,
@@ -2001,9 +2056,8 @@ export function buildColumnContextSuggestions(
         dataType: first.col.dataType,
         isNullable: first.col.isNullable,
         isIdentity: first.col.isIdentity,
-        ownerLabel:
-          owners.length === 1 ? owners[0].label : owners.map(o => o.label).join(', '),
-        shared: owners.length > 1,
+        ownerLabel: condivisa(first.col.name) ? [...new Set(owners.map(o => o.label))].join(', ') : first.label,
+        shared: condivisa(first.col.name),
         documentation: docFor(first.col, first.table),
         score: base + fkBoost + histBoost,
         counterpart: false,
@@ -2754,19 +2808,26 @@ export function buildSelectListSuggestions(
     }
   }
 
-  const refTables = extractStatementTableRefs(stmtText)
-    .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
-    .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined)
+  const refTables = dedupRefs(
+    extractStatementTableRefs(stmtText)
+      .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
+      .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined),
+  )
 
-  const colOwners = new Map<string, string[]>()
-  for (const { table } of refTables) {
+  /** Proprietari (tabella+alias) di ogni colonna, per decidere se qualificarla. */
+  const colOwners = new Map<string, ColOwner[]>()
+  for (const { r, table } of refTables) {
     for (const c of table.columns ?? []) {
       const lower = c.name.toLowerCase()
+      const owner: ColOwner = { table, alias: r.alias ?? null }
       const list = colOwners.get(lower)
-      if (list) list.push(`${table.schema}.${table.name}`)
-      else colOwners.set(lower, [`${table.schema}.${table.name}`])
+      if (list) list.push(owner)
+      else colOwners.set(lower, [owner])
     }
   }
+  /** True se la colonna di quel nome va qualificata (nome tabella/alias davanti). */
+  const condivisa = (colName: string): boolean =>
+    colonnaCondivisa(colOwners.get(colName.toLowerCase()) ?? [])
 
   let starText: string | null = null
   let starCount = 0
@@ -2789,13 +2850,18 @@ export function buildSelectListSuggestions(
   // "tutti i campi": proposto SEMPRE nella select-list (con '*' lo sostituisce,
   // senza '*' inserisce tutti i campi al cursore), escludendo quelli già scritti
   {
+    // un nome può comparire una sola volta (niente doppioni se lo statement cita due volte
+    // la stessa tabella): la qualifica si decide su TUTTE le tabelle in scope
     const parts: string[] = []
+    const visti = new Set<string>()
     for (const { r, table } of refTables) {
       const alias = r.alias ?? table.name
       for (const c of table.columns ?? []) {
         if (usedCols.has(c.name.toLowerCase())) continue
-        const owners = colOwners.get(c.name.toLowerCase()) ?? []
-        parts.push(owners.length === 1 ? sqlIdent(c.name) : `${sqlIdent(alias)}.${sqlIdent(c.name)}`)
+        const testo = condivisa(c.name) ? `${sqlIdent(alias)}.${sqlIdent(c.name)}` : sqlIdent(c.name)
+        if (visti.has(testo)) continue
+        visti.add(testo)
+        parts.push(testo)
       }
     }
     if (parts.length > 0) {
@@ -2823,14 +2889,16 @@ export function buildSelectListSuggestions(
   const columns: SelectListColumn[] = []
   const fkCols = fkColumnNames(summary.foreignKeys)
   for (const [, entry] of colMap) {
-    const shared = entry.owners.length > 1
+    // qualifica solo se la colonna è davvero ambigua (due tabelle diverse, o un self-join)
+    const shared = condivisa(entry.c.name)
     columns.push({
       name: entry.c.name,
       dataType: entry.c.dataType,
       isNullable: entry.c.isNullable,
       isIdentity: entry.c.isIdentity,
-      ownerLabel:
-        entry.owners.length === 1 ? entry.owners[0].label : entry.owners.map(o => o.label).join(', '),
+      ownerLabel: shared
+        ? [...new Set(entry.owners.map(o => o.label))].join(', ')
+        : entry.owners[0].label,
       shared,
       documentation: columnInfoMarkdown(
         entry.owners[0].table,
