@@ -1143,6 +1143,42 @@ async function verifyFormat(page) {
   )
   await page.screenshot('formatta-sempre-store-utente')
 
+  // condizione LUNGA di WHILE EXISTS (segnalazione utente: "la while exists non formatta
+  // quello che c'è dentro parentesi"): deve essere spezzata su più righe, non lasciata
+  // tutta su una riga da ~200 caratteri
+  const whileSql =
+    "CREATE PROCEDURE p\nAS\nBEGIN\n  WHILE EXISTS (SELECT 1 FROM RUN_ESEGUI INNER JOIN DAT_ORDINI_RIGHE dor ON RUN_ESEGUI.ESE_RIGA = dor.RIG_RIGA WHERE @pEseId LIKE concat ('%,', ESE_ID, ',%') AND ESE_QTAE > 0) AND @diff > 0\n  BEGIN\n    SET @diff -= 1\n  END\nEND"
+  const w = await scriviEFormatta(whileSql)
+  const righeWhile = w.righe.map(r => r.replace(/\s+$/, ''))
+  const primaWhile = w.righePrima.map(r => r.replace(/\s+$/, ''))
+  console.log('  WHILE EXISTS con condizione lunga:')
+  righeWhile.forEach(r => console.log(`    |${r}`))
+  console.log('  (testo digitato, prima di formattare)')
+  primaWhile.forEach(r => console.log(`    >${r}`))
+  const trimWhile = righeWhile.map(r => r.trim()).filter(Boolean)
+  const trimPrimaWhile = primaWhile.map(r => r.trim()).filter(Boolean)
+  check(
+    'WHILE EXISTS: prima della formattazione la condizione stava su una riga sola',
+    trimPrimaWhile.some(r => r.startsWith('WHILE EXISTS (') && r.length > 150),
+    `riga più lunga digitata: ${Math.max(...trimPrimaWhile.map(r => r.length))}`,
+  )
+  check(
+    'WHILE EXISTS: la condizione viene spezzata (SELECT/FROM su righe proprie)',
+    trimWhile.includes('WHILE EXISTS (') &&
+      trimWhile.includes('SELECT 1') &&
+      trimWhile.some(r => r.startsWith('FROM RUN_ESEGUI')),
+  )
+  check(
+    'WHILE EXISTS: AND della sotto-query e AND esterno vanno a capo',
+    trimWhile.includes('AND ESE_QTAE > 0') && trimWhile.includes('AND @diff > 0'),
+  )
+  check(
+    'WHILE EXISTS: nessuna riga chilometrica dopo la formattazione',
+    Math.max(...righeWhile.map(r => r.length)) <= 120,
+    `riga più lunga: ${Math.max(...righeWhile.map(r => r.length))}`,
+  )
+  await page.screenshot('formatta-while-exists')
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

@@ -1239,8 +1239,9 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
         if (t.type === 'word' && t.text.toUpperCase() === 'BEGIN' && par === 0 && j > 0) break
         cond.push(t)
       }
-      // commento "--" in mezzo alla condizione: chiude la riga, il codice prosegue sotto
-      rowsNoDashEat(cond, up).forEach((r, idx) => pushLine(r, idx === 0 ? indent : indent + 1))
+      // commento "--" in mezzo alla condizione: chiude la riga, il codice prosegue sotto.
+      // Le condizioni lunghe vengono spezzate (AND/OR a capo, sotto-query impaginate).
+      condRows(cond, up, profile.tabSize || 2, indent, profile).forEach(pushRawLine)
       const after = segment.slice(j)
       if (after.length > 0 && after[0].type === 'word' && after[0].text.toUpperCase() === 'BEGIN') {
         if (isBeginTransaction(after)) {
@@ -2628,6 +2629,151 @@ function rowsNoDashEat(tokens: Token[], up: (t: Token) => string): string[] {
   }
   flush()
   return rows.map(r => r.replace(/\s+/g, ' ').trim()).filter(Boolean)
+}
+
+/**
+ * Oltre questa larghezza la condizione di un IF/WHILE viene spezzata alle congiunzioni
+ * AND/OR; sotto, la condizione corta resta su una riga (come prima).
+ */
+const CONDIZIONE_MAX_RIGA = 100
+
+/**
+ * Righe di una condizione IF/WHILE. Come nella WHERE, le congiunzioni AND/OR di primo
+ * livello vanno a capo; una sotto-query fra parentesi ("EXISTS (SELECT …)", "IN (SELECT …)")
+ * viene impaginata come uno statement a clausole invece di restare tutta su una riga.
+ * Segnalazione utente: la condizione di "WHILE EXISTS (SELECT … FROM … WHERE … AND …)"
+ * non veniva formattata (restava una riga lunghissima).
+ * Le righe escono già complete della loro indentazione, pronte per pushRawLine.
+ */
+function condRows(
+  tokens: Token[],
+  up: (t: Token) => string,
+  unit: number,
+  baseIndent: number,
+  profile: FormatProfile,
+): string[] {
+  const pad = (n: number) => ' '.repeat(Math.max(0, n) * unit)
+  /** ")" che chiude la "(" all'indice `open` (-1 se non c'è). */
+  const closeParenOf = (open: number): number => {
+    let depth = 0
+    for (let k = open; k < tokens.length; k++) {
+      const t = tokens[k]
+      if (t.type !== 'punct') continue
+      if (t.text === '(') depth++
+      else if (t.text === ')') {
+        depth--
+        if (depth === 0) return k
+      }
+    }
+    return -1
+  }
+  /** True se la condizione contiene una sotto-query: "EXISTS (SELECT …)", "IN (SELECT …)". */
+  const haSottoQuery = (() => {
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i]
+      if (t.type !== 'punct' || t.text !== '(') continue
+      const close = closeParenOf(i)
+      if (close <= i) continue
+      const primo = tokens.slice(i + 1, close).find(x => x.type !== 'comment')
+      if (primo?.type === 'word' && ['SELECT', 'WITH'].includes(primo.text.toUpperCase())) return true
+    }
+    return false
+  })()
+  // un commento "--" in mezzo alla condizione non si può schiacciare su una riga sola
+  // (commenterebbe il resto); un blocco "/* … */" su più righe non si deve comprimere
+  const haCommento = tokens.some(
+    t => t.type === 'comment' && (t.text.startsWith('--') || t.text.includes('\n')),
+  )
+  const piatto = cleanInline(tokens.map(up).join(' ')).trim()
+  // condizione corta e senza sotto-query: resta su una riga (comportamento storico)
+  if (!haSottoQuery && !haCommento && baseIndent * unit + piatto.length <= CONDIZIONE_MAX_RIGA) {
+    return piatto ? [pad(baseIndent) + piatto] : []
+  }
+
+  const rows: string[] = []
+  let cur: Token[] = []
+  let curInd = baseIndent
+  const flush = () => {
+    if (cur.length === 0) return
+    // commento a blocco su più righe: conservato così com'è (la pulizia lo schiaccerebbe)
+    if (cur.length === 1 && cur[0].type === 'comment' && cur[0].text.includes('\n')) {
+      rows.push(pad(curInd) + cur[0].text.replace(/\s+$/, ''))
+      cur = []
+      return
+    }
+    const testo = cleanInline(cur.map(up).join(' ')).trim()
+    if (testo) rows.push(pad(curInd) + testo)
+    cur = []
+  }
+
+  let depth = 0
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]
+    if (t.type === 'comment') {
+      // storico: il "--" su riga propria resta una riga a sé, quello in coda chiude la riga
+      if (t.ownLine || cur.length === 0) {
+        flush()
+        rows.push(pad(curInd) + cleanInline(up(t)).trim())
+      } else {
+        cur.push(t)
+        if (t.text.startsWith('--')) flush()
+      }
+      continue
+    }
+    // sotto-query fra parentesi: impaginata come uno statement a clausole
+    if (t.type === 'punct' && t.text === '(') {
+      const close = closeParenOf(i)
+      if (close > i) {
+        const inner = tokens.slice(i + 1, close)
+        const primo = inner.find(x => x.type !== 'comment')
+        if (primo?.type === 'word' && ['SELECT', 'WITH'].includes(primo.text.toUpperCase())) {
+          cur.push(t)
+          flush()
+          const detailed = detailedSelectRows(
+            inner,
+            up,
+            unit,
+            pad(baseIndent + 1),
+            profile.setIndent,
+            profile,
+          )
+          const body =
+            detailed ??
+            splitStatementClauses(inner, up).flatMap(g =>
+              rowsNoDashEat(g.tokens, up).map(r => pad(baseIndent + 1) + r),
+            )
+          rows.push(...body)
+          rows.push(pad(baseIndent) + ')')
+          curInd = baseIndent + 1
+          i = close
+          continue
+        }
+      }
+      depth++
+      cur.push(t)
+      continue
+    }
+    if (t.type === 'punct' && t.text === ')') {
+      depth = Math.max(0, depth - 1)
+      cur.push(t)
+      continue
+    }
+    // AND/OR di primo livello: a capo, come nella WHERE
+    const upper = t.type === 'word' ? t.text.toUpperCase() : ''
+    if (
+      depth === 0 &&
+      cur.length > 0 &&
+      (upper === 'AND' ? profile.breakBeforeAnd : upper === 'OR' ? profile.breakBeforeOr : false)
+    ) {
+      flush()
+      curInd = baseIndent + 1
+      cur.push(t)
+      continue
+    }
+    cur.push(t)
+  }
+  flush()
+  return rows
 }
 
 // Clausole che iniziano una riga propria dentro SELECT/INSERT…SELECT/UPDATE/DELETE
