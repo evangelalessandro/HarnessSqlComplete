@@ -41,6 +41,7 @@ const VERIFY_SCHEMA_REFRESH = process.argv.includes('--verify-schema-refresh')
 const VERIFY_PAIR_HIGHLIGHT = process.argv.includes('--verify-pair-highlight')
 const VERIFY_LOCAL_TABLES = process.argv.includes('--verify-local-tables')
 const VERIFY_ALIAS = process.argv.includes('--verify-alias')
+const VERIFY_RISULTATI_SEQUENZA = process.argv.includes('--verify-risultati-sequenza')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -5423,6 +5424,160 @@ async function verifyScrollbars(page) {
 }
 
 /**
+ * VERIFICA (--verify-risultati-sequenza): eseguendo UNA query con PIÙ result set, l'opzione
+ * "Tutti in sequenza" (impostazione della tab corrente) deve mostrare tutti i set uno di
+ * seguito in UN SOLO scorrimento, con lo scroller che arriva fino in fondo; tornando a
+ * "Un set alla volta" si rivede la paginazione.
+ * Richiesta utente: "nei risultati di una query se ha tanti resultset permettimi anche di
+ * vederli uno di seguito all'altro, magari con una bella scrollbar che posso scorrere a fondo,
+ * metti una opzione per la tab corrente".
+ */
+async function verifyRisultatiSequenza(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  // tre result set ben distinti (nomi di colonna diversi, così si riconoscono)
+  const sql = [
+    'SELECT TOP 3 UDC_UDC, UDC_CORRIDOIO FROM dbo.DAT_UDC;',
+    'SELECT TOP 4 COR_CORRIDOIO, COR_AREA FROM dbo.MAG_CORRIDOI;',
+    'SELECT TOP 2 BCO_BAIA, BCO_USOBAIA FROM dbo.MAG_BAIE;',
+  ].join('\n')
+  await page.clickPoint(rect.x + 140, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(sql)
+  await sleep(500)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await page.waitFor(`document.body.textContent.includes('per pagina')`, 40000, 'risultati')
+  await sleep(1200)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const bottone = async testo =>
+    await page.eval(
+      `(() => { const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes(${JSON.stringify(testo)})); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`,
+    )
+  /** Stato della vista risultati: set elencati, righe per set e scorrimento del contenitore. */
+  const stato = async () =>
+    await page.eval(`(() => {
+      const cont = document.querySelector('[data-testid="risultati-in-sequenza"]');
+      const sezioni = cont ? [...cont.querySelectorAll('section')] : [];
+      return {
+        inSequenza: !!cont,
+        set: sezioni.length,
+        righePerSet: sezioni.map(s => s.querySelectorAll('tbody tr').length),
+        titoli: sezioni.map(s => (s.querySelector('div')?.textContent || '').trim().slice(0, 30)),
+        scrollHeight: cont ? cont.scrollHeight : 0,
+        clientHeight: cont ? cont.clientHeight : 0,
+        scrollTop: cont ? cont.scrollTop : 0,
+        testoPagina: document.body.textContent.includes('per pagina'),
+        setButton: [...document.querySelectorAll('button')].filter(b => /^Set \\d+ ·/.test((b.textContent || '').trim())).length,
+      };
+    })()`)
+
+  const prima = await stato()
+  console.log(`  vista normale: setButton=${prima.setButton} paginazione=${prima.testoPagina}`)
+  check('vista normale: i pulsanti dei 3 result set sono presenti', prima.setButton === 3)
+  check('vista normale: c\'è la paginazione ("per pagina")', prima.testoPagina === true)
+  check('vista normale: nessuna vista in sequenza', prima.inSequenza === false)
+
+  const btnSequenza = await bottone('Tutti in sequenza')
+  check('il pulsante "Tutti in sequenza" è presente', !!btnSequenza)
+  if (btnSequenza) {
+    await page.clickPoint(btnSequenza.x, btnSequenza.y)
+    await sleep(1200)
+  }
+  const dopo = await stato()
+  console.log(`  in sequenza: set=${dopo.set} righe=${JSON.stringify(dopo.righePerSet)}`)
+  console.log(`  titoli: ${JSON.stringify(dopo.titoli)}`)
+  console.log(`  scorrimento: scrollHeight=${dopo.scrollHeight} clientHeight=${dopo.clientHeight}`)
+  check('in sequenza: un solo contenitore che scorre', dopo.inSequenza === true)
+  check('in sequenza: ci sono TUTTI e 3 i result set', dopo.set === 3)
+  check(
+    'in sequenza: ogni set mostra TUTTE le righe (niente paginazione)',
+    JSON.stringify(dopo.righePerSet) === JSON.stringify([3, 4, 2]),
+    JSON.stringify(dopo.righePerSet),
+  )
+  check('in sequenza: i pulsanti dei set spariscono (vista unica)', dopo.setButton === 0)
+  check(
+    'in sequenza: il contenitore si può scorrere fino in fondo',
+    dopo.scrollHeight > dopo.clientHeight,
+    `${dopo.scrollHeight} > ${dopo.clientHeight}`,
+  )
+  await page.screenshot('risultati-in-sequenza')
+
+  // si scorre fino in fondo con la rotella e si verifica che l'ultimo set sia raggiungibile
+  const punto = await page.eval(`(() => {
+    const cont = document.querySelector('[data-testid="risultati-in-sequenza"]');
+    if (!cont) return null; const r = cont.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (punto) {
+    // rotella VERA (CDP mouseWheel), non uno scrollTop impostato da script: è il gesto dell'utente
+    for (let i = 0; i < 8; i++) {
+      await page.send('Input.dispatchMouseEvent', {
+        type: 'mouseWheel',
+        x: Math.round(punto.x),
+        y: Math.round(punto.y),
+        deltaX: 0,
+        deltaY: 500,
+      })
+      await sleep(120)
+    }
+    await sleep(700)
+  }
+  const fondo = await page.eval(`(() => {
+    const cont = document.querySelector('[data-testid="risultati-in-sequenza"]');
+    if (!cont) return null;
+    const r = cont.getBoundingClientRect();
+    const el = document.elementFromPoint(r.left + r.width / 2, r.top + 30);
+    return { scrollTop: cont.scrollTop, inFondo: cont.scrollTop + cont.clientHeight >= cont.scrollHeight - 4, sotto: (el ? el.textContent : '').slice(0, 40) };
+  })()`)
+  console.log(`  dopo lo scorrimento: scrollTop=${fondo?.scrollTop} inFondo=${fondo?.inFondo}`)
+  check('in sequenza: con la rotella si arriva in fondo ai risultati', fondo?.inFondo === true)
+  await page.screenshot('risultati-in-sequenza-fondo')
+
+  // "Torna su" riporta in cima
+  const btnSu = await bottone('Torna su')
+  if (btnSu) {
+    await page.clickPoint(btnSu.x, btnSu.y)
+    await sleep(900)
+  }
+  const su = await page.eval(
+    `(() => { const c = document.querySelector('[data-testid="risultati-in-sequenza"]'); return c ? c.scrollTop : -1; })()`,
+  )
+  console.log(`  dopo "Torna su": scrollTop=${su}`)
+  check('"Torna su" riporta all\'inizio dei risultati', su === 0)
+
+  // e si torna alla vista con un set alla volta
+  const btnSingolo = await bottone('Un set alla volta')
+  if (btnSingolo) {
+    await page.clickPoint(btnSingolo.x, btnSingolo.y)
+    await sleep(1000)
+  }
+  const ritorno = await stato()
+  console.log(`  ritorno: setButton=${ritorno.setButton} paginazione=${ritorno.testoPagina}`)
+  check(
+    'tornando indietro si rivede la vista con i set e la paginazione',
+    ritorno.inSequenza === false && ritorno.setButton === 3 && ritorno.testoPagina === true,
+  )
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -5619,6 +5774,11 @@ async function main() {
 
     if (VERIFY_ALIAS) {
       await verifyAlias(page)
+      return
+    }
+
+    if (VERIFY_RISULTATI_SEQUENZA) {
+      await verifyRisultatiSequenza(page)
       return
     }
 

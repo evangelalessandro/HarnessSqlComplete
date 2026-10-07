@@ -68,6 +68,9 @@ export default function App() {
   const [tabResults, setTabResults] = useState<Record<string, QueryResult | null>>({})
   const [tabExecuting, setTabExecuting] = useState<Record<string, boolean>>({})
   const [tabResultTab, setTabResultTab] = useState<Record<string, Tab>>({})
+  // Vista dei risultati "tutti i result set in sequenza": IMPOSTAZIONE DELLA TAB (la ricorda
+  // ogni editor, così tornando sulla tab si ritrova la stessa vista)
+  const [tabSetsInSequenza, setTabSetsInSequenza] = useState<Record<string, boolean>>({})
   // SQL eseguito per tab: propone la tabella target del generatore della griglia risultati
   const [tabSql, setTabSql] = useState<Record<string, string>>({})
   // GAMIFICATION: statistiche di lavoro per tab (tempo, esecuzioni ok/errore, XP)
@@ -660,6 +663,7 @@ export default function App() {
     setTabResults(without)
     setTabExecuting(without)
     setTabResultTab(without)
+    setTabSetsInSequenza(without)
     setTabSql(without)
   }, [])
 
@@ -1314,6 +1318,12 @@ export default function App() {
     if (!activeEditorTab) return
     setTabResultTab(prev => ({ ...prev, [activeEditorTab]: t }))
   }
+  // vista "tutti i result set in sequenza" della tab attiva
+  const activeSetsInSequenza = activeEditorTab ? (tabSetsInSequenza[activeEditorTab] ?? false) : false
+  const setActiveSetsInSequenza = (v: boolean) => {
+    if (!activeEditorTab) return
+    setTabSetsInSequenza(prev => ({ ...prev, [activeEditorTab]: v }))
+  }
 
   return (
     <FileDropZone onFiles={handleOpenFiles}>
@@ -1759,6 +1769,8 @@ export default function App() {
                     summary={summary}
                     onOpenObject={openObjectFromError}
                     onJumpToLine={revealErrorLine}
+                    continuous={activeSetsInSequenza}
+                    onContinuousChange={setActiveSetsInSequenza}
                   />
                 ) : (
                   <PrintPanel

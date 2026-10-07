@@ -28,6 +28,12 @@ interface Props {
   rows: CellValue[][]
   /** Numero della prima riga mostrata (per la paginazione: 51, 52, …). Default 1. */
   firstRowNumber?: number
+  /**
+   * Intestazione fissa in alto mentre si scorre (default). Si disattiva nella vista
+   * "tutti i result set in sequenza": lì più tabelle condividono lo stesso scorrimento e
+   * le intestazioni fisse si sovrapporrebbero (resta fissa solo la barra del result set).
+   */
+  stickyHeader?: boolean
   /** Caselle di selezione delle righe (usate dal generatore SQL). */
   rowSelection?: {
     selected: Set<number>
@@ -45,6 +51,7 @@ export default function ResultDataTable({
   columns,
   rows,
   firstRowNumber = 1,
+  stickyHeader = true,
   rowSelection,
   colSelection,
 }: Props) {
@@ -83,7 +90,7 @@ export default function ResultDataTable({
 
   return (
     <table className="w-full border-collapse text-left text-[13px]">
-      <thead className="sticky top-0 z-10">
+      <thead className={stickyHeader ? 'sticky top-0 z-10' : ''}>
         <tr>
           {rowSelection && (
             <th className="sticky left-0 z-20 w-10 border-b border-r border-zinc-600 bg-zinc-800 px-2 py-1.5">
