@@ -676,14 +676,16 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
     // select-list impilata: la virgola va IN TESTA alla riga successiva (così la query
     // resta valida e la formattazione è idempotente: prima la virgola veniva persa e
     // riformattando le colonne si univano — "SELECT a b", query rotta).
+    // La rottura avviene a OGNI virgola di primo livello, anche quando il campo corrente è
+    // un solo token (es. "UDC_USER_TASK" senza alias): con "current.length > 1" il campo
+    // senza alias restava appaiato al successivo (",UDC_USER_TASK, MIS_CAUSMISS X_CAUSMISS").
     if (
       profile.stackSelectColumns &&
       current.length > 0 &&
       (current[0].toUpperCase() === 'SELECT' || current[0].startsWith(',')) &&
       t.type === 'punct' &&
       t.text === ',' &&
-      depth === 0 &&
-      current.length > 1
+      depth === 0
     ) {
       flush()
       currentIndent = profile.selectColumnIndent
@@ -1666,9 +1668,15 @@ function detailedSelectRows(
     if (!impilabile) return null
     listaConCase = true
   }
-  // commenti "--" nella testata: niente layout a colonna (il codice dopo il commento
-  // non deve finire commentato); si ripiega sul percorso CASE/clausole
-  if (head.some(t => t.type === 'comment' && t.text.startsWith('--'))) return null
+  // commenti "--" nella testata SENZA l'impilamento a colonna: niente layout a colonna (il
+  // codice dopo il commento non deve finire commentato); si ripiega sul percorso CASE/clausole.
+  // Con stackSelectColumns attivo l'impilamento sa gestire i commenti (chiudono la riga e il
+  // campo successivo riparte sotto, virgola in testa), quindi il commento NON è più un motivo
+  // per rinunciare all'impaginazione: segnalazione utente su una SELECT con "--sorgente" in
+  // mezzo ai campi, che restava tutta storta (niente colonne, niente INTO a capo, WHERE su una riga).
+  if (!profile?.stackSelectColumns && head.some(t => t.type === 'comment' && t.text.startsWith('--'))) {
+    return null
+  }
 
   const out: string[] = []
   const varStart = head.findIndex(t => t.type === 'word' && t.text.startsWith('@'))
@@ -1828,6 +1836,12 @@ function stackSelectList(
   // appartiene alla testata dell'INSERT e non si spezza.
   const isSelectHead = head[0]?.type === 'word' && head[0].text.toUpperCase() === 'SELECT'
   const out: string[] = []
+  /**
+   * Info di ogni riga emessa (stessa posizione di `out`): serve all'ALLINEAMENTO DEGLI ALIAS
+   * in una passata finale, quando si conosce la larghezza massima delle espressioni.
+   * `null` per le righe che non sono un campo con alias (commenti, INTO, CASE multiriga…).
+   */
+  const items: (RigaItem | null)[] = []
   let depth = 0
   let cur: string[] = []
   /** Stessi token di `cur`: servono per espandere un CASE dentro l'elemento. */
@@ -1860,6 +1874,8 @@ function stackSelectList(
         if (!testo) continue
         const extra = riga.delta > 1 ? ' '.repeat((riga.delta - 1) * unit) : ''
         out.push(`${basePad}${rientro}${virgola ? ',' : ''}${extra}${testo}`)
+        // un CASE occupa più righe: resta fuori dall'allineamento degli alias
+        items.push(null)
         virgola = false
       }
       cur = []
@@ -1870,7 +1886,19 @@ function stackSelectList(
     }
     const testo = cleanInline(cur.join(' '))
     if (!testo) return
+    const virgola = cur[0].startsWith(',') ? ',' : ''
+    const split = splitAliasItem(curTokens, up)
     out.push(`${basePad}${rientro}${testo}`)
+    items.push(
+      split
+        ? {
+            prefisso: `${basePad}${rientro}`,
+            expr: `${virgola}${split.expr}`,
+            alias: split.alias,
+            commento: split.commento,
+          }
+        : null,
+    )
     cur = []
     curTokens = []
     commaAggiunta = false
@@ -1885,8 +1913,18 @@ function stackSelectList(
     // "inghiottito" dal commento). La virgola resta in testa al campo seguente.
     if (t.type === 'comment' && t.text.startsWith('--')) {
       const testo = up(t)
-      if (cur.length === 0 && out.length > 0) out[out.length - 1] += ` ${testo}`
-      else {
+      // MAI attaccare un commento a una riga che è GIÀ un commento: il secondo commento
+      // finirebbe dentro il primo e il codice (o i commenti) dopo di lui risulterebbero
+      // commentati. Caso reale: una select-list con più righe di SQL commentato
+      // ("--when exists(…)" seguito da "--and …", "--left join …", "--then …").
+      const ultimaRiga = out.length > 0 ? out[out.length - 1] : ''
+      const ultimaECommento = ultimaRiga.trimStart().startsWith('--')
+      if (cur.length === 0 && out.length > 0 && !ultimaECommento && !t.ownLine) {
+        out[out.length - 1] += ` ${testo}`
+        // il commento in coda fa parte della riga: l'allineamento non deve perderlo
+        const info = items[items.length - 1]
+        if (info) info.commento = info.commento ? `${info.commento} ${testo}` : testo
+      } else {
         cur.push(testo)
         curTokens.push(t)
         push()
@@ -1914,11 +1952,18 @@ function stackSelectList(
       t.type === 'punct' &&
       t.text === ',' &&
       depth === 0 &&
-      (unoPerRiga ? cur.length > 0 : cur.length > 1) &&
+      (unoPerRiga || cur.length > 0) &&
       // la virgola da sola (arrivata dalla riga precedente) non fa riga a sé: resta in testa
       cur.join('') !== ','
     ) {
       push()
+      commaPending = true
+      continue
+    }
+    // virgola a inizio riga (dopo un commento "--" della select-list): si attacca al campo
+    // successivo SENZA spazio (",campo"), come fa il motore delle query. Prima diventava un
+    // elemento a sé e il campo usciva con uno spazio di troppo (", UDC_UDC").
+    if (t.type === 'punct' && t.text === ',' && depth === 0 && cur.length === 0) {
       commaPending = true
       continue
     }
@@ -1928,7 +1973,84 @@ function stackSelectList(
     commaPending = false
   }
   push()
+
+  // ALLINEAMENTO DEGLI ALIAS (richiesta utente: "i campi nella select non si allineano così come
+  // gli alias"): in una lista con più campi "espressione [AS] alias", tutti gli alias partono
+  // dalla stessa colonna. Con un solo campo con alias non cambia nulla.
+  const conAlias = items.filter((i): i is RigaItem => !!i?.alias)
+  if (conAlias.length > 1) {
+    const colonna = Math.max(...conAlias.map(i => i.prefisso.length + i.expr.length)) + 1
+    items.forEach((info, idx) => {
+      if (!info?.alias) return
+      const finOra = info.prefisso.length + info.expr.length
+      const spazi = ' '.repeat(Math.max(1, colonna - finOra))
+      out[idx] = `${info.prefisso}${info.expr}${spazi}${info.alias}${info.commento ? ` ${info.commento}` : ''}`
+    })
+  }
   return out
+}
+
+/** Riga di una select-list scomposta per l'allineamento degli alias. */
+interface RigaItem {
+  /** Indentazione della riga (basePad + rientro dell'elemento). */
+  prefisso: string
+  /** Espressione del campo (compresa la virgola in testa agli elementi impilati). */
+  expr: string
+  /** Alias, con l'eventuale AS ("X_SCO" oppure "AS X_SSCC_DEST"). */
+  alias: string
+  /** Commento "--" in coda al campo (resta dopo l'alias). */
+  commento: string
+}
+
+/** Token (di un elemento della select-list) che NON possono precedere un alias. */
+const PRIMA_DI_ALIAS_NO = new Set(['.', '(', ',', '+', '-', '*', '/', '%', '=', '<', '>', '|', '&', '^', '~'])
+
+/**
+ * Scompone un elemento della select-list in "espressione [AS] alias [-- commento]".
+ * Restituisce null quando non c'è un alias: un solo token ("UDC_UDC"), un campo qualificato
+ * ("t.col"), un "*" ("a.*"), un'assegnazione ("@x = 1") o una stringa non si toccano.
+ */
+function splitAliasItem(
+  tokens: Token[],
+  up: (t: Token) => string,
+): { expr: string; alias: string; commento: string } | null {
+  // la virgola in testa (elemento impilato) non fa parte dell'espressione
+  let toks = tokens.slice()
+  while (toks.length > 0 && toks[0].type === 'punct' && toks[0].text === ',') toks = toks.slice(1)
+  // commenti in coda: restano DOPO l'alias
+  const commenti: Token[] = []
+  while (toks.length > 0 && toks[toks.length - 1].type === 'comment') commenti.unshift(toks.pop()!)
+  if (toks.length < 2) return null
+  const testo = (ts: Token[]) => cleanInline(ts.map(up).join(' '))
+  const commento = commenti.length > 0 ? testo(commenti) : ''
+  const n = toks.length
+  const last = toks[n - 1]
+  const prev = toks[n - 2]
+  /** L'espressione deve contenere qualcosa che NON sia una parola chiave (non "SELECT x"). */
+  const exprPiena = (ts: Token[]) =>
+    ts.some(t => t.type !== 'word' || !KEYWORDS.has(t.text.toUpperCase()))
+  // "… AS alias"
+  if (
+    n >= 3 &&
+    prev.type === 'word' &&
+    prev.text.toUpperCase() === 'AS' &&
+    last.type === 'word' &&
+    !last.text.startsWith('@') &&
+    exprPiena(toks.slice(0, n - 2))
+  ) {
+    return { expr: testo(toks.slice(0, n - 2)), alias: `AS ${testo([last])}`, commento }
+  }
+  // "espressione alias": l'alias è l'ultimo identificatore, non preceduto da punto/operatore
+  const aliasOk =
+    last.type === 'word' &&
+    /^[A-Za-z_#]/.test(last.text) &&
+    !last.text.startsWith('@') &&
+    !KEYWORDS.has(last.text.toUpperCase())
+  const prevOk = !(prev.type === 'punct' && PRIMA_DI_ALIAS_NO.has(prev.text))
+  if (aliasOk && prevOk && exprPiena(toks.slice(0, n - 1))) {
+    return { expr: testo(toks.slice(0, n - 1)), alias: testo([last]), commento }
+  }
+  return null
 }
 
 /** Layout di un INSERT: le righe da stampare e i token che restano dopo (es. lo SELECT di

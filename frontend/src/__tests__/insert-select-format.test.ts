@@ -131,8 +131,12 @@ END`
   })
 })
 
-describe('la SELECT che NON è di un INSERT resta come prima', () => {
-  it('raggruppa i campi corti (due per riga), non uno per riga', () => {
+describe('la SELECT che NON è di un INSERT', () => {
+  it('anche qui i campi vanno UNO PER RIGA (non più due per riga)', () => {
+    // Richiesta utente sulla store ws_CUSTOM_Handheld_Kitting_Bay_To_Rack_St1_GetList:
+    // "i campi nella select non si allineano così come gli alias". Prima le liste con campi
+    // corti venivano raggruppate a due per riga (",MIS_OPERATORE, MIS_WEIGHT"), quindi i campi
+    // non erano allineati; ora la select-list è sempre un campo per riga, come nell'INSERT…SELECT.
     const sql = `create procedure p as
 begin
   select MIS_UDC, MIS_OPERATORE, MIS_WEIGHT
@@ -141,6 +145,66 @@ begin
 end`
     const out = formatRoutineWithProfile(sql, profile)
     expect(out).toMatch(/^\s*SELECT MIS_UDC$/m)
-    expect(out).toMatch(/^\s*,MIS_OPERATORE, MIS_WEIGHT$/m)
+    expect(out).toMatch(/^\s*,MIS_OPERATORE$/m)
+    expect(out).toMatch(/^\s*,MIS_WEIGHT$/m)
+    // nessuna riga con due campi
+    expect(out).not.toMatch(/MIS_OPERATORE, MIS_WEIGHT/)
+    // i campi cominciano tutti dalla stessa colonna
+    const righe = out.split('\n').filter(r => /^\s*,?MIS_(UDC|OPERATORE|WEIGHT)$/.test(r))
+    expect(new Set(righe.map(r => r.search(/[^ ]/))).size).toBe(1)
+  })
+})
+
+describe('allineamento degli ALIAS nella select-list', () => {
+  it('gli alias partono tutti dalla stessa colonna', () => {
+    const sql = `create procedure p as
+begin
+  select SCO_SCOMPARTO X_SCO, UDC_UDC X_UDC_SOURCE, IIF (UDC_SSCC > '', UDC_SSCC, SCO_SSCC_SOURCE) X_SSCC, UDC_USER_TASK
+  from TEST_SRC
+  where X = 1
+end`
+    const out = formatRoutineWithProfile(sql, profile)
+    console.log(out)
+    const righe = out.split('\n').filter(r => /(X_SCO|X_UDC_SOURCE|X_SSCC)\s*$/.test(r.trimEnd()))
+    expect(righe.length).toBe(3)
+    // posizione di partenza dell'alias (dalla fine della riga, così non si confonde con
+    // le colonne omonime dentro l'espressione)
+    const colonne = righe.map(r => {
+      const t = r.trimEnd()
+      const m = /(X_SCO|X_UDC_SOURCE|X_SSCC)\s*$/.exec(t)!
+      return t.length - m[1].length
+    })
+    console.log(`  colonne degli alias: ${JSON.stringify(colonne)}`)
+    expect(new Set(colonne).size).toBe(1)
+    // il campo senza alias resta nudo
+    expect(out).toMatch(/^\s*,UDC_USER_TASK$/m)
+  })
+
+  it('con "AS" l alias (compreso l AS) resta incolonnato', () => {
+    const sql = `create procedure p as
+begin
+  select CAST ('' AS NVARCHAR(50)) AS X_SSCC_DEST, ISNULL (UDC_UDC, 0) X_UDC_DEST
+  from TEST_SRC
+  where X = 1
+end`
+    const out = formatRoutineWithProfile(sql, profile)
+    console.log(out)
+    const righe = out.split('\n').filter(r => /(AS X_SSCC_DEST|X_UDC_DEST)\s*$/.test(r.trimEnd()))
+    expect(righe.length).toBe(2)
+    const colonne = righe.map(r => {
+      const t = r.trimEnd()
+      const m = /(AS X_SSCC_DEST|X_UDC_DEST)\s*$/.exec(t)!
+      return t.length - m[1].length
+    })
+    console.log(`  colonne degli alias (AS compreso): ${JSON.stringify(colonne)}`)
+    expect(new Set(colonne).size).toBe(1)
+  })
+
+  it('senza alias non si aggiungono spazi inutili', () => {
+    const out = formatRoutineWithProfile(
+      'create procedure p as\nbegin\n  select UDC_UDC, UDC_TAG\n  from T\n  where X = 1\nend',
+      profile,
+    )
+    expect(out).toMatch(/^\s*,UDC_TAG$/m)
   })
 })

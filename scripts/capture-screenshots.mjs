@@ -963,7 +963,13 @@ async function verifyFormat(page) {
   }
   check('il pulsante "Formatta" è stato premuto (da sola)', a.premuto === true)
   check('il pulsante "Formatta" è stato premuto (dentro la store)', b.premuto === true)
-  check('da sola: la lista è a colonna (SELECT + campi con la virgola in testa)', daSola[0] === 'SELECT MIS_MISSIONE' && daSola[1] === ',MIS_UDC, MIS_BEG_L1')
+  check(
+    'da sola: la lista è a colonna (SELECT + un campo per riga, virgola in testa)',
+    daSola[0] === 'SELECT MIS_MISSIONE' &&
+      (daSola[1] ?? '').startsWith(',MIS_UDC') &&
+      (daSola[2] ?? '').startsWith(',MIS_BEG_L1'),
+    JSON.stringify(daSola.slice(0, 4)),
+  )
   check('da sola: INTO su riga propria', daSola.includes('INTO #t'))
   check('dentro la store: nessuna riga con la lista intera su una riga', !inStore.some(r => /SELECT MIS_MISSIONE,/.test(r)))
   check(
@@ -1179,6 +1185,52 @@ async function verifyFormat(page) {
     `riga più lunga: ${Math.max(...righeWhile.map(r => r.length))}`,
   )
   await page.screenshot('formatta-while-exists')
+
+  // SELECT con COMMENTO "--" in coda a un campo (store segnalata dall'utente): i campi devono
+  // andare UNO PER RIGA con gli ALIAS incolonnati, l'INTO a capo, e il commento non deve
+  // "mangiarsi" i campi che seguono. Nella WHERE le condizioni vanno a capo e le parentesi
+  // indentate.
+  const sqlCommenti = [
+    'CREATE PROCEDURE p',
+    'AS',
+    'BEGIN',
+    '  SELECT TOP 1 SCO_SCOMPARTO X_SCO --sorgente',
+    "  , UDC_UDC X_UDC_SOURCE, IIF (UDC_SSCC > '', UDC_SSCC, SCO_SSCC_SOURCE) X_SSCC --sorgente",
+    '  , UDC_ARTICOLO X_SKU, ART_DES X_SKU_DESC, UDC_USER_TASK INTO #tmpAcc',
+    '  FROM DAT_UDC',
+    '  WHERE (A = 1 AND B = 2 OR C = 3) AND D = 4',
+    'END',
+  ].join('\n')
+  const q = await scriviEFormatta(sqlCommenti)
+  const righeQ = q.righe.map(r => r.replace(/\s+$/, ''))
+  console.log('  SELECT con commenti, dopo "Formatta":')
+  righeQ.forEach(r => console.log(`    |${r}`))
+  const trimQ = righeQ.map(r => r.trim())
+  const colonnaAlias = alias => {
+    const riga = righeQ.find(r => new RegExp(`${alias}\\s*(--.*)?$`).test(r))
+    if (!riga) return -1
+    return riga.replace(/\s*--.*$/, '').trimEnd().length - alias.length
+  }
+  const colAlias = ['X_SCO', 'X_UDC_SOURCE', 'X_SSCC', 'X_SKU', 'X_SKU_DESC'].map(colonnaAlias)
+  console.log(`  colonne degli alias: ${JSON.stringify(colAlias)}`)
+  check(
+    'SELECT con commenti: i campi vanno uno per riga',
+    [',UDC_UDC', ',IIF', ',UDC_ARTICOLO', ',ART_DES', ',UDC_USER_TASK'].every(c => trimQ.some(r => r.startsWith(c))),
+  )
+  check('SELECT con commenti: INTO su riga propria', trimQ.includes('INTO #tmpAcc'))
+  check(
+    'SELECT con commenti: gli ALIAS sono incolonnati',
+    colAlias.every(c => c > 0) && new Set(colAlias).size === 1,
+    JSON.stringify(colAlias),
+  )
+  check('SELECT con commenti: il commento resta in coda al suo campo', /X_SCO --sorgente$/.test(righeQ.find(r => r.includes('X_SCO')) ?? ''))
+  check(
+    'SELECT con commenti: i campi dopo il commento NON sono commentati',
+    trimQ.some(r => r.startsWith(',UDC_ARTICOLO')) && trimQ.some(r => r.startsWith(',ART_DES')),
+  )
+  const iWhereQ = trimQ.findIndex(r => r.startsWith('WHERE (A = 1'))
+  check('WHERE: il gruppo fra parentesi va a capo e rientra', iWhereQ > -1 && /^AND B = 2$/.test(trimQ[iWhereQ + 1] ?? '') && /^OR C = 3\)$/.test(trimQ[iWhereQ + 2] ?? ''))
+  await page.screenshot('formatta-select-commenti-alias')
 
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)

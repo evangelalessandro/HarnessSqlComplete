@@ -106,6 +106,21 @@ export default function ResultsPanel({
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-1.5 text-xs text-zinc-400">
+        {multiSet && (
+          <Button
+            variant={continuo ? 'primary' : 'ghost'}
+            size="sm"
+            onClick={() => onContinuousChange?.(!continuo)}
+            title={
+              continuo
+                ? 'Torna alla vista con un result set alla volta (con paginazione)'
+                : 'Mostra tutti i result set uno di seguito all’altro, con un solo scorrimento'
+            }
+          >
+            {continuo ? <Square className="h-3.5 w-3.5" /> : <Rows3 className="h-3.5 w-3.5" />}
+            {continuo ? 'Un set alla volta' : 'Tutti in sequenza'}
+          </Button>
+        )}
         {multiSet && (!continuo || genMode) && (
           <div className="flex items-center gap-1">
             {result.resultSets.map((s, i) => (
@@ -130,21 +145,6 @@ export default function ResultsPanel({
           </span>
         )}
         <span className="ml-auto flex items-center gap-2">
-          {multiSet && (
-            <Button
-              variant={continuo ? 'primary' : 'ghost'}
-              size="sm"
-              onClick={() => onContinuousChange?.(!continuo)}
-              title={
-                continuo
-                  ? 'Torna alla vista con un result set alla volta (con paginazione)'
-                  : 'Mostra tutti i result set uno di seguito all’altro, con un solo scorrimento'
-              }
-            >
-              {continuo ? <Square className="h-3.5 w-3.5" /> : <Rows3 className="h-3.5 w-3.5" />}
-              {continuo ? 'Un set alla volta' : 'Tutti in sequenza'}
-            </Button>
-          )}
           <Button
             variant={genMode ? 'primary' : 'ghost'}
             size="sm"

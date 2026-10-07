@@ -28,9 +28,13 @@ describe('routine reale: select-list impilata come da sola', () => {
 
   it('la SELECT ... INTO dentro la store è impilata', () => {
     expect(formattata).toMatch(/^SELECT MIS_MISSIONE$/m)
-    expect(formattata).toMatch(/^   ,MIS_UDC, MIS_BEG_L1$/m)
-    expect(formattata).toMatch(/^   ,MIS_S_BAIA, MIS_S_CORRIDOIO$/m)
-    expect(formattata).toMatch(/^   ,MIS_D_CORRIDOIO, MIS_NOBACK$/m)
+    // un campo per riga (prima i campi corti venivano raggruppati a due per riga)
+    expect(formattata).toMatch(/^   ,MIS_UDC$/m)
+    expect(formattata).toMatch(/^   ,MIS_BEG_L1$/m)
+    expect(formattata).toMatch(/^   ,MIS_S_BAIA$/m)
+    expect(formattata).toMatch(/^   ,MIS_S_CORRIDOIO$/m)
+    expect(formattata).toMatch(/^   ,MIS_D_CORRIDOIO$/m)
+    expect(formattata).toMatch(/^   ,MIS_NOBACK$/m)
     // INTO su riga propria, allineato alla SELECT
     expect(formattata).toMatch(/^INTO #ws_L2_SUSEVOMOPEPESESE_FIB_MASIDAPU_fodopege$/m)
   })
@@ -41,7 +45,8 @@ FROM dbo.RUN_MISSIONI
 WHERE MIS_MISSIONE <> @idMissione`
     const out = formatSqlWithProfile(solo, profile)
     expect(out).toMatch(/^SELECT MIS_MISSIONE$/m)
-    expect(out).toMatch(/^   ,MIS_UDC, MIS_BEG_L1$/m)
+    expect(out).toMatch(/^   ,MIS_UDC$/m)
+    expect(out).toMatch(/^   ,MIS_BEG_L1$/m)
     expect(out).toMatch(/^INTO #ws_L2_SUSEVOMOPEPESESE_FIB_MASIDAPU_fodopege$/m)
   })
 
