@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { Eraser, FolderOpen, IndentDecrease, IndentIncrease, Loader2, MessageSquare, Moon, Play, Save, Settings2, Sun, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
+import { Eraser, FolderOpen, IndentDecrease, IndentIncrease, Loader2, MessageSquare, Moon, Pilcrow, Play, Save, Settings2, Sun, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
 import monaco from '../monacoSetup'
 import { api } from '../api'
 import { syntaxIssuesFromCheck } from '../syntaxCheck'
@@ -25,6 +25,7 @@ import { formattaConMotore, OPZIONI_SQLFLUFF_DEFAULT } from '../formatEngine'
 import type { MotoreFormattazione, OpzioniSqlFluff } from '../formatEngine'
 import { SQL_WORD_SEPARATORS } from '../editorOptions'
 import { BLOCCHI_KEY, opzioniMonaco, parseBlocchi, serializzaBlocchi } from '../blockMode'
+import { SPAZI_KEY, opzioniSpazi, parseSpazi, serializzaSpazi } from '../whitespaceMode'
 import { azioneCursore, cursoreDaAggiungere, cursoreDaNeutralizzare } from '../multiCursor'
 import FormatProfilePanel from './FormatProfilePanel'
 import { Badge, Button, Spinner, Toggle } from './ui'
@@ -186,6 +187,32 @@ export default function SqlEditor({
   useEffect(() => {
     editorRef.current?.updateOptions(opzioniMonaco(blocchi))
   }, [blocchi])
+  /**
+   * MOSTRA SPAZI E TAB (richiesta utente): accesa, l'editor disegna lo spazio come '·' e il tab
+   * come '→', così si vedono rientri sbagliati e tab mescolati agli spazi. La scelta si ricorda
+   * fra un avvio e l'altro (come la scrittura a blocchi).
+   */
+  const [mostraSpazi, setMostraSpazi] = useState(() => {
+    try {
+      return parseSpazi(localStorage.getItem(SPAZI_KEY))
+    } catch {
+      return false
+    }
+  })
+  const toggleSpazi = useCallback(() => {
+    setMostraSpazi(v => {
+      const nuovo = !v
+      try {
+        localStorage.setItem(SPAZI_KEY, serializzaSpazi(nuovo))
+      } catch {
+        /* localStorage non disponibile */
+      }
+      return nuovo
+    })
+  }, [])
+  useEffect(() => {
+    editorRef.current?.updateOptions(opzioniSpazi(mostraSpazi))
+  }, [mostraSpazi])
   // Finestra anteprima dati della tabella sotto il cursore (F4)
   const [previewTarget, setPreviewTarget] = useState<{ schema: string; table: string } | null>(null)
   // tabella attualmente sotto l'hover (per il pulsante cliccabile nella tooltip)
@@ -816,6 +843,14 @@ export default function SqlEditor({
           >
             <Settings2 className="h-4 w-4" />
           </Button>
+          <Button
+            variant={mostraSpazi ? 'primary' : 'ghost'}
+            onClick={toggleSpazi}
+            title="Mostra i caratteri invisibili: spazio (·) e tab (→)"
+            data-spazi={mostraSpazi ? 'on' : 'off'}
+          >
+            <Pilcrow className="h-4 w-4" /> Spazi e tab
+          </Button>
           <Button variant="ghost" onClick={() => editorRef.current?.setValue('')}>
             <Eraser className="h-4 w-4" /> Svuota
           </Button>
@@ -874,6 +909,8 @@ export default function SqlEditor({
             minimap: { enabled: false },
             scrollBeyondLastLine: false,
             tabSize: 2,
+            // MOSTRA SPAZI E TAB: acceso dal tasto "Spazi e tab" della barra (spazio '·', tab '→')
+            ...opzioniSpazi(mostraSpazi),
             // SCRITTURA SU PIÙ RIGHE: selezione a blocchi (stile SSMS) e Alt+clic per più cursori
             columnSelection: blocchi,
             multiCursorModifier: 'alt',

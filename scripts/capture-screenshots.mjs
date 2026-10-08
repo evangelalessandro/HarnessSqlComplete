@@ -42,6 +42,7 @@ const VERIFY_PAIR_HIGHLIGHT = process.argv.includes('--verify-pair-highlight')
 const VERIFY_LOCAL_TABLES = process.argv.includes('--verify-local-tables')
 const VERIFY_ALIAS = process.argv.includes('--verify-alias')
 const VERIFY_RISULTATI_SEQUENZA = process.argv.includes('--verify-risultati-sequenza')
+const VERIFY_SPAZI = process.argv.includes('--verify-spazi')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -5630,6 +5631,105 @@ async function verifyRisultatiSequenza(page) {
 }
 
 /**
+ * VERIFICA (--verify-spazi): il tasto "Spazi e tab" della barra dell'editor deve far DISEGNARE
+ * i caratteri invisibili (spazio '·', tab '→') e spegnerli al secondo clic, ricordando la scelta.
+ * Richiesta utente: "mi aggiungi un tasto per vedere anche i caratteri speciali, come gli spazi
+ * e i tab?".
+ */
+async function verifySpazi(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await sleep(1800)
+  const rect = await editorRect(page)
+
+  /** Righe visibili dell'editor (Monaco usa spazi insecabili: si normalizzano). */
+  const righe = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' '))`)
+  /**
+   * Marcatori disegnati da Monaco per gli spazi e i tab. Monaco 0.56 li rende come SVG
+   * nell'overlay delle righe: un <circle> per ogni SPAZIO e un <path> (freccia) per ogni TAB;
+   * con la resa "a caratteri" sarebbero <div class="mwh">. Si contano entrambe le forme.
+   */
+  const conta = async () =>
+    await page.eval(`(() => {
+      const ov = document.querySelector('.monaco-editor .view-overlays');
+      const punti = ov ? ov.querySelectorAll('svg circle').length : 0;
+      const frecce = ov ? ov.querySelectorAll('svg path').length : 0;
+      const div = ov ? ov.querySelectorAll('.mwh').length : 0;
+      return { totale: punti + frecce + div, punti: punti + div, frecce };
+    })()`)
+  /** Valore dell'opzione in Monaco (prova che il tasto arriva davvero all'editor). */
+  const opzione = async () =>
+    await page.eval(
+      `(async () => { const m = (await import('/src/monacoSetup.ts')).default; const ed = m.editor.getEditors()[0]; return ed ? String(ed.getOption(m.editor.EditorOption.renderWhitespace)) : 'nessun editor'; })()`,
+    )
+
+  // testo con spazi multipli in mezzo, spazi in coda e un TAB in testa alla seconda riga.
+  // Il TAB va messo con l'API (digitandolo Monaco lo converte in spazi): così si verifica
+  // anche il marcatore "→".
+  await page.eval(
+    `(async () => { const m = (await import('/src/monacoSetup.ts')).default; const ed = m.editor.getEditors()[0]; ed.setValue('SELECT    1   ' + String.fromCharCode(10) + String.fromCharCode(9) + 'SELECT 2'); ed.setPosition({ lineNumber: 1, column: 1 }); return true; })()`,
+  )
+  await sleep(900)
+  console.log('  testo nel modello:')
+  ;(await righe()).forEach(r => console.log(`    |${JSON.stringify(r)}`))
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const bottone = async () =>
+    await page.eval(
+      `(() => { const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Spazi e tab')); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`,
+    )
+
+  const btn = await bottone()
+  check('il tasto "Spazi e tab" è nella barra dell\'editor', !!btn)
+
+  const spento = await conta()
+  console.log(`  con il tasto SPENTO: marcatori=${spento.totale} punti=${spento.punti} frecce=${spento.frecce}`)
+  check('spento: nessun carattere invisibile disegnato', spento.totale === 0)
+  check('spento: in Monaco renderWhitespace = none', (await opzione()) === 'none')
+
+  if (btn) {
+    await page.clickPoint(btn.x, btn.y)
+    await sleep(1000)
+  }
+  const acceso = await conta()
+  console.log(`  con il tasto ACCESO: marcatori=${acceso.totale} punti=${acceso.punti} frecce=${acceso.frecce}`)
+  check('acceso: in Monaco renderWhitespace = all', (await opzione()) === 'all')
+  check('acceso: gli SPAZI sono disegnati come "·"', acceso.punti >= 6, `${acceso.punti} punti`)
+  check('acceso: il TAB è disegnato come "→"', acceso.frecce >= 1, `${acceso.frecce} frecce`)
+  await page.screenshot('editor-spazi-e-tab')
+
+  // la preferenza è salvata
+  const salvato = await page.eval(`localStorage.getItem('sqlIntelli.spazi.v1')`)
+  check('la scelta è ricordata (localStorage)', salvato === 'on', JSON.stringify(salvato))
+
+  // secondo clic: si spegne e i marcatori spariscono
+  const btn2 = await bottone()
+  if (btn2) {
+    await page.clickPoint(btn2.x, btn2.y)
+    await sleep(900)
+  }
+  const rispento = await conta()
+  console.log(`  dopo il secondo clic: marcatori=${rispento.totale} punti=${rispento.punti} frecce=${rispento.frecce}`)
+  check('secondo clic: i caratteri invisibili spariscono', rispento.totale === 0)
+  const salvato2 = await page.eval(`localStorage.getItem('sqlIntelli.spazi.v1')`)
+  check('la scelta spenta è ricordata', salvato2 === 'off', JSON.stringify(salvato2))
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -5831,6 +5931,11 @@ async function main() {
 
     if (VERIFY_RISULTATI_SEQUENZA) {
       await verifyRisultatiSequenza(page)
+      return
+    }
+
+    if (VERIFY_SPAZI) {
+      await verifySpazi(page)
       return
     }
 
