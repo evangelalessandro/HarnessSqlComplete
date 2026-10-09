@@ -97,6 +97,16 @@ export interface IndexInfo {
   fileGroup?: string | null
   /** Colonne chiave DISCENDENTI: nello script vanno scritte [col] DESC invece di ASC. */
   descendingColumns?: string[] | null
+  /**
+   * True se l'indice E' un vincolo UNIQUE (sys.indexes.is_unique_constraint): nello script di
+   * cancellazione diventa "ALTER TABLE … DROP CONSTRAINT", perché su un vincolo SQL Server non
+   * accetta "DROP INDEX".
+   */
+  isUniqueConstraint?: boolean
+  /** Colonne INCLUDE (colonne di copertura): nello script CREATE INDEX vanno in "INCLUDE (…)". */
+  includedColumns?: string[] | null
+  /** Filtro di un indice filtrato (sys.indexes.filter_definition): nello script va dopo WHERE. */
+  filterDefinition?: string | null
 }
 
 export interface TableInfo {

@@ -43,6 +43,7 @@ const VERIFY_LOCAL_TABLES = process.argv.includes('--verify-local-tables')
 const VERIFY_ALIAS = process.argv.includes('--verify-alias')
 const VERIFY_RISULTATI_SEQUENZA = process.argv.includes('--verify-risultati-sequenza')
 const VERIFY_SPAZI = process.argv.includes('--verify-spazi')
+const VERIFY_INDICI_VINCOLI = process.argv.includes('--verify-indici-vincoli')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -5730,6 +5731,328 @@ async function verifySpazi(page) {
 }
 
 /**
+ * VERIFICA (--verify-indici-vincoli): indici e vincoli devono comparire nella treeview e negli
+ * script di generazione/cancellazione.
+ * Richiesta utente: "devi mettermi nello script di generazione\cancellazione e treeview anche gli
+ * indici e constraint".
+ * Controlla nel browser vero:
+ *   - la tabella espansa mostra le sezioni "Indici" (indici veri) e "Vincoli" (PK, UNIQUE, FK, CHECK);
+ *   - clic su una riga di indice → tab con CREATE … INDEX … ON …;
+ *   - tasto destro su un indice → Script indice → DROP → DROP INDEX … ON …;
+ *   - tasto destro sul vincolo → Script vincolo → CREATE / DROP CONSTRAINT;
+ *   - lo script CREATE della tabella (menu contestuale della tabella) contiene anche gli indici.
+ */
+async function verifyIndiciVincoli(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1800)
+
+  // il pannello Oggetti può essere chiuso: nel caso lo si riapre dalla barra dei pannelli
+  const campo = `document.querySelector('input[placeholder^="Cerca (spazio"]')`
+  if (!(await page.eval(`!!${campo}`))) {
+    await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Oggetti')`,
+    )
+    await sleep(1200)
+  }
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  /**
+   * Apre il pannello Oggetti (se è chiuso) e SVUOTA la ricerca: con del testo nel campo si
+   * vedono i RISULTATI (righe piatte, senza chevron), non l'albero con indici e vincoli.
+   */
+  const preparaAlbero = async () => {
+    if (!(await page.eval(`!!${campo}`))) {
+      await page.clickWhere(
+        `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Oggetti')`,
+      )
+      await sleep(1300)
+    }
+    await page.eval(`(() => {
+      const i = ${campo};
+      if (!i) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(i, '');
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(700)
+  }
+
+  /** Clic sul bottone che ha uno <span> con questo testo ESATTO (sezioni e gruppi dell'albero). */
+  const clicSpan = async testo =>
+    await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b =>
+        [...b.querySelectorAll('span')].some(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(testo)}));
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`)
+
+  /** La riga della tabella esiste nell'albero (dentro il suo .group)? */
+  const rigaPresente = async nome =>
+    await page.eval(`(() => {
+      const s = [...document.querySelectorAll('span')]
+        .find(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(nome)});
+      return !!(s && s.closest('.group'));
+    })()`)
+
+  /** Il gruppo di prefisso è visibile e APERTO? (null = sezione Tabelle chiusa) */
+  const gruppoAperto = async label =>
+    await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b =>
+        [...b.querySelectorAll('span')].some(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(label)}));
+      if (!b) return null;
+      const padre = b.parentElement;
+      return !!padre && padre.children.length > 1;
+    })()`)
+
+  /** Apre sezione "Tabelle" e gruppo di prefisso finché la riga della tabella non c'è. */
+  const raggiungiRiga = async nome => {
+    if (await rigaPresente(nome)) return true
+    const gruppo = nome.includes('_') ? nome.split('_')[0] : 'Varie'
+    let aperto = await gruppoAperto(gruppo)
+    if (aperto === null) {
+      // la sezione "Tabelle" è chiusa: si apre (cliccare a caso la chiuderebbe)
+      await clicSpan('Tabelle')
+      await sleep(600)
+      aperto = await gruppoAperto(gruppo)
+    }
+    if (aperto === false) {
+      await clicSpan(gruppo)
+      await sleep(700)
+    }
+    return await rigaPresente(nome)
+  }
+
+  /** Espande la tabella (chevron "Mostra i campi") per vedere colonne, indici e vincoli. */
+  const espandi = async nome =>
+    await page.eval(`(() => {
+      const s = [...document.querySelectorAll('span')]
+        .find(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(nome)});
+      const gruppo = s && s.closest('.group');
+      if (!gruppo) return 'nessuna-riga';
+      const b = [...gruppo.querySelectorAll('button')]
+        .find(b => (b.getAttribute('title') || '').startsWith('Mostra i campi'));
+      if (!b) return 'gia-aperto';
+      b.click();
+      return 'aperto';
+    })()`)
+
+  /**
+   * Sezioni e righe mostrate sotto la tabella espansa. Il NOME dell'indice/vincolo si legge dal
+   * title (l'etichetta visibile attacca il nome alle colonne/badge: "IX_TX_ART" + "ART").
+   */
+  const contenuto = async nome =>
+    await page.eval(`(() => {
+      const s = [...document.querySelectorAll('span')]
+        .find(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(nome)});
+      const gruppo = s && s.closest('.group');
+      if (!gruppo) return null;
+      const testi = [...gruppo.querySelectorAll('div')].map(d => (d.textContent || '').trim());
+      const sezioni = ['Colonne', 'Indici', 'Vincoli', 'Trigger'].filter(x => testi.includes(x));
+      const bottoni = [...gruppo.querySelectorAll('button')].map(b => ({
+        titolo: b.getAttribute('title') || '',
+        primaRiga: (b.getAttribute('title') || '').split('\\n')[0],
+      }));
+      const indici = bottoni.filter(b => /INDEX /.test(b.titolo)).map(b => ({
+        nome: (/INDEX ([^\\s]+)/.exec(b.titolo) || [])[1] || b.primaRiga,
+        titolo: b.primaRiga,
+      }));
+      const vincoli = bottoni
+        .filter(b => /^(PRIMARY KEY|FOREIGN KEY|UNIQUE|CHECK) /.test(b.titolo))
+        .map(b => {
+          // il tipo può essere di DUE parole ("PRIMARY KEY", "FOREIGN KEY")
+          const m = /^(PRIMARY KEY|FOREIGN KEY|UNIQUE|CHECK)\\s+(.+)$/.exec(b.primaRiga);
+          return m ? { tipo: m[1], nome: m[2].trim() } : { tipo: 'VINCOLO', nome: b.primaRiga };
+        });
+      return { sezioni, indici, vincoli };
+    })()`)
+
+  /** Testo di TUTTI gli script aperti nelle tab (per verificare cosa è stato generato). */
+  const scriptAperti = async () =>
+    await page.eval(
+      `(async () => { const m = (await import('/src/monacoSetup.ts')).default; return m.editor.getModels().map(x => x.getValue()); })()`,
+    )
+
+  /** Tasto destro sulla riga di una tabella (o su una sua voce) e scelta di una voce del menu. */
+  const apriMenu = async etichettaRiga => {
+    await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')]
+        .find(b => (b.textContent || '').trim().startsWith(${JSON.stringify(etichettaRiga)}));
+      if (b) b.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window }));
+    })()`)
+    await sleep(600)
+  }
+  const scegliVoce = async testo => {
+    const punto = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === ${JSON.stringify(testo)});
+      if (!b) return null;
+      b.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (punto) {
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(punto.x), y: Math.round(punto.y), buttons: 0 })
+      await sleep(700)
+      await page.clickPoint(punto.x, punto.y)
+      await sleep(1200)
+    }
+    return !!punto
+  }
+  const chiudiMenu = async () => {
+    await page.press('Escape', { code: 'Escape', vk: 27 })
+    await sleep(300)
+  }
+
+  // ---------------------------------------------------------------- 1) treeview
+  await preparaAlbero()
+  const candidate = [
+    TABELLA_CREATE,
+    'RUN_MISSIONI',
+    'RUN_ESEGUI',
+    'DAT_UDC',
+    'MAG_CELLE',
+    'DAT_ORDINI_RIGHE',
+    'MAG_CORRIDOI',
+    'DAT_SCOMPART',
+    'TIPI_CAUSALI_MISSIONI',
+    'MAG_BAIE',
+  ]
+  let conIndici = null
+  let conVincoli = null
+  /** Tipi di vincolo visti nell'albero su TUTTE le tabelle esaminate (PK, FK, CHECK, UNIQUE). */
+  const tipiVisti = new Set()
+  for (const nome of candidate) {
+    if (!(await raggiungiRiga(nome))) {
+      console.log(`  (${nome}: riga non trovata nell'albero)`)
+      continue
+    }
+    await espandi(nome)
+    await sleep(700)
+    const c = await contenuto(nome)
+    if (!c) continue
+    for (const v of c.vincoli) tipiVisti.add(v.tipo)
+    console.log(`  ${nome}: sezioni=${JSON.stringify(c.sezioni)} indici=${JSON.stringify(c.indici.map(i => i.nome))} vincoli=${JSON.stringify(c.vincoli.map(v => `${v.tipo} ${v.nome}`))}`)
+    if (!conIndici && c.indici.length > 0) conIndici = { nome, ...c }
+    if (!conVincoli && c.vincoli.length > 0) conVincoli = { nome, ...c }
+    if (conIndici && conVincoli && ['PRIMARY KEY', 'FOREIGN KEY', 'CHECK'].every(t => tipiVisti.has(t))) break
+  }
+
+  check('la treeview mostra la sezione "Vincoli"', !!conVincoli, conVincoli ? `${conVincoli.nome}: ${conVincoli.vincoli.length} vincoli (${conVincoli.vincoli.slice(0, 3).map(v => `${v.tipo} ${v.nome}`).join(', ')}…)` : 'nessuna tabella con vincoli trovata')
+  check('la treeview mostra la sezione "Indici"', !!conIndici, conIndici ? `${conIndici.nome}: ${conIndici.indici.map(i => i.nome).join(', ')}` : 'nessuna tabella con indici trovata')
+  check(
+    'fra i vincoli ci sono CHIAVE PRIMARIA, CHIAVI ESTERNE e CHECK',
+    ['PRIMARY KEY', 'FOREIGN KEY', 'CHECK'].every(t => tipiVisti.has(t)),
+    [...tipiVisti].join(', '),
+  )
+
+  // ---------------------------------------------------------------- 2) script di un INDICE
+  if (conIndici) {
+    const indice = conIndici.indici[0].nome
+    const tabella = conIndici.nome
+    await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')]
+        .find(b => (b.textContent || '').trim().startsWith(${JSON.stringify(indice)}) && /INDEX /.test(b.getAttribute('title') || ''));
+      if (b) b.click();
+    })()`)
+    await sleep(1500)
+    const aperti = await scriptAperti()
+    check(
+      'clic su un indice → si apre lo script CREATE INDEX',
+      aperti.some(v => v.includes('CREATE') && v.includes('INDEX') && v.includes(`[${indice}]`) && v.includes(`[${tabella}]`)),
+      `indice ${indice}`,
+    )
+
+    await apriMenu(indice)
+    const menuIndice = await page.eval(`document.body.textContent.includes('Script indice')`)
+    check('tasto destro su un indice → menu "Script indice"', menuIndice === true)
+    await scegliVoce('Script indice')
+    await scegliVoce('DROP')
+    const aperti2 = await scriptAperti()
+    check(
+      'Script indice → DROP → si apre "DROP INDEX … ON …"',
+      aperti2.some(v => v.includes(`DROP INDEX ${indice} ON`) || v.includes(`DROP INDEX [${indice}] ON`)),
+    )
+    await page.screenshot('treeview-indici')
+  }
+
+  // ---------------------------------------------------------------- 3) script di un VINCOLO
+  if (conVincoli) {
+    const pk = (conVincoli.vincoli.find(v => v.tipo === 'PRIMARY KEY') ?? conVincoli.vincoli[0]).nome
+    await apriMenu(pk)
+    const menuVincolo = await page.eval(`document.body.textContent.includes('Script vincolo')`)
+    check('tasto destro su un vincolo → menu "Script vincolo"', menuVincolo === true)
+    await scegliVoce('Script vincolo')
+    await scegliVoce('DROP CONSTRAINT')
+    const aperti3 = await scriptAperti()
+    check(
+      'Script vincolo → DROP CONSTRAINT → si apre "ALTER TABLE … DROP CONSTRAINT …"',
+      aperti3.some(v => v.includes(`DROP CONSTRAINT ${pk}`) || v.includes(`DROP CONSTRAINT [${pk}]`)),
+      `vincolo ${pk}`,
+    )
+
+    // la chiave esterna (se c'è) si può ricreare da sola
+    const fk = conVincoli.vincoli.find(v => v.tipo === 'FOREIGN KEY')
+    if (fk) {
+      const nomeFk = fk.nome
+      await chiudiMenu()
+      await page.eval(`(() => {
+        const b = [...document.querySelectorAll('button')]
+          .find(b => (b.textContent || '').trim().startsWith(${JSON.stringify(nomeFk)}) && /^FOREIGN KEY/.test(b.getAttribute('title') || ''));
+        if (b) b.click();
+      })()`)
+      await sleep(1500)
+      const aperti4 = await scriptAperti()
+      check(
+        'clic su una chiave esterna → script ADD CONSTRAINT … FOREIGN KEY … REFERENCES',
+        aperti4.some(v => v.includes('FOREIGN KEY') && v.includes('REFERENCES') && v.includes(nomeFk)),
+        `fk ${nomeFk}`,
+      )
+    } else {
+      console.log('  (nessuna chiave esterna fra le prime tabelle esaminate: controllo saltato)')
+    }
+    await chiudiMenu()
+  }
+
+  // ---------------------------------------------------------------- 4) script CREATE della tabella
+  if (conIndici) {
+    const tabella = conIndici.nome
+    await raggiungiRiga(tabella)
+    await apriMenu(tabella)
+    await scegliVoce('Script tabella')
+    await scegliVoce('CREATE')
+    await sleep(1800)
+    const aperti5 = await scriptAperti()
+    const script = aperti5.find(v => v.includes(`CREATE TABLE [dbo].[${tabella}](`)) ?? ''
+    const indice = conIndici.indici[0].nome
+    check(
+      'lo script CREATE della tabella contiene anche gli INDICI',
+      script.includes('INDEX') && script.includes(`[${indice}]`),
+      `indice atteso: ${indice}`,
+    )
+    check(
+      'lo script CREATE della tabella contiene anche i VINCOLI (PK/CHECK/FK)',
+      script.includes('CONSTRAINT') && /PRIMARY KEY|CHECK|FOREIGN KEY/.test(script),
+    )
+  }
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -5936,6 +6259,11 @@ async function main() {
 
     if (VERIFY_SPAZI) {
       await verifySpazi(page)
+      return
+    }
+
+    if (VERIFY_INDICI_VINCOLI) {
+      await verifyIndiciVincoli(page)
       return
     }
 

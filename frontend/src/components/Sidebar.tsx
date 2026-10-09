@@ -30,6 +30,8 @@ import type {
   CheckConstraintInfo,
   ColumnInfo,
   DatabaseSummary,
+  ForeignKeyInfo,
+  IndexInfo,
   ProcedureInfo,
   TableInfo,
   TriggerInfo,
@@ -39,12 +41,18 @@ import {
   dbColorPalette,
   dbTabColor,
   groupTablesByPrefix,
+  indiceVincolo,
   qualified,
+  scriptAddConstraint,
+  scriptCreateIndex,
   scriptCreateTable,
   scriptDeleteTable,
+  scriptDropConstraint,
+  scriptDropIndex,
   scriptDropObject,
   scriptCheckConstraint,
   scriptExecProcedure,
+  scriptForeignKey,
   scriptInsertTable,
   scriptMergeTable,
   scriptSelectTable,
@@ -102,7 +110,20 @@ interface Props {
   onShowCallGraph?: (schema: string, name: string, kind: 'procedure' | 'function') => void
 }
 
-type HitKind = 'tabella' | 'vista' | 'procedura' | 'funzione' | 'trigger' | 'check'
+type HitKind = 'tabella' | 'vista' | 'procedura' | 'funzione' | 'trigger' | 'check' | 'indice' | 'vincolo'
+
+/** Voce della sezione "Vincoli" della treeview: chiave primaria, unique, chiave esterna o check. */
+interface VoceVincolo {
+  nome: string
+  tipo: 'PRIMARY KEY' | 'UNIQUE' | 'FOREIGN KEY' | 'CHECK'
+  /** Riga di dettaglio (colonne del vincolo, tabella riferita, testo del CHECK). */
+  dettaglio: string
+  /** Script per (ri)creare il vincolo. */
+  sqlCreate: string
+  /** Script di cancellazione (ALTER TABLE … DROP CONSTRAINT). */
+  sqlDrop: string
+  disabilitato?: boolean
+}
 
 interface SearchHit {
   kind: HitKind
@@ -115,6 +136,10 @@ interface SearchHit {
   view?: ViewInfo
   trigger?: TriggerInfo
   check?: CheckConstraintInfo
+  /** Indice della tabella (per lo script CREATE/DROP INDEX). */
+  index?: IndexInfo
+  /** Vincolo della tabella (per gli script ADD/DROP CONSTRAINT). */
+  vincolo?: VoceVincolo
 }
 
 /** Voce del menu contestuale (SSMS): azione foglia oppure sottomenu "Script ...". */
@@ -340,6 +365,66 @@ export default function Sidebar({
     return map
   }, [summary])
 
+  /**
+   * CHIAVI ESTERNE uscenti raggruppate per tabella (e per nome del vincolo: le FK composite hanno
+   * una riga per colonna). Servono alla sezione "Vincoli" della treeview, dove prima le chiavi
+   * esterne non comparivano affatto (richiesta utente: "metti nella treeview anche i constraint").
+   */
+  const foreignKeysByTable = useMemo(() => {
+    const map = new Map<string, Map<string, ForeignKeyInfo[]>>()
+    if (!summary) return map
+    for (const fk of summary.foreignKeys) {
+      const key = `${fk.schema}.${fk.table}`
+      const perNome = map.get(key) ?? new Map<string, ForeignKeyInfo[]>()
+      const gruppo = perNome.get(fk.name) ?? []
+      gruppo.push(fk)
+      perNome.set(fk.name, gruppo)
+      map.set(key, perNome)
+    }
+    return map
+  }, [summary])
+
+  /**
+   * VINCOLI di una tabella visti come voci pronte: PRIMARY KEY e UNIQUE (dagli indici),
+   * FOREIGN KEY uscenti e CHECK. Ognuna porta gli script CREATE/DROP, così dalla treeview si
+   * può generare sia la creazione sia la cancellazione del vincolo.
+   */
+  const vincoliDiTabella = (t: TableInfo): VoceVincolo[] => {
+    const voci: VoceVincolo[] = []
+    for (const ix of (t.indexes ?? []).filter(i => indiceVincolo(i))) {
+      const tipo = ix.isPrimaryKey ? 'PRIMARY KEY' : 'UNIQUE'
+      voci.push({
+        nome: ix.name,
+        tipo,
+        dettaglio: `${tipo}${ix.isClustered ? ' CLUSTERED' : ' NONCLUSTERED'}${(ix.columns ?? []).length > 0 ? ` (${(ix.columns ?? []).join(', ')})` : ''}`,
+        sqlCreate: scriptAddConstraint(t, ix),
+        sqlDrop: scriptDropConstraint(t.schema, t.name, ix.name),
+      })
+    }
+    const tKey = `${t.schema}.${t.name}`
+    for (const [nome, gruppo] of foreignKeysByTable.get(tKey) ?? []) {
+      const primi = gruppo[0]
+      voci.push({
+        nome,
+        tipo: 'FOREIGN KEY',
+        dettaglio: `(${gruppo.map(g => g.column).join(', ')}) → ${primi.refSchema}.${primi.refTable} (${gruppo.map(g => g.refColumn).join(', ')})`,
+        sqlCreate: scriptForeignKey(t.schema, t.name, nome, gruppo),
+        sqlDrop: scriptDropConstraint(t.schema, t.name, nome),
+      })
+    }
+    for (const cc of checksByTable.get(tKey) ?? []) {
+      voci.push({
+        nome: cc.name,
+        tipo: 'CHECK',
+        dettaglio: cc.definition,
+        sqlCreate: scriptCheckConstraint(cc.schema, cc.tableName, cc.name, cc.definition, cc.isDisabled),
+        sqlDrop: scriptDropConstraint(cc.schema, cc.tableName, cc.name),
+        disabilitato: cc.isDisabled,
+      })
+    }
+    return voci
+  }
+
   const toggleTable = (key: string) =>
     setExpandedTables(prev => {
       const next = new Set(prev)
@@ -553,6 +638,83 @@ export default function Sidebar({
                 label,
                 scriptCheckConstraint(cc.schema, cc.tableName, cc.name, cc.definition, cc.isDisabled),
               ),
+          },
+        ]
+      }
+      /**
+       * INDICE: come in SSMS "Script Index as →", con CREATE e DROP. Per un indice che è in
+       * realtà un vincolo (PK / UNIQUE CONSTRAINT) lo script di cancellazione è quello giusto
+       * (ALTER TABLE … DROP CONSTRAINT): lo decide scriptDropIndex.
+       */
+      case 'indice': {
+        const t = hit.table!
+        const ix = hit.index!
+        const label = `Indice ${ix.name}`
+        const tipo = `${ix.isUnique ? 'UNIQUE ' : ''}${ix.isClustered ? 'CLUSTERED' : 'NONCLUSTERED'}`
+        return [
+          {
+            id: 'script',
+            label: 'Script indice',
+            icon: <FileCode2 className="h-3.5 w-3.5" />,
+            hint: `${tipo} INDEX ${ix.name}`,
+            submenu: [
+              {
+                id: 'create',
+                label: 'CREATE',
+                icon: <FileCode2 className="h-3.5 w-3.5" />,
+                run: () => apriScriptFiglia(`CREATE ${label}`, scriptCreateIndex(t, ix)),
+              },
+              {
+                id: 'drop',
+                label: 'DROP',
+                icon: <Trash2 className="h-3.5 w-3.5" />,
+                danger: true,
+                run: () => apriScriptFiglia(`DROP ${label}`, scriptDropIndex(t, ix)),
+              },
+            ],
+          },
+          {
+            id: 'copy',
+            label: 'Copia nome',
+            icon: <Braces className="h-3.5 w-3.5" />,
+            run: () => void navigator.clipboard?.writeText(sqlIdent(ix.name)),
+          },
+        ]
+      }
+      /**
+       * VINCOLO (PRIMARY KEY, UNIQUE, FOREIGN KEY, CHECK): gli script per ricrearlo e per
+       * cancellarlo con ALTER TABLE … DROP CONSTRAINT.
+       */
+      case 'vincolo': {
+        const v = hit.vincolo!
+        const label = `${v.tipo} ${v.nome}`
+        return [
+          {
+            id: 'script',
+            label: 'Script vincolo',
+            icon: <FileCode2 className="h-3.5 w-3.5" />,
+            hint: v.dettaglio,
+            submenu: [
+              {
+                id: 'create',
+                label: v.tipo === 'FOREIGN KEY' ? 'ADD CONSTRAINT' : 'CREATE',
+                icon: <FileCode2 className="h-3.5 w-3.5" />,
+                run: () => apriScriptFiglia(label, v.sqlCreate),
+              },
+              {
+                id: 'drop',
+                label: 'DROP CONSTRAINT',
+                icon: <Trash2 className="h-3.5 w-3.5" />,
+                danger: true,
+                run: () => apriScriptFiglia(`DROP ${label}`, v.sqlDrop),
+              },
+            ],
+          },
+          {
+            id: 'copy',
+            label: 'Copia nome',
+            icon: <Braces className="h-3.5 w-3.5" />,
+            run: () => void navigator.clipboard?.writeText(sqlIdent(v.nome)),
           },
         ]
       }
@@ -792,7 +954,10 @@ export default function Sidebar({
                           const tKey = `${t.schema}.${t.name}`
                           const expanded = expandedTables.has(tKey)
                           const tableTriggers = triggersByTable.map.get(tKey) ?? []
-                          const tableChecks = checksByTable.get(tKey) ?? []
+                          // INDICI veri (non vincoli: PK/UNIQUE CONSTRAINT stanno fra i vincoli)
+                          const indiciVeri = (t.indexes ?? []).filter(ix => !indiceVincolo(ix))
+                          // VINCOLI: chiave primaria, unique, chiavi esterne uscenti e CHECK
+                          const vincoli = expanded ? vincoliDiTabella(t) : []
                           return (
                             <TableRow
                               key={tKey}
@@ -828,30 +993,94 @@ export default function Sidebar({
                                       <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">{c.dataType}</span>
                                     </button>
                                   ))}
-                                  {t.indexes && t.indexes.length > 0 && (
+                                  {indiciVeri.length > 0 && (
+                                    <>
+                                      <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
+                                        Indici
+                                      </div>
+                                      {indiciVeri.map(ix => (
+                                        <button
+                                          key={ix.name}
+                                          onClick={() => apriScriptFiglia(`Indice ${ix.name}`, scriptCreateIndex(t, ix))}
+                                          onContextMenu={e =>
+                                            openObjectMenu(e, {
+                                              kind: 'indice',
+                                              schema: t.schema,
+                                              name: ix.name,
+                                              detail: t.name,
+                                              table: t,
+                                              index: ix,
+                                            })
+                                          }
+                                          className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                                          title={`${ix.isUnique ? 'UNIQUE ' : ''}${ix.isClustered ? 'CLUSTERED' : 'NONCLUSTERED'} INDEX ${ix.name}${
+                                            (ix.columns ?? []).length > 0 ? `\nColonne: ${(ix.columns ?? []).join(', ')}` : ''
+                                          }${
+                                            (ix.includedColumns ?? []).length > 0 ? `\nINCLUDE: ${(ix.includedColumns ?? []).join(', ')}` : ''
+                                          }${ix.filterDefinition ? `\nFiltro: ${ix.filterDefinition}` : ''}\nClicca per lo script CREATE — tasto destro per CREATE/DROP`}
+                                        >
+                                          <KeyRound className="h-3 w-3 shrink-0 text-sky-400/70" />
+                                          <span className="min-w-0 break-all font-mono">{ix.name}</span>
+                                          {ix.isUnique && (
+                                            <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-zinc-400">UNIQUE</span>
+                                          )}
+                                          {ix.isClustered && (
+                                            <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-sky-300/80">CLUSTERED</span>
+                                          )}
+                                          {ix.columns && ix.columns.length > 0 && (
+                                            <span className="ml-auto min-w-0 break-all text-right font-mono text-[10px] text-zinc-600">
+                                              {ix.columns.join(', ')}
+                                            </span>
+                                          )}
+                                        </button>
+                                      ))}
+                                    </>
+                                  )}
+                                  {vincoli.length > 0 && (
                                     <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
-                                      Indici
+                                      Vincoli
                                     </div>
                                   )}
-                                  {t.indexes?.map(ix => (
-                                    <div
-                                      key={ix.name}
-                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-xs text-zinc-500"
-                                      title={`${ix.name}${ix.isPrimaryKey ? ' — PRIMARY KEY' : ix.isUnique ? ' — UNIQUE' : ''}${ix.columns && ix.columns.length > 0 ? `\nColonne: ${ix.columns.join(', ')}` : ''}`}
+                                  {vincoli.map(v => (
+                                    <button
+                                      key={`${v.tipo}:${v.nome}`}
+                                      onClick={() => apriScriptFiglia(`${v.tipo} ${v.nome}`, v.sqlCreate)}
+                                      onContextMenu={e =>
+                                        openObjectMenu(e, {
+                                          kind: 'vincolo',
+                                          schema: t.schema,
+                                          name: v.nome,
+                                          detail: t.name,
+                                          table: t,
+                                          vincolo: v,
+                                        })
+                                      }
+                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                                      title={`${v.tipo} ${v.nome}\n${v.dettaglio}\nClicca per lo script di creazione — tasto destro per CREATE/DROP`}
                                     >
-                                      <KeyRound className="h-3 w-3 shrink-0 text-amber-400/70" />
-                                      <span className="min-w-0 break-all font-mono text-zinc-400">{ix.name}</span>
-                                      {ix.isPrimaryKey ? (
-                                        <span className="shrink-0 rounded bg-amber-950/70 px-1 text-[9px] font-bold uppercase text-amber-300">PK</span>
-                                      ) : ix.isUnique ? (
-                                        <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-zinc-400">UNIQUE</span>
-                                      ) : null}
-                                      {ix.columns && ix.columns.length > 0 && (
-                                        <span className="ml-auto min-w-0 break-all text-right font-mono text-[10px] text-zinc-600">
-                                          {ix.columns.join(', ')}
-                                        </span>
+                                      {v.tipo === 'CHECK' ? (
+                                        <BadgeCheck className="h-3 w-3 shrink-0 text-emerald-400/70" />
+                                      ) : v.tipo === 'FOREIGN KEY' ? (
+                                        <Share2 className="h-3 w-3 shrink-0 text-violet-400/70" />
+                                      ) : (
+                                        <KeyRound className="h-3 w-3 shrink-0 text-amber-400/70" />
                                       )}
-                                    </div>
+                                      <span className="min-w-0 break-all font-mono">{v.nome}</span>
+                                      <span
+                                        className={`shrink-0 rounded px-1 text-[9px] font-bold uppercase ${
+                                          v.tipo === 'PRIMARY KEY'
+                                            ? 'bg-amber-950/70 text-amber-300'
+                                            : v.tipo === 'FOREIGN KEY'
+                                              ? 'bg-violet-950/70 text-violet-300'
+                                              : 'bg-zinc-800 text-zinc-400'
+                                        }`}
+                                      >
+                                        {v.tipo === 'PRIMARY KEY' ? 'PK' : v.tipo === 'FOREIGN KEY' ? 'FK' : v.tipo}
+                                      </span>
+                                      {v.disabilitato && (
+                                        <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-amber-400">off</span>
+                                      )}
+                                    </button>
                                   ))}
                                   {tableTriggers.length > 0 && (
                                     <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
@@ -870,33 +1099,6 @@ export default function Sidebar({
                                     >
                                       <Flame className="h-3 w-3 shrink-0 text-rose-400/70" />
                                       <span className="min-w-0 break-all font-mono">{trg.name}</span>
-                                    </button>
-                                  ))}
-                                  {tableChecks.length > 0 && (
-                                    <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
-                                      Vincoli CHECK
-                                    </div>
-                                  )}
-                                  {tableChecks.map(cc => (
-                                    <button
-                                      key={cc.name}
-                                      onClick={() =>
-                                        onOpenScript?.(
-                                          `Vincolo CHECK ${cc.name}`,
-                                          scriptCheckConstraint(cc.schema, cc.tableName, cc.name, cc.definition, cc.isDisabled),
-                                        )
-                                      }
-                                      onContextMenu={e =>
-                                        openObjectMenu(e, { kind: 'check', schema: cc.schema, name: cc.name, detail: cc.tableName, check: cc })
-                                      }
-                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-                                      title={`Clicca per vedere/modificare il vincolo — tasto destro per le azioni`}
-                                    >
-                                      <BadgeCheck className="h-3 w-3 shrink-0 text-emerald-400/70" />
-                                      <span className="min-w-0 break-all font-mono">{cc.name}</span>
-                                      {cc.isDisabled && (
-                                        <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-amber-400">off</span>
-                                      )}
                                     </button>
                                   ))}
                                 </>

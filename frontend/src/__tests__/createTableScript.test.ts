@@ -86,9 +86,12 @@ describe('scriptCreateTable: stile SSMS (colonne, chiavi, vincoli, proprietà es
     expect(scriptCreateTable(cluster)).toContain(' CONSTRAINT [PK_Cluster] PRIMARY KEY CLUSTERED \n(\n\t[a] ASC\n)WITH (')
   })
 
-  it('le chiavi UNIQUE sono vincoli, gli indici non unici no', () => {
+  it('le chiavi UNIQUE sono vincoli dentro la CREATE TABLE; gli indici NON di vincolo arrivano come CREATE INDEX', () => {
     expect(sql).toContain(' CONSTRAINT [UQ_Ordini_Cliente] UNIQUE NONCLUSTERED \n(\n\t[cliente_id] ASC\n)WITH (')
-    expect(sql).not.toContain('IX_Ordini_Importo')
+    // richiesta utente: "metti nello script di generazione anche gli indici" — prima l'indice
+    // non unico spariva del tutto dallo script
+    expect(sql).toContain('CREATE NONCLUSTERED INDEX [IX_Ordini_Importo] ON [dbo].[Ordini]')
+    expect(sql).not.toContain('CONSTRAINT [IX_Ordini_Importo]')
   })
 
   it('le colonne chiave in ordine DISCENDENTE si scrivono DESC, come nel database di origine', () => {

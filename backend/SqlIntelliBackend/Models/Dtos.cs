@@ -94,7 +94,17 @@ public record IndexInfo(
     bool IsClustered = false,
     string? FileGroup = null,
     /// <summary>Colonne chiave in ordine DISCENDENTE (nello script: [col] DESC invece di ASC).</summary>
-    List<string>? DescendingColumns = null);
+    List<string>? DescendingColumns = null,
+    /// <summary>
+    /// True se l'indice E' un vincolo UNIQUE (sys.indexes.is_unique_constraint): nello script di
+    /// cancellazione diventa "ALTER TABLE … DROP CONSTRAINT" (su un vincolo SQL Server non accetta
+    /// DROP INDEX), e nella CREATE TABLE resta come CONSTRAINT.
+    /// </summary>
+    bool IsUniqueConstraint = false,
+    /// <summary>Colonne INCLUDE (copertura): nello script CREATE INDEX vanno in "INCLUDE (…)".</summary>
+    List<string>? IncludedColumns = null,
+    /// <summary>Filtro di un indice filtrato (sys.indexes.filter_definition): nello script dopo WHERE.</summary>
+    string? FilterDefinition = null);
 
 public record TableInfo(
     string Schema,

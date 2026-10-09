@@ -128,7 +128,19 @@ public class MetadataService
                        -- TIPO di indice (CLUSTERED/NONCLUSTERED: cambia la struttura fisica della tabella!)
                        i.type,
                        -- FILEGROUP dell'indice (nell'esempio dell'utente: [SECONDARY])
-                       ISNULL(ds.name, '')
+                       ISNULL(ds.name, ''),
+                       -- VINCOLO o indice? is_unique_constraint: decide DROP CONSTRAINT vs DROP INDEX
+                       i.is_unique_constraint,
+                       -- Colonne INCLUDE (copertura): nello script CREATE INDEX vanno in INCLUDE (…)
+                       ISNULL(STUFF((
+                         SELECT ', ' + c.name
+                         FROM sys.index_columns ic
+                         INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                         WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 1
+                         ORDER BY ic.index_column_id
+                         FOR XML PATH('')), 1, 2, ''), '') AS ColsInclude,
+                       -- Filtro degli indici filtrati (CREATE INDEX … WHERE …)
+                       ISNULL(i.filter_definition, '') AS Filtro
                 FROM sys.tables t
                 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
                 INNER JOIN sys.indexes i ON i.object_id = t.object_id
@@ -162,6 +174,14 @@ public class MetadataService
                     IsClustered = Convert.ToInt32(r.GetValue(14)) == 1,
                     FileGroup = r.GetString(15) is { Length: > 0 } fg ? fg : null,
                     DescendingColumns = colsDesc.Count > 0 ? colsDesc : null,
+                    // 16 = is_unique_constraint, 17 = colonne INCLUDE, 18 = filtro
+                    IsUniqueConstraint = r.GetBoolean(16),
+                    IncludedColumns = r.GetString(17)
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .ToList() is { Count: > 0 } inc
+                        ? inc
+                        : null,
+                    FilterDefinition = r.GetString(18) is { Length: > 0 } filtro ? filtro : null,
                 });
             }
         }

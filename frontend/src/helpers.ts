@@ -961,11 +961,122 @@ export function opzioniIndice(i: IndexInfo): string {
   return `WITH (${voci.join(', ')})${filegroup}`
 }
 
+/** Identificatore SEMPRE fra parentesi quadre: [dbo].[Tabella] — come gli script di SSMS. */
+function qIdent(nome: string): string {
+  return `[${nome.replace(/]/g, ']]')}]`
+}
+
+/**
+ * True se l'indice è in realtà un VINCOLO: PRIMARY KEY oppure UNIQUE CONSTRAINT
+ * (sys.indexes.is_unique_constraint). I vincoli stanno DENTRO la CREATE TABLE come CONSTRAINT, e
+ * si cancellano con "ALTER TABLE … DROP CONSTRAINT" (SQL Server non accetta "DROP INDEX" su un
+ * vincolo). Un UNIQUE INDEX "normale" invece è un indice: CREATE UNIQUE INDEX / DROP INDEX.
+ * Se il backend non manda il dato (is_unique_constraint assente) si mantiene il comportamento
+ * storico: una chiave UNIQUE viene trattata come vincolo.
+ */
+export function indiceVincolo(ix: IndexInfo): boolean {
+  if (ix.isPrimaryKey) return true
+  if (!ix.isUnique) return false
+  return ix.isUniqueConstraint !== false
+}
+
+/**
+ * Blocco di un vincolo di indice (PRIMARY KEY / UNIQUE) scritto come lo mette SSMS: colonne una
+ * per riga con ASC/DESC e coda ")WITH (…) ON [filegroup]". Si usa DENTRO la CREATE TABLE
+ * (preceduto da una virgola) e dopo "ALTER TABLE … ADD" per il vincolo da solo.
+ */
+export function bloccoVincoloIndice(i: IndexInfo, tipo: 'PRIMARY KEY' | 'UNIQUE'): string {
+  const tipo0 = i.isClustered ? 'CLUSTERED' : 'NONCLUSTERED'
+  const discendenti = new Set((i.descendingColumns ?? []).map(c => c.toLowerCase()))
+  const colonne = (i.columns ?? [])
+    .map(c => `\t${qIdent(c)} ${discendenti.has(c.toLowerCase()) ? 'DESC' : 'ASC'}`)
+    .join(',\n')
+  return ` CONSTRAINT ${qIdent(i.name)} ${tipo} ${tipo0} \n(\n${colonne}\n)${opzioniIndice(i)}`
+}
+
+/**
+ * Script ALTER TABLE … ADD CONSTRAINT di un vincolo PRIMARY KEY / UNIQUE: serve a ricreare il
+ * vincolo da solo (dalla treeview) e nei casi in cui si è appena cancellato con DROP CONSTRAINT.
+ */
+export function scriptAddConstraint(table: TableInfo, ix: IndexInfo): string {
+  const tipo: 'PRIMARY KEY' | 'UNIQUE' = ix.isPrimaryKey ? 'PRIMARY KEY' : 'UNIQUE'
+  const target = qualified(table.schema, table.name)
+  return `ALTER TABLE ${target} ADD${bloccoVincoloIndice(ix, tipo)}\nGO\n`
+}
+
+/**
+ * Script CREATE di un INDICE, stile SSMS "Script Index as → CREATE": colonne chiave una per riga
+ * con ASC/DESC, colonne INCLUDE (copertura), filtro degli indici filtrati e opzioni/filegroup.
+ * Richiesta utente: "metti nello script di generazione anche gli indici".
+ */
+export function scriptCreateIndex(table: TableInfo, ix: IndexInfo): string {
+  const target = `${qIdent(table.schema)}.${qIdent(table.name)}`
+  const tipo = ix.isUnique ? 'UNIQUE ' : ''
+  const cluster = ix.isClustered ? 'CLUSTERED' : 'NONCLUSTERED'
+  const discendenti = new Set((ix.descendingColumns ?? []).map(c => c.toLowerCase()))
+  const chiave = (ix.columns ?? []).map(c => `\t${qIdent(c)} ${discendenti.has(c.toLowerCase()) ? 'DESC' : 'ASC'}`).join(',\n')
+  const include = (ix.includedColumns ?? []).length > 0
+    ? `\nINCLUDE (${(ix.includedColumns ?? []).map(qIdent).join(', ')})`
+    : ''
+  const filtro = ix.filterDefinition ? `\nWHERE ${ix.filterDefinition}` : ''
+  return [
+    `/****** Object:  Index ${qIdent(ix.name)} ******/`,
+    `CREATE ${tipo}${cluster} INDEX ${qIdent(ix.name)} ON ${target}`,
+    `(\n${chiave}\n)${include}${filtro}`,
+    opzioniIndice(ix),
+    'GO',
+    '',
+  ].join('\n')
+}
+
+/**
+ * Script di CANCELLAZIONE di un indice: "DROP INDEX … ON …" per un indice vero,
+ * "ALTER TABLE … DROP CONSTRAINT …" quando l'indice è un vincolo (PK / UNIQUE CONSTRAINT).
+ * Richiesta utente: "metti nello script di cancellazione anche gli indici e i constraint".
+ */
+export function scriptDropIndex(table: TableInfo, ix: IndexInfo): string {
+  const target = qualified(table.schema, table.name)
+  if (indiceVincolo(ix)) return scriptDropConstraint(table.schema, table.name, ix.name)
+  return `DROP INDEX ${sqlIdent(ix.name)} ON ${target};\n`
+}
+
+/** Script di cancellazione di un vincolo (PRIMARY KEY, UNIQUE, CHECK, FOREIGN KEY, DEFAULT). */
+export function scriptDropConstraint(schema: string, tableName: string, name: string): string {
+  return `ALTER TABLE ${qualified(schema, tableName)} DROP CONSTRAINT ${sqlIdent(name)};\n`
+}
+
+/**
+ * Script per (ri)creare una CHIAVE ESTERNA, nello stesso stile con cui scriptCreateTable la
+ * emette: "WITH CHECK ADD CONSTRAINT … FOREIGN KEY(…) REFERENCES …" + "CHECK CONSTRAINT …".
+ */
+export function scriptForeignKey(
+  schema: string,
+  tableName: string,
+  name: string,
+  righeFk: ForeignKeyInfo[],
+): string {
+  if (righeFk.length === 0) return ''
+  const target = qualified(schema, tableName)
+  const locali = righeFk.map(r => qIdent(r.column)).join(', ')
+  const riferite = righeFk.map(r => qIdent(r.refColumn)).join(', ')
+  const ref = `${qIdent(righeFk[0].refSchema)}.${qIdent(righeFk[0].refTable)}`
+  return [
+    `-- Chiave esterna ${name} su ${target}`,
+    `ALTER TABLE ${target}  WITH CHECK ADD  CONSTRAINT ${qIdent(name)} FOREIGN KEY(${locali})`,
+    `REFERENCES ${ref} (${riferite})`,
+    'GO',
+    `ALTER TABLE ${target} CHECK CONSTRAINT ${qIdent(name)}`,
+    'GO',
+    '',
+  ].join('\n')
+}
+
 /**
  * Script CREATE TABLE generato dai metadati, scritto come lo scrive SSMS ("Script tabella →
  * CREATE"): banner, SET ANSI_NULLS/QUOTED_IDENTIFIER, CREATE TABLE con gli identificatori fra
  * parentesi quadre, PRIMARY KEY/UNIQUE con le opzioni dell'indice e il filegroup, DEFAULT, CHECK e
- * chiavi esterne come ALTER TABLE separati, proprietà estese e trigger in coda.
+ * chiavi esterne come ALTER TABLE separati, indici NON di vincolo come CREATE INDEX, proprietà
+ * estese e trigger in coda.
  * Richiesta utente: "lo script di creazione di una tabella deve riportare anche proprietà estese,
  * trigger, constraint, primary key, ecc…" e "fallo identico a SSMS".
  * `extra` porta i vincoli del sommario (CHECK e FK stanno in elenchi a parte, con la tabella e lo
@@ -998,19 +1109,10 @@ export function scriptCreateTable(
 
   const indici = table.indexes ?? []
   const pk = indici.find(i => i.isPrimaryKey)
-  /** Blocco di un vincolo di indice, nello stile di SSMS (colonne su righe proprie con ASC/DESC). */
-  const bloccoIndice = (i: IndexInfo, tipo: 'PRIMARY KEY' | 'UNIQUE'): string => {
-    const tipo0 = i.isClustered ? 'CLUSTERED' : 'NONCLUSTERED'
-    // l'ordine della chiave è quello del database di origine: DESC dove è DESC
-    const discendenti = new Set((i.descendingColumns ?? []).map(c => c.toLowerCase()))
-    const colonne = (i.columns ?? []).map(c => `\t${q(c)} ${discendenti.has(c.toLowerCase()) ? 'DESC' : 'ASC'}`).join(',\n')
-    const opts = opzioniIndice(i)
-    return ` CONSTRAINT ${q(i.name)} ${tipo} ${tipo0} \n(\n${colonne}\n)${opts}`
-  }
   const vincoli: string[] = []
-  if (pk && (pk.columns ?? []).length > 0) vincoli.push(bloccoIndice(pk, 'PRIMARY KEY'))
-  for (const uq of indici.filter(i => !i.isPrimaryKey && i.isUnique && (i.columns ?? []).length > 0)) {
-    vincoli.push(bloccoIndice(uq, 'UNIQUE'))
+  if (pk && (pk.columns ?? []).length > 0) vincoli.push(bloccoVincoloIndice(pk, 'PRIMARY KEY'))
+  for (const uq of indici.filter(i => !i.isPrimaryKey && indiceVincolo(i) && (i.columns ?? []).length > 0)) {
+    vincoli.push(bloccoVincoloIndice(uq, 'UNIQUE'))
   }
 
   const fgTabella = (indici.find(i => i.isPrimaryKey) ?? indici[0])?.fileGroup
@@ -1074,6 +1176,13 @@ export function scriptCreateTable(
       `ALTER TABLE ${target} CHECK CONSTRAINT ${q(nome)}`,
       'GO',
     )
+  }
+
+  // INDICI che NON sono vincoli (né PRIMARY KEY né UNIQUE CONSTRAINT): nello script di SSMS
+  // arrivano come CREATE INDEX separati dopo i vincoli. Senza questo pezzo gli indici "normali"
+  // (compresi gli UNIQUE INDEX e le colonne INCLUDE) sparivano dallo script di creazione.
+  for (const ix of indici.filter(i => !indiceVincolo(i) && (i.columns ?? []).length > 0)) {
+    righe.push(...scriptCreateIndex(table, ix).trimEnd().split('\n'), 'GO')
   }
 
   // PROPRIETÀ ESTESE: una sola riga per proprietà, scritta come fa SSMS:
