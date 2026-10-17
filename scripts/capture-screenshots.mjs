@@ -6388,6 +6388,16 @@ async function verifyOggettoVersione(page) {
       /SELECT\s+3/i.test(testoDopo),
       JSON.stringify(testoDopo.slice(0, 60)),
     )
+
+    // 8) ESEGUIRE da questa tab il CREATE OR ALTER non deve far comparire "versione vecchia":
+    //    la definizione sul database è quella che ho appena scritto io (segnalazione utente:
+    //    "dopo che la eseguo però una store mi dice Stai lavorando da una versione vecchia…").
+    await esegui(`CREATE OR ALTER PROCEDURE dbo.${NOME} AS\nBEGIN\n  SELECT 4 AS A\nEND`)
+    await sleep(3000)
+    const avvisoDopoEsegui = await avvisoVersione()
+    console.log(`  avviso dopo l'esecuzione da questa tab: ${JSON.stringify(avvisoDopoEsegui)}`)
+    check('eseguendo la store DA QUESTA TAB non compare "versione vecchia"', avvisoDopoEsegui === null)
+    check('nessun badge ⚠ sulla tab dopo l\'esecuzione', (await badgeTab()) === 0, `${await badgeTab()} badge`)
   } finally {
     // pulizia: la store di comodo non resta nel database
     try {

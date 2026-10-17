@@ -30,6 +30,7 @@ import {
   improntaDefinizione,
   nuovoObjectRef,
   quandoAperta,
+  stessaDefinizione,
   testoPerLaTab,
   trovaTabOggetto,
   versioneSuperata,
@@ -886,6 +887,48 @@ export default function App() {
     [],
   )
 
+  const ultimoControlloRef = useRef<Record<string, number>>({})
+  /**
+   * CONTROLLO "VERSIONE VECCHIA": rilegge la definizione dal database e la confronta con la
+   * versione di partenza della tab (al massimo ogni 5 s per tab, per non tempestare il backend;
+   * con `forza` si controlla subito, es. dopo un'esecuzione).
+   *
+   * IMPORTANTE: se il testo della tab COINCIDE con la definizione sul database non c'è nessuna
+   * versione vecchia — quella versione l'ha scritta la tab stessa (tipico dopo aver eseguito da qui
+   * il CREATE OR ALTER). In quel caso si aggiorna la versione di partenza e l'avviso non compare
+   * (segnalazione utente: "dopo che la eseguo però una store mi dice Stai lavorando da una versione
+   * vecchia…").
+   */
+  const controllaVersioneOggetto = useCallback(
+    /**
+     * @param testoEseguito testo DAVVERO eseguito (dopo un'esecuzione): il testo della tab viene
+     *   salvato con un debounce, quindi subito dopo F5 `tab.sql` potrebbe essere ancora il vecchio.
+     */
+    async (tabId: string, forza = false, testoEseguito?: string) => {
+      const tab = editorTabs.find(t => t.id === tabId)
+      const ref = tab?.objectRef
+      if (!connection || !tab || !ref) return
+      if (!forza && Date.now() - (ultimoControlloRef.current[tabId] ?? 0) < 5000) return
+      try {
+        const { definition } = await api.getObjectDefinition(connection.connectionId, ref.schema, ref.name)
+        ultimoControlloRef.current[tabId] = Date.now()
+        // testo che la tab avrebbe ADESSO dal database (stessa trasformazione usata all'apertura:
+        // CREATE OR ALTER per la "Modifica", definizione grezza per "Apri")
+        const atteso = testoPerLaTab(ref.modo ?? 'alter', definition, toCreateOrAlterStatement)
+        // la tab è ALLINEATA al database? (si ignorano solo gli spazi in coda)
+        const allineata = stessaDefinizione(testoEseguito ?? tab.sql, atteso)
+        const baseHash = allineata ? improntaDefinizione(atteso) : ref.baseHash
+        const stale = allineata ? false : versioneSuperata(ref.baseHash, atteso)
+        setEditorTabs(prev =>
+          prev.map(t => (t.id === tabId && t.objectRef ? { ...t, objectRef: { ...t.objectRef, baseHash, stale } } : t)),
+        )
+      } catch {
+        /* il controllo e' un di piu': se il backend non risponde non si avvisa nulla */
+      }
+    },
+    [connection, editorTabs],
+  )
+
   const handleExecute = useCallback(
     async (sql: string) => {
       if (!connection) return
@@ -921,6 +964,11 @@ export default function App() {
         updateTabStats(tabId, s => recordExecution(s, r.elapsedMs, !r.error, Date.now()))
         // senza SELECT (solo PRINT/messaggi) si apre la schermata dei print
         setTabResultTab(prev => ({ ...prev, [tabId]: chooseResultTab(r) }))
+        // Se questa tab modifica un oggetto: se l'esecuzione ha applicato PROPRIO il testo della
+        // tab (CREATE OR ALTER eseguito da qui) la versione di partenza si aggiorna e non compare
+        // nessun avviso di "versione vecchia" (lo fa controllaVersioneOggetto, che riconosce
+        // l'allineamento tab↔database confrontando il testo ESEGUITO).
+        if (!r.error) void controllaVersioneOggetto(tabId, true, sql)
       } catch (e) {
         // errore di trasporto/API: conta come esecuzione fallita
         updateTabStats(tabId, s => recordExecution(s, 0, false, Date.now()))
@@ -929,7 +977,7 @@ export default function App() {
         setTabExecuting(prev => ({ ...prev, [tabId]: false }))
       }
     },
-    [connection, activeEditorTab, updateTabStats],
+    [connection, activeEditorTab, updateTabStats, controllaVersioneOggetto],
   )
 
   const handleDisconnect = useCallback(async () => {
@@ -1131,47 +1179,22 @@ export default function App() {
   }, [nota])
 
   /**
-   * CONTROLLO "VERSIONE VECCHIA": tornando su una tab che modifica un oggetto si rilegge la
-   * definizione dal database e la si confronta con quella di partenza (al massimo ogni 5 s per
-   * tab, per non tempestare il backend). Se e' cambiata, la tab viene marcata come superata e
-   * compare l'avviso con "Ricarica dal database".
+   * CONTROLLO "VERSIONE VECCHIA": rilegge la definizione dal database e la confronta con la
+   * versione di partenza della tab (al massimo ogni 5 s per tab, per non tempestare il backend;
+   * con `forza` si controlla subito, es. dopo un'esecuzione). Vedi la definizione completa sopra:
+   * se la tab è ALLINEATA al database non si segnala nulla e la versione di partenza si aggiorna.
    */
-  const ultimoControlloRef = useRef<Record<string, number>>({})
   useEffect(() => {
-    if (!connection) return
     const tab = editorTabs.find(t => t.id === activeEditorTab)
-    const ref = tab?.objectRef
-    if (!tab || !ref) return
-    const ora = Date.now()
-    const attesa = 5000 - (ora - (ultimoControlloRef.current[tab.id] ?? 0))
-    /** Il controllo vero e proprio (definito qui per poterlo riprogrammare). */
-    const controlla = async () => {
-      try {
-        const { definition } = await api.getObjectDefinition(connection.connectionId, ref!.schema, ref!.name)
-        ultimoControlloRef.current[tab.id] = Date.now()
-        // si confronta con il testo che la tab avrebbe ADESSO dal database (stessa trasformazione
-        // usata all'apertura: CREATE OR ALTER per la "Modifica", definizione grezza per "Apri")
-        const superata = versioneSuperata(
-          ref!.baseHash,
-          testoPerLaTab(ref!.modo ?? 'alter', definition, toCreateOrAlterStatement),
-        )
-        setEditorTabs(prev =>
-          prev.map(t =>
-            t.id === tab.id && t.objectRef ? { ...t, objectRef: { ...t.objectRef, stale: superata } } : t,
-          ),
-        )
-        // l'avviso vero e proprio è la striscia sopra l'editor (niente doppione)
-      } catch {
-        /* il controllo e' un di piu': se il backend non risponde non si avvisa nulla */
-      }
-    }
+    if (!connection || !tab?.objectRef) return
+    const attesa = 5000 - (Date.now() - (ultimoControlloRef.current[tab.id] ?? 0))
     // controllo fatto da poco su questa tab: si RIPROGRAMMA (non si perde l'occasione)
     if (attesa > 0) {
-      const t = window.setTimeout(() => void controlla(), attesa)
+      const t = window.setTimeout(() => void controllaVersioneOggetto(tab.id, true), attesa)
       return () => window.clearTimeout(t)
     }
-    void controlla()
-  }, [activeEditorTab, editorTabs, connection])
+    void controllaVersioneOggetto(tab.id)
+  }, [activeEditorTab, editorTabs, connection, controllaVersioneOggetto])
 
   /**
    * RICARICA DAL DATABASE (dal banner "versione vecchia"): rilegge la definizione, la rimette

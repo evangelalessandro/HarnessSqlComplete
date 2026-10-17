@@ -52,6 +52,27 @@ export function versioneSuperata(baseHash: string, definizioneAttuale: string): 
 }
 
 /**
+ * Testo "normalizzato" per il confronto: fine riga uniformati, spazi in fondo a ogni riga tolti,
+ * righe vuote ai bordi tolte. Serve a riconoscere che la tab e il database hanno la STESSA
+ * definizione anche se una delle due ha un ritorno a capo in più (capita eseguendo il CREATE OR
+ * ALTER della tab: il database restituisce il testo salvato, che può differire solo in coda).
+ */
+export function normalizzaDefinizione(testo: string): string {
+  return testo
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(r => r.replace(/[ \t]+$/, ''))
+    .join('\n')
+    .replace(/^\n+/, '')
+    .replace(/\n+$/, '')
+}
+
+/** True se la tab e il database hanno la STESSA definizione (a meno di spazi in coda). */
+export function stessaDefinizione(a: string, b: string): boolean {
+  return normalizzaDefinizione(a) === normalizzaDefinizione(b)
+}
+
+/**
  * Testo della tab a partire dalla definizione del database, secondo COME è stata aperta:
  * 'alter' → CREATE OR ALTER (la "Modifica"), 'open' → la definizione così com'è.
  */

@@ -5,8 +5,10 @@ import { describe, expect, it } from 'vitest'
 import {
   etichettaOggetto,
   improntaDefinizione,
+  normalizzaDefinizione,
   nuovoObjectRef,
   quandoAperta,
+  stessaDefinizione,
   testoPerLaTab,
   trovaTabOggetto,
   versioneSuperata,
@@ -57,6 +59,27 @@ describe('versioneSuperata', () => {
 
   it('true se qualcuno l ha cambiata dopo l apertura', () => {
     expect(versioneSuperata(base, DEFINIZIONE.replace('SELECT 1', 'SELECT 2'))).toBe(true)
+  })
+})
+
+describe('stessaDefinizione (tab allineata al database)', () => {
+  it('vera con spazi in coda e fine riga diversi', () => {
+    // caso reale: eseguendo dalla tab il CREATE OR ALTER, il database restituisce lo stesso testo
+    // ma con un ritorno a capo o qualche spazio in più in coda
+    expect(stessaDefinizione(DEFINIZIONE, DEFINIZIONE)).toBe(true)
+    expect(stessaDefinizione(DEFINIZIONE, DEFINIZIONE + '\n')).toBe(true)
+    expect(stessaDefinizione(DEFINIZIONE + '\r\n', DEFINIZIONE)).toBe(true)
+    expect(stessaDefinizione('A  \nB', 'A\nB   \n')).toBe(true)
+    expect(stessaDefinizione('\n\nA', 'A\n\n')).toBe(true)
+  })
+
+  it('falsa se il contenuto cambia davvero', () => {
+    expect(stessaDefinizione(DEFINIZIONE, DEFINIZIONE.replace('SELECT 1', 'SELECT 2'))).toBe(false)
+    expect(stessaDefinizione('A\nB', 'A\n B')).toBe(false)
+  })
+
+  it('normalizzaDefinizione toglie solo gli spazi inutili', () => {
+    expect(normalizzaDefinizione('  A = 1  \r\n  B = 2  \r\n')).toBe('  A = 1\n  B = 2')
   })
 })
 
