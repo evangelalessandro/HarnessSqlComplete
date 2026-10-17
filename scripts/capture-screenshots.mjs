@@ -44,6 +44,7 @@ const VERIFY_ALIAS = process.argv.includes('--verify-alias')
 const VERIFY_RISULTATI_SEQUENZA = process.argv.includes('--verify-risultati-sequenza')
 const VERIFY_SPAZI = process.argv.includes('--verify-spazi')
 const VERIFY_INDICI_VINCOLI = process.argv.includes('--verify-indici-vincoli')
+const VERIFY_DRAGO_JOIN = process.argv.includes('--verify-drago-join')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -6076,6 +6077,109 @@ async function verifyIndiciVincoli(page) {
 }
 
 /**
+ * VERIFICA (--verify-drago-join): i suggerimenti di JOIN dell'intellisense portano il drago
+ * dell'app (🐉) davanti all'etichetta, e la riga della lista è animata.
+ * Richiesta utente: "mettimi delle icone di drago, animate, per i suggerimenti dei join
+ * dell'intellisense".
+ * Controlla anche che il drago NON rompa il filtro: scrivendo il nome della tabella il
+ * suggerimento deve continuare a comparire.
+ */
+async function verifyDragoJoin(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 140, rect.y + 18)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1700)
+  }
+  /** Voci del popup (etichetta visibile). */
+  const voci = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+  /** Attributi/classi della riga col drago (o della prima riga: serve a capire il DOM). */
+  const ispeziona = async () =>
+    await page.eval(`(() => {
+      const riga = [...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+        .find(r => (r.textContent || '').includes('🐉')) ||
+        document.querySelector('.suggest-widget .monaco-list-row');
+      if (!riga) return null;
+      const nome = riga.querySelector('.label-name');
+      const stile = window.getComputedStyle(nome || riga);
+      return {
+        ariaLabel: riga.getAttribute('aria-label'),
+        classi: riga.className,
+        testo: (riga.textContent || '').trim().slice(0, 120),
+        html: riga.outerHTML.slice(0, 700),
+        animazioneRiga: window.getComputedStyle(riga).animationName,
+        animazioneNome: stile.animationName,
+      };
+    })()`)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // in posizione JOIN compaiono i suggerimenti con la clausola ON
+  await scrivi('SELECT * FROM dbo.DAT_UDC INNER JOIN ')
+  const vociJoin = await voci()
+  console.log(`  suggerimenti in posizione JOIN: ${JSON.stringify(vociJoin.slice(0, 6))}`)
+  check(
+    'i suggerimenti di JOIN hanno il drago davanti',
+    vociJoin.some(v => v.startsWith('🐉')),
+    `${vociJoin.filter(v => v.startsWith('🐉')).length} su ${vociJoin.length}`,
+  )
+
+  const ispezione = await ispeziona()
+  if (ispezione) {
+    console.log(`  riga col drago: aria-label=${JSON.stringify(ispezione.ariaLabel)}`)
+    console.log(`    testo=${JSON.stringify(ispezione.testo)}`)
+    console.log(`    animazione riga=${ispezione.animazioneRiga} nome=${ispezione.animazioneNome}`)
+  }
+  check('la riga del drago esiste nel popup', !!ispezione)
+  check(
+    'la riga del drago è ANIMATA (fire che pulsa sul nome)',
+    ispezione?.animazioneRiga === 'dragon-join-row' && ispezione?.animazioneNome === 'dragon-join-name',
+    `riga=${ispezione?.animazioneRiga} nome=${ispezione?.animazioneNome}`,
+  )
+  await page.screenshot('intellisense-drago-join')
+
+  // il drago non deve rompere il filtro: scrivendo il nome della tabella la voce resta
+  await scrivi('SELECT * FROM dbo.DAT_UDC INNER JOIN RUN_MIS')
+  const vociFiltrate = await voci()
+  console.log(`  filtrando "RUN_MIS": ${JSON.stringify(vociFiltrate.slice(0, 5))}`)
+  check(
+    'il filtro funziona lo stesso (scrivendo il nome la voce compare)',
+    vociFiltrate.some(v => v.includes('RUN_MISSIONI')),
+  )
+
+  // e una tabella SENZA relazioni non ha il drago (non è un join)
+  await scrivi('SELECT * FROM dbo.DAT_UDC INNER JOIN ZZ_')
+  const vociVuote = await voci()
+  console.log(`  con "ZZ_": ${JSON.stringify(vociVuote.slice(0, 4))}`)
+  check(
+    'una tabella senza relazioni NON porta il drago (non è un join)',
+    vociVuote.every(v => !v.startsWith('🐉')),
+    JSON.stringify(vociVuote.slice(0, 3)),
+  )
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -6287,6 +6391,11 @@ async function main() {
 
     if (VERIFY_INDICI_VINCOLI) {
       await verifyIndiciVincoli(page)
+      return
+    }
+
+    if (VERIFY_DRAGO_JOIN) {
+      await verifyDragoJoin(page)
       return
     }
 

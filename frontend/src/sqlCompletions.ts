@@ -5,6 +5,7 @@
 import * as monaco from 'monaco-editor'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
 import { isTextOffsetInComment } from './helpers'
+import { etichettaDrago } from './dragon'
 import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, columnsByFragment, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from './helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
 import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectAlterTableTrigger, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectEnableDisableTriggerName, detectEnableDisableTriggerOn, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, dropColumnSnippet, extractDeclaredVariables, extractRoutineParameters, nomiTriggerDigitati, setOptionInsertText, setOptionLabel, systemVariablePrefixLen, tabellaDelTrigger, variablePrefixLen, vincoliCollegati } from './tsqlSnippets'
@@ -1207,11 +1208,15 @@ export function provideSqlCompletions({
             // si propongono TUTTE le tabelle per utilizzo reale (le query precedenti
             // non devono nascondere tabelle riscrivibili, es. RUN_MISSIONI).
             // Posizione JOIN (o contesti generici): solo le tabelle collegabili al contesto.
+            // La posizione JOIN NON deve azzerare il contesto: "SELECT * FROM T INNER JOIN " ha
+            // isTablePosition=true (JOIN chiude la regex di FROM/JOIN) e azzerando il contesto le
+            // voci restavano senza clausola ON (niente drago e niente join pronto da inserire).
+            const clausolaNuova = (isTablePosition && !isJoinPosition) || ctx.statementStart
             const rankedTables = rankTablesForPosition(
               st.summary.tables,
               st.summary.foreignKeys,
               contextTables,
-              isTablePosition || ctx.statementStart,
+              clausolaNuova,
               st.summary.cooccurrences ?? undefined,
               historyTableBoost,
             )
@@ -1307,8 +1312,13 @@ export function provideSqlCompletions({
                 const details = [usageDetail(ranked.table.usage)]
                 if (ranked.hints.length > 0) details.push(`${ranked.hints.length} FK`)
                 const detail = details.filter(Boolean).join(' · ') || `tabella · ${ranked.table.columnCount} colonne`
+                // Il DRAGO segna i suggerimenti di JOIN veri (quelli che inseriscono la clausola
+                // ON): si vede subito quali voci costruiscono il join. È solo l'etichetta: il
+                // filtro continua a usare filterText (il nome della tabella), quindi scrivere
+                // "dat_" trova ancora DAT_UDC.
+                const inserisceJoin = item.insertText.includes(' ON (')
                 push({
-                  label: item.label,
+                  label: inserisceJoin ? etichettaDrago(item.label) : item.label,
                   detail: item.detail || detail,
                   documentation: columnInfoMarkdown(ranked.table, null),
                   kind: monaco.languages.CompletionItemKind.Struct,
