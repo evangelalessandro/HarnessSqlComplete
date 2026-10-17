@@ -123,7 +123,9 @@ describe('tsqlFormatter: formatta secondo il profilo', () => {
       'update ordini set totale = 10, note = \'aggiornamento manuale del totale della riga selezionata con valori lunghi\' where id = 1',
       profile,
     )
-    expect(out).toMatch(/UPDATE ordini\n {2}SET totale = 10\n {6},note = 'aggiornamento/)
+    // i due "=" stanno nella STESSA colonna ("totale" e "note" hanno lunghezze diverse: il più
+    // corto viene riempito) — segnalazione utente: "non formatta bene in colonna quello che è dopo ="
+    expect(out).toMatch(/UPDATE ordini\n {2}SET totale = 10\n {6},note {2}= 'aggiornamento/)
     expect(out).toMatch(/\nWHERE id = 1\n$/)
   })
 
@@ -132,7 +134,7 @@ describe('tsqlFormatter: formatta secondo il profilo', () => {
       'alter procedure [dbo].[x]\nas\nbegin\n    update t\n        set a = 1\n        , b = 2\n    where id = 1\nend',
       profile,
     )
-    expect(out).toContain('UPDATE t\n      SET a = 1\n          ,b = 2\n    WHERE id = 1')
+    expect(out).toContain('UPDATE t\n      SET a  = 1\n          ,b = 2\n    WHERE id = 1')
   })
 
   it('commenti preservati', () => {

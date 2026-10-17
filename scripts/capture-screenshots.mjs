@@ -1261,6 +1261,33 @@ async function verifyFormat(page) {
   )
   await page.screenshot('formatta-case-into')
 
+  // UPDATE … SET: i "=" in colonna (segnalazione utente: "non formatta bene in colonna quello che
+  // è dopo =" — con più assegnazioni i valori restavano sfalsati)
+  const sqlSet =
+    "UPDATE [#tmpMission]\n  SET X_CORRIDOIO = UDC_CORRIDOIO\n      ,X_CELLA = UDC_CELLA\n      ,X_UDC_DEST = ESE_UDC_DEST\n      ,X_QTY = RIG_QTAR\n  FROM RUN_ESEGUI\n    INNER JOIN #tmpMission ON ESE_UDC = X_UDC_SOURCE"
+  const set = await scriviEFormatta(sqlSet)
+  const righeSet = set.righe.map(r => r.replace(/\s+$/, ''))
+  console.log('  UPDATE … SET, dopo "Formatta":')
+  righeSet.forEach(r => console.log(`    |${r}`))
+  const assegnazioni = righeSet.filter(r => /^\s*(SET |,)\s*\S+\s*=/.test(r))
+  const colonneSet = assegnazioni.map(r => r.indexOf('=')).filter(i => i > 0)
+  check(
+    'UPDATE: le assegnazioni del SET vanno una per riga',
+    assegnazioni.length === 4,
+    `${assegnazioni.length} assegnazioni`,
+  )
+  check(
+    'UPDATE: i "=" delle assegnazioni sono nella STESSA colonna',
+    colonneSet.length === 4 && new Set(colonneSet).size === 1,
+    `colonne ${JSON.stringify(colonneSet)}`,
+  )
+  check(
+    'UPDATE: i valori dopo "=" restano incolonnati',
+    righeSet.some(r => /^\s*,X_CELLA\s+=\s+UDC_CELLA$/.test(r)) &&
+      righeSet.some(r => /^\s*,X_QTY\s+=\s+RIG_QTAR$/.test(r)),
+  )
+  await page.screenshot('formatta-update-set')
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

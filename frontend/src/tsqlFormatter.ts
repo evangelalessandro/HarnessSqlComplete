@@ -2598,9 +2598,70 @@ function setClauseRows(basePad: string, tokens: Token[], up: (t: Token) => strin
   let open = 0
   let cur: Token[] = []
   let firstItem = true
+  /**
+   * ALLINEAMENTO DEI "=" IN COLONNA (segnalazione utente: "non formatta bene in colonna quello che
+   * è dopo ="). In un SET con più assegnazioni tutti i "=" finiscono nella stessa colonna:
+   *
+   *     SET X_CORRIDOIO = UDC_CORRIDOIO
+   *         ,X_CELLA    = UDC_CELLA
+   *         ,X_UDC_DEST = ESE_UDC_DEST
+   *
+   * Il conto tiene conto del PREFISSO della riga: "SET " (4 caratteri) sulla prima, "," (1) sulle
+   * altre — per questo il primo campo non ha lo stesso riempimento degli altri ma i "=" combaciano.
+   * Si guardano SOLO le assegnazioni di primo livello (dentro le parentesi un "=" può essere una
+   * condizione o un DEFAULT) e solo gli item che hanno davvero un "=".
+   */
+  const posUguale = (tok: Token[]): number => {
+    let prof = 0
+    for (let i = 0; i < tok.length; i++) {
+      const t = tok[i]
+      if (t.type !== 'punct') continue
+      if (t.text === '(') prof++
+      else if (t.text === ')') prof = Math.max(0, prof - 1)
+      else if (t.text === '=' && prof === 0) return i
+    }
+    return -1
+  }
+  /** Item del SET spezzati sulle virgole di primo livello (solo per misurare l'allineamento). */
+  const itemSet = (() => {
+    const res: Token[][] = []
+    let prof = 0
+    let acc: Token[] = []
+    for (const t of body) {
+      if (t.type === 'punct') {
+        if (t.text === '(') prof++
+        else if (t.text === ')') prof = Math.max(0, prof - 1)
+        if (t.text === ',' && prof === 0) {
+          res.push(acc)
+          acc = []
+          continue
+        }
+      }
+      acc.push(t)
+    }
+    res.push(acc)
+    return res
+  })()
+  /** Larghezza (prefisso incluso) a cui allineare il "=" — 0 se non c'è nessuna assegnazione.
+   *  Il prefisso è "SET " (4) sulla prima riga e "    ," (4 spazi + virgola, 5) sulle altre. */
+  const prefissoItem = (prima: boolean) => (prima ? 'SET '.length : 'SET '.length + 1)
+  const larghezzaEq = itemSet.reduce((max, it, i) => {
+    const eq = posUguale(it)
+    if (eq <= 0) return max
+    const lhs = cleanInline(it.slice(0, eq).map(up).join(' ')).length
+    return Math.max(max, prefissoItem(i === 0) + lhs)
+  }, 0)
+  /** Testo dell'item con il lato sinistro del "=" allargato fino alla colonna comune. */
+  const incolonna = (tok: Token[], prima: boolean): string => {
+    const eq = posUguale(tok)
+    if (eq <= 0 || larghezzaEq === 0) return cleanInline(tok.map(up).join(' '))
+    const lhs = cleanInline(tok.slice(0, eq).map(up).join(' '))
+    const rhs = cleanInline(tok.slice(eq + 1).map(up).join(' '))
+    return `${lhs.padEnd(Math.max(0, larghezzaEq - prefissoItem(prima)))} = ${rhs}`
+  }
   const flushItem = () => {
     if (cur.length === 0) return
-    const text = cleanInline(cur.map(up).join(' '))
+    const text = incolonna(cur, firstItem)
     if (firstItem) {
       out.push(`${basePad}${' '.repeat(setIndent)}SET ${text}`)
       firstItem = false

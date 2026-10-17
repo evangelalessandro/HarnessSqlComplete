@@ -91,7 +91,7 @@ describe('audit formattatore: layout delle clausole secondo il profilo', () => {
 
   it('UPDATE: SET e WHERE a capo e un campo per riga', () => {
     const out = fmt('update dbo.T set a = 1, b = 2 where id = 3')
-    expect(out).toMatch(/^UPDATE dbo\.T\n {2}SET a = 1\n {6},b = 2\nWHERE id = 3\n$/)
+    expect(out).toMatch(/^UPDATE dbo\.T\n {2}SET a  = 1\n {6},b = 2\nWHERE id = 3\n$/)
   })
 
   it('INSERT lungo: campi e valori uno per riga', () => {
