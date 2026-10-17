@@ -45,6 +45,7 @@ const VERIFY_RISULTATI_SEQUENZA = process.argv.includes('--verify-risultati-sequ
 const VERIFY_SPAZI = process.argv.includes('--verify-spazi')
 const VERIFY_INDICI_VINCOLI = process.argv.includes('--verify-indici-vincoli')
 const VERIFY_DRAGO_JOIN = process.argv.includes('--verify-drago-join')
+const VERIFY_OGGETTO_VERSIONE = process.argv.includes('--verify-oggetto-versione')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -6180,6 +6181,207 @@ async function verifyDragoJoin(page) {
 }
 
 /**
+ * VERIFICA (--verify-oggetto-versione): aprendo in Modifica una store che era GIÀ aperta, e
+ * lavorando da una versione di partenza VECCHIA (la definizione sul database è cambiata dopo
+ * l'apertura) l'app deve dirlo in modo evidente.
+ * Richiesta utente: "se apro in edit una store\funzione mostrami se ce n'era una già aperta e se
+ * sto lavorando da una versione di partenza che è vecchia (metti una cosa ad impatto che lo mostri)".
+ *
+ * La prova usa una store di comodo (dbo.zz_ProvaVersione) creata e cancellata qui: nessun
+ * oggetto esistente viene toccato.
+ */
+async function verifyOggettoVersione(page) {
+  const NOME = 'zz_ProvaVersione'
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1800)
+  const rect = await editorRect(page)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Scrive nell'editor e preme F5 (la posizione dell'editor si RICALCOLA: la nota sopra
+   *  l'editor sposta la casella e un clic fuori dal testo farebbe ricaricare la pagina con F5). */
+  const esegui = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(400)
+    await page.press('F5', { code: 'F5', vk: 116 })
+    await sleep(2600)
+  }
+  const tabAperti = async () =>
+    await page.eval(`[...document.querySelectorAll('.sql-tab')].map(t => (t.textContent || '').trim())
+      .filter(t => t && !/^\\+/.test(t))`)
+  const clicTab = async titolo => {
+    const punto = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('.sql-tab button')].find(b => (b.textContent || '').trim() === ${JSON.stringify(titolo)});
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (punto) {
+      await page.clickPoint(punto.x, punto.y)
+      await sleep(900)
+    }
+    return !!punto
+  }
+  /** Apre l'oggetto in Modifica dal pannello Oggetti (ricerca + tasto destro + Modifica). */
+  const apriModifica = async () => {
+    const campo = `document.querySelector('input[placeholder^="Cerca (spazio"]')`
+    await page.eval(`(() => {
+      const i = ${campo};
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(i, ${JSON.stringify(NOME)});
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`)
+    await page.waitFor(
+      `[...document.querySelectorAll('span')].some(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(NOME)})`,
+      15000,
+      `risultato ${NOME} in Oggetti`,
+    )
+    await sleep(500)
+    await page.eval(`(() => {
+      const s = [...document.querySelectorAll('span')]
+        .find(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(NOME)});
+      if (s) s.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window }));
+    })()`)
+    await sleep(700)
+    const punto = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Modifica');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(2200)
+    return !!punto
+  }
+  const notaVisibile = async () =>
+    await page.eval(`(() => { const n = document.querySelector('[data-nota]'); return n ? (n.textContent || '').trim() : null; })()`)
+  const avvisoVersione = async () =>
+    await page.eval(`(() => { const n = document.querySelector('[data-versione="vecchia"]'); return n ? (n.textContent || '').trim().slice(0, 160) : null; })()`)
+  const badgeTab = async () => await page.eval(`document.querySelectorAll('[data-versione-tab]').length`)
+
+  try {
+    // 1) store di comodo
+    await esegui(`CREATE OR ALTER PROCEDURE dbo.${NOME} AS\nBEGIN\n  SELECT 1 AS A\nEND`)
+    // la store è nuova: il sommario del pannello va riletto (come il pulsante "Aggiorna schema")
+    await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Aggiorna schema'))`,
+    )
+    await sleep(3500)
+
+    // 2) prima apertura in Modifica
+    const primaApertura = await apriModifica()
+    const dopoPrima = await tabAperti()
+    console.log(`  tab dopo la prima apertura: ${JSON.stringify(dopoPrima)}`)
+    check('la store si apre in Modifica (tab con il suo nome)', primaApertura && dopoPrima.some(t => t.includes(NOME)))
+
+    // 3) SECONDA apertura: non deve duplicare la tab e deve dirlo
+    await apriModifica()
+    const dopoSeconda = await tabAperti()
+    const nota = await notaVisibile()
+    console.log(`  tab dopo la seconda apertura: ${JSON.stringify(dopoSeconda)}`)
+    console.log(`  nota: ${JSON.stringify(nota)}`)
+    check(
+      'riaprendo la stessa store NON si duplica la tab',
+      dopoSeconda.filter(t => t.includes(NOME)).length === 1,
+      `${dopoSeconda.filter(t => t.includes(NOME)).length} tab con ${NOME}`,
+    )
+    check('viene mostrato che era già aperta', !!nota && /era gia' aperta|era già aperta/i.test(nota), JSON.stringify(nota))
+
+    // 4) la definizione cambia sul database (da un'altra tab)
+    const nuova = await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Nuova')`,
+    )
+    await sleep(1000)
+    console.log(`  "Nuova" premuto: ${nuova}`)
+    await esegui(`CREATE OR ALTER PROCEDURE dbo.${NOME} AS\nBEGIN\n  SELECT 2 AS A\nEND`)
+    console.log(`  tab dopo la modifica da un'altra tab: ${JSON.stringify(await tabAperti())}`)
+
+    // 5) si torna sulla tab dell'oggetto: il controllo trova la versione cambiata
+    const tornato = await clicTab(NOME)
+    console.log(`  ritorno sulla tab ${NOME}: ${tornato}`)
+    await sleep(6500)
+    const avviso = await avvisoVersione()
+    console.log(`  avviso versione: ${JSON.stringify(avviso)}`)
+    check('sulla tab compare l\'avviso "versione vecchia"', !!avviso && /versione vecchia/i.test(avviso))
+    check('la definizione cambiata è citata nell\'avviso', !!avviso && avviso.includes(NOME))
+    check('la tab con la versione vecchia ha il badge ⚠', (await badgeTab()) >= 1, `${await badgeTab()} badge`)
+    await page.screenshot('versione-vecchia-oggetto')
+
+    // 6) "Ignora": l'avviso sparisce
+    const ignora = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('[data-versione="vecchia"] button')].find(b => (b.textContent || '').includes('Ignora'));
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (ignora) {
+      await page.clickPoint(ignora.x, ignora.y)
+      await sleep(800)
+    }
+    check('dopo "Ignora" l\'avviso sparisce', (await avvisoVersione()) === null)
+
+    // 7) "Ricarica dal database": l'oggetto cambia di nuovo e la tab si riallinea
+    await clicTab('Query 3')
+    await sleep(600)
+    await esegui(`CREATE OR ALTER PROCEDURE dbo.${NOME} AS\nBEGIN\n  SELECT 3 AS A\nEND`)
+    await clicTab(NOME)
+    await sleep(6500)
+    check('l\'avviso torna se l\'oggetto cambia ancora', !!(await avvisoVersione()))
+    const ricarica = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('[data-versione="vecchia"] button')].find(b => (b.textContent || '').includes('Ricarica dal database'));
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (ricarica) {
+      await page.clickPoint(ricarica.x, ricarica.y)
+      await sleep(2200)
+    }
+    const testoDopo = (await page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' '))`)).join('\n')
+    console.log(`  editor dopo "Ricarica dal database": ${JSON.stringify(testoDopo.slice(0, 90))}`)
+    check('dopo "Ricarica dal database" l\'avviso sparisce', (await avvisoVersione()) === null)
+    check(
+      'dopo "Ricarica dal database" la tab ha la definizione NUOVA (SELECT 3)',
+      /SELECT\s+3/i.test(testoDopo),
+      JSON.stringify(testoDopo.slice(0, 60)),
+    )
+  } finally {
+    // pulizia: la store di comodo non resta nel database
+    try {
+      const r = await editorRect(page)
+      await page.clickPoint(r.x + 220, r.y + 46)
+      await sleep(300)
+      await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+      await page.typeText(`DROP PROCEDURE dbo.${NOME}`)
+      await sleep(300)
+      await page.press('F5', { code: 'F5', vk: 116 })
+      await sleep(2000)
+      console.log(`  (pulizia: DROP PROCEDURE dbo.${NOME} eseguito)`)
+    } catch {
+      console.log(`  (ATTENZIONE: non sono riuscito a cancellare dbo.${NOME})`)
+    }
+  }
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -6396,6 +6598,11 @@ async function main() {
 
     if (VERIFY_DRAGO_JOIN) {
       await verifyDragoJoin(page)
+      return
+    }
+
+    if (VERIFY_OGGETTO_VERSIONE) {
+      await verifyOggettoVersione(page)
       return
     }
 

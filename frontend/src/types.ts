@@ -351,8 +351,26 @@ export interface TableReportRow {
  * ultima modifica (ISO 8601 UTC, come le registra SQL Server). `typeCode` è il codice di
  * `sys.objects.type` ('P', 'V', 'FN', 'IF', 'TF', 'TR', 'U').
  */
-export interface ObjectChangeRow {
+/**
+ * OGGETTO APERTO IN MODIFICA: la "fotografia" della definizione letta dal database quando la tab
+ * è stata aperta. Se la definizione sul database cambia, `stale` diventa true e l'app avvisa che
+ * si sta lavorando da una versione vecchia (vedi objectVersion.ts).
+ */
+export interface ObjectRef {
   schema: string
+  name: string
+  kind: 'procedure' | 'function' | 'view' | 'trigger'
+  /** Come è stato aperto: 'alter' (CREATE OR ALTER, "Modifica") oppure 'open' (definizione CREATE). */
+  modo: 'alter' | 'open'
+  /** Impronta (FNV-1a) del TESTO messo nella tab all'apertura: la versione di partenza. */
+  baseHash: string
+  /** Quando è stata aperta (ms): mostrato nel messaggio di avviso. */
+  openedAt: number
+  /** True quando sul database c'è una definizione DIVERSA da quella di partenza. */
+  stale?: boolean
+}
+
+export interface ObjectChangeRow {  schema: string
   name: string
   typeCode: string
   typeDesc: string
@@ -365,6 +383,13 @@ export interface EditorTab {
   id: string
   title: string
   sql: string
+  /**
+   * Oggetto del DATABASE aperto in questa tab (Modifica di una store/funzione/vista/trigger).
+   * Serve a due cose: capire se l'oggetto era già aperto in un'altra tab, e sapere se la
+   * "versione di partenza" (la definizione letta all'apertura) è nel frattempo cambiata sul
+   * database — così non si sovrascrive una versione nuova con una vecchia.
+   */
+  objectRef?: ObjectRef
   /** Descrizione libera della tab (nota dell'utente). */
   description?: string
   /** Icona/simbolo/emoji della tab scelto dall'utente (mostrato nella barra). */

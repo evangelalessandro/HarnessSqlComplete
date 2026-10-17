@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, CornerDownRight, Database as DbIcon, FilePlus2, Pin, Plus, RefreshCw, Search, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { AlertTriangle, BookOpen, CornerDownRight, Database as DbIcon, FilePlus2, Pin, Plus, RefreshCw, Search, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
@@ -25,6 +25,15 @@ import {
 import type { NewTabPosition, TabCloseMode } from './tabOps'
 import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryMessage, QueryResult, RoutineCallGraph } from './types'
 import { chooseResultTab } from './queryTabs'
+import {
+  etichettaOggetto,
+  improntaDefinizione,
+  nuovoObjectRef,
+  quandoAperta,
+  testoPerLaTab,
+  trovaTabOggetto,
+  versioneSuperata,
+} from './objectVersion'
 import { isRefreshSchemaShortcut, isToggleResultsShortcut } from './shortcuts'
 import {
   clearQueryStats,
@@ -108,6 +117,11 @@ export default function App() {
   const [aiEnabled, setAiEnabled] = useState(true)
   const [aiStatus, setAiStatus] = useState<AutocompleteStatus | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
+  /**
+   * NOTA (non è un errore): messaggio breve e non invadente, es. "«dbo.X» era già aperta: sei
+   * sulla tab esistente". Si chiude da sola dopo qualche secondo o con un clic.
+   */
+  const [nota, setNota] = useState<{ testo: string; tono: 'info' | 'attenzione' } | null>(null)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
 
   // Drago e fuoco: compaiono SOLO se la query eseguita contiene PRINT 'drago' / PRINT 'fuoco'.
@@ -1077,20 +1091,126 @@ export default function App() {
       if (!connection) return
       setBanner(null)
       try {
+        // L'OGGETTO ERA GIA' APERTO? Non si duplica la tab: si va su quella esistente e lo si dice
+        // (richiesta utente: "mostrami se ce n'era gia' una aperta").
+        const giaAperta = trovaTabOggetto(editorTabs, schema, name)
+        if (giaAperta) {
+          setActiveEditorTab(giaAperta.id)
+          setNota({
+            testo: `«${etichettaOggetto(schema, name)}» era gia' aperta (${quandoAperta(
+              giaAperta.objectRef?.openedAt ?? Date.now(),
+            )}): sei sulla tab esistente${giaAperta.objectRef?.stale ? ' — ATTENZIONE: sul database e\' cambiata' : ''}.`,
+            tono: giaAperta.objectRef?.stale ? 'attenzione' : 'info',
+          })
+          return
+        }
         const { definition } = await api.getObjectDefinition(connection.connectionId, schema, name)
         const sql = mode === 'alter' ? toCreateOrAlterStatement(definition) : definition
-        // il titolo della tab è il NOME dell'oggetto (richiesta utente): la "Modifica" si
+        // il titolo della tab e' il NOME dell'oggetto (richiesta utente): la "Modifica" si
         // riconosce dal contenuto (CREATE OR ALTER) e dalla tooltip della tab
         const title = schema === 'dbo' ? name : `${schema}.${name}`
         const tabId = newEditorTab(title, sql, connection?.database, false, null, undefined, undefined, asChild)
-        // la riga si applica DOPO che la tab è attiva: l'effetto che carica il testo la usa
+        // VERSIONE DI PARTENZA: si memorizza l'impronta del TESTO messo nella tab, cosi' poi si
+        // puo' capire se sul database e' cambiata (e non sovrascrivere una versione nuova).
+        const ref = nuovoObjectRef(schema, name, _kind, mode, sql)
+        setEditorTabs(prev => prev.map(t => (t.id === tabId ? { ...t, objectRef: ref } : t)))
+        // la riga si applica DOPO che la tab e' attiva: l'effetto che carica il testo la usa
         if (revealLine && revealLine > 0) pendingRevealRef.current = { tabId, line: revealLine }
       } catch (e) {
         setBanner(e instanceof Error ? e.message : String(e))
       }
     },
-    [connection, newEditorTab],
+    [connection, editorTabs, newEditorTab],
   )
+
+  // La nota ("era gia' aperta") si chiude da sola dopo 8 secondi.
+  useEffect(() => {
+    if (!nota) return
+    const t = window.setTimeout(() => setNota(null), 8000)
+    return () => window.clearTimeout(t)
+  }, [nota])
+
+  /**
+   * CONTROLLO "VERSIONE VECCHIA": tornando su una tab che modifica un oggetto si rilegge la
+   * definizione dal database e la si confronta con quella di partenza (al massimo ogni 5 s per
+   * tab, per non tempestare il backend). Se e' cambiata, la tab viene marcata come superata e
+   * compare l'avviso con "Ricarica dal database".
+   */
+  const ultimoControlloRef = useRef<Record<string, number>>({})
+  useEffect(() => {
+    if (!connection) return
+    const tab = editorTabs.find(t => t.id === activeEditorTab)
+    const ref = tab?.objectRef
+    if (!tab || !ref) return
+    const ora = Date.now()
+    const attesa = 5000 - (ora - (ultimoControlloRef.current[tab.id] ?? 0))
+    /** Il controllo vero e proprio (definito qui per poterlo riprogrammare). */
+    const controlla = async () => {
+      try {
+        const { definition } = await api.getObjectDefinition(connection.connectionId, ref!.schema, ref!.name)
+        ultimoControlloRef.current[tab.id] = Date.now()
+        // si confronta con il testo che la tab avrebbe ADESSO dal database (stessa trasformazione
+        // usata all'apertura: CREATE OR ALTER per la "Modifica", definizione grezza per "Apri")
+        const superata = versioneSuperata(
+          ref!.baseHash,
+          testoPerLaTab(ref!.modo ?? 'alter', definition, toCreateOrAlterStatement),
+        )
+        setEditorTabs(prev =>
+          prev.map(t =>
+            t.id === tab.id && t.objectRef ? { ...t, objectRef: { ...t.objectRef, stale: superata } } : t,
+          ),
+        )
+        // l'avviso vero e proprio è la striscia sopra l'editor (niente doppione)
+      } catch {
+        /* il controllo e' un di piu': se il backend non risponde non si avvisa nulla */
+      }
+    }
+    // controllo fatto da poco su questa tab: si RIPROGRAMMA (non si perde l'occasione)
+    if (attesa > 0) {
+      const t = window.setTimeout(() => void controlla(), attesa)
+      return () => window.clearTimeout(t)
+    }
+    void controlla()
+  }, [activeEditorTab, editorTabs, connection])
+
+  /**
+   * RICARICA DAL DATABASE (dal banner "versione vecchia"): rilegge la definizione, la rimette
+   * nella tab e aggiorna la versione di partenza. Se nel frattempo si e' modificato il testo si
+   * chiede conferma: si sta per sovrascrivere il lavoro in corso.
+   */
+  const ricaricaOggettoNellaTab = useCallback(async () => {
+    const tab = editorTabs.find(t => t.id === activeEditorTab)
+    const ref = tab?.objectRef
+    if (!connection || !tab || !ref) return
+    try {
+      const { definition } = await api.getObjectDefinition(connection.connectionId, ref.schema, ref.name)
+      const modificato = improntaDefinizione(tab.sql) !== ref.baseHash
+      if (modificato && !window.confirm('La tab e\' stata modificata: sovrascriverla con la versione del database?')) {
+        return
+      }
+      const sql = testoPerLaTab(ref.modo ?? 'alter', definition, toCreateOrAlterStatement)
+      setEditorTabs(prev =>
+        prev.map(t =>
+          t.id === tab.id
+            ? { ...t, sql, objectRef: nuovoObjectRef(ref.schema, ref.name, ref.kind, ref.modo ?? 'alter', sql) }
+            : t,
+        ),
+      )
+      editor?.setValue(sql)
+      setNota({ testo: `«${etichettaOggetto(ref.schema, ref.name)}» ricaricata dal database.`, tono: 'info' })
+    } catch (e) {
+      setBanner(e instanceof Error ? e.message : String(e))
+    }
+  }, [activeEditorTab, connection, editor, editorTabs])
+
+  /** IGNORA l'avviso di versione vecchia per questa tab (smette di segnalarlo). */
+  const ignoraVersioneVecchia = useCallback(() => {
+    const id = activeEditorTab
+    setEditorTabs(prev =>
+      prev.map(t => (t.id === id && t.objectRef ? { ...t, objectRef: { ...t.objectRef, stale: false } } : t)),
+    )
+    setNota(null)
+  }, [activeEditorTab])
 
   /**
    * DIAGRAMMA CHIAMATE: apre la finestra con i legami della routine indicata.
@@ -1378,6 +1498,25 @@ export default function App() {
         <div className="shrink-0 border-b border-rose-900 bg-rose-950/60 px-4 py-2 text-sm text-rose-200">{banner}</div>
       )}
 
+      {/* NOTA (non è un errore): "era già aperta", "ricaricata dal database", "versione cambiata".
+          Si chiude da sola dopo 8 secondi oppure con un clic. */}
+      {nota && (
+        <button
+          onClick={() => setNota(null)}
+          title="Chiudi l'avviso"
+          className={`flex w-full shrink-0 items-center gap-2 border-b px-4 py-1.5 text-left text-sm transition-colors ${
+            nota.tono === 'attenzione'
+              ? 'border-amber-900 bg-amber-950/70 text-amber-100 hover:bg-amber-950'
+              : 'border-sky-900 bg-sky-950/50 text-sky-100 hover:bg-sky-950/70'
+          }`}
+          data-nota={nota.tono}
+        >
+          <AlertTriangle className={`h-4 w-4 shrink-0 ${nota.tono === 'attenzione' ? 'text-amber-400' : 'text-sky-400'}`} />
+          <span className="min-w-0 flex-1">{nota.testo}</span>
+          <X className="h-3.5 w-3.5 shrink-0 opacity-60" />
+        </button>
+      )}
+
       <div className="flex min-h-0 flex-1">
         <aside
           className="relative flex shrink-0 flex-col border-r border-zinc-800 bg-zinc-900/60"
@@ -1500,6 +1639,17 @@ export default function App() {
                 >
                   {t.title}
                 </button>
+                {/* La definizione sul database è cambiata dopo l'apertura: la tab lo mostra
+                    anche quando non è quella attiva (richiesta utente: una cosa ad impatto). */}
+                {t.objectRef?.stale && (
+                  <span
+                    className="shrink-0 text-amber-400"
+                    data-versione-tab={t.id}
+                    title={`${etichettaOggetto(t.objectRef.schema, t.objectRef.name)}: sul database la definizione è cambiata dopo l'apertura (versione di partenza vecchia)`}
+                  >
+                    <AlertTriangle className="h-3 w-3" />
+                  </span>
+                )}
                 <button
                   onClick={() => {
                     setTitleDraft(t.title)
@@ -1629,6 +1779,36 @@ export default function App() {
             }}
             title={`Query su database: ${activeDbName} — trascina il divisore sotto per ridimensionare`}
           >
+            {/* AVVISO "VERSIONE VECCHIA": la tab attiva modifica un oggetto la cui definizione sul
+                database è cambiata dopo l'apertura. Ben visibile, con le due azioni possibili. */}
+            {tabAttiva?.objectRef?.stale && activeEditorTab && (
+              <div
+                className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-800 bg-amber-950/80 px-3 py-1.5 text-xs text-amber-100"
+                data-versione="vecchia"
+              >
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
+                <span className="min-w-0 flex-1">
+                  <b className="text-amber-300">Stai lavorando da una versione vecchia</b> di{' '}
+                  <span className="font-mono">{etichettaOggetto(tabAttiva.objectRef.schema, tabAttiva.objectRef.name)}</span>:
+                  sul database la definizione è cambiata dopo l'apertura di questa tab (
+                  {quandoAperta(tabAttiva.objectRef.openedAt)}).
+                </span>
+                <button
+                  onClick={() => void ricaricaOggettoNellaTab()}
+                  className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-700 px-2 py-0.5 font-medium transition-colors hover:bg-amber-900/60"
+                  title="Sostituisce il testo della tab con la definizione del database (chiede conferma se la tab è stata modificata)"
+                >
+                  <RefreshCw className="h-3 w-3" /> Ricarica dal database
+                </button>
+                <button
+                  onClick={ignoraVersioneVecchia}
+                  className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-amber-200/80 transition-colors hover:bg-amber-900/40 hover:text-amber-100"
+                  title="Continua con la versione di partenza (l'avviso sparisce per questa tab)"
+                >
+                  <X className="h-3 w-3" /> Ignora
+                </button>
+              </div>
+            )}
             {/* La ricerca e i diagrammi vivono in TAB: il pannello resta MONTATO (nascosto quando
                 non è la tab attiva) così i risultati non si perdono passando da una tab all'altra.
                 L'editor Monaco resta montato per la stessa ragione, ma va NASCOSTO quando la tab
