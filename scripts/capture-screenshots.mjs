@@ -47,6 +47,7 @@ const VERIFY_INDICI_VINCOLI = process.argv.includes('--verify-indici-vincoli')
 const VERIFY_DRAGO_JOIN = process.argv.includes('--verify-drago-join')
 const VERIFY_OGGETTO_VERSIONE = process.argv.includes('--verify-oggetto-versione')
 const VERIFY_MAIUSCOLO = process.argv.includes('--verify-maiuscolo')
+const VERIFY_SELEZIONE_TREEVIEW = process.argv.includes('--verify-selezione-treeview')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -6478,6 +6479,188 @@ async function verifyMaiuscolo(page) {
 }
 
 /**
+ * VERIFICA (--verify-selezione-treeview): le voci dell'albero laterale sono SELEZIONABILI e la
+ * riga selezionata resta evidenziata. Richiesta utente: "rendi le voci della treeview
+ * selezionabili, adesso non si capisce cosa è selezionato".
+ * Controlla: clic su una riga → classe `nodo-attivo` + sfondo tinto; clic su un'altra → la
+ * prima si spegne; tasto destro → seleziona anche lui; colonne e viste/procedure si selezionano;
+ * la scelta è memorizzata (localStorage) e sopravvive al ridisegno dell'albero (ricerca).
+ */
+async function verifySelezioneTreeview(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Stato della selezione: riga attiva (data-nodo), sfondo, classe e valore salvato. */
+  const stato = async () =>
+    await page.eval(`(() => {
+      const sel = document.querySelectorAll('.nodo-attivo[data-nodo]');
+      const prima = sel[0] || null;
+      return {
+        quante: sel.length,
+        chiavi: [...sel].map(e => e.getAttribute('data-nodo')),
+        sfondo: prima ? window.getComputedStyle(prima).backgroundColor : null,
+        salvato: (() => { try { return localStorage.getItem('sql-intelli:nodoSel.v1') } catch { return null } })(),
+      };
+    })()`)
+  /** Clic (o tasto destro) sulla riga che contiene il testo indicato. */
+  const clicRiga = async (testo, tastoDestro = false) => {
+    const punto = await page.eval(`(() => {
+      const righe = [...document.querySelectorAll('[data-nodo]')];
+      const riga = righe.find(r => (r.textContent || '').trim().includes(${JSON.stringify(testo)}));
+      if (!riga) return null;
+      const r = riga.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4) return null;
+      return { x: r.left + 22, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) return false
+    if (tastoDestro) await page.clickPoint(punto.x, punto.y, 'right')
+    else await page.clickPoint(punto.x, punto.y)
+    await sleep(700)
+    return true
+  }
+  const chiudiMenu = async () => {
+    await page.press('Escape', { code: 'Escape', vk: 27 })
+    await sleep(400)
+  }
+  const cerca = async testo => {
+    await page.eval(`(() => {
+      const i = document.querySelector('input[placeholder^="Cerca (spazio"]');
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(i, ${JSON.stringify(testo)});
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`)
+    await sleep(1200)
+  }
+
+  // 1) una tabella dalla ricerca: selezione + evidenziazione
+  await cerca('DAT_')
+  const primo = await clicRiga('DAT_')
+  const s1 = await stato()
+  console.log(`  dopo il clic su una tabella: ${JSON.stringify(s1)}`)
+  check('clic su una riga → la riga è selezionata (data-nodo)', primo && s1.quante === 1 && !!s1.chiavi[0])
+  check('la riga selezionata ha lo SFONDO evidenziato', !!s1.sfondo && !/rgba\(0, 0, 0, 0\)|transparent/.test(s1.sfondo), s1.sfondo)
+  check('la scelta è memorizzata (resta dopo un ricaricamento)', s1.salvato === s1.chiavi[0], String(s1.salvato))
+  const primaChiave = s1.chiavi[0]
+
+  // 2) un'altra TABELLA: la precedente si spegne (una sola selezione, restando sul database)
+  const righe = await page.eval(`[...document.querySelectorAll('[data-nodo^="tabella:"]')]
+    .filter(r => { const b = r.getBoundingClientRect(); return b.width > 4 && b.height > 4; })
+    .map(r => (r.textContent || '').trim())`)
+  const altra = righe.find(t => t && !t.includes(primaChiave.split(':').pop()))
+  console.log(`  tabelle cliccabili: ${JSON.stringify(righe.slice(0, 5))}`)
+  const secondo = altra ? await clicRiga(altra) : false
+  const s2 = await stato()
+  console.log(`  dopo il clic su un'altra riga: ${JSON.stringify(s2)}`)
+  check(
+    'clic su un\'altra riga: resta UNA sola riga selezionata, ed è la nuova',
+    secondo && s2.quante === 1 && s2.chiavi[0] !== primaChiave,
+    `${s2.chiavi[0]} (prima ${primaChiave})`,
+  )
+
+  // 3) tasto destro su una riga: seleziona anche lui (poi si chiude il menu)
+  const rigaDx = await page.eval(`(() => {
+    const riga = [...document.querySelectorAll('[data-nodo^="tabella:"]')].find(r => {
+      const b = r.getBoundingClientRect();
+      return b.width > 4 && b.height > 4;
+    });
+    return riga ? { chiave: riga.getAttribute('data-nodo'), testo: (riga.textContent || '').trim() } : null;
+  })()`)
+  if (rigaDx) {
+    await clicRiga(rigaDx.testo, true)
+    const s3 = await stato()
+    console.log(`  dopo il tasto destro su "${rigaDx.testo}": ${JSON.stringify(s3.chiavi)}`)
+    check('il tasto destro seleziona la riga', s3.quante === 1 && s3.chiavi[0] === rigaDx.chiave, String(rigaDx.chiave))
+    await chiudiMenu()
+  }
+
+  // 4) una COLONNA (dentro una tabella espansa): si seleziona con la sua chiave.
+  // Qui si clicca in modo SINTETICO sull'elemento (non con le coordinate): la card di hover che
+  // si apre sopra l'albero coprirebbe la riga da cliccare. Il percorso "vero" del mouse è già
+  // verificato nei passi 1-3.
+  await cerca('')
+  await sleep(1000)
+  const clicSintetico = async condizione =>
+    await page.eval(`(() => {
+      const el = [...document.querySelectorAll('[data-nodo], button')].find(e => ${condizione});
+      if (!el) return false;
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      return true;
+    })()`)
+  // sezione Tabelle e un gruppo di schema aperti (si insiste finché non compaiono tabelle:
+  // il clic su una sezione/gruppo già aperto la chiude, quindi si riprova).
+  let righeTabella = 0
+  for (let giro = 0; giro < 6 && righeTabella === 0; giro++) {
+    const haSchemi = await page.eval(`[...document.querySelectorAll('[data-nodo^="schema:"]')].length`)
+    const cliccato = haSchemi
+      ? await page.eval(`(() => {
+          const gruppi = [...document.querySelectorAll('[data-nodo^="schema:"]')];
+          const g = gruppi[${giro} % Math.max(1, gruppi.length)];
+          if (!g) return false;
+          g.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+          return g.getAttribute('data-nodo');
+        })()`)
+      : await clicSintetico(`e.getAttribute && e.getAttribute('data-nodo') === 'sezione:Tabelle'`)
+    console.log(`  giro ${giro + 1}: cliccato ${JSON.stringify(cliccato)}`)
+    await sleep(900)
+    righeTabella = await page.eval(`[...document.querySelectorAll('[data-nodo^="tabella:"]')].length`)
+  }
+  console.log(`  righe di tabella nell'albero: ${righeTabella}`)
+  // si espande la prima tabella (il chevron è il primo bottone del contenitore della riga)
+  const espanso = await page.eval(`(() => {
+    const riga = [...document.querySelectorAll('[data-nodo^="tabella:"]')][0];
+    if (!riga) return false;
+    const contenitore = riga.closest('div.group') || riga.parentElement;
+    const chevron = contenitore ? contenitore.querySelector('button') : null;
+    if (!chevron) return false;
+    chevron.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    return true;
+  })()`)
+  await sleep(1000)
+  const clickColonna = await page.eval(`(() => {
+    const c = [...document.querySelectorAll('[data-nodo^="colonna:"]')][0];
+    if (!c) return null;
+    const chiave = c.getAttribute('data-nodo');
+    c.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    return chiave;
+  })()`)
+  await sleep(800)
+  const s4 = await stato()
+  const colonne = await page.eval(`[...document.querySelectorAll('[data-nodo^="colonna:"]')].length`)
+  console.log(`  colonne visibili: ${colonne}; colonna cliccata: ${JSON.stringify(clickColonna)}; stato: ${JSON.stringify(s4.chiavi)}`)
+  check(
+    'clic su una COLONNA: si seleziona la colonna (chiave colonna:…)',
+    !!clickColonna && s4.quante === 1 && s4.chiavi[0] === clickColonna && /^colonna:/.test(clickColonna),
+    String(clickColonna),
+  )
+
+  // per lo screenshot: la riga selezionata al centro e il puntatore lontano (la card di hover
+  // coprirebbe la riga da mostrare)
+  await page.eval(`(() => {
+    const el = document.querySelector('.nodo-attivo[data-nodo]');
+    if (el) el.scrollIntoView({ block: 'center' });
+  })()`)
+  await sleep(500)
+  await page.clickPoint(900, 760)
+  await sleep(700)
+  await page.screenshot('treeview-selezione')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -6704,6 +6887,11 @@ async function main() {
 
     if (VERIFY_MAIUSCOLO) {
       await verifyMaiuscolo(page)
+      return
+    }
+
+    if (VERIFY_SELEZIONE_TREEVIEW) {
+      await verifySelezioneTreeview(page)
       return
     }
 

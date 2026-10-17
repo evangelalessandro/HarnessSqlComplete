@@ -231,3 +231,21 @@ body {
     animation: none;
   }
 }
+
+/* ---------- VOCE SELEZIONATA NELL'ALBERO LATERALE (vedi src/treeSelection.ts) ----------
+   Richiesta utente: "rendi le voci della treeview selezionabili, adesso non si capisce cosa è
+   selezionato". La riga cliccata (o col tasto destro) resta evidenziata con una barra azzurra a
+   sinistra e lo sfondo tinto, così si capisce sempre dov'è il fuoco. */
+.nodo-attivo {
+  background-color: rgba(56, 189, 248, 0.16) !important;
+  box-shadow: inset 2px 0 0 0 #38bdf8;
+  color: #f4f4f5 !important;
+}
+.nodo-attivo:hover {
+  background-color: rgba(56, 189, 248, 0.24) !important;
+}
+/* quando la riga selezionata ha il fuoco da tastiera, un contorno in più (leggibilità) */
+.nodo-attivo:focus-visible {
+  outline: 1px solid rgba(56, 189, 248, 0.7);
+  outline-offset: -1px;
+}

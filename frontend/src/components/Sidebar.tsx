@@ -70,6 +70,7 @@ import type { PanelSize, PanelState } from '../panelLayout'
 import { ColumnHoverCard, TableHoverCard } from './HoverCards'
 import type { HoverRect, HoverTarget } from './HoverCards'
 import ChangesModal from './ChangesModal'
+import { CLASSE_NODO_ATTIVO, chiaveNodo } from '../treeSelection'
 
 interface Props {
   summary: DatabaseSummary | null
@@ -183,6 +184,44 @@ export default function Sidebar({
   ) => onOpenObject?.(kind, schema, name, mode, true)
 
   const [query, setQuery] = useState('')
+  /**
+   * VOCE SELEZIONATA NELL'ALBERO (richiesta utente: "rendi le voci della treeview selezionabili,
+   * adesso non si capisce cosa è selezionato"). Si tiene la CHIAVE della riga cliccata (o cliccata
+   * col tasto destro), non l'elemento: sopravvive a espansioni, filtri e nuovi dati.
+   */
+  const [nodoSel, setNodoSel] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('sql-intelli:nodoSel.v1')
+    } catch {
+      return null
+    }
+  })
+  /** Registra il clic (o il tasto destro) sulla riga dell'albero: `data-nodo` dice quale. */
+  const selezionaDaClic = (e: React.MouseEvent | React.FocusEvent) => {
+    const riga = (e.target as HTMLElement).closest?.('[data-nodo]')
+    if (!riga) return
+    const chiave = riga.getAttribute('data-nodo') || null
+    if (!chiave || chiave === nodoSel) return
+    setNodoSel(chiave)
+    try {
+      localStorage.setItem('sql-intelli:nodoSel.v1', chiave)
+    } catch {
+      /* ignora */
+    }
+  }
+  /**
+   * La classe dell'evidenziazione si applica DOPO il render, su tutte le righe che dichiarano
+   * `data-nodo`: così non serve calcolare la classe in ognuno dei punti in cui si disegna una
+   * voce dell'albero (ce ne sono una dozzina) e la riga resta evidenziata anche quando l'albero
+   * si ridisegna (espansione di una tabella, ricerca, aggiornamento dello schema).
+   */
+  useEffect(() => {
+    // Si guarda l'intero documento, non solo il ref: un pannello STACCATO (floating) viene
+    // disegnato in un portale fuori dalla sidebar, e le sue righe devono evidenziarsi uguale.
+    for (const el of document.querySelectorAll('[data-nodo]')) {
+      el.classList.toggle(CLASSE_NODO_ATTIVO, el.getAttribute('data-nodo') === nodoSel)
+    }
+  })
   // Filtro per nome nella lista dei database
   const [dbFilter, setDbFilter] = useState('')
   // Pannelli (stile Visual Studio): database in alto, oggetti+ricerca sotto.
@@ -810,6 +849,7 @@ export default function Sidebar({
           <div key={d.name}>
             <button
               onClick={() => toggleDbNode(d.name)}
+              data-nodo={chiaveNodo('db', d.name)}
               onContextMenu={e => {
                 e.preventDefault()
                 setColorMenu({ db: d.name, x: e.clientX, y: e.clientY })
@@ -890,6 +930,7 @@ export default function Sidebar({
               return (
                 <button
                   key={`${h.kind}-${h.schema}-${h.name}-${i}`}
+                  data-nodo={chiaveNodo(h.kind, h.schema, h.name)}
                   onClick={isProc ? undefined : () => onInsertText(qualified(h.schema, h.name))}
                   onContextMenu={e => openObjectMenu(e, h)}
                   draggable={isProc}
@@ -935,6 +976,7 @@ export default function Sidebar({
                   <div key={g.key}>
                     <button
                       onClick={() => toggleGroup(g.key)}
+                      data-nodo={chiaveNodo('schema', g.key)}
                       className="flex w-full items-center gap-1.5 rounded px-2 py-1 pl-2 text-left text-xs font-semibold text-zinc-400 transition-colors hover:bg-zinc-800/70 hover:text-zinc-200"
                     >
                       {groupOpen ? (
@@ -961,6 +1003,7 @@ export default function Sidebar({
                           return (
                             <TableRow
                               key={tKey}
+                              nodo={chiaveNodo('tabella', t.schema, t.name)}
                               label={t.schema !== 'dbo' ? `${t.schema}.${t.name}` : t.name}
                               badge={`${t.columnCount}`}
                               usageText={usageDetail(t.usage)}
@@ -982,6 +1025,7 @@ export default function Sidebar({
                                   {t.columns?.map(c => (
                                     <button
                                       key={c.name}
+                                      data-nodo={chiaveNodo('colonna', t.schema, t.name, c.name)}
                                       onClick={() => onInsertText(sqlIdent(c.name))}
                                       onMouseEnter={e => hoverColumn(e, t.name, c)}
                                       onMouseLeave={scheduleClose}
@@ -1001,6 +1045,7 @@ export default function Sidebar({
                                       {indiciVeri.map(ix => (
                                         <button
                                           key={ix.name}
+                                          data-nodo={chiaveNodo('indice', t.schema, t.name, ix.name)}
                                           onClick={() => apriScriptFiglia(`Indice ${ix.name}`, scriptCreateIndex(t, ix))}
                                           onContextMenu={e =>
                                             openObjectMenu(e, {
@@ -1044,6 +1089,7 @@ export default function Sidebar({
                                   {vincoli.map(v => (
                                     <button
                                       key={`${v.tipo}:${v.nome}`}
+                                      data-nodo={chiaveNodo('vincolo', t.schema, t.name, v.nome)}
                                       onClick={() => apriScriptFiglia(`${v.tipo} ${v.nome}`, v.sqlCreate)}
                                       onContextMenu={e =>
                                         openObjectMenu(e, {
@@ -1090,6 +1136,7 @@ export default function Sidebar({
                                   {tableTriggers.map(trg => (
                                     <button
                                       key={trg.name}
+                                      data-nodo={chiaveNodo('trigger', trg.schema, trg.name)}
                                       onClick={() => onInsertText(qualified(trg.schema, trg.name))}
                                       onContextMenu={e =>
                                         openObjectMenu(e, { kind: 'trigger', schema: trg.schema, name: trg.name, detail: trg.tableName, trigger: trg })
@@ -1123,6 +1170,7 @@ export default function Sidebar({
               {summary.views.map(v => (
                 <ObjectRow
                   key={`${v.schema}.${v.name}`}
+                  nodo={chiaveNodo('vista', v.schema, v.name)}
                   label={v.schema !== 'dbo' ? `${v.schema}.${v.name}` : v.name}
                   onInsert={() => onInsertText(qualified(v.schema, v.name))}
                   onContextMenu={e =>
@@ -1151,6 +1199,7 @@ export default function Sidebar({
                   {summary.procedures.map(p => (
                     <ObjectRow
                       key={`${p.schema}.${p.name}`}
+                      nodo={chiaveNodo('procedura', p.schema, p.name)}
                       label={p.schema !== 'dbo' ? `${p.schema}.${p.name}` : p.name}
                       draggable
                       onDragStart={e => {
@@ -1184,6 +1233,7 @@ export default function Sidebar({
                   {summary.functions.map(f => (
                     <ObjectRow
                       key={`${f.schema}.${f.name}`}
+                      nodo={chiaveNodo('funzione', f.schema, f.name)}
                       label={f.schema !== 'dbo' ? `${f.schema}.${f.name}` : f.name}
                       onInsert={() => onInsertText(qualified(f.schema, f.name))}
                       onContextMenu={e =>
@@ -1205,6 +1255,7 @@ export default function Sidebar({
                     {triggersByTable.orphans.map(t => (
                       <ObjectRow
                         key={`${t.schema}.${t.tableName}.${t.name}`}
+                        nodo={chiaveNodo('trigger', t.schema, t.name)}
                         label={t.name}
                         detail={t.schema !== 'dbo' ? `${t.schema}.${t.tableName}` : t.tableName}
                         onInsert={() => onInsertText(qualified(t.schema, t.name))}
@@ -1229,7 +1280,14 @@ export default function Sidebar({
   const objectsFloating = panels.objects.open && panels.objects.floating
 
   return (
-    <div ref={sidebarRef} className="flex h-full flex-col">
+    <div
+      ref={sidebarRef}
+      className="flex h-full flex-col"
+      // La selezione delle voci dell'albero si prende QUI (delegata): ogni riga dichiara
+      // `data-nodo`, quindi non serve un gestore per riga. Il tasto destro seleziona pure lui.
+      onClickCapture={selezionaDaClic}
+      onContextMenuCapture={selezionaDaClic}
+    >
       {/* Pannello DATABASE ancorato a sinistra: lista dei database */}
       {dbDockedLeft && (
         <DockPanel
@@ -1624,6 +1682,7 @@ function Section({
     <div>
       <button
         onClick={onToggle}
+        data-nodo={chiaveNodo('sezione', title)}
         className={`flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs font-semibold transition-colors hover:bg-zinc-800/70 hover:text-zinc-200 ${
           nested ? 'normal-case tracking-normal text-zinc-400' : 'uppercase tracking-wide text-zinc-400'
         }`}
@@ -1641,6 +1700,7 @@ function Section({
 function ObjectRow({
   label,
   detail,
+  nodo,
   onInsert,
   onContextMenu,
   draggable,
@@ -1649,6 +1709,8 @@ function ObjectRow({
 }: {
   label: string
   detail?: string
+  /** Chiave della voce (`data-nodo`): serve alla selezione dell'albero. */
+  nodo?: string
   onInsert?: () => void
   onContextMenu?: (e: MouseEvent<HTMLElement>) => void
   draggable?: boolean
@@ -1659,6 +1721,7 @@ function ObjectRow({
     <div>
       <button
         onClick={onInsert}
+        data-nodo={nodo}
         onContextMenu={onContextMenu}
         draggable={draggable}
         onDragStart={onDragStart}
@@ -1684,6 +1747,7 @@ function ObjectRow({
 function TableRow({
   label,
   badge,
+  nodo,
   usageText,
   expanded,
   onToggleExpand,
@@ -1696,6 +1760,8 @@ function TableRow({
 }: {
   label: string
   badge?: string
+  /** Chiave della voce (`data-nodo`): serve alla selezione dell'albero. */
+  nodo?: string
   usageText?: string
   expanded: boolean
   onToggleExpand: () => void
@@ -1718,6 +1784,7 @@ function TableRow({
         </button>
         <button
           onClick={onInsert}
+          data-nodo={nodo}
           onMouseEnter={onHover}
           onMouseLeave={onHoverLeave}
           onContextMenu={onContextMenu}
