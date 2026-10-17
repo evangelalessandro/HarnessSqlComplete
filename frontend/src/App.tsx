@@ -25,6 +25,7 @@ import {
 import type { NewTabPosition, TabCloseMode } from './tabOps'
 import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryMessage, QueryResult, RoutineCallGraph } from './types'
 import { chooseResultTab } from './queryTabs'
+import { pickSqlToExecute } from './executeSelection'
 import {
   etichettaOggetto,
   improntaDefinizione,
@@ -1177,6 +1178,38 @@ export default function App() {
     const t = window.setTimeout(() => setNota(null), 8000)
     return () => window.clearTimeout(t)
   }, [nota])
+
+  /**
+   * F5 GLOBALE (richiesta utente: "se non ho il focus sulla scheda mi ricarica tutta la pagina").
+   *
+   * Con il fuoco sull'editor ci pensa già Monaco (registra anche l'uso delle tabelle); negli altri
+   * casi — albero laterale, griglie dei risultati, pulsanti — il tasto arrivava al browser e
+   * RICARICAVA l'app, perdendo il lavoro. Qui lo si prende a livello di finestra e si esegue la
+   * selezione (o tutto il testo) della tab attiva, esattamente come il pulsante "Esegui".
+   * Senza connessione (schermata di login) si lascia fare al browser; nelle tab di ricerca e nei
+   * diagrammi F5 non esegue niente ma viene comunque fermato, per non perdere lo stato.
+   */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const f5 = e.key === 'F5' || e.keyCode === 116
+      if (!f5 || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return
+      if (!connection) return
+      // con il fuoco nell'editor F5 è già gestito da Monaco (e registra l'uso delle tabelle)
+      if (editor?.hasTextFocus()) return
+      e.preventDefault()
+      e.stopPropagation()
+      const tab = editorTabs.find(t => t.id === activeEditorTab)
+      // ricerca / diagramma / report: niente da eseguire, ma il tasto non deve ricaricare la pagina
+      if (!tab || (tab.kind && tab.kind !== 'query')) return
+      const model = editor?.getModel()
+      const sel = model ? editor?.getSelection() : null
+      const selected = model && sel && !sel.isEmpty() ? model.getValueInRange(sel) : null
+      const sql = pickSqlToExecute(selected, model?.getValue() ?? tab.sql)
+      if (sql.trim()) void handleExecute(sql)
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [connection, editorTabs, activeEditorTab, editor, handleExecute])
 
   /**
    * CONTROLLO "VERSIONE VECCHIA": rilegge la definizione dal database e la confronta con la

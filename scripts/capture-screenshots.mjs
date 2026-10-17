@@ -49,6 +49,7 @@ const VERIFY_OGGETTO_VERSIONE = process.argv.includes('--verify-oggetto-versione
 const VERIFY_MAIUSCOLO = process.argv.includes('--verify-maiuscolo')
 const VERIFY_SELEZIONE_TREEVIEW = process.argv.includes('--verify-selezione-treeview')
 const VERIFY_GRUPPI_ALBERO = process.argv.includes('--verify-gruppi-albero')
+const VERIFY_F5_GLOBALE = process.argv.includes('--verify-f5-globale')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -6829,6 +6830,101 @@ async function verifyGruppiAlbero(page) {
 }
 
 /**
+ * VERIFICA (--verify-f5-globale): F5 esegue la tab attiva anche quando il fuoco NON è nell'editor,
+ * senza ricaricare la pagina. Richiesta utente: "se non ho il focus sulla scheda mi ricarica tutta
+ * la pagina, c'è modo di prenderlo e non fare aggiornare la pagina, ma eseguire f5 sulla tab attiva
+ * del codice?".
+ *
+ * Come si distingue "ricaricata" da "eseguita": prima di premere F5 si pianta un segno su `window`
+ * (`__f5Probe`); se la pagina si ricarica il segno sparisce. L'esecuzione si riconosce dal pannello
+ * dei risultati (compare la griglia con la colonna del SELECT).
+ */
+async function verifyF5Globale(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const scrivi = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(700)
+  }
+  /** Fuoco dentro l'editor di codice? */
+  const fuocoNellEditor = async () =>
+    await page.eval(`(() => {
+      const a = document.activeElement;
+      return !!(a && a.closest && a.closest('.monaco-editor'));
+    })()`)
+  /** Testo del pannello dei risultati (griglia + messaggi). */
+  const testoRisultati = async () =>
+    await page.eval(`(() => {
+      const box = document.querySelector('[data-testid="risultati"]')
+        || [...document.querySelectorAll('div')].find(d => /Risultati/i.test((d.textContent || '').slice(0, 40)) && d.querySelector('table'));
+      return box ? (box.textContent || '').slice(0, 400) : '';
+    })()`)
+  /** Marca su window: se la pagina si ricarica sparisce. */
+  const piantaSegno = async () => await page.eval(`(window.__f5Probe = 'vivo-' + Date.now(), window.__f5Probe)`)
+  const segno = async () => await page.eval(`window.__f5Probe ?? null`)
+
+  // 1) una query che produce una griglia riconoscibile
+  await scrivi('SELECT 111 AS F5_PROVA')
+  check('prima della prova il fuoco è nell editor', await fuocoNellEditor())
+
+  // 2) si porta il fuoco FUORI dall'editor (nel campo di ricerca dell'albero) e si preme F5
+  const spostato = await page.eval(`(() => {
+    const i = document.querySelector('input[placeholder^="Cerca (spazio"]');
+    if (!i) return null;
+    i.focus();
+    const a = document.activeElement;
+    return { fuoco: !!a, descrizione: a ? (a.tagName + ':' + (a.getAttribute('placeholder') || a.className || '')).slice(0, 60) : '' };
+  })()`)
+  await sleep(600)
+  const fuocoDopo = await fuocoNellEditor()
+  console.log(`  spostamento del fuoco: ${JSON.stringify(spostato)}`)
+  const marca = await piantaSegno()
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(2600)
+  const segnoDopo = await segno()
+  const risultati = await testoRisultati()
+  console.log(`  fuoco nell'editor dopo il clic fuori: ${fuocoDopo}`)
+  console.log(`  segno prima=${JSON.stringify(marca)} dopo=${JSON.stringify(segnoDopo)}`)
+  console.log(`  risultati: ${JSON.stringify(risultati.slice(0, 120))}`)
+  check('il clic fuori dall\'editor toglie il fuoco all\'editor', fuocoDopo === false)
+  check('F5 senza fuoco nell\'editor NON ricarica la pagina (il segno resta)', segnoDopo === marca, String(segnoDopo))
+  check('F5 senza fuoco nell\'editor ESEGUE la tab attiva', /F5_PROVA|111/.test(risultati), risultati.slice(0, 60))
+  await page.screenshot('f5-globale')
+
+  // 3) con il fuoco nell'editor F5 continua a eseguire (una volta sola: lo gestisce Monaco)
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(400)
+  await scrivi('SELECT 222 AS F5_EDITOR')
+  const marca2 = await piantaSegno()
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(2600)
+  const risultati2 = await testoRisultati()
+  check('con il fuoco nell\'editor F5 esegue ancora', /F5_EDITOR|222/.test(risultati2), risultati2.slice(0, 60))
+  check('e non ricarica la pagina', (await segno()) === marca2)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -7065,6 +7161,11 @@ async function main() {
 
     if (VERIFY_GRUPPI_ALBERO) {
       await verifyGruppiAlbero(page)
+      return
+    }
+
+    if (VERIFY_F5_GLOBALE) {
+      await verifyF5Globale(page)
       return
     }
 
