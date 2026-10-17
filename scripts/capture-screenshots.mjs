@@ -1234,6 +1234,29 @@ async function verifyFormat(page) {
   check('WHERE: il gruppo fra parentesi va a capo e rientra', iWhereQ > -1 && /^AND B = 2$/.test(trimQ[iWhereQ + 1] ?? '') && /^OR C = 3\)$/.test(trimQ[iWhereQ + 2] ?? ''))
   await page.screenshot('formatta-select-commenti-alias')
 
+  // SELECT con CASE e INTO su tabella temporanea (segnalazione utente: "la formattazione per le
+  // query con select e into tabella temporanea non funziona bene quando c'è un case" →
+  // "into #tmp deve stare sempre a capo")
+  const sqlCasoInto =
+    "CREATE PROCEDURE p\nAS\nBEGIN\n  SELECT UDC_UDC X_UDC, CASE WHEN A = 1 THEN 'x' WHEN A = 2 THEN 'y' ELSE 'z' END AS X_FLAG, UDC_TAG X_TAG INTO #tmpAcc FROM dbo.DAT_UDC WHERE UDC_UDC > 0\nEND"
+  const ci = await scriviEFormatta(sqlCasoInto)
+  const righeCi = ci.righe.map(r => r.replace(/\s+$/, ''))
+  console.log('  CASE + INTO #tmp, dopo "Formatta":')
+  righeCi.forEach(r => console.log(`    |${r}`))
+  const trimCi = righeCi.map(r => r.trim())
+  const conIntoCi = righeCi.filter(r => /INTO\s+#tmpAcc/i.test(r))
+  check(
+    'CASE + INTO: la clausola INTO sta su una riga tutta sua',
+    trimCi.includes('INTO #tmpAcc') && conIntoCi.length === 1 && conIntoCi[0].trim() === 'INTO #tmpAcc',
+    JSON.stringify(conIntoCi),
+  )
+  check('CASE + INTO: la virgola del CASE va in testa (",CASE" su riga propria)', trimCi.includes(',CASE'))
+  check(
+    'CASE + INTO: la select-list non lascia la virgola in coda alla testata',
+    !righeCi.some(r => /X_UDC,$/.test(r)),
+  )
+  await page.screenshot('formatta-case-into')
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

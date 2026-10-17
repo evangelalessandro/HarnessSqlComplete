@@ -1478,8 +1478,18 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
         // SELECT con CASE nella testata: testa, blocco CASE, poi coda con le clausole
         // (FROM/JOIN/WHERE) su righe proprie — la coda non resta attaccata a "END"
         if (caseParts) {
-          rowsNoDashEat(caseParts.head, up).forEach(r => pushLine(r, lineIndent))
-          splitCaseLines(caseParts.casePart, up).forEach(cl => pushLine(cl.text, lineIndent + cl.delta))
+          // la virgola che separa l'ultimo campo della testata dal CASE va IN TESTA alla riga
+          // del CASE (stile del resto del formattatore), non lasciata in coda alla testata
+          const righeTesta = rowsNoDashEat(caseParts.head, up)
+          let virgolaCaso = false
+          if (righeTesta.length > 0 && righeTesta[righeTesta.length - 1].trimEnd().endsWith(',')) {
+            righeTesta[righeTesta.length - 1] = righeTesta[righeTesta.length - 1].trimEnd().replace(/,$/, '')
+            virgolaCaso = true
+          }
+          righeTesta.forEach(r => pushLine(r, lineIndent))
+          splitCaseLines(caseParts.casePart, up).forEach((cl, idx) =>
+            pushLine(idx === 0 && virgolaCaso ? `,${cl.text.trimStart()}` : cl.text, lineIndent + cl.delta),
+          )
           const groups = splitClauseGroups(caseParts.tail)
           groups.forEach((g, gi) => {
             const kw = g[0]?.type === 'word' ? g[0].text.toUpperCase() : ''
@@ -1496,9 +1506,13 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
                 // Resto della select-list DOPO il CASE: si impila come la lista dei valori
                 // (un elemento per riga). Prima restava tutta su una riga sola: con un CASE in
                 // testa, i quaranta campi che seguono finivano in una riga da mille caratteri.
-                stackSelectList(
-                  g, up, ' '.repeat(ind * unit), profile, true,
-                ).forEach(r => pushRawLine(r))
+                // Gli elementi si allineano alla colonna del CASE (non al rientro della lista),
+                // e "INTO #t" resta a MARGINE come nel resto del formattatore.
+                const pad = ' '.repeat(ind * unit)
+                stackSelectList(g, up, '', profile, true).forEach(r => {
+                  const testo = r.trimStart()
+                  pushRawLine(`${/^INTO\b/i.test(testo) ? basePad : pad}${testo}`)
+                })
               } else {
                 rowsNoDashEat(g, up)
                   .map(r => r.replace(/^,\s+/, ','))
@@ -1832,9 +1846,17 @@ function stackSelectList(
   unoPerRiga = false,
 ): string[] {
   const indent = profile.selectColumnIndent
-  // "SELECT … INTO #t": l'INTO va su riga propria. L'INTO di un "INSERT INTO …" invece
-  // appartiene alla testata dell'INSERT e non si spezza.
-  const isSelectHead = head[0]?.type === 'word' && head[0].text.toUpperCase() === 'SELECT'
+  /**
+   * "SELECT … INTO #t": l'INTO va SEMPRE su riga propria (segnalazione utente: con un CASE nella
+   * select-list l'INTO restava attaccato a "END AS X…"). Si spezza in ogni select-list; l'unica
+   * eccezione è la testata di un INSERT/MERGE/UPDATE/DELETE, dove "INSERT INTO …" è la testata
+   * dello statement e non una clausola della select-list.
+   * Prima ci si basava su "la testata inizia con SELECT": la coda DOPO un CASE inizia con la
+   * virgola (", altro_campo INTO #t"), quindi lì l'INTO non veniva mai spezzato.
+   */
+  const primoUtile = head.find(t => t.type !== 'comment')
+  const testataDiInsert =
+    primoUtile?.type === 'word' && ['INSERT', 'MERGE', 'UPDATE', 'DELETE'].includes(primoUtile.text.toUpperCase())
   const out: string[] = []
   /**
    * Info di ogni riga emessa (stessa posizione di `out`): serve all'ALLINEAMENTO DEGLI ALIAS
@@ -1937,7 +1959,7 @@ function stackSelectList(
       t.type === 'word' &&
       t.text.toUpperCase() === 'INTO' &&
       cur.length > 0 &&
-      isSelectHead &&
+      !testataDiInsert &&
       profile.breakBeforeInto
     ) {
       push()
