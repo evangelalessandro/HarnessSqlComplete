@@ -461,6 +461,18 @@ export default function SqlEditor({
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS, () => onSaveAsRef.current?.())
     // Formatta: Ctrl+Shift+F
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF, handleFormat)
+    /**
+     * MAIUSCOLO / minuscolo della selezione (richiesta utente: "Ctrl+U per rendere maiuscolo la
+     * selezione"). Si usano le azioni NATIVE di Monaco: funzionano con più cursori e selezioni
+     * multiple, e senza selezione trasformano la parola sotto il cursore.
+     * Ctrl+U è la scorciatoia richiesta; Ctrl+Shift+U e Ctrl+Shift+L sono quelle di SSMS, così chi
+     * arriva da lì le ritrova.
+     */
+    const maiuscolo = () => void editor.getAction('editor.action.transformToUppercase')?.run()
+    const minuscolo = () => void editor.getAction('editor.action.transformToLowercase')?.run()
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyU, maiuscolo)
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyU, maiuscolo)
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyL, minuscolo)
     // Anteprima dati della tabella sotto il cursore: F4 (e il link nella scheda di hover; il
     // pulsante in toolbar è stato tolto — richiesta utente: "toglilo tanto c'è il tasto sotto")
     const openPreviewUnderCursor = () => {

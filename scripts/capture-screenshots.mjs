@@ -46,6 +46,7 @@ const VERIFY_SPAZI = process.argv.includes('--verify-spazi')
 const VERIFY_INDICI_VINCOLI = process.argv.includes('--verify-indici-vincoli')
 const VERIFY_DRAGO_JOIN = process.argv.includes('--verify-drago-join')
 const VERIFY_OGGETTO_VERSIONE = process.argv.includes('--verify-oggetto-versione')
+const VERIFY_MAIUSCOLO = process.argv.includes('--verify-maiuscolo')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -6382,6 +6383,101 @@ async function verifyOggettoVersione(page) {
 }
 
 /**
+ * VERIFICA (--verify-maiuscolo): Ctrl+U rende MAIUSCOLA la selezione (richiesta utente: "mi fai
+ * anche il comando ctrl+U per rendere maiuscolo la selezione?"). Si controlla nell'editor vero:
+ * - con TUTTO selezionato diventa tutto maiuscolo;
+ * - con una sola riga selezionata cambia SOLO quella;
+ * - senza selezione trasforma la parola sotto il cursore (comportamento nativo di Monaco);
+ * - Ctrl+Shift+L rende minuscolo (scorciatoia di SSMS).
+ */
+async function verifyMaiuscolo(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Testo del modello dell'editor attivo. */
+  const testo = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors().find(e => e.hasTextFocus()) ?? m.editor.getEditors()[0];
+      return ed ? ed.getValue() : ''; })()`)
+  /** Scrive il testo (sostituendo tutto) e lascia il cursore in fondo. */
+  const scrivi = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(700)
+  }
+  const premi = async (key, code, vk, modifiers = 0) => {
+    await page.press(key, { code, vk, modifiers })
+    await sleep(700)
+  }
+
+  const BASE = 'select uno, due from tre\ngo\nselect quattro from cinque'
+  await scrivi(BASE)
+
+  // 1) tutto selezionato (Ctrl+A) + Ctrl+U
+  await premi('a', 'KeyA', 65, 2)
+  await premi('u', 'KeyU', 85, 2)
+  const tutto = await testo()
+  console.log(`  dopo Ctrl+A + Ctrl+U:\n${tutto.split('\n').map(r => `    |${r}`).join('\n')}`)
+  check('Ctrl+U con tutto selezionato: diventa TUTTO maiuscolo', tutto === BASE.toUpperCase(), tutto.split('\n')[0])
+
+  // 2) SOLO la prima riga selezionata: cambia quella e nient'altro
+  await scrivi(BASE)
+  await premi('Home', 'Home', 36, 2) // Ctrl+Home: inizio del documento
+  await premi('End', 'End', 35, 8) // Shift+End: seleziona la prima riga
+  await premi('u', 'KeyU', 85, 2)
+  const unaRiga = await testo()
+  console.log(`  dopo Ctrl+U sulla sola prima riga:\n${unaRiga.split('\n').map(r => `    |${r}`).join('\n')}`)
+  const righe = unaRiga.split('\n')
+  check('Ctrl+U con una riga selezionata: cambia SOLO quella', righe[0] === 'SELECT UNO, DUE FROM TRE')
+  check(
+    'le altre righe restano come erano',
+    righe[1] === 'go' && righe[2] === 'select quattro from cinque',
+    JSON.stringify(righe.slice(1)),
+  )
+
+  // 3) senza selezione: la PAROLA sotto il cursore (qui dentro "cinque", in fondo al documento)
+  await scrivi(BASE)
+  await premi('End', 'End', 35, 2) // Ctrl+End: fine del documento
+  for (let i = 0; i < 4; i++) await page.press('ArrowLeft', { code: 'ArrowLeft', vk: 37 })
+  await sleep(400)
+  await premi('u', 'KeyU', 85, 2)
+  const parola = await testo()
+  console.log(`  senza selezione (cursore dentro "cinque"): ${JSON.stringify(parola.split('\n')[2])}`)
+  check(
+    'Ctrl+U senza selezione: rende maiuscola la PAROLA sotto il cursore',
+    /CINQUE/.test(parola) && /select quattro from/.test(parola),
+    parola.split('\n')[2],
+  )
+
+  // 4) Ctrl+Shift+L: minuscolo (da tutto maiuscolo si torna al testo di partenza)
+  await scrivi(BASE.toUpperCase())
+  await premi('a', 'KeyA', 65, 2)
+  await premi('l', 'KeyL', 76, 2 | 8)
+  const minuscolo = await testo()
+  console.log(`  dopo Ctrl+Shift+L:\n${minuscolo.split('\n').map(r => `    |${r}`).join('\n')}`)
+  check('Ctrl+Shift+L rende MINUSCOLA la selezione (torna al testo di partenza)', minuscolo === BASE)
+
+  await page.screenshot('editor-ctrl-u-maiuscolo')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -6603,6 +6699,11 @@ async function main() {
 
     if (VERIFY_OGGETTO_VERSIONE) {
       await verifyOggettoVersione(page)
+      return
+    }
+
+    if (VERIFY_MAIUSCOLO) {
+      await verifyMaiuscolo(page)
       return
     }
 

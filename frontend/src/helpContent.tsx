@@ -270,6 +270,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       { title: 'Ctrl+Shift+F', detail: 'Formatta il SQL con il profilo attivo.' },
       { title: 'Ctrl+Shift+R', detail: 'Aggiorna lo schema (tabelle, colonne, viste e routine) rileggendolo dal database, come il Refresh di SSMS.' },
       { title: 'Ctrl+R', detail: 'Mostra/nasconde il pannello dei risultati.' },
+      { title: 'Ctrl+U', detail: 'Rende MAIUSCOLA la selezione (con più cursori vale per tutte le selezioni; senza selezione, la parola sotto il cursore). Ctrl+Shift+U lo stesso, come in SSMS; Ctrl+Shift+L rende minuscolo.' },
       { title: 'Ctrl+rotella mouse', detail: 'Ingrandisce/riduce il testo dell\u2019editor.' },
       { title: 'Ctrl+Spazio', detail: 'Forza l\u2019apertura dell\u2019autocompletamento.' },
     ],
