@@ -11,6 +11,7 @@ export type TipoNodo =
   | 'db'
   | 'sezione'
   | 'schema'
+  | 'gruppo'
   | 'tabella'
   | 'colonna'
   | 'indice'

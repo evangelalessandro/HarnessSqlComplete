@@ -48,6 +48,7 @@ const VERIFY_DRAGO_JOIN = process.argv.includes('--verify-drago-join')
 const VERIFY_OGGETTO_VERSIONE = process.argv.includes('--verify-oggetto-versione')
 const VERIFY_MAIUSCOLO = process.argv.includes('--verify-maiuscolo')
 const VERIFY_SELEZIONE_TREEVIEW = process.argv.includes('--verify-selezione-treeview')
+const VERIFY_GRUPPI_ALBERO = process.argv.includes('--verify-gruppi-albero')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -6698,6 +6699,136 @@ async function verifySelezioneTreeview(page) {
 }
 
 /**
+ * VERIFICA (--verify-gruppi-albero): dentro il nodo di una tabella, Colonne / Indici / Chiavi
+ * esterne / Vincoli / Trigger sono SOTTOGRUPPI annidati, ognuno apribile per conto suo.
+ * Richiesta utente: "annida nella treeview delle tabelle le colonne in un nodo, indici in un altro
+ * e fk in un altro ecc…".
+ */
+async function verifyGruppiAlbero(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Clic sintetico sull'elemento che soddisfa la condizione (la card di hover coprirebbe la riga). */
+  const clic = async condizione =>
+    await page.eval(`(() => {
+      const el = [...document.querySelectorAll('[data-nodo], button')].find(e => ${condizione});
+      if (!el) return false;
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      return true;
+    })()`)
+  /** Chiavi delle voci visibili con un certo prefisso. */
+  const chiavi = async prefisso =>
+    await page.eval(`[...document.querySelectorAll('[data-nodo^=' + JSON.stringify(${JSON.stringify(prefisso)}) + ']')]
+      .map(e => e.getAttribute('data-nodo'))`)
+
+  // si apre l'albero fino a una tabella che ha indici/FK: RUN_MISSIONI (gruppo RUN)
+  for (let giro = 0; giro < 8; giro++) {
+    if ((await chiavi('tabella:')).length > 0) break
+    const haSchemi = (await chiavi('schema:')).length > 0
+    if (!haSchemi) {
+      await clic(`e.getAttribute && e.getAttribute('data-nodo') === 'sezione:Tabelle'`)
+    } else {
+      await page.eval(`(() => {
+        const gruppi = [...document.querySelectorAll('[data-nodo^="schema:"]')];
+        const g = gruppi.find(e => (e.getAttribute('data-nodo') || '').includes('run')) || gruppi[0];
+        if (g) g.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      })()`)
+    }
+    await sleep(900)
+  }
+  // si espande la tabella RUN_MISSIONI (o la prima disponibile)
+  const espanso = await page.eval(`(() => {
+    const righe = [...document.querySelectorAll('[data-nodo^="tabella:"]')];
+    const riga = righe.find(r => (r.getAttribute('data-nodo') || '').includes('RUN_MISSIONI')) || righe[0];
+    if (!riga) return null;
+    const contenitore = riga.closest('div.group') || riga.parentElement;
+    const chevron = contenitore ? contenitore.querySelector('button') : null;
+    if (!chevron) return null;
+    chevron.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    return riga.getAttribute('data-nodo');
+  })()`)
+  await sleep(1000)
+  console.log(`  tabella espansa: ${espanso}`)
+  const gruppi = await page.eval(`[...document.querySelectorAll('[data-nodo^="gruppo:"]')]
+    .map(e => ({ chiave: e.getAttribute('data-nodo'), testo: (e.textContent || '').trim() }))`)
+  console.log(`  nodi di gruppo: ${JSON.stringify(gruppi)}`)
+  const titoli = gruppi.map(g => g.testo.replace(/\s*\d+$/, '').trim().toLowerCase())
+  check(
+    'Colonne/Indici/Chiavi esterne/Vincoli sono NODI separati dentro la tabella',
+    titoli.includes('colonne') &&
+      (titoli.includes('indici') || titoli.includes('chiavi esterne') || titoli.includes('vincoli')),
+    JSON.stringify(titoli),
+  )
+  check(
+    'ogni nodo porta il conteggio delle voci',
+    gruppi.length > 0 && gruppi.every(g => /\d+$/.test(g.testo)),
+    JSON.stringify(gruppi.map(g => g.testo)),
+  )
+
+  // Colonne aperte di default; chiudendole spariscono le colonne
+  const colonneAperte = (await chiavi('colonna:')).length
+  check('il nodo Colonne è aperto all\'apertura della tabella', colonneAperte > 0, `${colonneAperte} colonne`)
+  const chiaveColonne = gruppi.find(g => /colonne/i.test(g.testo))?.chiave
+  if (chiaveColonne) {
+    await clic(`e.getAttribute && e.getAttribute('data-nodo') === ${JSON.stringify(chiaveColonne)}`)
+    await sleep(700)
+  }
+  check('chiudendo il nodo Colonne le colonne si nascondono', (await chiavi('colonna:')).length === 0)
+
+  // un nodo tra Indici / Chiavi esterne / Vincoli: si apre e mostra le sue voci
+  const chiaveAltro = gruppi.find(g => /indici|chiavi esterne|vincoli/i.test(g.testo))?.chiave
+  if (chiaveAltro) {
+    const prima = await page.eval(`document.querySelectorAll('[data-nodo^="indice:"], [data-nodo^="vincolo:"]').length`)
+    await clic(`e.getAttribute && e.getAttribute('data-nodo') === ${JSON.stringify(chiaveAltro)}`)
+    await sleep(800)
+    const dopo = await page.eval(`document.querySelectorAll('[data-nodo^="indice:"], [data-nodo^="vincolo:"]').length`)
+    console.log(`  voci di ${chiaveAltro}: prima ${prima}, dopo il clic ${dopo}`)
+    check('aprendo un altro nodo (indici/chiavi esterne/vincoli) compaiono le sue voci', dopo > prima, `${dopo} voci`)
+  }
+
+  // le FK, se ci sono, stanno nel loro nodo
+  const chiaveFk = gruppi.find(g => /chiavi esterne/i.test(g.testo))?.chiave
+  if (chiaveFk) {
+    /** Conteggio delle righe di vincolo che sono FK. */
+    const quanteFk = async () =>
+      await page.eval(`[...document.querySelectorAll('[data-nodo^="vincolo:"]')]
+        .filter(r => /FOREIGN KEY/i.test(r.getAttribute('title') || '')).length`)
+    // il nodo potrebbe essere già aperto dal passo precedente: si clicca solo se serve
+    if ((await quanteFk()) === 0) {
+      await clic(`e.getAttribute && e.getAttribute('data-nodo') === ${JSON.stringify(chiaveFk)}`)
+      await sleep(800)
+    }
+    const fk = await quanteFk()
+    console.log(`  FK visibili sotto il nodo "Chiavi esterne": ${fk}`)
+    check('sotto "Chiavi esterne" ci sono le FK', fk > 0, `${fk} FK`)
+  }
+
+  await page.eval(`(() => {
+    const el = document.querySelector('[data-nodo^="gruppo:"]');
+    if (el) el.scrollIntoView({ block: 'center' });
+  })()`)
+  await sleep(400)
+  await page.clickPoint(900, 760)
+  await sleep(500)
+  await page.screenshot('treeview-gruppi-annidati')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -6929,6 +7060,11 @@ async function main() {
 
     if (VERIFY_SELEZIONE_TREEVIEW) {
       await verifySelezioneTreeview(page)
+      return
+    }
+
+    if (VERIFY_GRUPPI_ALBERO) {
+      await verifyGruppiAlbero(page)
       return
     }
 

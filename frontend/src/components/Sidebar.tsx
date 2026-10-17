@@ -362,6 +362,13 @@ export default function Sidebar({
   // Tabelle: gruppi di prefisso e campi delle tabelle chiusi di default
   const [expandedTables, setExpandedTables] = useState<Set<string>>(() => new Set())
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set())
+  /**
+   * SOTTOGRUPPI del nodo tabella (Colonne / Indici / Chiavi esterne / Vincoli / Trigger): ognuno è
+   * un NODO apribile per conto suo, così l'albero non mostra tutto in fila (richiesta utente:
+   * "annida nella treeview delle tabelle le colonne in un nodo, indici in un altro e fk in un
+   * altro ecc…"). La chiave è `${tabella}|${gruppo}`.
+   */
+  const [openSottogruppi, setOpenSottogruppi] = useState<Set<string>>(() => new Set())
 
   const tableGroups = useMemo(
     () => (summary ? groupTablesByPrefix(summary.tables) : []),
@@ -466,6 +473,25 @@ export default function Sidebar({
 
   const toggleTable = (key: string) =>
     setExpandedTables(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) {
+        next.delete(key)
+        // chiudendo la tabella si richiudono anche i suoi sottogruppi (si riparte puliti)
+        setOpenSottogruppi(s => {
+          const dopo = new Set(s)
+          for (const k of dopo) if (k.startsWith(`${key}|`)) dopo.delete(k)
+          return dopo
+        })
+      } else {
+        next.add(key)
+        // aprendo la tabella si apre subito il nodo COLONNE: è quello che serve quasi sempre
+        setOpenSottogruppi(s => new Set(s).add(`${key}|colonne`))
+      }
+      return next
+    })
+
+  const toggleSottogruppo = (key: string) =>
+    setOpenSottogruppi(prev => {
       const next = new Set(prev)
       if (next.has(key)) next.delete(key)
       else next.add(key)
@@ -1000,6 +1026,10 @@ export default function Sidebar({
                           const indiciVeri = (t.indexes ?? []).filter(ix => !indiceVincolo(ix))
                           // VINCOLI: chiave primaria, unique, chiavi esterne uscenti e CHECK
                           const vincoli = expanded ? vincoliDiTabella(t) : []
+                          // ...ma nell'albero stanno in DUE nodi distinti (richiesta utente:
+                          // "indici in un altro e fk in un altro ecc…")
+                          const chiaviEsterne = vincoli.filter(v => v.tipo === 'FOREIGN KEY')
+                          const altriVincoli = vincoli.filter(v => v.tipo !== 'FOREIGN KEY')
                           return (
                             <TableRow
                               key={tKey}
@@ -1019,29 +1049,40 @@ export default function Sidebar({
                             >
                               {expanded && (
                                 <>
-                                  <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
-                                    Colonne
-                                  </div>
-                                  {t.columns?.map(c => (
-                                    <button
-                                      key={c.name}
-                                      data-nodo={chiaveNodo('colonna', t.schema, t.name, c.name)}
-                                      onClick={() => onInsertText(sqlIdent(c.name))}
-                                      onMouseEnter={e => hoverColumn(e, t.name, c)}
-                                      onMouseLeave={scheduleClose}
-                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-                                      title={`${c.dataType}${c.isNullable ? ' NULL' : ''}${c.isIdentity ? ' IDENTITY' : ''}`}
-                                    >
-                                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${c.isIdentity ? 'bg-amber-400' : c.isNullable ? 'bg-zinc-600' : 'bg-emerald-500'}`} />
-                                      <span className="min-w-0 break-all font-mono">{c.name}</span>
-                                      <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">{c.dataType}</span>
-                                    </button>
-                                  ))}
+                                  {/* SOTTOGRUPPI: ognuno è un nodo apribile per conto suo
+                                      (Colonne, Indici, Chiavi esterne, Vincoli, Trigger). */}
+                                  <NodoGruppo
+                                    titolo="Colonne"
+                                    quantita={t.columns?.length ?? 0}
+                                    aperto={openSottogruppi.has(`${tKey}|colonne`)}
+                                    onToggle={() => toggleSottogruppo(`${tKey}|colonne`)}
+                                    nodo={chiaveNodo('gruppo', t.schema, t.name, 'colonne')}
+                                  >
+                                    {t.columns?.map(c => (
+                                      <button
+                                        key={c.name}
+                                        data-nodo={chiaveNodo('colonna', t.schema, t.name, c.name)}
+                                        onClick={() => onInsertText(sqlIdent(c.name))}
+                                        onMouseEnter={e => hoverColumn(e, t.name, c)}
+                                        onMouseLeave={scheduleClose}
+                                        className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-12 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                                        title={`${c.dataType}${c.isNullable ? ' NULL' : ''}${c.isIdentity ? ' IDENTITY' : ''}`}
+                                      >
+                                        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${c.isIdentity ? 'bg-amber-400' : c.isNullable ? 'bg-zinc-600' : 'bg-emerald-500'}`} />
+                                        <span className="min-w-0 break-all font-mono">{c.name}</span>
+                                        <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">{c.dataType}</span>
+                                      </button>
+                                    ))}
+                                  </NodoGruppo>
+
                                   {indiciVeri.length > 0 && (
-                                    <>
-                                      <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
-                                        Indici
-                                      </div>
+                                    <NodoGruppo
+                                      titolo="Indici"
+                                      quantita={indiciVeri.length}
+                                      aperto={openSottogruppi.has(`${tKey}|indici`)}
+                                      onToggle={() => toggleSottogruppo(`${tKey}|indici`)}
+                                      nodo={chiaveNodo('gruppo', t.schema, t.name, 'indici')}
+                                    >
                                       {indiciVeri.map(ix => (
                                         <button
                                           key={ix.name}
@@ -1057,7 +1098,7 @@ export default function Sidebar({
                                               index: ix,
                                             })
                                           }
-                                          className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                                          className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-12 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
                                           title={`${ix.isUnique ? 'UNIQUE ' : ''}${ix.isClustered ? 'CLUSTERED' : 'NONCLUSTERED'} INDEX ${ix.name}${
                                             (ix.columns ?? []).length > 0 ? `\nColonne: ${(ix.columns ?? []).join(', ')}` : ''
                                           }${
@@ -1079,75 +1120,95 @@ export default function Sidebar({
                                           )}
                                         </button>
                                       ))}
-                                    </>
+                                    </NodoGruppo>
                                   )}
-                                  {vincoli.length > 0 && (
-                                    <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
-                                      Vincoli
-                                    </div>
-                                  )}
-                                  {vincoli.map(v => (
-                                    <button
-                                      key={`${v.tipo}:${v.nome}`}
-                                      data-nodo={chiaveNodo('vincolo', t.schema, t.name, v.nome)}
-                                      onClick={() => apriScriptFiglia(`${v.tipo} ${v.nome}`, v.sqlCreate)}
-                                      onContextMenu={e =>
-                                        openObjectMenu(e, {
-                                          kind: 'vincolo',
-                                          schema: t.schema,
-                                          name: v.nome,
-                                          detail: t.name,
-                                          table: t,
-                                          vincolo: v,
-                                        })
-                                      }
-                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-                                      title={`${v.tipo} ${v.nome}\n${v.dettaglio}\nClicca per lo script di creazione — tasto destro per CREATE/DROP`}
+
+                                  {/* CHIAVI ESTERNE in un nodo a parte (richiesta utente:
+                                      "indici in un altro e fk in un altro") */}
+                                  {chiaviEsterne.length > 0 && (
+                                    <NodoGruppo
+                                      titolo="Chiavi esterne"
+                                      quantita={chiaviEsterne.length}
+                                      aperto={openSottogruppi.has(`${tKey}|fk`)}
+                                      onToggle={() => toggleSottogruppo(`${tKey}|fk`)}
+                                      nodo={chiaveNodo('gruppo', t.schema, t.name, 'fk')}
                                     >
-                                      {v.tipo === 'CHECK' ? (
-                                        <BadgeCheck className="h-3 w-3 shrink-0 text-emerald-400/70" />
-                                      ) : v.tipo === 'FOREIGN KEY' ? (
-                                        <Share2 className="h-3 w-3 shrink-0 text-violet-400/70" />
-                                      ) : (
-                                        <KeyRound className="h-3 w-3 shrink-0 text-amber-400/70" />
-                                      )}
-                                      <span className="min-w-0 break-all font-mono">{v.nome}</span>
-                                      <span
-                                        className={`shrink-0 rounded px-1 text-[9px] font-bold uppercase ${
-                                          v.tipo === 'PRIMARY KEY'
-                                            ? 'bg-amber-950/70 text-amber-300'
-                                            : v.tipo === 'FOREIGN KEY'
-                                              ? 'bg-violet-950/70 text-violet-300'
-                                              : 'bg-zinc-800 text-zinc-400'
-                                        }`}
-                                      >
-                                        {v.tipo === 'PRIMARY KEY' ? 'PK' : v.tipo === 'FOREIGN KEY' ? 'FK' : v.tipo}
-                                      </span>
-                                      {v.disabilitato && (
-                                        <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-amber-400">off</span>
-                                      )}
-                                    </button>
-                                  ))}
+                                      {chiaviEsterne.map(v => (
+                                        <VoceVincoloRiga
+                                          key={`${v.tipo}:${v.nome}`}
+                                          v={v}
+                                          nodo={chiaveNodo('vincolo', t.schema, t.name, v.nome)}
+                                          onApri={() => apriScriptFiglia(`${v.tipo} ${v.nome}`, v.sqlCreate)}
+                                          onMenu={e =>
+                                            openObjectMenu(e, {
+                                              kind: 'vincolo',
+                                              schema: t.schema,
+                                              name: v.nome,
+                                              detail: t.name,
+                                              table: t,
+                                              vincolo: v,
+                                            })
+                                          }
+                                        />
+                                      ))}
+                                    </NodoGruppo>
+                                  )}
+
+                                  {/* VINCOLI: chiave primaria, unique e CHECK (le FK stanno sopra) */}
+                                  {altriVincoli.length > 0 && (
+                                    <NodoGruppo
+                                      titolo="Vincoli"
+                                      quantita={altriVincoli.length}
+                                      aperto={openSottogruppi.has(`${tKey}|vincoli`)}
+                                      onToggle={() => toggleSottogruppo(`${tKey}|vincoli`)}
+                                      nodo={chiaveNodo('gruppo', t.schema, t.name, 'vincoli')}
+                                    >
+                                      {altriVincoli.map(v => (
+                                        <VoceVincoloRiga
+                                          key={`${v.tipo}:${v.nome}`}
+                                          v={v}
+                                          nodo={chiaveNodo('vincolo', t.schema, t.name, v.nome)}
+                                          onApri={() => apriScriptFiglia(`${v.tipo} ${v.nome}`, v.sqlCreate)}
+                                          onMenu={e =>
+                                            openObjectMenu(e, {
+                                              kind: 'vincolo',
+                                              schema: t.schema,
+                                              name: v.nome,
+                                              detail: t.name,
+                                              table: t,
+                                              vincolo: v,
+                                            })
+                                          }
+                                        />
+                                      ))}
+                                    </NodoGruppo>
+                                  )}
+
                                   {tableTriggers.length > 0 && (
-                                    <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
-                                      Trigger
-                                    </div>
-                                  )}
-                                  {tableTriggers.map(trg => (
-                                    <button
-                                      key={trg.name}
-                                      data-nodo={chiaveNodo('trigger', trg.schema, trg.name)}
-                                      onClick={() => onInsertText(qualified(trg.schema, trg.name))}
-                                      onContextMenu={e =>
-                                        openObjectMenu(e, { kind: 'trigger', schema: trg.schema, name: trg.name, detail: trg.tableName, trigger: trg })
-                                      }
-                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-                                      title="Clicca per inserire — tasto destro per le azioni"
+                                    <NodoGruppo
+                                      titolo="Trigger"
+                                      quantita={tableTriggers.length}
+                                      aperto={openSottogruppi.has(`${tKey}|trigger`)}
+                                      onToggle={() => toggleSottogruppo(`${tKey}|trigger`)}
+                                      nodo={chiaveNodo('gruppo', t.schema, t.name, 'trigger')}
                                     >
-                                      <Flame className="h-3 w-3 shrink-0 text-rose-400/70" />
-                                      <span className="min-w-0 break-all font-mono">{trg.name}</span>
-                                    </button>
-                                  ))}
+                                      {tableTriggers.map(trg => (
+                                        <button
+                                          key={trg.name}
+                                          data-nodo={chiaveNodo('trigger', trg.schema, trg.name)}
+                                          onClick={() => onInsertText(qualified(trg.schema, trg.name))}
+                                          onContextMenu={e =>
+                                            openObjectMenu(e, { kind: 'trigger', schema: trg.schema, name: trg.name, detail: trg.tableName, trigger: trg })
+                                          }
+                                          className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-12 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                                          title="Clicca per inserire — tasto destro per le azioni"
+                                        >
+                                          <Flame className="h-3 w-3 shrink-0 text-rose-400/70" />
+                                          <span className="min-w-0 break-all font-mono">{trg.name}</span>
+                                        </button>
+                                      ))}
+                                    </NodoGruppo>
+                                  )}
                                 </>
                               )}
                             </TableRow>
@@ -1811,8 +1872,93 @@ function TableRow({
   )
 }
 
-function KindIcon({ kind }: { kind: HitKind }) {
-  switch (kind) {
+/**
+ * NODO DI UN SOTTOGRUPPO della tabella (Colonne / Indici / Chiavi esterne / Vincoli / Trigger).
+ * Richiesta utente: "annida nella treeview delle tabelle le colonne in un nodo, indici in un altro
+ * e fk in un altro ecc…" — ogni gruppo ha la sua freccia, il conteggio e si apre per conto suo.
+ */
+function NodoGruppo({
+  titolo,
+  quantita,
+  aperto,
+  onToggle,
+  nodo,
+  children,
+}: {
+  titolo: string
+  quantita: number
+  aperto: boolean
+  onToggle: () => void
+  /** Chiave della voce (`data-nodo`) per la selezione dell'albero. */
+  nodo?: string
+  children: ReactNode
+}) {
+  return (
+    <div>
+      <button
+        onClick={onToggle}
+        data-nodo={nodo}
+        className="flex w-full items-center gap-1.5 rounded px-2 py-0.5 pl-8 text-left text-[10px] font-semibold uppercase tracking-wide text-zinc-500 transition-colors hover:bg-zinc-800/60 hover:text-zinc-300"
+        title={`${aperto ? 'Chiudi' : 'Apri'} ${titolo.toLowerCase()} (${quantita})`}
+      >
+        {aperto ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+        <span>{titolo}</span>
+        <span className="ml-auto rounded-full bg-zinc-800 px-1.5 py-px text-[10px] font-normal normal-case tracking-normal text-zinc-400">
+          {quantita}
+        </span>
+      </button>
+      {aperto && <div className="space-y-0.5">{children}</div>}
+    </div>
+  )
+}
+
+/** Riga di un VINCOLO nell'albero (usata sia sotto "Chiavi esterne" sia sotto "Vincoli"). */
+function VoceVincoloRiga({
+  v,
+  nodo,
+  onApri,
+  onMenu,
+}: {
+  v: VoceVincolo
+  nodo: string
+  onApri: () => void
+  onMenu: (e: MouseEvent<HTMLElement>) => void
+}) {
+  return (
+    <button
+      data-nodo={nodo}
+      onClick={onApri}
+      onContextMenu={onMenu}
+      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-12 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+      title={`${v.tipo} ${v.nome}\n${v.dettaglio}\nClicca per lo script di creazione — tasto destro per CREATE/DROP`}
+    >
+      {v.tipo === 'CHECK' ? (
+        <BadgeCheck className="h-3 w-3 shrink-0 text-emerald-400/70" />
+      ) : v.tipo === 'FOREIGN KEY' ? (
+        <Share2 className="h-3 w-3 shrink-0 text-violet-400/70" />
+      ) : (
+        <KeyRound className="h-3 w-3 shrink-0 text-amber-400/70" />
+      )}
+      <span className="min-w-0 break-all font-mono">{v.nome}</span>
+      <span
+        className={`shrink-0 rounded px-1 text-[9px] font-bold uppercase ${
+          v.tipo === 'PRIMARY KEY'
+            ? 'bg-amber-950/70 text-amber-300'
+            : v.tipo === 'FOREIGN KEY'
+              ? 'bg-violet-950/70 text-violet-300'
+              : 'bg-zinc-800 text-zinc-400'
+        }`}
+      >
+        {v.tipo === 'PRIMARY KEY' ? 'PK' : v.tipo === 'FOREIGN KEY' ? 'FK' : v.tipo}
+      </span>
+      {v.disabilitato && (
+        <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-amber-400">off</span>
+      )}
+    </button>
+  )
+}
+
+function KindIcon({ kind }: { kind: HitKind }) {  switch (kind) {
     case 'tabella':
       return <Table2 className="h-3.5 w-3.5 shrink-0 text-sky-400" />
     case 'vista':

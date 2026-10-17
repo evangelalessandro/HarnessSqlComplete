@@ -90,3 +90,38 @@ describe('collegamento nell albero (Sidebar)', () => {
     expect(source).toContain("document.querySelectorAll('[data-nodo]')")
   })
 })
+
+// SOTTOGRUPPI ANNIDATI NEL NODO TABELLA.
+// Richiesta utente: "annida nella treeview delle tabelle le colonne in un nodo, indici in un altro
+// e fk in un altro ecc…" — Colonne / Indici / Chiavi esterne / Vincoli / Trigger sono nodi
+// separati, ognuno con la sua freccia, il conteggio e la sua chiave per la selezione.
+describe('sottogruppi annidati della tabella (Sidebar)', () => {
+  it('esiste il componente NodoGruppo con freccia, titolo e conteggio', () => {
+    expect(source).toContain('function NodoGruppo')
+    expect(source).toContain('titolo: string')
+    expect(source).toContain('quantita: number')
+    expect(source).toContain('aperto: boolean')
+  })
+
+  it('i gruppi sono cinque e separati (le FK non stanno con gli altri vincoli)', () => {
+    for (const titolo of ['titolo="Colonne"', 'titolo="Indici"', 'titolo="Chiavi esterne"', 'titolo="Vincoli"', 'titolo="Trigger"']) {
+      expect(source, `manca il nodo ${titolo}`).toContain(titolo)
+    }
+    // i vincoli vengono divisi in due liste: FK a parte
+    expect(source).toContain("vincoli.filter(v => v.tipo === 'FOREIGN KEY')")
+    expect(source).toContain("vincoli.filter(v => v.tipo !== 'FOREIGN KEY')")
+  })
+
+  it('ogni gruppo ha la sua chiave data-nodo e il suo stato di apertura', () => {
+    for (const gruppo of ['colonne', 'indici', 'fk', 'vincoli', 'trigger']) {
+      expect(source, `manca la chiave ${gruppo}`).toContain(`\`\${tKey}|${gruppo}\``)
+    }
+    expect(source).toContain('openSottogruppi')
+    expect(source).toContain('toggleSottogruppo')
+  })
+
+  it('aprendo una tabella si apre subito il nodo Colonne; chiudendola si richiudono i suoi gruppi', () => {
+    expect(source).toContain('setOpenSottogruppi(s => new Set(s).add(`${key}|colonne`))')
+    expect(source).toContain('if (k.startsWith(`${key}|`)) dopo.delete(k)')
+  })
+})
