@@ -6986,6 +6986,7 @@ async function verifyTransazione(page) {
   const notaAperta = await nota()
   console.log(`  dopo BEGIN TRAN: nota=${JSON.stringify(notaAperta)}`)
   check('la transazione resta aperta e viene SEGNALATA', !!notaAperta && /transazione aperta/i.test(notaAperta), String(notaAperta).slice(0, 80))
+  await page.screenshot('transazione-aperta')
   await apriMessaggi()
   const msgAperti = await messaggi()
   check('il messaggio di avviso è anche nei Messaggi', /Transazione ancora aperta/i.test(msgAperti))
