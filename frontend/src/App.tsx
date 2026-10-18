@@ -26,6 +26,8 @@ import type { NewTabPosition, TabCloseMode } from './tabOps'
 import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryMessage, QueryResult, RoutineCallGraph } from './types'
 import { chooseResultTab } from './queryTabs'
 import { pickSqlToExecute } from './executeSelection'
+import { costruisciAnteprima } from './dmlPreview'
+import { statementAttorno } from './inlineSuggest'
 import {
   etichettaOggetto,
   improntaDefinizione,
@@ -1257,6 +1259,40 @@ export default function App() {
    * nella tab e aggiorna la versione di partenza. Se nel frattempo si e' modificato il testo si
    * chiede conferma: si sta per sovrascrivere il lavoro in corso.
    */
+  /**
+   * ANTEPRIMA DELLE MODIFICHE (richiesta utente: "fai anteprima delle modifiche").
+   *
+   * Da un UPDATE/DELETE costruisce la SELECT che mostra le righe che verrebbero toccate — con la
+   * STESSA FROM/JOIN/WHERE scritta dall'utente — e la esegue nel pannello dei risultati. Nulla viene
+   * modificato: il testo nello statement vero non viene toccato.
+   */
+  const anteprimaModifiche = useCallback(() => {
+    if (!connection) return
+    const model = editor?.getModel()
+    const pos = editor?.getPosition()
+    const testo = model?.getValue() ?? ''
+    const sel = model ? editor?.getSelection() : null
+    const selezionato = model && sel && !sel.isEmpty() ? model.getValueInRange(sel) : null
+    let statement = selezionato ?? testo
+    if (!selezionato && model && pos) {
+      const { inizio, fine } = statementAttorno(testo, model.getOffsetAt(pos))
+      statement = testo.slice(inizio, fine)
+    }
+    const anteprima = costruisciAnteprima(statement, summary)
+    if (!anteprima) {
+      setNota({
+        testo: "L'anteprima vale per un UPDATE o un DELETE: metti il cursore su uno di questi statement.",
+        tono: 'info',
+      })
+      return
+    }
+    setNota({
+      testo: `Anteprima di ${anteprima.tipo === 'update' ? 'UPDATE' : 'DELETE'} su «${anteprima.tabella}»: le righe nel pannello sono quelle che verrebbero modificate (nulla è stato toccato).`,
+      tono: 'info',
+    })
+    void handleExecute(anteprima.sql)
+  }, [connection, editor, handleExecute, summary])
+
   const ricaricaOggettoNellaTab = useCallback(async () => {
     const tab = editorTabs.find(t => t.id === activeEditorTab)
     const ref = tab?.objectRef
@@ -1905,6 +1941,7 @@ export default function App() {
                 dragonLevel={dragonLevel}
                 fireTick={fireTick}
                 onExecute={(sql: string) => void handleExecute(sql)}
+                onAnteprimaModifiche={anteprimaModifiche}
                 onContentChange={handleContentChange}
                 onSave={() => saveActiveTab(false)}
                 onSaveAs={() => saveActiveTab(true)}

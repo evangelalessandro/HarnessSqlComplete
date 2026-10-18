@@ -54,6 +54,7 @@ const VERIFY_F5_GLOBALE = process.argv.includes('--verify-f5-globale')
 const MEASURE_SCHEMA = process.argv.includes('--measure-schema')
 const VERIFY_GHOST = process.argv.includes('--verify-ghost')
 const VERIFY_VIRGOLA = process.argv.includes('--verify-virgola')
+const VERIFY_ANTEPRIMA = process.argv.includes('--verify-anteprima')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -7283,6 +7284,128 @@ async function verifyVirgola(page) {
 }
 
 /**
+ * VERIFICA (--verify-anteprima): il pulsante (e Alt+P) "Anteprima" mostra, per un UPDATE/DELETE, le
+ * righe che verrebbero toccate — senza modificare niente. Richiesta utente: "fai anteprima delle
+ * modifiche".
+ * Controlla: compare la griglia con le colonne della tabella, la striscia dice che è un'anteprima,
+ * il TESTO nell'editor non cambia, la tabella non viene modificata (valore di riferimento identico
+ * prima e dopo) e su un SELECT il comando avvisa senza eseguire nulla.
+ */
+async function verifyAnteprima(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const testo = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors().find(e => e.hasTextFocus()) ?? m.editor.getEditors()[0];
+      return ed ? ed.getValue() : ''; })()`)
+  const scrivi = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(700)
+  }
+  const clicAnteprima = async () => {
+    const punto = await page.eval(`(() => {
+      const b = document.querySelector('[data-anteprima="modifiche"]');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) return false
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(2600)
+    return true
+  }
+  const risultati = async () =>
+    await page.eval(`(() => {
+      const box = document.querySelector('[data-testid="risultati"]')
+        || [...document.querySelectorAll('div')].find(d => /Risultati/.test((d.textContent || '').slice(0, 40)) && d.querySelector('table'));
+      return box ? (box.textContent || '').replace(/\\s+/g, ' ').slice(0, 500) : '';
+    })()`)
+  const nota = async () =>
+    await page.eval(`(() => { const n = document.querySelector('[data-nota]'); return n ? (n.textContent || '').trim() : null; })()`)
+  const valore = async sql => {
+    await scrivi(sql)
+    await page.press('F5', { code: 'F5', vk: 116 })
+    await sleep(2400)
+    return await risultati()
+  }
+
+  // 0) valore di riferimento PRIMA (tabella vera, sola lettura)
+  // impronta dei dati: un solo valore stabile (il tempo di esecuzione nella griglia cambia sempre)
+  const CONTA = "SELECT CONCAT(COUNT(*), '|', SUM(LEN(CEL_DES))) AS F FROM dbo.MAG_CELLE"
+  const conta = async () => {
+    await valore(CONTA)
+    const m = (await risultati()).match(/\d+\|\d+/)
+    return m ? m[0] : null
+  }
+  const prima = await conta()
+  check('lettura di riferimento riuscita', prima.length > 0, prima.slice(0, 60))
+
+  // 1) UPDATE con JOIN e WHERE → anteprima
+  // caso reale: il bersaglio è scritto con lo schema e la FROM usa un ALIAS (c) → le colonne
+  // devono essere qualificate con "c", non con "MAG_CELLE" (era il bug trovato da questa prova)
+  const sqlUpdate = 'UPDATE dbo.MAG_CELLE SET CEL_DES = CEL_DES FROM MAG_CELLE c WHERE c.CEL_CELLA >= 0'
+  await scrivi(sqlUpdate)
+  const testoPrima = await testo()
+  const premuto = await clicAnteprima()
+  await page.screenshot('anteprima-dopo-click')
+  const griglia = await risultati()
+  const messaggi = await page.eval(
+    `(() => { const d = [...document.querySelectorAll('div')].find(x => /Messaggi \\/ PRINT/.test(x.textContent || '')); return d ? (d.textContent || '').replace(/\\s+/g, ' ').slice(0, 400) : '' })()`,
+  )
+  console.log(`  messaggi: ${JSON.stringify(messaggi.slice(0, 220))}`)
+  const avviso = await nota()
+  console.log(`  anteprima premuta: ${premuto}`)
+  console.log(`  griglia: ${JSON.stringify(griglia.slice(0, 160))}`)
+  console.log(`  nota: ${JSON.stringify(avviso)}`)
+  check('il pulsante Anteprima esiste ed è stato premuto', premuto)
+  check('compare la griglia con le colonne della tabella', /CEL_CORRIDOIO|CEL_CELLA|CEL_DES/i.test(griglia))
+  check('la striscia dice che è un\'anteprima', !!avviso && /anteprima/i.test(avviso), String(avviso).slice(0, 80))
+  check('il testo dell\'editor NON è cambiato', (await testo()) === testoPrima)
+
+  // 2) la tabella non è stata modificata
+  const dopo = await conta()
+  check('nessun dato modificato (valore di riferimento invariato)', dopo === prima, `${prima.slice(-28)} → ${dopo.slice(-28)}`)
+
+  // 3) su una SELECT avvisa e non esegue niente
+  await scrivi('SELECT 1 AS X')
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(2200)
+  const primaSelect = await risultati()
+  await clicAnteprima()
+  const avvisoSelect = await nota()
+  console.log(`  nota su SELECT: ${JSON.stringify(avvisoSelect)}`)
+  check('su un SELECT avvisa che vale per UPDATE/DELETE', !!avvisoSelect && /UPDATE o un DELETE/i.test(avvisoSelect), String(avvisoSelect).slice(0, 70))
+  check('su un SELECT non esegue niente', (await risultati()) === primaSelect)
+  await page.screenshot('anteprima-modifiche')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -7544,6 +7667,11 @@ async function main() {
 
     if (VERIFY_VIRGOLA) {
       await verifyVirgola(page)
+      return
+    }
+
+    if (VERIFY_ANTEPRIMA) {
+      await verifyAnteprima(page)
       return
     }
 
