@@ -8,9 +8,15 @@ public class MetadataService
 {
     public async Task<List<string>> ListDatabasesAsync(string connectionString, CancellationToken ct = default)
     {
-        var dbs = new List<string>();
         await using var conn = new SqlConnection(connectionString);
         await conn.OpenAsync(ct);
+        return await ListDatabasesAsync(conn, ct);
+    }
+
+    /// <summary>Elenco database sulla connessione già aperta (evita un secondo connect nello schema).</summary>
+    private static async Task<List<string>> ListDatabasesAsync(SqlConnection conn, CancellationToken ct)
+    {
+        var dbs = new List<string>();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT name FROM sys.databases ORDER BY name;";
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -59,6 +65,9 @@ public class MetadataService
         }
 
         // Colonne (una sola query per tutte le tabelle)
+        // Il DEFAULT si raggiunge con dc.object_id = c.default_object_id (ricerca sulla chiave
+        // primaria): con il join su (parent_object_id, parent_column_id) SQL Server faceva una
+        // scansione per OGNI colonna e la query passava da ~190 ms a ~710 ms.
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = """
@@ -71,7 +80,7 @@ public class MetadataService
                 INNER JOIN sys.tables t ON c.object_id = t.object_id
                 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
                 INNER JOIN sys.types ty ON c.user_type_id = ty.user_type_id
-                LEFT JOIN sys.default_constraints dc ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
+                LEFT JOIN sys.default_constraints dc ON dc.object_id = c.default_object_id
                 LEFT JOIN sys.computed_columns cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id
                 WHERE t.is_ms_shipped = 0
                 ORDER BY s.name, t.name, c.column_id;
@@ -556,7 +565,7 @@ public class MetadataService
             .Take(500)
             .ToList();
 
-        var databases = (await ListDatabasesAsync(connectionString, ct)).Select(d => new DatabaseInfo(d)).ToList();
+        var databases = (await ListDatabasesAsync(conn, ct)).Select(d => new DatabaseInfo(d)).ToList();
         return new DatabaseSummary(tables, views, procs, triggers, checkConstraints, functions, foreignKeys, databases, cooccurrences);
     }
 
@@ -697,6 +706,26 @@ public class MetadataService
     /// <summary>
     /// Estrae i valori di default dei parametri dalla definizione CREATE PROCEDURE
     /// (sys.parameters.has_default_value è inaffidabile: restituisce 0 anche con default espliciti).
+    /// <summary>
+    /// Regex usate mentre si leggono i metadati: create UNA volta (compilate) e non a ogni
+    /// definizione. Prima erano istanziate dentro il ciclo sulle ~2000 routine: solo quello
+    /// costava quasi un secondo a ogni lettura dello schema.
+    /// </summary>
+    private static readonly System.Text.RegularExpressions.Regex ReParametroDefault = new(
+        @"@\s*([A-Za-z_][A-Za-z0-9_]*)\s+([^=]+?)\s*=\s*(.+?)\s*$",
+        System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.IgnoreCase
+        | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex ReOutputReadonly = new(
+        @"\s+(OUTPUT|READONLY)\s*$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>FROM/JOIN/UPDATE/INTO/TABLE nome (con schema opzionale) nelle definizioni.</summary>
+    private static readonly System.Text.RegularExpressions.Regex ReTabelleReferenziate = new(
+        @"\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
     /// Gestisce tipi con parentesi (nvarchar(50)), OUTPUT, commenti e virgole nei default (es. GETDATE()).
     /// </summary>
     internal static Dictionary<string, string> ExtractParameterDefaults(string definition)
@@ -726,15 +755,11 @@ public class MetadataService
         // Divide in parametri: virgole fuori da parentesi e stringhe
         foreach (var raw in SplitSignatureParams(signature))
         {
-            var m = System.Text.RegularExpressions.Regex.Match(
-                raw,
-                @"@\s*([A-Za-z_][A-Za-z0-9_]*)\s+([^=]+?)\s*=\s*(.+?)\s*$",
-                System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var m = ReParametroDefault.Match(raw);
             if (!m.Success) continue;
             var defaultValue = m.Groups[3].Value.Trim();
             // toglie OUTPUT/READONLY residui dal default (raro ma possibile)
-            defaultValue = System.Text.RegularExpressions.Regex.Replace(
-                defaultValue, @"\s+(OUTPUT|READONLY)\s*$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            defaultValue = ReOutputReadonly.Replace(defaultValue, "");
             result[m.Groups[1].Value.Trim()] = defaultValue;
         }
         return result;
@@ -778,11 +803,8 @@ public class MetadataService
     {
         // estrae la sequenza di tabelle referenziate (FROM/JOIN/UPDATE/INTO/TABLE) ignorando commenti e stringhe
         var clean = StripCommentsAndStrings(definition);
-        var re = new System.Text.RegularExpressions.Regex(
-            @"\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         var names = new List<string>();
-        foreach (System.Text.RegularExpressions.Match m in re.Matches(clean))
+        foreach (System.Text.RegularExpressions.Match m in ReTabelleReferenziate.Matches(clean))
         {
             var token = m.Groups[1].Value.Replace("[", "").Replace("]", "").Trim();
             if (token.Length == 0) continue;

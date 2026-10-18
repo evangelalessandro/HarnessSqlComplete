@@ -51,6 +51,7 @@ const VERIFY_TRANSAZIONE = process.argv.includes('--verify-transazione')
 const VERIFY_SELEZIONE_TREEVIEW = process.argv.includes('--verify-selezione-treeview')
 const VERIFY_GRUPPI_ALBERO = process.argv.includes('--verify-gruppi-albero')
 const VERIFY_F5_GLOBALE = process.argv.includes('--verify-f5-globale')
+const MEASURE_SCHEMA = process.argv.includes('--measure-schema')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -7037,6 +7038,45 @@ async function verifyTransazione(page) {
 }
 
 /**
+ * MISURA (--measure-schema): quanto ci mette l'app a mostrare lo schema, dal clic su "Connetti" a
+ * "Schema: N tabelle" in alto (tempo reale percepito, browser compreso), poi la stessa cosa dopo
+ * "Aggiorna schema" (che rilegge dal database bypassando la cache).
+ */
+async function measureSchema(page) {
+  await page.waitFor(`document.querySelector('input')`, 15000)
+  // le login salvate arrivano dal backend: aspettare che ci siano, altrimenti il clic cade a vuoto
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    `login salvata ${LOGIN_NAME}`,
+  )
+  const t0 = Date.now()
+  const cliccato = await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  if (!cliccato) console.log('  ATTENZIONE: login salvata non trovata')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 90000, 'schema caricato')
+  const primoCarico = Date.now() - t0
+  const etichetta = await page.eval(`(() => {
+    const m = (document.body.textContent || '').match(/Schema:\\s*\\d+\\s*tabelle/);
+    return m ? m[0] : '';
+  })()`)
+  console.log(`  primo caricamento dello schema: ${primoCarico} ms   (${etichetta})`)
+
+  // "Aggiorna schema": rilegge tutto dal database (niente cache)
+  const t1 = Date.now()
+  await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Aggiorna schema'))`,
+  )
+  await sleep(1200)
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 90000, 'schema ricaricato')
+  console.log(`  "Aggiorna schema" (dal database): ${Date.now() - t1} ms`)
+  await page.screenshot('schema-tempi')
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -7283,6 +7323,11 @@ async function main() {
 
     if (VERIFY_F5_GLOBALE) {
       await verifyF5Globale(page)
+      return
+    }
+
+    if (MEASURE_SCHEMA) {
+      await measureSchema(page)
       return
     }
 
