@@ -27,6 +27,9 @@ import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, Q
 import { chooseResultTab } from './queryTabs'
 import { pickSqlToExecute } from './executeSelection'
 import { costruisciAnteprima } from './dmlPreview'
+import { analizzaPiano } from './executionPlan'
+import type { PianoEsecuzione } from './executionPlan'
+import ExecutionPlanPanel from './components/ExecutionPlanPanel'
 import { statementAttorno } from './inlineSuggest'
 import {
   etichettaOggetto,
@@ -127,6 +130,12 @@ export default function App() {
    */
   const [nota, setNota] = useState<{ testo: string; tono: 'info' | 'attenzione'; chiave?: 'transazione' } | null>(null)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
+  /** PIANO DI ESECUZIONE: pannello, piano analizzato, errore, caricamento. */
+  const [piano, setPiano] = useState<PianoEsecuzione | null>(null)
+  const [pianoErrore, setPianoErrore] = useState<string | null>(null)
+  const [pianoInCorso, setPianoInCorso] = useState(false)
+  const [pianoAperto, setPianoAperto] = useState(false)
+  const [pianoAltri, setPianoAltri] = useState(0)
 
   // Drago e fuoco: compaiono SOLO se la query eseguita contiene PRINT 'drago' / PRINT 'fuoco'.
   // Il drago si "nutre" (livello 0-100 persistito) a ogni invocazione e resta visibile ~8s.
@@ -1293,6 +1302,53 @@ export default function App() {
     void handleExecute(anteprima.sql)
   }, [connection, editor, handleExecute, summary])
 
+  /**
+   * PIANO DI ESECUZIONE (richiesta utente: "piano di esecuzione + indice suggerito").
+   *
+   * Chiede a SQL Server il piano STIMATO dello statement sotto il cursore (o della selezione):
+   * SHOWPLAN_XML non esegue la query, quindi nessun dato viene letto o modificato. Il pannello mostra
+   * gli operatori e, se SQL Server ne propone, gli indici mancanti con lo script CREATE INDEX pronto.
+   */
+  const mostraPiano = useCallback(async () => {
+    if (!connection) return
+    const model = editor?.getModel()
+    const pos = editor?.getPosition()
+    const testo = model?.getValue() ?? ''
+    const sel = model ? editor?.getSelection() : null
+    const selezionato = model && sel && !sel.isEmpty() ? model.getValueInRange(sel) : null
+    let statement = selezionato ?? testo
+    if (!selezionato && model && pos) {
+      const { inizio, fine } = statementAttorno(testo, model.getOffsetAt(pos))
+      statement = testo.slice(inizio, fine)
+    }
+    if (!statement.trim()) return
+    setPianoAperto(true)
+    setPianoInCorso(true)
+    setPianoErrore(null)
+    setPiano(null)
+    setPianoAltri(0)
+    try {
+      const r = await api.executionPlan(connection.connectionId, statement)
+      if (r.error) {
+        setPianoErrore(r.error)
+        return
+      }
+      const piani = r.plans ?? []
+      if (piani.length === 0) {
+        setPianoErrore('SQL Server non ha restituito un piano per questo statement.')
+        return
+      }
+      const analizzato = analizzaPiano(piani[0])
+      setPianoAltri(Math.max(0, piani.length - 1))
+      if (!analizzato) setPianoErrore('Il piano restituito non è leggibile.')
+      else setPiano(analizzato)
+    } catch (e) {
+      setPianoErrore(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPianoInCorso(false)
+    }
+  }, [connection, editor])
+
   const ricaricaOggettoNellaTab = useCallback(async () => {
     const tab = editorTabs.find(t => t.id === activeEditorTab)
     const ref = tab?.objectRef
@@ -1563,6 +1619,19 @@ export default function App() {
   return (
     <FileDropZone onFiles={handleOpenFiles}>
       <div className="flex h-full flex-col">
+        {pianoAperto && (
+          <ExecutionPlanPanel
+            piano={piano}
+            inCorso={pianoInCorso}
+            errore={pianoErrore}
+            altriStatement={pianoAltri}
+            onClose={() => setPianoAperto(false)}
+            onApriScript={(titolo, sql) => {
+              newEditorTab(titolo, sql, connection?.database, false, null)
+              setPianoAperto(false)
+            }}
+          />
+        )}
         <DragonBackground level={dragonLevel} visible={dragonShow} />
         <header className="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/70 px-4 py-2">
         <div className="flex items-center gap-2 font-semibold text-zinc-100">
@@ -1942,6 +2011,7 @@ export default function App() {
                 fireTick={fireTick}
                 onExecute={(sql: string) => void handleExecute(sql)}
                 onAnteprimaModifiche={anteprimaModifiche}
+                onPiano={() => void mostraPiano()}
                 onContentChange={handleContentChange}
                 onSave={() => saveActiveTab(false)}
                 onSaveAs={() => saveActiveTab(true)}

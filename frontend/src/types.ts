@@ -314,6 +314,12 @@ export interface QueryResult {
   trancount?: number
 }
 
+/** Piano di esecuzione STIMATO: XML di showplan (uno per statement) come lo manda SQL Server. */
+export interface PlanResult {
+  plans: string[]
+  error?: string | null
+}
+
 export interface SuggestionItem {
   text: string
   reason: string | null

@@ -6,6 +6,7 @@ import type {
   ConnectionTestResult,
   DatabaseSummary,
   ObjectChangeRow,
+  PlanResult,
   QueryResult,
   RoutineCallGraph,
   SavedConnectionDto,
@@ -106,6 +107,13 @@ export const api = {
   /** Grafo delle chiamate fra routine: legami diretti "chi chiama chi" (per il diagramma). */
   getRoutineCallGraph: (connectionId: string) =>
     http<RoutineCallGraph>(`/metadata/${connectionId}/routine-call-graph`),
+
+  /** Piano di esecuzione STIMATO (SET SHOWPLAN_XML ON): la query NON viene eseguita. */
+  executionPlan: (connectionId: string, sql: string) =>
+    http<PlanResult>(`/query/${connectionId}/plan`, {
+      method: 'POST',
+      body: JSON.stringify({ sql, timeoutSeconds: 60 }),
+    }),
 
   execute: (connectionId: string, sql: string, timeoutSeconds?: number) =>
     http<QueryResult>(`/query/${connectionId}/execute`, {

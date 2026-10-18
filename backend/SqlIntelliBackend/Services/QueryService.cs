@@ -96,6 +96,82 @@ public class QueryService
         }
     }
 
+    /// <summary>
+    /// PIANO DI ESECUZIONE STIMATO: usa SET SHOWPLAN_XML ON, quindi la query NON viene eseguita (nessun
+    /// dato letto o modificato). Restituisce l'XML di SQL Server così com'è: l'analisi la fa il client.
+    /// Va su una connessione A PARTE (non sulla sessione dell'utente) e spegne sempre SHOWPLAN alla
+    /// fine, anche in caso di errore.
+    /// </summary>
+    public async Task<PlanResult> GetEstimatedPlanAsync(string connectionString, string sql, CancellationToken ct = default)
+    {
+        var plans = new List<string>();
+        string? error = null;
+        try
+        {
+            await using var conn = new SqlConnection(connectionString);
+            await conn.OpenAsync(ct);
+            await using (var on = conn.CreateCommand())
+            {
+                on.CommandText = "SET SHOWPLAN_XML ON";
+                await on.ExecuteNonQueryAsync(ct);
+            }
+            try
+            {
+                foreach (var batch in SqlBatchSplitter.SplitWithLines(sql))
+                {
+                    await using var cmd = conn.CreateCommand();
+                    cmd.CommandText = batch.Text;
+                    cmd.CommandTimeout = 60;
+                    await using var r = await cmd.ExecuteReaderAsync(ct);
+                    do
+                    {
+                        if (r.FieldCount < 1) continue;
+                        while (await r.ReadAsync(ct))
+                        {
+                            if (r.IsDBNull(0)) continue;
+                            var valore = r.GetValue(0);
+                            var xml = valore is System.Data.SqlTypes.SqlXml sx ? sx.Value : valore?.ToString() ?? "";
+                            // il piano è un XML di showplan: si tiene solo quello (per statement)
+                            if (xml.Contains("<ShowPlanXML", StringComparison.OrdinalIgnoreCase)) plans.Add(xml);
+                        }
+                    } while (await r.NextResultAsync(ct));
+                }
+            }
+            finally
+            {
+                try
+                {
+                    await using var off = conn.CreateCommand();
+                    off.CommandText = "SET SHOWPLAN_XML OFF";
+                    await off.ExecuteNonQueryAsync(ct);
+                }
+                catch
+                {
+                    /* la connessione si chiude comunque: SHOWPLAN non resta acceso da nessuna parte */
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            error = "Piano annullato (timeout).";
+        }
+        catch (SqlException ex)
+        {
+            var parti = new List<string>();
+            foreach (SqlError err in ex.Errors)
+            {
+                var proc = err.Procedure is { Length: > 0 } p ? $" Procedura {p}," : "";
+                parti.Add($"Msg {err.Number}, Livello {err.Class}, Stato {err.State}{proc} Riga {err.LineNumber}" + Environment.NewLine + err.Message);
+            }
+            error = string.Join(Environment.NewLine, parti);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        return new PlanResult(plans, error);
+    }
+
     /// <summary>Il giro vero e proprio: divide in batch, esegue e raccoglie set/messaggi/errori.</summary>
     private static async Task<QueryResult> EseguiBatchAsync(
         SqlConnection conn,

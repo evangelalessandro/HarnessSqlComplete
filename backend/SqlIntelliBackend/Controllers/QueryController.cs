@@ -34,4 +34,20 @@ public class QueryController(ConnectionHub hub, QueryService query) : Controller
         var result = await query.EseguiInSessioneAsync(sessione, req.Sql, req.TimeoutSeconds, ct);
         return Ok(result);
     }
+
+    /// <summary>
+    /// PIANO DI ESECUZIONE STIMATO (SET SHOWPLAN_XML ON): la query NON viene eseguita. Va su una
+    /// connessione a parte, così non tocca la sessione dell'utente (transazioni e #tmp restano intatte).
+    /// </summary>
+    [HttpPost("plan")]
+    public async Task<ActionResult<PlanResult>> Plan([FromRoute] string connectionId, [FromBody] ExecuteRequest req, CancellationToken ct)
+    {
+        var cs = hub.Get(connectionId);
+        if (cs is null)
+            return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
+        if (string.IsNullOrWhiteSpace(req.Sql))
+            return BadRequest("SQL vuoto.");
+
+        return Ok(await query.GetEstimatedPlanAsync(cs, req.Sql, ct));
+    }
 }

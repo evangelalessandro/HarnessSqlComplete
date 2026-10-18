@@ -55,6 +55,7 @@ const MEASURE_SCHEMA = process.argv.includes('--measure-schema')
 const VERIFY_GHOST = process.argv.includes('--verify-ghost')
 const VERIFY_VIRGOLA = process.argv.includes('--verify-virgola')
 const VERIFY_ANTEPRIMA = process.argv.includes('--verify-anteprima')
+const VERIFY_PIANO = process.argv.includes('--verify-piano')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -7406,6 +7407,115 @@ async function verifyAnteprima(page) {
 }
 
 /**
+ * VERIFICA (--verify-piano): il pulsante "Piano" (Alt+E) mostra il piano di esecuzione STIMATO —
+ * operatori e indici suggeriti — senza eseguire la query. Richiesta utente: "piano di esecuzione +
+ * indice suggerito".
+ */
+async function verifyPiano(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const testo = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors().find(e => e.hasTextFocus()) ?? m.editor.getEditors()[0];
+      return ed ? ed.getValue() : ''; })()`)
+  const scrivi = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(700)
+  }
+  const apriPiano = async () => {
+    const punto = await page.eval(`(() => {
+      const b = document.querySelector('[data-piano="apri"]');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) return false
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(3000)
+    return true
+  }
+  const pannello = async () =>
+    await page.eval(`(() => { const p = document.querySelector('[data-piano="pannello"]'); return p ? (p.textContent || '').replace(/\\s+/g, ' ').slice(0, 900) : null })()`)
+  const nodi = async () =>
+    await page.eval(`[...document.querySelectorAll('[data-piano-nodo]')].map(e => e.getAttribute('data-piano-nodo'))`)
+  const chiudi = async () => {
+    const punto = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('[data-piano="pannello"] button')].find(b => (b.textContent || '').trim() === 'Chiudi');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(700)
+  }
+
+  // 1) piano di una SELECT con JOIN
+  const sqlPiano =
+    "SELECT c.CEL_CORRIDOIO, c.CEL_CELLA, c.CEL_DES FROM dbo.MAG_CELLE c INNER JOIN dbo.MAG_BAIE b ON b.BCO_BAIA = c.CEL_CORRIDOIO WHERE c.CEL_DES LIKE '101%' ORDER BY c.CEL_CELLA"
+  await scrivi(sqlPiano)
+  const testoPrima = await testo()
+  const premuto = await apriPiano()
+  const testoPannello = await pannello()
+  const operatori = await nodi()
+  console.log(`  pannello: ${JSON.stringify((testoPannello ?? '').slice(0, 260))}`)
+  console.log(`  operatori: ${JSON.stringify(operatori)}`)
+  check('il pulsante Piano esiste e apre il pannello', premuto && !!testoPannello)
+  check(
+    'il pannello dice che il piano è STIMATO e che la query non è stata eseguita',
+    !!testoPannello && /stimato/i.test(testoPannello) && /NON è stata eseguita/i.test(testoPannello),
+  )
+  check(
+    'il piano mostra gli operatori (Sort / Nested Loops / Seek o Scan)',
+    operatori.includes('Sort') && operatori.some(o => /Nested Loops/i.test(o)) && operatori.some(o => /Index (Seek|Scan)/i.test(o)),
+    JSON.stringify(operatori),
+  )
+  check('mostra le tabelle coinvolte', !!testoPannello && /dbo\.MAG_CELLE/.test(testoPannello) && /dbo\.MAG_BAIE/.test(testoPannello))
+  check('la sezione degli indici suggeriti è presente', !!testoPannello && /Indici suggeriti/i.test(testoPannello))
+  check('la query NON è stata eseguita: testo dell\'editor invariato', (await testo()) === testoPrima)
+  await page.screenshot('piano-esecuzione')
+  await chiudi()
+  check('il pulsante Chiudi chiude il pannello', (await pannello()) === null)
+
+  // 2) SQL sbagliato → l'errore di SQL Server arriva nel pannello
+  await scrivi('SELECT * FROM dbo.TabellaCheNonEsiste')
+  await apriPiano()
+  const pannelloErrore = await pannello()
+  console.log(`  errore nel pannello: ${JSON.stringify((pannelloErrore ?? '').slice(0, 160))}`)
+  check(
+    'con SQL sbagliato mostra l\'errore di SQL Server',
+    !!pannelloErrore && /non è valido|non esiste|Msg 208/i.test(pannelloErrore),
+    (pannelloErrore ?? '').slice(0, 90),
+  )
+  await chiudi()
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -7672,6 +7782,11 @@ async function main() {
 
     if (VERIFY_ANTEPRIMA) {
       await verifyAnteprima(page)
+      return
+    }
+
+    if (VERIFY_PIANO) {
+      await verifyPiano(page)
       return
     }
 

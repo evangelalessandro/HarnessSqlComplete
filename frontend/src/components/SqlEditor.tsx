@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { Eraser, Eye, FolderOpen, IndentDecrease, IndentIncrease, Loader2, MessageSquare, Moon, Pilcrow, Play, Save, Settings2, Sun, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
+import { Activity, Eraser, Eye, FolderOpen, IndentDecrease, IndentIncrease, Loader2, MessageSquare, Moon, Pilcrow, Play, Save, Settings2, Sun, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
 import monaco from '../monacoSetup'
 import { api } from '../api'
 import { syntaxIssuesFromCheck } from '../syntaxCheck'
@@ -47,6 +47,8 @@ interface Props {
   onExecute: (sql: string) => void
   /** Anteprima delle modifiche: mostra le righe che un UPDATE/DELETE toccherebbe (non modifica nulla). */
   onAnteprimaModifiche?: () => void
+  /** Piano di esecuzione STIMATO dello statement (non esegue la query). */
+  onPiano?: () => void
   /** Notifica il contenuto dell'editor mentre si digita (per la persistenza). */
   onContentChange?: (sql: string) => void
   /** Salva la tab attiva (sovrascrive l'originale se aperta da file, altrimenti picker). */
@@ -103,6 +105,7 @@ export default function SqlEditor({
   aiStatusText,
   onExecute,
   onAnteprimaModifiche,
+  onPiano,
   onContentChange,
   onSave,
   onSaveAs,
@@ -129,6 +132,8 @@ export default function SqlEditor({
   stateRef.current = { connectionId, summary, aiEnabled, onExecute, onOpenObject, onShowCallGraph }
   const onAnteprimaRef = useRef(onAnteprimaModifiche)
   onAnteprimaRef.current = onAnteprimaModifiche
+  const onPianoRef = useRef(onPiano)
+  onPianoRef.current = onPiano
   const onSaveRef = useRef(onSave)
   onSaveRef.current = onSave
   const onSaveAsRef = useRef(onSaveAs)
@@ -476,6 +481,8 @@ export default function SqlEditor({
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => runQuery())
     // Anteprima delle modifiche di un UPDATE/DELETE: Alt+P (non modifica niente)
     editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.KeyP, () => onAnteprimaRef.current?.())
+    // Piano di esecuzione: Alt+E (non esegue la query)
+    editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.KeyE, () => onPianoRef.current?.())
     // Salva: Ctrl+S
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => onSaveRef.current?.())
     // Salva con nome: Ctrl+Shift+S
@@ -862,6 +869,14 @@ export default function SqlEditor({
               data-anteprima="modifiche"
             >
               <Eye className="h-4 w-4" /> Anteprima
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => onPianoRef.current?.()}
+              title="Piano di esecuzione stimato (Alt+E): operatori e indici suggeriti, senza eseguire la query"
+              data-piano="apri"
+            >
+              <Activity className="h-4 w-4" /> Piano
             </Button>
             {/* Fuoco del drago: scaturisce dal pulsante a ogni query eseguita */}
             {fireVisible && (

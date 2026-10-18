@@ -267,6 +267,18 @@ public record QueryResult(
     /// </summary>
     int Trancount = 0);
 
+// ---------- Piano di esecuzione ----------
+
+/// <summary>
+/// Piano di esecuzione STIMATO di uno o più batch (SET SHOWPLAN_XML ON: la query NON viene eseguita).
+/// Si restituisce l'XML grezzo di SQL Server: l'analisi (operatori, indici mancanti, script) la fa il
+/// client, dove è testabile e dove serve per la UI.
+/// </summary>
+public record PlanResult(
+    List<string> Plans,
+    /// <summary>Errore del server (es. sintassi) oppure null.</summary>
+    string? Error = null);
+
 // ---------- Autocompletamento IA ----------
 
 public record AutocompleteRequest(string Sql, string? ApiKey, int? MaxTokens);
