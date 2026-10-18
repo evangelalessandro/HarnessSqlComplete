@@ -851,17 +851,17 @@ export default function SqlEditor({
         <div className="flex items-center gap-2">
           <span className="relative">
             <Button
-              variant="primary"
+              variant="secondary"
               onClick={() => {
                 const sql = getSqlToExecute()
                 recordTablesFromSql(sql)
                 onExecute(sql)
               }}
               loading={executing}
-              className="bg-emerald-600 text-white hover:bg-emerald-500"
               title="Esegui (F5 / Ctrl+Invio) — se hai selezionato del testo esegue solo la selezione"
             >
-              <Play className="h-4 w-4 fill-white/90" /> Esegui
+              {/* la freccia è VERDE (colore dell'esecuzione), il pulsante resta neutro come gli altri */}
+              <Play className="h-4 w-4 fill-emerald-400 text-emerald-400" /> Esegui
             </Button>
             <Button
               variant="secondary"
