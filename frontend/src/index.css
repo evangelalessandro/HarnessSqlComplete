@@ -237,15 +237,21 @@ body {
    selezionato". La riga cliccata (o col tasto destro) resta evidenziata con una barra azzurra a
    sinistra e lo sfondo tinto, così si capisce sempre dov'è il fuoco. */
 .nodo-attivo {
-  background-color: rgba(56, 189, 248, 0.16) !important;
+  /* stile SourceTree: riga PIENA blu con testo bianco (non una tinta leggera) */
+  background-color: #0c4a6e !important; /* sky-900 */
   box-shadow: inset 2px 0 0 0 #38bdf8;
-  color: #f4f4f5 !important;
+  color: #f8fafc !important;
 }
 .nodo-attivo:hover {
-  background-color: rgba(56, 189, 248, 0.24) !important;
+  background-color: #075985 !important; /* sky-800 */
+}
+/* il testo e le etichette interne restano leggibili sul blu (icone comprese) */
+.nodo-attivo span,
+.nodo-attivo svg {
+  color: #f1f5f9 !important;
 }
 /* quando la riga selezionata ha il fuoco da tastiera, un contorno in più (leggibilità) */
 .nodo-attivo:focus-visible {
-  outline: 1px solid rgba(56, 189, 248, 0.7);
+  outline: 1px solid rgba(125, 211, 252, 0.9);
   outline-offset: -1px;
 }

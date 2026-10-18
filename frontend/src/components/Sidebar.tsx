@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { DragEvent, MouseEvent, ReactNode } from 'react'
 import {
-  BadgeCheck,
   Braces,
   Boxes,
   ChevronDown,
@@ -10,22 +9,18 @@ import {
   Database as DbIcon,
   Eye,
   FileCode2,
-  Flame,
-  FolderOpen,
   GitMerge,
   History,
-  KeyRound,
   Play,
   Plus,
   Rows3,
   Search,
   Share2,
   SquarePen,
-  Table2,
   Trash2,
   X,
-  Zap,
 } from 'lucide-react'
+import TypeIcon from './TypeIcon'
 import type {
   CheckConstraintInfo,
   ColumnInfo,
@@ -991,7 +986,7 @@ export default function Sidebar({
           <div className="space-y-1 border-t border-zinc-800 pt-2 pl-2">
             <Section
               title="Tabelle"
-              icon={<Table2 className="h-4 w-4 text-sky-400" />}
+              icon={<TypeIcon tipo="tabella" size={15} />}
               count={summary.tables.length}
               open={!!openSections.tables}
               onToggle={() => toggle('tables')}
@@ -1010,7 +1005,7 @@ export default function Sidebar({
                       ) : (
                         <ChevronRight className="h-3.5 w-3.5 shrink-0" />
                       )}
-                      <FolderOpen className="h-3.5 w-3.5 shrink-0 text-zinc-500" />
+                      <TypeIcon tipo="schema" size={13} />
                       <span>{g.label}</span>
                       <span className="ml-auto rounded-full bg-zinc-800 px-1.5 text-[10px] text-zinc-400">
                         {g.tables.length}
@@ -1105,7 +1100,7 @@ export default function Sidebar({
                                             (ix.includedColumns ?? []).length > 0 ? `\nINCLUDE: ${(ix.includedColumns ?? []).join(', ')}` : ''
                                           }${ix.filterDefinition ? `\nFiltro: ${ix.filterDefinition}` : ''}\nClicca per lo script CREATE — tasto destro per CREATE/DROP`}
                                         >
-                                          <KeyRound className="h-3 w-3 shrink-0 text-sky-400/70" />
+                                          <TypeIcon tipo="indice" size={12} />
                                           <span className="min-w-0 break-all font-mono">{ix.name}</span>
                                           {ix.isUnique && (
                                             <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-zinc-400">UNIQUE</span>
@@ -1203,7 +1198,7 @@ export default function Sidebar({
                                           className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-12 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
                                           title="Clicca per inserire — tasto destro per le azioni"
                                         >
-                                          <Flame className="h-3 w-3 shrink-0 text-rose-400/70" />
+                                          <TypeIcon tipo="trigger" size={12} />
                                           <span className="min-w-0 break-all font-mono">{trg.name}</span>
                                         </button>
                                       ))}
@@ -1223,7 +1218,7 @@ export default function Sidebar({
 
             <Section
               title="Viste"
-              icon={<Eye className="h-4 w-4 text-violet-400" />}
+              icon={<TypeIcon tipo="vista" size={15} />}
               count={summary.views.length}
               open={!!openSections.views}
               onToggle={() => toggle('views')}
@@ -1251,7 +1246,7 @@ export default function Sidebar({
               <div className="space-y-1 pl-2">
                 <Section
                   title="Stored Procedure"
-                  icon={<FileCode2 className="h-3.5 w-3.5 text-emerald-400" />}
+                  icon={<TypeIcon tipo="procedura" size={15} />}
                   count={summary.procedures.length}
                   open={!!openSections.procedures}
                   onToggle={() => toggle('procedures')}
@@ -1285,7 +1280,7 @@ export default function Sidebar({
 
                 <Section
                   title="Funzioni"
-                  icon={<Zap className="h-3.5 w-3.5 text-amber-400" />}
+                  icon={<TypeIcon tipo="funzione" size={15} />}
                   count={summary.functions.length}
                   open={!!openSections.functions}
                   onToggle={() => toggle('functions')}
@@ -1307,7 +1302,7 @@ export default function Sidebar({
                 {triggersByTable.orphans.length > 0 && (
                   <Section
                     title="Trigger"
-                    icon={<Flame className="h-3.5 w-3.5 text-rose-400" />}
+                    icon={<TypeIcon tipo="trigger" size={15} />}
                     count={triggersByTable.orphans.length}
                     open={!!openSections.triggers}
                     onToggle={() => toggle('triggers')}
@@ -1722,8 +1717,20 @@ function ObjectMenu({
   )
 }
 
-function Section({
-  title,
+/** Triangolino PIENO (stile SourceTree) per aprire/chiudere i nodi: ▸ chiuso, ▾ aperto. */
+function Triangolino({ open, className = 'text-zinc-500' }: { open: boolean; className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 8 8"
+      className={`h-2 w-2 shrink-0 transition-transform duration-100 ${open ? 'rotate-90' : ''} ${className}`}
+      aria-hidden
+    >
+      <path fill="currentColor" d="M1.6 1 7 4 1.6 7V1Z" />
+    </svg>
+  )
+}
+
+function Section({  title,
   icon,
   count,
   open,
@@ -1748,7 +1755,7 @@ function Section({
           nested ? 'normal-case tracking-normal text-zinc-400' : 'uppercase tracking-wide text-zinc-400'
         }`}
       >
-        {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+        <Triangolino open={open} />
         {icon}
         <span>{title}</span>
         <span className="ml-auto rounded-full bg-zinc-800 px-1.5 text-[10px] text-zinc-400">{count}</span>
@@ -1841,7 +1848,7 @@ function TableRow({
           className="shrink-0 rounded p-1 pl-4 text-zinc-500 transition-colors hover:text-zinc-300"
           title={expanded ? 'Chiudi i campi' : 'Mostra i campi'}
         >
-          {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          <Triangolino open={expanded} />
         </button>
         <button
           onClick={onInsert}
@@ -1852,8 +1859,9 @@ function TableRow({
           className="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800"
           title={usageText ? `${usageText} — clicca per inserire, tasto destro per le azioni` : 'Clicca per inserire, tasto destro per le azioni'}
         >
+          <TypeIcon tipo="tabella" size={13} />
           <span className="min-w-0 break-all font-mono">{label}</span>
-          {badge && <span className="ml-auto shrink-0 rounded bg-zinc-800 px-1 text-[10px] text-zinc-500">{badge}</span>}
+          {badge && <span className="ml-auto shrink-0 rounded-full bg-zinc-800 px-1.5 text-[10px] text-zinc-500">{badge}</span>}
         </button>
         {onQuickPreview && (
           <button
@@ -1901,7 +1909,8 @@ function NodoGruppo({
         className="flex w-full items-center gap-1.5 rounded px-2 py-0.5 pl-8 text-left text-[10px] font-semibold uppercase tracking-wide text-zinc-500 transition-colors hover:bg-zinc-800/60 hover:text-zinc-300"
         title={`${aperto ? 'Chiudi' : 'Apri'} ${titolo.toLowerCase()} (${quantita})`}
       >
-        {aperto ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+        <Triangolino open={aperto} />
+        <TypeIcon tipo="gruppo" size={12} />
         <span>{titolo}</span>
         <span className="ml-auto rounded-full bg-zinc-800 px-1.5 py-px text-[10px] font-normal normal-case tracking-normal text-zinc-400">
           {quantita}
@@ -1933,11 +1942,11 @@ function VoceVincoloRiga({
       title={`${v.tipo} ${v.nome}\n${v.dettaglio}\nClicca per lo script di creazione — tasto destro per CREATE/DROP`}
     >
       {v.tipo === 'CHECK' ? (
-        <BadgeCheck className="h-3 w-3 shrink-0 text-emerald-400/70" />
+        <TypeIcon tipo="check" size={12} />
       ) : v.tipo === 'FOREIGN KEY' ? (
-        <Share2 className="h-3 w-3 shrink-0 text-violet-400/70" />
+        <TypeIcon tipo="chiaveEsterna" size={12} />
       ) : (
-        <KeyRound className="h-3 w-3 shrink-0 text-amber-400/70" />
+        <TypeIcon tipo="chiave" size={12} />
       )}
       <span className="min-w-0 break-all font-mono">{v.nome}</span>
       <span
@@ -1958,16 +1967,17 @@ function VoceVincoloRiga({
   )
 }
 
-function KindIcon({ kind }: { kind: HitKind }) {  switch (kind) {
+function KindIcon({ kind }: { kind: HitKind }) {
+  switch (kind) {
     case 'tabella':
-      return <Table2 className="h-3.5 w-3.5 shrink-0 text-sky-400" />
+      return <TypeIcon tipo="tabella" size={14} />
     case 'vista':
-      return <Eye className="h-3.5 w-3.5 shrink-0 text-violet-400" />
+      return <TypeIcon tipo="vista" size={14} />
     case 'procedura':
-      return <FileCode2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+      return <TypeIcon tipo="procedura" size={14} />
     case 'funzione':
-      return <Zap className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+      return <TypeIcon tipo="funzione" size={14} />
     default:
-      return <Flame className="h-3.5 w-3.5 shrink-0 text-rose-400" />
+      return <TypeIcon tipo="trigger" size={14} />
   }
 }
