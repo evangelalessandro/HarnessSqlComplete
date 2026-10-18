@@ -14,6 +14,11 @@ export interface EditorSettings {
   formatter: MotoreFormattazione
   /** Opzioni di SQLFluff (rientri, maiuscole, virgola, larghezza riga). */
   sqlFluff: OpzioniSqlFluff
+  /**
+   * Invio dopo la virgola → la virgola va in testa alla riga nuova (stile del progetto).
+   * Richiesta utente: "Enter e virgola intelligenti".
+   */
+  virgolaACapo: boolean
 }
 
 const DEFAULTS: EditorSettings = {
@@ -22,6 +27,7 @@ const DEFAULTS: EditorSettings = {
   newTabPosition: 'end',
   formatter: 'nostro',
   sqlFluff: normalizzaOpzioniSqlFluff(undefined),
+  virgolaACapo: true,
 }
 
 /** Posizioni valide per le nuove tab (usato per validare il valore salvato). */
@@ -44,6 +50,8 @@ export function loadSettings(): EditorSettings {
         ? (p.formatter as MotoreFormattazione)
         : DEFAULTS.formatter,
       sqlFluff: normalizzaOpzioniSqlFluff(p.sqlFluff),
+      // salvo scelta esplicita, la virgola va a capo (comportamento predefinito)
+      virgolaACapo: typeof p.virgolaACapo === 'boolean' ? p.virgolaACapo : DEFAULTS.virgolaACapo,
     }
   } catch {
     return { ...DEFAULTS }

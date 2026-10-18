@@ -321,6 +321,15 @@ export default function App() {
     })
   }, [])
 
+  /** Virgola a capo automatica (Invio dopo la virgola): impostazione di scrittura, persistita. */
+  const setVirgolaACapo = useCallback((virgolaACapo: boolean) => {
+    setSettings(prev => {
+      const next: EditorSettings = { ...prev, virgolaACapo }
+      saveSettings(next)
+      return next
+    })
+  }, [])
+
   /** Motore di formattazione scelto (nostro profilo T-SQL oppure SQLFluff, che gira sul backend). */
   const setFormatter = useCallback((formatter: MotoreFormattazione) => {
     setSettings(prev => {
@@ -1904,6 +1913,8 @@ export default function App() {
                 theme={settings.theme}
                 formatter={settings.formatter}
                 onFormatterChange={setFormatter}
+                virgolaACapo={settings.virgolaACapo}
+                onVirgolaACapoChange={setVirgolaACapo}
                 sqlFluff={settings.sqlFluff}
                 onSqlFluffChange={setSqlFluffOptions}
                 onZoomFont={zoomFont}

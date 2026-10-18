@@ -16,7 +16,7 @@ beforeEach(() => {
   }
 })
 
-const DEFAULT = { fontSize: 13, theme: 'vs-dark', newTabPosition: 'end', formatter: 'nostro', sqlFluff: normalizzaOpzioniSqlFluff(undefined) } as const
+const DEFAULT = { fontSize: 13, theme: 'vs-dark', newTabPosition: 'end', formatter: 'nostro', sqlFluff: normalizzaOpzioniSqlFluff(undefined), virgolaACapo: true } as const
 
 describe('settings: font e tema', () => {
   it('default senza dati salvati', () => {
@@ -24,8 +24,8 @@ describe('settings: font e tema', () => {
   })
 
   it('roundtrip save/load', () => {
-    saveSettings({ fontSize: 18, theme: 'vs', newTabPosition: 'start', formatter: 'sqlfluff', sqlFluff: normalizzaOpzioniSqlFluff(undefined) })
-    expect(loadSettings()).toEqual({ fontSize: 18, theme: 'vs', newTabPosition: 'start', formatter: 'sqlfluff', sqlFluff: normalizzaOpzioniSqlFluff(undefined) })
+    saveSettings({ fontSize: 18, theme: 'vs', newTabPosition: 'start', formatter: 'sqlfluff', sqlFluff: normalizzaOpzioniSqlFluff(undefined), virgolaACapo: false })
+    expect(loadSettings()).toEqual({ fontSize: 18, theme: 'vs', newTabPosition: 'start', formatter: 'sqlfluff', sqlFluff: normalizzaOpzioniSqlFluff(undefined), virgolaACapo: false })
   })
 
   it('valori fuori range o non validi → default', () => {
@@ -63,6 +63,6 @@ describe('settings: dove aprire le nuove tab', () => {
   it('le impostazioni salvate PRIMA di questa funzione restano valide', () => {
     // utenti che avevano solo font e tema: la nuova proprietà prende il default
     store.set('sqlIntelli.settings.v1', JSON.stringify({ fontSize: 16, theme: 'vs' }))
-    expect(loadSettings()).toEqual({ fontSize: 16, theme: 'vs', newTabPosition: 'end', formatter: 'nostro', sqlFluff: normalizzaOpzioniSqlFluff(undefined) })
+    expect(loadSettings()).toEqual({ fontSize: 16, theme: 'vs', newTabPosition: 'end', formatter: 'nostro', sqlFluff: normalizzaOpzioniSqlFluff(undefined), virgolaACapo: true })
   })
 })

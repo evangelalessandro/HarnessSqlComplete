@@ -53,6 +53,7 @@ const VERIFY_GRUPPI_ALBERO = process.argv.includes('--verify-gruppi-albero')
 const VERIFY_F5_GLOBALE = process.argv.includes('--verify-f5-globale')
 const MEASURE_SCHEMA = process.argv.includes('--measure-schema')
 const VERIFY_GHOST = process.argv.includes('--verify-ghost')
+const VERIFY_VIRGOLA = process.argv.includes('--verify-virgola')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -7187,6 +7188,101 @@ async function verifyGhost(page) {
 }
 
 /**
+ * VERIFICA (--verify-virgola): premendo Invio dopo una virgola, la virgola va IN TESTA alla riga
+ * nuova, incolonnata sotto il primo campo (stile del progetto). Richiesta utente: "che altro si può
+ * fare per velocizzare la scrittura?" → "Enter e virgola intelligenti".
+ * Controlla anche l'interruttore nelle impostazioni e che un solo Ctrl+Z annulli tutto.
+ */
+async function verifyVirgola(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const testo = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors().find(e => e.hasTextFocus()) ?? m.editor.getEditors()[0];
+      return ed ? ed.getValue() : ''; })()`)
+  const scrivi = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(900)
+  }
+
+  // 1) "SELECT UDC_UDC," + Invio → la virgola va in testa alla riga nuova, incolonnata
+  await scrivi('SELECT UDC_UDC,')
+  await page.press('Enter', { code: 'Enter', vk: 13 })
+  await sleep(700)
+  const dopo = await testo()
+  const righe = dopo.split('\n')
+  console.log(`  dopo Invio: ${JSON.stringify(dopo)}`)
+  check('la virgola NON resta in coda alla riga precedente', !/,\s*$/.test(righe[0]), JSON.stringify(righe[0]))
+  check('la virgola va in testa alla riga nuova', (righe[1] ?? '').trim() === ',', JSON.stringify(righe[1]))
+  check(
+    'la virgola è incolonnata sotto il primo campo (7 spazi per SELECT)',
+    (righe[1] ?? '').indexOf(',') === 'SELECT '.length,
+    `${(righe[1] ?? '').indexOf(',')} spazi`,
+  )
+  await page.screenshot('virgola-a-capo')
+
+  // 2) una sola modifica → un solo Ctrl+Z riporta tutto com'era
+  await page.press('z', { code: 'KeyZ', vk: 90, modifiers: 2 })
+  await sleep(600)
+  const dopoUndo = await testo()
+  check('un solo Ctrl+Z annulla tutto', dopoUndo.trim() === 'SELECT UDC_UDC,', JSON.stringify(dopoUndo))
+
+  // 3) nessuna virgola in coda → Invio si comporta normalmente
+  await scrivi('SELECT AAA')
+  await page.press('Enter', { code: 'Enter', vk: 13 })
+  await sleep(600)
+  const dopoNormale = await testo()
+  check('senza virgola in coda Invio non aggiunge nulla', !/,/.test(dopoNormale), JSON.stringify(dopoNormale))
+
+  // 4) l'interruttore esiste nelle impostazioni di formattazione ed è acceso
+  const ingranaggio = await page.eval(`(() => {
+    const b = [...document.querySelectorAll('button')].find(b => (b.title || '').includes('Impostazioni di formattazione'));
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (ingranaggio) {
+    await page.clickPoint(ingranaggio.x, ingranaggio.y)
+    await sleep(900)
+  }
+  const casella = await page.eval(`(() => {
+    const c = document.querySelector('[data-format="virgola-a-capo"]');
+    return c ? { presente: true, acceso: c.checked } : null;
+  })()`)
+  console.log(`  interruttore: ${JSON.stringify(casella)}`)
+  check('nelle impostazioni c\'è l\'interruttore "Virgola a capo automatica", acceso', !!casella && casella.acceso === true)
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await sleep(400)
+  await page.screenshot('virgola-impostazione')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -7443,6 +7539,11 @@ async function main() {
 
     if (VERIFY_GHOST) {
       await verifyGhost(page)
+      return
+    }
+
+    if (VERIFY_VIRGOLA) {
+      await verifyVirgola(page)
       return
     }
 

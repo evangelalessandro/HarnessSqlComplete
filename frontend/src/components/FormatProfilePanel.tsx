@@ -73,12 +73,17 @@ export default function FormatProfilePanel({
   onMotoreChange,
   opzioni,
   onOpzioniChange,
+  virgolaACapo = true,
+  onVirgolaACapoChange,
 }: {
   onClose: () => void
   motore?: MotoreFormattazione
   onMotoreChange?: (m: MotoreFormattazione) => void
   opzioni?: OpzioniSqlFluff
   onOpzioniChange?: (o: OpzioniSqlFluff) => void
+  /** Invio dopo la virgola → virgola in testa alla riga nuova (richiesta utente). */
+  virgolaACapo?: boolean
+  onVirgolaACapoChange?: (attiva: boolean) => void
 }) {
   const [xml, setXml] = useState<string>(() => loadFormatProfileXml())
   const [nodes, setNodes] = useState<FormatProfileNode[]>(() => parseFormatProfileXml(loadFormatProfileXml()))
@@ -162,6 +167,23 @@ export default function FormatProfilePanel({
             {motore === 'nostro'
               ? 'Come finora: profilo e regole dell\u2019app (un testo già impaginato resta identico).'
               : 'SQLFluff gira sul backend (serve Python con sqlfluff installato).'}
+          </span>
+        </div>
+        {/* SCRITTURA: Invio dopo la virgola → la virgola va in testa alla riga nuova */}
+        <div className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900/40 px-4 py-2">
+          <input
+            id="virgola-a-capo"
+            data-format="virgola-a-capo"
+            type="checkbox"
+            checked={virgolaACapo}
+            onChange={e => onVirgolaACapoChange?.(e.target.checked)}
+            className="h-3.5 w-3.5 accent-sky-500"
+          />
+          <label htmlFor="virgola-a-capo" className="text-xs text-zinc-300">
+            Virgola a capo automatica
+          </label>
+          <span className="text-[11px] text-zinc-500">
+            Invio dopo la virgola: la virgola va in testa alla riga nuova, incolonnata sotto il primo campo
           </span>
         </div>
         {motore === 'sqlfluff' && (

@@ -18,6 +18,8 @@ import { isCallableAt, resolveCallableAt } from '../callables'
 import type { CallableRef } from '../callables'
 import { provideSqlCompletions } from '../sqlCompletions'
 import { suggerisciInLinea } from '../inlineSuggest'
+import { spezzaDopoVirgola, testoSpezzato } from '../autoIndent'
+import { dentroCommentoOStringa } from '../inlineSuggest'
 
 import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../history'
 import { registerSqlHover } from '../sqlHover'
@@ -65,6 +67,10 @@ interface Props {
   onZoomFont?: (delta: number) => void
   /** Alterna tema chiaro/scuro. */
   onToggleTheme?: () => void
+  /** Invio dopo la virgola → la virgola va in testa alla riga nuova (stile del progetto). */
+  virgolaACapo?: boolean
+  /** Cambia l'impostazione della virgola a capo (interruttore nelle impostazioni di formattazione). */
+  onVirgolaACapoChange?: (attiva: boolean) => void
   /** Livello del drago (0-100): il fuoco scaturito a ogni esecuzione cresce con esso. */
   dragonLevel?: number
   /** Contatore incrementato a ogni query eseguita: innesca il colpo di fuoco. */
@@ -106,6 +112,8 @@ export default function SqlEditor({
   onSqlFluffChange,
   onZoomFont,
   onToggleTheme,
+  virgolaACapo = true,
+  onVirgolaACapoChange,
   dragonLevel = 0,
   fireTick = 0,
   registerEditor,
@@ -144,6 +152,9 @@ export default function SqlEditor({
   }, [summary, connectionId])
   // Pannello impostazioni di formattazione
   const [profileOpen, setProfileOpen] = useState(false)
+  /** Virgola a capo: il ref serve alla scorciatoia (il gestore dei tasti non si ricrea a ogni render). */
+  const virgolaACapoRef = useRef(virgolaACapo)
+  virgolaACapoRef.current = virgolaACapo
   /** Messaggio dell'ultima formattazione (es. SQLFluff non disponibile). */
   const [formatError, setFormatError] = useState<string | null>(null)
   /** True mentre la formattazione e' in corso (SQLFluff gira sul backend: puo' metterci secondi). */
@@ -550,6 +561,7 @@ export default function SqlEditor({
 
     registerSchemaCompletions()
     registerInlineCompletions()
+    registerVirgolaACapo(editor)
     registerSqlDiagnostics()
     registerBlockGuides()
     registerFolding()
@@ -594,6 +606,49 @@ export default function SqlEditor({
             historyColumnBoost,
           })
         },
+      }),
+    )
+  }
+
+  /**
+   * VIRGOLA A CAPO AUTOMATICA (richiesta utente: "Enter e virgola intelligenti").
+   *
+   * Nel progetto lo stile è "un campo per riga, virgola in testa". Premendo Invio a fine riga dopo
+   * una virgola, la virgola viene SPOSTATA in testa alla riga nuova, già rientrata sotto il primo
+   * campo della riga precedente ("SELECT a," + Invio → "SELECT a" / ",", incolonnato).
+   *
+   * Non interviene quando non deve: con altre combinazioni (Alt/Ctrl/Shift+Invio), con una
+   * selezione attiva, dentro commenti/stringhe, con il popup dei suggerimenti aperto (lì Invio
+   * accetta la voce) e se l'impostazione è spenta. Tutto in UNA modifica, quindi un solo Undo.
+   */
+  const registerVirgolaACapo = (editor: monaco.editor.IStandaloneCodeEditor) => {
+    disposablesRef.current.push(
+      editor.onKeyDown(e => {
+        if (e.keyCode !== monaco.KeyCode.Enter) return
+        if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+        if (virgolaACapoRef.current === false) return
+        // con il popup dei suggerimenti aperto Invio deve accettare la voce selezionata
+        if (document.querySelector('.suggest-widget.visible')) return
+        const ed = editorRef.current
+        const model = ed?.getModel()
+        const pos = ed?.getPosition()
+        if (!ed || !model || !pos) return
+        if (ed.getSelections()?.some(s => !s.isEmpty())) return
+        if (dentroCommentoOStringa(model.getValue(), model.getOffsetAt(pos))) return
+        const spezzatura = spezzaDopoVirgola(model.getLineContent(pos.lineNumber), pos.column)
+        if (!spezzatura) return
+        e.preventDefault()
+        e.stopPropagation()
+        ed.pushUndoStop()
+        // una sola modifica: toglie "virgola + spazi" in coda e mette la riga nuova con la virgola
+        ed.executeEdits('sql-intelli-virgola', [
+          {
+            range: new monaco.Range(pos.lineNumber, spezzatura.colonnaVirgola, pos.lineNumber, pos.column),
+            text: testoSpezzato(spezzatura),
+          },
+        ])
+        ed.setPosition({ lineNumber: pos.lineNumber + 1, column: spezzatura.rientro + 2 })
+        ed.pushUndoStop()
       }),
     )
   }
@@ -981,6 +1036,8 @@ export default function SqlEditor({
           onMotoreChange={onFormatterChange}
           opzioni={sqlFluff}
           onOpzioniChange={onSqlFluffChange}
+          virgolaACapo={virgolaACapo}
+          onVirgolaACapoChange={onVirgolaACapoChange}
         />
       )}
       {formatting && (
