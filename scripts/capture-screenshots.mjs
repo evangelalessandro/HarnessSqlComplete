@@ -52,6 +52,7 @@ const VERIFY_SELEZIONE_TREEVIEW = process.argv.includes('--verify-selezione-tree
 const VERIFY_GRUPPI_ALBERO = process.argv.includes('--verify-gruppi-albero')
 const VERIFY_F5_GLOBALE = process.argv.includes('--verify-f5-globale')
 const MEASURE_SCHEMA = process.argv.includes('--measure-schema')
+const VERIFY_GHOST = process.argv.includes('--verify-ghost')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -7077,6 +7078,115 @@ async function measureSchema(page) {
 }
 
 /**
+ * VERIFICA (--verify-ghost): il GHOST TEXT (suggerimento in linea) compare nell'editor e Tab lo
+ * accetta. Richiesta utente: "che altro si può inventare per essere più veloci a scrivere delle
+ * query?" → scelta: "Ghost text: suggerimento inline con Tab".
+ * Controlla: dopo "… JOIN tabella" propone l'ON della chiave esterna, il testo è visibile in
+ * grigio, Tab lo inserisce; poi la colonna successiva nella select-list.
+ */
+async function verifyGhost(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Testo del fantasma a schermo: Monaco lo disegna come una serie di span ".ghost-text-decoration",
+   *  uno per token, quindi il testo completo è la loro concatenazione. */
+  const ghost = async () =>
+    await page.eval(`(() => {
+      const pezzi = [...document.querySelectorAll('.monaco-editor .ghost-text-decoration')];
+      const testo = pezzi.map(e => e.textContent || '').join('').trim();
+      if (testo) return testo;
+      const altro = [...document.querySelectorAll('.monaco-editor .ghost-text, .monaco-editor .inline-suggestion-text')];
+      return altro.length ? (altro.map(e => e.textContent || '').join('').trim() || null) : null;
+    })()`)
+  /** Testo del modello dell'editor attivo. */
+  const testo = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors().find(e => e.hasTextFocus()) ?? m.editor.getEditors()[0];
+      return ed ? ed.getValue() : ''; })()`)
+  const scrivi = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1400)
+  }
+
+  /** Porta il cursore subito dopo un frammento di testo (deterministico). */
+  const cursoreDopo = async frammento =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors().find(e => e.hasTextFocus()) ?? m.editor.getEditors()[0];
+      const model = ed.getModel();
+      if (!model) return false;
+      const i = model.getValue().indexOf(${JSON.stringify(frammento)});
+      if (i < 0) return false;
+      ed.setPosition(model.getPositionAt(i + ${JSON.stringify(frammento)}.length));
+      ed.focus();
+      return true; })()`)
+
+  // 1) JOIN senza ON → propone l'ON della FK (coppia reale del database:
+  //    DAT_ARTICOLI.ART_CLAMOV -> CLA_MOV.CLA_CLAMOV)
+  await scrivi('SELECT * FROM dbo.DAT_ARTICOLI INNER JOIN dbo.CLA_MOV')
+  await sleep(1500)
+  await page.screenshot('ghost-join')
+  const g1 = await ghost()
+  console.log(`  ghost sul JOIN: ${JSON.stringify(g1)}`)
+  check('dopo "… JOIN tabella" compare il fantasma con l\'ON della FK', !!g1 && /^ON/i.test(g1) && /ART_CLAMOV/i.test(g1) && /CLA_CLAMOV/i.test(g1), String(g1))
+  await page.screenshot('ghost-join')
+  // Tab accetta il suggerimento
+  await page.press('Tab', { code: 'Tab', vk: 9 })
+  await sleep(900)
+  const dopoTab = await testo()
+  console.log(`  testo dopo Tab: ${JSON.stringify(dopoTab)}`)
+  check(
+    'Tab inserisce l\'ON proposto (con le colonne della FK)',
+    /ON\s*\(/i.test(dopoTab) && /ART_CLAMOV/i.test(dopoTab) && /CLA_CLAMOV/i.test(dopoTab),
+    dopoTab.slice(-70),
+  )
+
+  // 2) select-list: dopo la virgola propone la colonna successiva
+  await scrivi('SELECT UDC_UDC, FROM dbo.DAT_UDC')
+  const posizionato = await cursoreDopo('SELECT UDC_UDC,')
+  await sleep(1400)
+  const g2 = await ghost()
+  console.log(`  ghost sulla select-list: ${JSON.stringify(g2)} (cursore dopo la virgola: ${posizionato})`)
+  check('dopo la virgola compare il fantasma con la colonna successiva', !!g2 && /^[A-Za-z_]\w*$/.test(g2), String(g2))
+  if (g2) {
+    await page.press('Tab', { code: 'Tab', vk: 9 })
+    await sleep(800)
+    const dopo = await testo()
+    console.log(`  testo dopo Tab: ${JSON.stringify(dopo.slice(0, 60))}`)
+    check('Tab inserisce la colonna proposta', dopo.includes(String(g2).trim()), dopo.slice(0, 60))
+  }
+
+  // 3) niente fantasma quando l'ON c'è già
+  await scrivi('SELECT * FROM dbo.RUN_MISSIONI INNER JOIN dbo.DAT_UDC ON (MIS_UDC = UDC_UDC)')
+  await sleep(1200)
+  check('con l\'ON già scritto non propone niente', (await ghost()) === null)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -7328,6 +7438,11 @@ async function main() {
 
     if (MEASURE_SCHEMA) {
       await measureSchema(page)
+      return
+    }
+
+    if (VERIFY_GHOST) {
+      await verifyGhost(page)
       return
     }
 

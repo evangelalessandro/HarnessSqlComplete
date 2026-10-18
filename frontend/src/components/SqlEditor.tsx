@@ -17,6 +17,7 @@ import { registerTableColorizer } from '../sqlTableColors'
 import { isCallableAt, resolveCallableAt } from '../callables'
 import type { CallableRef } from '../callables'
 import { provideSqlCompletions } from '../sqlCompletions'
+import { suggerisciInLinea } from '../inlineSuggest'
 
 import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../history'
 import { registerSqlHover } from '../sqlHover'
@@ -366,6 +367,8 @@ export default function SqlEditor({
 
     // SCRITTURA SU PIÙ RIGHE: si parte dalla preferenza salvata (selezione a blocchi stile SSMS)
     editor.updateOptions(opzioniMonaco(blocchiRef.current))
+    // GHOST TEXT: suggerimenti in linea (testo grigio, Tab per accettare), dal database
+    editor.updateOptions({ inlineSuggest: { enabled: true } })
     // Alt+C accende/spegne la selezione a blocchi, come in SSMS
     editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.KeyC, () => toggleBlocchiRef.current?.())
 
@@ -600,9 +603,21 @@ export default function SqlEditor({
       monaco.languages.registerInlineCompletionsProvider('sql', {
         provideInlineCompletions: async (model, position, context, token) => {
           const st = stateRef.current
-          if (!st.aiEnabled) return { items: [] }
           // la preview dati ha un mini-editor: niente autocompletamento IA lì
           if (model.uri.toString().startsWith('sql-intelli://preview')) return { items: [] }
+
+          // 1) SUGGERIMENTI CERTI, dal database (chiavi esterne e colonne): non serve l'IA e non
+          //    c'è niente da leggere — il testo compare già e Tab lo accetta. Vengono prima
+          //    dell'IA perché sono immediati e sempre giusti sul TUO schema.
+          const certo = suggerisciInLinea(model.getValue(), model.getOffsetAt(position), st.summary)
+          if (certo) {
+            const punto = new monaco.Range(position.lineNumber, position.column, position.lineNumber, position.column)
+            // con il fantasma a schermo si nasconde il popup: altrimenti Tab sarebbe ambiguo
+            return { items: [{ insertText: certo.testo, range: punto }], suppressSuggestions: true }
+          }
+
+          // 2) IA (solo se attiva: richiede la chiave DeepSeek configurata)
+          if (!st.aiEnabled) return { items: [] }
 
           const textBefore = model.getValueInRange(
             new monaco.Range(1, 1, position.lineNumber, position.column),
