@@ -250,6 +250,11 @@ body {
 .nodo-attivo svg {
   color: #f1f5f9 !important;
 }
+/* i contatori sulle righe selezionate: pastiglia chiara invece del grigio scuro (stile SourceTree) */
+.nodo-attivo span.bg-zinc-800 {
+  background-color: rgba(248, 250, 252, 0.22) !important;
+  color: #f8fafc !important;
+}
 /* quando la riga selezionata ha il fuoco da tastiera, un contorno in più (leggibilità) */
 .nodo-attivo:focus-visible {
   outline: 1px solid rgba(125, 211, 252, 0.9);
