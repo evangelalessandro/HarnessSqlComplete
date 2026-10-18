@@ -124,9 +124,11 @@ public class ConnectionsController(AppDbContext db, ConnectionHub hub, MetadataS
     }
 
     [HttpPost("{connectionId}/disconnect")]
-    public IActionResult Disconnect(string connectionId)
+    public async Task<IActionResult> Disconnect(string connectionId)
     {
-        hub.Remove(connectionId);
+        // chiude anche la SESSIONE SQL (se c'era una transazione aperta viene annullata: è quello
+        // che succede chiudendo la finestra in SSMS)
+        await hub.RemoveAsync(connectionId);
         return NoContent();
     }
 
@@ -155,7 +157,8 @@ public class ConnectionsController(AppDbContext db, ConnectionHub hub, MetadataS
 
         var dbs = await metadata.ListDatabasesAsync(newCs, ct);
         var newId = hub.Register(newCs);
-        hub.Remove(connectionId);
+        // la connessione vecchia (e la sua sessione SQL) viene chiusa: cambio database = nuova sessione
+        await hub.RemoveAsync(connectionId);
         return Ok(new ConnectResponse(newId, builder.DataSource, req.Database.Trim(), dbs.ToArray(), "Database cambiato."));
     }
 

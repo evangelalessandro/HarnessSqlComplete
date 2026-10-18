@@ -10,7 +10,100 @@ public class QueryService
 {
     private const int MaxRowsPerSet = 5000;
 
+    /// <summary>
+    /// Esecuzione SENZA sessione (verifica di sintassi e usi occasionali): connessione nuova e, in
+    /// verifica di sintassi, una transazione ADO.NET sempre annullata. Nessun effetto collaterale.
+    /// </summary>
     public async Task<QueryResult> ExecuteAsync(string connectionString, string sql, int? timeoutSeconds, CancellationToken ct = default, bool checkSyntax = false)
+    {
+        await using var conn = new SqlConnection(connectionString)
+        {
+            FireInfoMessageEventOnUserErrors = true,
+        };
+        await conn.OpenAsync(ct);
+
+        // Verifica di sintassi: ogni comando gira dentro una transazione ADO.NET che viene
+        // SEMPRE annullata a fine richiesta (nessun effetto collaterale). NON si usa
+        // "BEGIN TRANSACTION" in T-SQL: se il testo utente contiene già BEGIN TRAN/ROLLBACK/COMMIT
+        // (nidificati sopra il nostro), un suo ROLLBACK senza nome chiuderebbe l'INTERA
+        // transazione → il Rollback finale fallisce e va ignorato (la connessione si chiude
+        // comunque senza COMMIT, quindi niente effetti collaterali residui).
+        SqlTransaction? checkTran = null;
+        if (checkSyntax) checkTran = (SqlTransaction)await conn.BeginTransactionAsync(ct);
+
+        var result = await EseguiBatchAsync(conn, checkTran, sql, timeoutSeconds, checkSyntax, ct);
+
+        if (checkTran is not null)
+        {
+            try
+            {
+                await checkTran.RollbackAsync(ct);
+            }
+            catch
+            {
+                /* transazione già chiusa dal testo utente */
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Esecuzione NELLA SESSIONE della connessione (quella che resta aperta fra una richiesta e
+    /// l'altra): le transazioni aperte e le tabelle temporanee create qui restano valide per
+    /// l'esecuzione successiva, come in SSMS. Se a fine esecuzione la sessione ha ancora una
+    /// transazione aperta lo si dice nei messaggi (le modifiche non sono salvate).
+    /// </summary>
+    public async Task<QueryResult> EseguiInSessioneAsync(ConnectionHub.SessioneSql sessione, string sql, int? timeoutSeconds, CancellationToken ct = default)
+    {
+        var result = await EseguiBatchAsync(sessione.Connection, null, sql, timeoutSeconds, checkSyntax: false, ct);
+
+        var messaggi = new List<string>(result.Messages);
+        var dettagli = result.Errors is null ? new List<QueryMessage>() : new List<QueryMessage>(result.Errors);
+
+        // sessione riaperta dopo una disconnessione: quello che c'era prima è perso
+        if (sessione.PersaPerDisconnessione)
+        {
+            messaggi.Add(
+                "⚠ Sessione SQL riaperta dopo una disconnessione: le transazioni aperte e le tabelle temporanee di prima sono andate perse.");
+        }
+
+        // transazione rimasta APERTA: non si annulla (la sessione resta, come in SSMS) ma va detto
+        var trancount = await TrancountAsync(sessione.Connection, ct);
+        if (trancount > 0)
+        {
+            var riga = trancount == 1 ? "1 transazione aperta" : $"{trancount} transazioni annidate aperte";
+            messaggi.Add(
+                $"⚠ Transazione ancora aperta ({riga}): le modifiche NON sono salvate. Chiudila con COMMIT TRANSACTION oppure ROLLBACK TRANSACTION.");
+        }
+
+        return result with { Messages = messaggi, Errors = dettagli, Trancount = trancount };
+    }
+
+    /// <summary>Legge @@TRANCOUNT dalla connessione (0 se non si riesce).</summary>
+    private static async Task<int> TrancountAsync(SqlConnection conn, CancellationToken ct)
+    {
+        try
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT @@TRANCOUNT";
+            cmd.CommandTimeout = 5;
+            var v = await cmd.ExecuteScalarAsync(ct);
+            return v is null or DBNull ? 0 : Convert.ToInt32(v, CultureInfo.InvariantCulture);
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>Il giro vero e proprio: divide in batch, esegue e raccoglie set/messaggi/errori.</summary>
+    private static async Task<QueryResult> EseguiBatchAsync(
+        SqlConnection conn,
+        SqlTransaction? tran,
+        string sql,
+        int? timeoutSeconds,
+        bool checkSyntax,
+        CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
         var messages = new List<string>();
@@ -24,9 +117,9 @@ public class QueryService
 
         try
         {
-            await using var conn = new SqlConnection(connectionString);
-            conn.FireInfoMessageEventOnUserErrors = true;
-            conn.InfoMessage += (_, e) =>
+            // i messaggi (PRINT/errori di sintassi) vanno raccolti SOLO per questa esecuzione: la
+            // connessione può essere quella persistente della sessione, condivisa con le altre
+            SqlInfoMessageEventHandler onInfo = (_, e) =>
             {
                 // con FireInfoMessageEventOnUserErrors gli errori di sintassi arrivano qui:
                 // riporta la riga assoluta (i PRINT hanno Number 0 → niente prefisso)
@@ -52,89 +145,67 @@ public class QueryService
                     details.Add(detail);
                 }
             };
-            await conn.OpenAsync(ct);
-
-            // Verifica di sintassi: ogni comando gira dentro una transazione ADO.NET che
-            // viene SEMPRE annullata a fine richiesta (nessun effetto collaterale). NON si
-            // usa "BEGIN TRANSACTION" in T-SQL: se il testo utente contiene già
-            // BEGIN TRAN/ROLLBACK/COMMIT (nidificati sopra il nostro), un suo ROLLBACK
-            // senza nome chiude l'INTERA transazione → il Rollback finale fallisce e va
-            // ignorato (la connessione si chiude comunque senza COMMIT, quindi niente
-            // effetti collaterali residui).
-            SqlTransaction? checkTran = null;
-            if (checkSyntax)
+            conn.InfoMessage += onInfo;
+            try
             {
-                checkTran = (SqlTransaction)await conn.BeginTransactionAsync(ct);
-            }
+                var batches = SqlBatchSplitter.SplitWithLines(sql);
+                if (batches.Count == 0)
+                    throw new InvalidOperationException("Nessuna istruzione SQL da eseguire.");
 
-            var batches = SqlBatchSplitter.SplitWithLines(sql);
-            if (batches.Count == 0)
-                throw new InvalidOperationException("Nessuna istruzione SQL da eseguire.");
-
-            foreach (var batch in batches)
-            {
-                currentStartLine = batch.StartLine;
-                await using var cmd = conn.CreateCommand();
-                cmd.CommandText = batch.Text;
-                cmd.Transaction = checkTran;
-                cmd.CommandTimeout = checkSyntax ? Math.Min(timeoutSeconds ?? 30, 10) : (timeoutSeconds ?? 30);
-                cmd.StatementCompleted += (_, e) => totalAffected += e.RecordCount;
-
-                await using var reader = await cmd.ExecuteReaderAsync(ct);
-                do
+                foreach (var batch in batches)
                 {
-                    var schema = reader.GetColumnSchema();
-                    if (schema.Count == 0)
+                    currentStartLine = batch.StartLine;
+                    await using var cmd = conn.CreateCommand();
+                    cmd.CommandText = batch.Text;
+                    cmd.Transaction = tran;
+                    cmd.CommandTimeout = checkSyntax ? Math.Min(timeoutSeconds ?? 30, 10) : (timeoutSeconds ?? 30);
+                    cmd.StatementCompleted += (_, e) => totalAffected += e.RecordCount;
+
+                    await using var reader = await cmd.ExecuteReaderAsync(ct);
+                    do
                     {
-                        // Statement senza result set (UPDATE/INSERT/DELETE/PRINT…):
-                        // niente set vuoto — come SSMS, le righe interessate finiscono nei messaggi,
-                        // così il client mostra la schermata dei PRINT quando non c'è una SELECT.
-                        var affected = reader.RecordsAffected;
-                        if (affected >= 0)
+                        var schema = reader.GetColumnSchema();
+                        if (schema.Count == 0)
                         {
-                            totalAffected += affected;
-                            messages.Add(affected == 1 ? "(1 riga interessata)" : $"({affected} righe interessate)");
+                            // Statement senza result set (UPDATE/INSERT/DELETE/PRINT…):
+                            // niente set vuoto — come SSMS, le righe interessate finiscono nei messaggi,
+                            // così il client mostra la schermata dei PRINT quando non c'è una SELECT.
+                            var affected = reader.RecordsAffected;
+                            if (affected >= 0)
+                            {
+                                totalAffected += affected;
+                                messages.Add(affected == 1 ? "(1 riga interessata)" : $"({affected} righe interessate)");
+                            }
+                            continue;
                         }
-                        continue;
-                    }
 
-                    var columns = schema
-                        .Select(c => new ColumnResult(
-                            string.IsNullOrEmpty(c.ColumnName) ? $"Column{schema.IndexOf(c) + 1}" : c.ColumnName,
-                            c.DataTypeName ?? c.DataType?.Name ?? "unknown"))
-                        .ToList();
+                        var columns = schema
+                            .Select(c => new ColumnResult(
+                                string.IsNullOrEmpty(c.ColumnName) ? $"Column{schema.IndexOf(c) + 1}" : c.ColumnName,
+                                c.DataTypeName ?? c.DataType?.Name ?? "unknown"))
+                            .ToList();
 
-                    var rows = new List<List<object?>>();
-                    var truncated = false;
-                    while (await reader.ReadAsync(ct))
-                    {
-                        if (rows.Count >= MaxRowsPerSet)
+                        var rows = new List<List<object?>>();
+                        var truncated = false;
+                        while (await reader.ReadAsync(ct))
                         {
-                            truncated = true;
-                            break;
+                            if (rows.Count >= MaxRowsPerSet)
+                            {
+                                truncated = true;
+                                break;
+                            }
+                            var row = new List<object?>(reader.FieldCount);
+                            for (var i = 0; i < reader.FieldCount; i++)
+                                row.Add(ConvertValue(reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i)));
+                            rows.Add(row);
                         }
-                        var row = new List<object?>(reader.FieldCount);
-                        for (var i = 0; i < reader.FieldCount; i++)
-                            row.Add(ConvertValue(reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i)));
-                        rows.Add(row);
-                    }
-                    sets.Add(new QueryResultSet(columns, rows, rows.Count, 0, truncated));
-                } while (await reader.NextResultAsync(ct));
+                        sets.Add(new QueryResultSet(columns, rows, rows.Count, 0, truncated));
+                    } while (await reader.NextResultAsync(ct));
+                }
             }
-
-            // verifica di sintassi: annulla la transazione ADO.NET (nessun effetto collaterale).
-            // Se il testo utente ha già eseguito ROLLBACK senza nome, la transazione non esiste
-            // più: il rollback fallisce e va ignorato (la connessione si chiude senza COMMIT).
-            if (checkTran is not null)
+            finally
             {
-                try
-                {
-                    await checkTran.RollbackAsync(ct);
-                }
-                catch
-                {
-                    /* transazione già chiusa dal testo utente */
-                }
+                conn.InfoMessage -= onInfo;
             }
         }
         catch (OperationCanceledException)

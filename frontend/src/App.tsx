@@ -123,7 +123,7 @@ export default function App() {
    * NOTA (non è un errore): messaggio breve e non invadente, es. "«dbo.X» era già aperta: sei
    * sulla tab esistente". Si chiude da sola dopo qualche secondo o con un clic.
    */
-  const [nota, setNota] = useState<{ testo: string; tono: 'info' | 'attenzione' } | null>(null)
+  const [nota, setNota] = useState<{ testo: string; tono: 'info' | 'attenzione'; chiave?: 'transazione' } | null>(null)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
 
   // Drago e fuoco: compaiono SOLO se la query eseguita contiene PRINT 'drago' / PRINT 'fuoco'.
@@ -965,6 +965,20 @@ export default function App() {
         updateTabStats(tabId, s => recordExecution(s, r.elapsedMs, !r.error, Date.now()))
         // senza SELECT (solo PRINT/messaggi) si apre la schermata dei print
         setTabResultTab(prev => ({ ...prev, [tabId]: chooseResultTab(r) }))
+        // TRANSAZIONE ANCORA APERTA: la sessione SQL resta aperta fra un'esecuzione e l'altra (come
+        // in SSMS), quindi se una transazione è rimasta aperta le modifiche non sono salvate: lo si
+        // dice con la striscia in alto, che si vede anche con la griglia dei risultati aperta.
+        if (r.trancount && r.trancount > 0) {
+          const quante = r.trancount === 1 ? '1 transazione aperta' : `${r.trancount} transazioni annidate aperte`
+          setNota({
+            testo: `⚠ ${quante}: le modifiche NON sono salvate. Chiudila con COMMIT TRANSACTION oppure ROLLBACK TRANSACTION.`,
+            tono: 'attenzione',
+            chiave: 'transazione',
+          })
+        } else {
+          // la transazione è stata chiusa: via la striscia (se era quella)
+          setNota(n => (n?.chiave === 'transazione' ? null : n))
+        }
         // Se questa tab modifica un oggetto: se l'esecuzione ha applicato PROPRIO il testo della
         // tab (CREATE OR ALTER eseguito da qui) la versione di partenza si aggiorna e non compare
         // nessun avviso di "versione vecchia" (lo fa controllaVersioneOggetto, che riconosce

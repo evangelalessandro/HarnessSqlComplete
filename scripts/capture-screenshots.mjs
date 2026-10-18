@@ -47,6 +47,7 @@ const VERIFY_INDICI_VINCOLI = process.argv.includes('--verify-indici-vincoli')
 const VERIFY_DRAGO_JOIN = process.argv.includes('--verify-drago-join')
 const VERIFY_OGGETTO_VERSIONE = process.argv.includes('--verify-oggetto-versione')
 const VERIFY_MAIUSCOLO = process.argv.includes('--verify-maiuscolo')
+const VERIFY_TRANSAZIONE = process.argv.includes('--verify-transazione')
 const VERIFY_SELEZIONE_TREEVIEW = process.argv.includes('--verify-selezione-treeview')
 const VERIFY_GRUPPI_ALBERO = process.argv.includes('--verify-gruppi-albero')
 const VERIFY_F5_GLOBALE = process.argv.includes('--verify-f5-globale')
@@ -6925,6 +6926,116 @@ async function verifyF5Globale(page) {
 }
 
 /**
+ * VERIFICA (--verify-transazione): la SESSIONE SQL resta aperta fra un'esecuzione e l'altra, come in
+ * SSMS. Segnalazione utente: "se lancio una query che non chiude la transazione, e poi lancio un
+ * rollback nella seconda chiamata, cosa fa adesso?".
+ * Controlla:
+ * 1. `BEGIN TRAN; SELECT …` → la transazione RESTA aperta e compare la striscia "transazione aperta";
+ * 2. nella chiamata dopo `@@TRANCOUNT` è ancora 1;
+ * 3. `ROLLBACK` nella chiamata dopo FUNZIONA (prima dava "Msg 3903") e la striscia sparisce;
+ * 4. una tabella temporanea (#tmp) creata in un'esecuzione esiste anche nell'esecuzione dopo.
+ */
+async function verifyTransazione(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Esegue il testo nell'editor (F5) e aspetta. */
+  const esegui = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(500)
+    await page.press('F5', { code: 'F5', vk: 116 })
+    await sleep(2600)
+  }
+  /** Testo della striscia di avviso (nota) e dei messaggi. */
+  const nota = async () =>
+    await page.eval(`(() => { const n = document.querySelector('[data-nota]'); return n ? (n.textContent || '').trim() : null; })()`)
+  const messaggi = async () =>
+    await page.eval(`(() => {
+      const box = [...document.querySelectorAll('div')].find(d => /Messaggi \\/ PRINT/.test(d.textContent || '') && d.querySelectorAll('div').length < 400);
+      return box ? (box.textContent || '').slice(0, 600) : '';
+    })()`)
+  /** Apre la scheda "Messaggi / PRINT" dei risultati. */
+  const apriMessaggi = async () => {
+    const punto = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b => /Messaggi/.test(b.textContent || ''));
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(700)
+  }
+
+  // 1) transazione lasciata APERTA
+  await esegui('BEGIN TRAN; SELECT 1 AS A')
+  const notaAperta = await nota()
+  console.log(`  dopo BEGIN TRAN: nota=${JSON.stringify(notaAperta)}`)
+  check('la transazione resta aperta e viene SEGNALATA', !!notaAperta && /transazione aperta/i.test(notaAperta), String(notaAperta).slice(0, 80))
+  await apriMessaggi()
+  const msgAperti = await messaggi()
+  check('il messaggio di avviso è anche nei Messaggi', /Transazione ancora aperta/i.test(msgAperti))
+
+  // 2) seconda esecuzione: la transazione è ancora lì
+  await esegui('SELECT @@TRANCOUNT AS trancount')
+  const nota2 = await nota()
+  check('nella esecuzione successiva la transazione è ancora aperta (come SSMS)', !!nota2 && /transazione aperta/i.test(nota2))
+
+  // 3) ROLLBACK in una chiamata successiva: FUNZIONA (prima: Msg 3903)
+  await esegui('ROLLBACK TRANSACTION')
+  await apriMessaggi()
+  const msgRollback = await messaggi()
+  console.log(`  messaggi dopo ROLLBACK: ${JSON.stringify(msgRollback.slice(0, 120))}`)
+  check('ROLLBACK in una chiamata successiva non dà errore', !/3903/.test(msgRollback) && !/non è associata un'istruzione BEGIN/i.test(msgRollback))
+  check('dopo il ROLLBACK la striscia sparisce', (await nota()) === null)
+
+  // 4) tabella temporanea fra due esecuzioni
+  await esegui('CREATE TABLE #tmpProva (a int); INSERT INTO #tmpProva VALUES (1),(2); SELECT COUNT(*) AS righe FROM #tmpProva')
+  await esegui('SELECT COUNT(*) AS righe_dopo FROM #tmpProva')
+  const risultati = await page.eval(`(() => {
+    const box = document.querySelector('[data-testid="risultati"]')
+      || [...document.querySelectorAll('div')].find(d => /Risultati/.test((d.textContent || '').slice(0, 40)) && d.querySelector('table'));
+    return box ? (box.textContent || '').replace(/\\s+/g, ' ').slice(0, 400) : '';
+  })()`)
+  console.log(`  risultati dopo #tmp: ${JSON.stringify(risultati.slice(0, 140))}`)
+  // la prova vera: la seconda esecuzione NON deve dare "Msg 208 oggetto non valido"
+  await apriMessaggi()
+  const msgTmp = await messaggi()
+  console.log(`  messaggi della seconda esecuzione: ${JSON.stringify(msgTmp.slice(0, 120))}`)
+  check(
+    'nessun errore "oggetto #tmpProva non valido" (la #tmp è ancora lì)',
+    !/208/.test(msgTmp) && !/non è valido/i.test(msgTmp),
+    msgTmp.slice(0, 60),
+  )
+  check(
+    'la seconda esecuzione ha letto la #tmp (colonna righe_dopo nei risultati)',
+    /righe_dopo/i.test(risultati),
+    risultati.slice(0, 60),
+  )
+  await page.screenshot('transazione-sessione')
+
+  // pulizia: nessuna transazione lasciata aperta
+  await esegui('IF OBJECT_ID(\'tempdb..#tmpProva\') IS NOT NULL DROP TABLE #tmpProva')
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -7151,6 +7262,11 @@ async function main() {
 
     if (VERIFY_MAIUSCOLO) {
       await verifyMaiuscolo(page)
+      return
+    }
+
+    if (VERIFY_TRANSAZIONE) {
+      await verifyTransazione(page)
       return
     }
 

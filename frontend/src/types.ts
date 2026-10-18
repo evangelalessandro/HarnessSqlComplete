@@ -307,6 +307,11 @@ export interface QueryResult {
   error: string | null
   /** Messaggi/errori con numero, livello, procedura e riga (elenco dettagliato). */
   errors?: QueryMessage[] | null
+  /**
+   * Transazioni ancora aperte nella sessione SQL dopo l'esecuzione (0 = nessuna). La sessione
+   * resta aperta fra un'esecuzione e l'altra: se è > 0 le modifiche non sono ancora salvate.
+   */
+  trancount?: number
 }
 
 export interface SuggestionItem {

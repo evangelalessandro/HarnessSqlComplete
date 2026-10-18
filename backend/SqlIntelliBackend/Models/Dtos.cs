@@ -259,7 +259,13 @@ public record QueryResult(
     long ElapsedMs,
     string? Error,
     /// <summary>Messaggi con numero/livello/procedura/riga (SSMS), per l'elenco dettagliato.</summary>
-    List<QueryMessage>? Errors = null);
+    List<QueryMessage>? Errors = null,
+    /// <summary>
+    /// Transazioni ancora APERTE nella sessione dopo l'esecuzione (0 = nessuna). La sessione SQL
+    /// resta aperta fra una richiesta e l'altra: se è &gt; 0 le modifiche NON sono salvate finché
+    /// non si esegue COMMIT o ROLLBACK.
+    /// </summary>
+    int Trancount = 0);
 
 // ---------- Autocompletamento IA ----------
 
