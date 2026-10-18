@@ -858,9 +858,10 @@ export default function SqlEditor({
                 onExecute(sql)
               }}
               loading={executing}
+              className="bg-emerald-600 text-white hover:bg-emerald-500"
               title="Esegui (F5 / Ctrl+Invio) — se hai selezionato del testo esegue solo la selezione"
             >
-              <Play className="h-4 w-4" /> Esegui
+              <Play className="h-4 w-4 fill-white/90" /> Esegui
             </Button>
             <Button
               variant="secondary"
@@ -868,7 +869,7 @@ export default function SqlEditor({
               title="Anteprima delle modifiche (Alt+P): mostra le righe che un UPDATE/DELETE toccherebbe, senza modificare niente"
               data-anteprima="modifiche"
             >
-              <Eye className="h-4 w-4" /> Anteprima
+              <Eye className="h-4 w-4 text-sky-400" /> Anteprima
             </Button>
             <Button
               variant="ghost"
@@ -876,7 +877,7 @@ export default function SqlEditor({
               title="Piano di esecuzione stimato (Alt+E): operatori e indici suggeriti, senza eseguire la query"
               data-piano="apri"
             >
-              <Activity className="h-4 w-4" /> Piano
+              <Activity className="h-4 w-4 text-amber-400" /> Piano
             </Button>
             {/* Fuoco del drago: scaturisce dal pulsante a ogni query eseguita */}
             {fireVisible && (
@@ -900,13 +901,13 @@ export default function SqlEditor({
             )}
           </span>
           <Button variant="secondary" onClick={() => onSave?.()} title="Salva la query (Ctrl+S) — sovrascrive il file originale se aperto">
-            <Save className="h-4 w-4" /> Salva
+            <Save className="h-4 w-4 text-sky-400" /> Salva
           </Button>
           <Button variant="ghost" onClick={() => onSaveAs?.()} title="Salva con nome (Ctrl+Shift+S) — scegli dove salvarla">
-            <Save className="h-4 w-4" /> Salva con nome
+            <Save className="h-4 w-4 text-sky-300" /> Salva con nome
           </Button>
           <Button variant="ghost" onClick={() => onOpenFile?.()} title="Apri file .sql (permette di sovrascrivere l'originale)">
-            <FolderOpen className="h-4 w-4" /> Apri file
+            <FolderOpen className="h-4 w-4 text-amber-400" /> Apri file
           </Button>
           <Button
             variant="ghost"
@@ -916,7 +917,7 @@ export default function SqlEditor({
             }}
             title="Commenta / togli il commento alle righe selezionate (Ctrl+/)"
           >
-            <MessageSquare className="h-4 w-4" /> Commenta
+            <MessageSquare className="h-4 w-4 text-lime-400" /> Commenta
           </Button>
           <Button
             variant="ghost"
@@ -926,7 +927,7 @@ export default function SqlEditor({
             }}
             title="Aumenta il rientro delle righe selezionate (Tab)"
           >
-            <IndentIncrease className="h-4 w-4" /> Rientra
+            <IndentIncrease className="h-4 w-4 text-teal-300" /> Rientra
           </Button>
           <Button
             variant="ghost"
@@ -936,7 +937,7 @@ export default function SqlEditor({
             }}
             title="Riduce il rientro delle righe selezionate (Shift+Tab)"
           >
-            <IndentDecrease className="h-4 w-4" /> Fuori rientro
+            <IndentDecrease className="h-4 w-4 text-teal-300" /> Fuori rientro
           </Button>
           <Button
             variant="secondary"
@@ -946,14 +947,14 @@ export default function SqlEditor({
             data-formatta={formatting ? 'in-corso' : 'pronto'}
             title="Formatta (Ctrl+Shift+F) — con una selezione formatta solo quella parte"
           >
-            {!formatting && <Wand2 className="h-4 w-4" />} {formatting ? 'Formattazione…' : 'Formatta'}
+            {!formatting && <Wand2 className="h-4 w-4 text-violet-400" />} {formatting ? 'Formattazione…' : 'Formatta'}
           </Button>
           <Button
             variant="ghost"
             onClick={() => setProfileOpen(true)}
             title="Impostazioni di formattazione (importa/edita/esporta il profilo T-SQL)"
           >
-            <Settings2 className="h-4 w-4" />
+            <Settings2 className="h-4 w-4 text-sky-300" />
           </Button>
           <Button
             variant={mostraSpazi ? 'primary' : 'ghost'}
@@ -961,20 +962,20 @@ export default function SqlEditor({
             title="Mostra i caratteri invisibili: spazio (·) e tab (→)"
             data-spazi={mostraSpazi ? 'on' : 'off'}
           >
-            <Pilcrow className="h-4 w-4" /> Spazi e tab
+            <Pilcrow className={mostraSpazi ? 'h-4 w-4 text-amber-200' : 'h-4 w-4 text-zinc-400'} /> Spazi e tab
           </Button>
           <Button variant="ghost" onClick={() => editorRef.current?.setValue('')}>
-            <Eraser className="h-4 w-4" /> Svuota
+            <Eraser className="h-4 w-4 text-rose-400" /> Svuota
           </Button>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1">
             <Button variant="ghost" onClick={() => onZoomFont?.(-1)} title="Riduci testo (Ctrl+rotella giù)">
-              <ZoomOut className="h-4 w-4" />
+              <ZoomOut className="h-4 w-4 text-sky-300/80" />
             </Button>
             <span className="w-6 text-center text-xs tabular-nums text-zinc-400">{fontSize}</span>
             <Button variant="ghost" onClick={() => onZoomFont?.(1)} title="Ingrandisci testo (Ctrl+rotella su)">
-              <ZoomIn className="h-4 w-4" />
+              <ZoomIn className="h-4 w-4 text-sky-300" />
             </Button>
           </div>
           <Button
@@ -982,7 +983,7 @@ export default function SqlEditor({
             onClick={() => onToggleTheme?.()}
             title={theme === 'vs-dark' ? 'Passa al tema chiaro' : 'Passa al tema scuro'}
           >
-            {theme === 'vs-dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            {theme === 'vs-dark' ? <Sun className="h-4 w-4 text-amber-300" /> : <Moon className="h-4 w-4 text-sky-300" />}
           </Button>
           <Toggle checked={aiEnabled} onChange={onAiEnabledChange} label="Autocompletamento IA" />
           <Toggle

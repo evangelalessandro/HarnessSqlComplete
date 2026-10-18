@@ -1653,28 +1653,28 @@ export default function App() {
           className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
           title="Aggiorna lo schema dal database (Ctrl+Shift+R) — rilegge tabelle, colonne, viste e routine"
         >
-          <RefreshCw className={`h-4 w-4 ${summaryReloading ? 'animate-spin' : ''}`} /> Aggiorna schema
+          <RefreshCw className={`h-4 w-4 text-emerald-300 ${summaryReloading ? 'animate-spin' : ''}`} /> Aggiorna schema
         </button>
         <button
           onClick={openSearchTab}
           className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
           title={`Ricerca testuale nel database ${connection.database}: nomi, definizioni e (opzionale) dati — si apre in una tab`}
         >
-          <Search className="h-4 w-4" /> Cerca
+          <Search className="h-4 w-4 text-sky-300" /> Cerca
         </button>
         <button
           onClick={() => setHelpOpen(true)}
           className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
           title="Apri la guida con tutte le funzioni"
         >
-          <BookOpen className="h-4 w-4" /> Aiuto
+          <BookOpen className="h-4 w-4 text-amber-300" /> Aiuto
         </button>
         {activeStats && <QueryStatsBadge stats={activeStats} onClick={() => setStatsOpen(true)} />}
         <button
           onClick={() => void handleDisconnect()}
           className="ml-auto inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
         >
-          <Unplug className="h-4 w-4" /> Disconnetti
+          <Unplug className="h-4 w-4 text-rose-300" /> Disconnetti
         </button>
       </header>
 
