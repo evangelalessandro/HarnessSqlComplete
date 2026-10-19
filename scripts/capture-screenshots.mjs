@@ -57,6 +57,7 @@ const VERIFY_VIRGOLA = process.argv.includes('--verify-virgola')
 const VERIFY_ANTEPRIMA = process.argv.includes('--verify-anteprima')
 const VERIFY_PIANO = process.argv.includes('--verify-piano')
 const VERIFY_MULTICURSORE = process.argv.includes('--verify-multicursore')
+const VERIFY_SHIFT_SELEZIONE = process.argv.includes('--verify-shift-selezione')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -7517,6 +7518,129 @@ async function verifyPiano(page) {
 }
 
 /**
+ * VERIFICA (--verify-shift-selezione): Shift+Su / Shift+Giù devono SELEZIONARE il testo (regressione
+ * segnalata dall'utente). Controlla anche Shift+Fine e che la selezione non venga persa da nessuno dei
+ * gestori di tasti aggiunti (virgola a capo, multi cursore, Invio indentato).
+ */
+async function verifyShiftSelezione(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const TESTO = ['SELECT 1', 'SELECT 2', 'SELECT 3', 'SELECT 4'].join('\n')
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const ed = m.editor.getEditors()[0];
+    ed.setValue(${JSON.stringify(TESTO)});
+    ed.setPosition({ lineNumber: 1, column: 1 });
+    ed.focus();
+  })()`)
+  await sleep(500)
+  const selezione = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors()[0];
+      const s = ed.getSelection();
+      return { testo: ed.getModel().getValueInRange(s), righe: s.endLineNumber - s.startLineNumber + 1,
+               da: { l: s.startLineNumber, c: s.startColumn }, a: { l: s.endLineNumber, c: s.endColumn } }; })()`)
+
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 8 }) // Shift+Giù
+  await sleep(500)
+  const s1 = await selezione()
+  console.log(`  Shift+Giù: ${JSON.stringify(s1)}`)
+  check('Shift+Giù seleziona la prima riga', s1.righe === 2 && s1.testo.startsWith('SELECT 1'), JSON.stringify(s1))
+
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 8 })
+  await sleep(500)
+  const s2 = await selezione()
+  console.log(`  Shift+Giù x2: ${JSON.stringify(s2)}`)
+  check('due Shift+Giù selezionano tre righe', s2.righe === 3, JSON.stringify(s2))
+
+  await page.press('ArrowUp', { code: 'ArrowUp', vk: 38, modifiers: 8 }) // Shift+Su
+  await sleep(500)
+  const s3 = await selezione()
+  console.log(`  Shift+Su: ${JSON.stringify(s3)}`)
+  check('Shift+Su riduce la selezione', s3.righe === 2, JSON.stringify(s3))
+
+  await page.press('End', { code: 'End', vk: 35, modifiers: 8 }) // Shift+Fine
+  await sleep(400)
+  const s4 = await selezione()
+  console.log(`  Shift+Fine: ${JSON.stringify(s4)}`)
+  check('Shift+Fine estende la selezione', s4.testo.length > 0, JSON.stringify(s4))
+
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 8 })
+  await sleep(400)
+  const s5 = await selezione()
+  console.log(`  Shift+Fine + Shift+Giù: ${JSON.stringify(s5)}`)
+  check('la selezione continua a funzionare dopo averla estesa', s5.righe >= 2, JSON.stringify(s5))
+  // 2) CONDIZIONE REALE: con il popup dei suggerimenti aperto, Shift+Giù deve comunque selezionare
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const ed = m.editor.getEditors()[0];
+    ed.setValue(${JSON.stringify(TESTO)});
+    ed.setPosition({ lineNumber: 1, column: 8 });
+    ed.focus();
+  })()`)
+  await sleep(400)
+  await page.typeText(' ')
+  await sleep(1200)
+  const popup = await page.eval(`!!document.querySelector('.suggest-widget.visible')`)
+  console.log(`  popup suggerimenti aperto: ${popup}`)
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 8 })
+  await sleep(600)
+  const s6 = await selezione()
+  console.log(`  Shift+Giù col popup aperto: ${JSON.stringify(s6)}`)
+  check('con il popup dei suggerimenti aperto Shift+Giù seleziona comunque', s6.righe >= 2, JSON.stringify(s6))
+
+  // 3) MODALITÀ A BLOCCHI accesa (Alt+C, persistita): Monaco trasforma Shift+Su/Giù in selezione a
+  //    COLONNA di larghezza zero → sembra che la selezione non funzioni. Deve selezionare testo.
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const ed = m.editor.getEditors()[0];
+    ed.setValue(${JSON.stringify(TESTO)});
+    ed.setPosition({ lineNumber: 1, column: 9 }); // FINE riga: qui "stream" e "blocco" differiscono
+    ed.focus();
+  })()`)
+  await page.press('c', { code: 'KeyC', vk: 67, modifiers: 1 }) // Alt+C: modalità a blocchi ACCESA
+  await sleep(800)
+  const blocchiOn = await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+    return m.editor.getEditors()[0].getOption(m.editor.EditorOption.columnSelection); })()`)
+  console.log(`  modalità a blocchi accesa: ${blocchiOn}`)
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 8 })
+  await sleep(600)
+  const sBlocchi = await selezione()
+  console.log(`  BLOCCHI ON + Shift+Giù: ${JSON.stringify(sBlocchi)}`)
+  check(
+    'con la modalità a blocchi accesa Shift+Giù seleziona il TESTO (non un blocco vuoto)',
+    sBlocchi.testo.trim().length > 0 && sBlocchi.righe >= 2,
+    JSON.stringify(sBlocchi),
+  )
+  await page.press('c', { code: 'KeyC', vk: 67, modifiers: 1 }) // Alt+C: modalità a blocchi SPENTA
+  await sleep(500)
+
+  await page.screenshot('shift-selezione')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * VERIFICA (--verify-multicursore): con il multi cursore su più righe (una vuota in mezzo), digitando
  * le righe corte vengono riempite di spazi per restare allineate — come fa SSMS.
  * Richiesta utente: "se fai il multi cursore tra le 2 print comprese, dovresti aggiungere spazi nella
@@ -7936,6 +8060,11 @@ async function main() {
 
     if (VERIFY_MULTICURSORE) {
       await verifyMulticursore(page)
+      return
+    }
+
+    if (VERIFY_SHIFT_SELEZIONE) {
+      await verifyShiftSelezione(page)
       return
     }
 

@@ -4,7 +4,7 @@
 // La combinazione viene riconosciuta dall'evento e gestita direttamente dall'app.
 import { describe, expect, it } from 'vitest'
 import source from '../components/SqlEditor.tsx?raw'
-import { azioneCursore, cursoreDaAggiungere, cursoreDaNeutralizzare } from '../multiCursor'
+import { azioneCursore, cursoreDaAggiungere, cursoreDaNeutralizzare, selezioneVerticale } from '../multiCursor'
 
 describe('cursoreDaAggiungere: Maiusc+Alt+Su/Giù', () => {
   it('Giù → cursore sotto, Su → cursore sopra', () => {
@@ -106,5 +106,38 @@ describe('collegamento nell\'editor', () => {
     expect(source).toContain('Aggiungi cursore sotto (Maiusc+Alt+Giù)')
     expect(source).toContain('Aggiungi cursore sopra (Maiusc+Alt+Su)')
     expect(source).toContain('editor.getAction(id)')
+  })
+})
+
+describe('selezioneVerticale: Maiusc+Su/Giù (selezione di testo, anche in modalità a blocchi)', () => {
+  it('riconosce Maiusc+Giù e Maiusc+Su', () => {
+    expect(selezioneVerticale({ code: 'ArrowDown', key: 'ArrowDown', shiftKey: true })).toBe(1)
+    expect(selezioneVerticale({ code: 'ArrowUp', key: 'ArrowUp', shiftKey: true })).toBe(-1)
+  })
+
+  it('funziona anche quando la tastiera manda solo keyCode (niente code/key)', () => {
+    expect(selezioneVerticale({ keyCode: 40, shiftKey: true })).toBe(1)
+    expect(selezioneVerticale({ which: 38, shiftKey: true })).toBe(-1)
+  })
+
+  it('NON è la combinazione con Alt (cursore), Ctrl o senza Shift', () => {
+    expect(selezioneVerticale({ code: 'ArrowDown', shiftKey: true, altKey: true })).toBe(0)
+    expect(selezioneVerticale({ code: 'ArrowDown', shiftKey: true, ctrlKey: true })).toBe(0)
+    expect(selezioneVerticale({ code: 'ArrowDown' })).toBe(0)
+    expect(selezioneVerticale({ code: 'ArrowDown', shiftKey: true, altGraph: true })).toBe(0)
+  })
+
+  it('le frecce orizzontali non c entrano', () => {
+    expect(selezioneVerticale({ code: 'ArrowLeft', shiftKey: true })).toBe(0)
+    expect(selezioneVerticale({ code: 'ArrowRight', shiftKey: true })).toBe(0)
+  })
+})
+
+describe('modalità a blocchi: Maiusc+Su/Giù non deve fare una selezione a rettangolo vuota', () => {
+  it('l editor intercetta la selezione verticale quando la modalità a blocchi è accesa', () => {
+    // controllo sul sorgente: il ramo esiste ed è dentro il blocco "if (blocchiRef.current)"
+    expect(source).toContain('selezioneVerticale(tasto)')
+    expect(source).toContain('estendiSelezioneVerticale')
+    expect(source).toMatch(/if \(blocchiRef\.current\) \{/)
   })
 })

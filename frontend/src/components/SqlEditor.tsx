@@ -30,7 +30,7 @@ import type { MotoreFormattazione, OpzioniSqlFluff } from '../formatEngine'
 import { SQL_WORD_SEPARATORS } from '../editorOptions'
 import { BLOCCHI_KEY, opzioniMonaco, parseBlocchi, serializzaBlocchi } from '../blockMode'
 import { SPAZI_KEY, opzioniSpazi, parseSpazi, serializzaSpazi } from '../whitespaceMode'
-import { azioneCursore, cursoreDaAggiungere, cursoreDaNeutralizzare } from '../multiCursor'
+import { azioneCursore, cursoreDaAggiungere, cursoreDaNeutralizzare, selezioneVerticale } from '../multiCursor'
 import FormatProfilePanel from './FormatProfilePanel'
 import { Badge, Button, Spinner, Toggle } from './ui'
 
@@ -409,6 +409,28 @@ export default function SqlEditor({
      * code/key/keyCode + modificatori.
      */
     const domNodeTasti = editor.getDomNode()
+    /** Colonna "desiderata" mentre si seleziona in verticale (per non accorciarla sulle righe corte). */
+    let colonnaVoluta: number | null = null
+    /**
+     * Estende la selezione di una riga in su/giù come fa la selezione di testo normale: l'estremo
+     * fisso resta l'ancora, l'estremo mobile si sposta di una riga mantenendo la colonna voluta.
+     * Serve con la modalità a blocchi accesa, dove Monaco userebbe un rettangolo (e a fine riga la
+     * selezione risulterebbe vuota).
+     */
+    const estendiSelezioneVerticale = (delta: -1 | 1) => {
+      const ed = editorRef.current
+      const model = ed?.getModel()
+      if (!ed || !model) return
+      const s = ed.getSelection()
+      if (!s) return
+      const ancoraRiga = s.selectionStartLineNumber
+      const ancoraColonna = s.selectionStartColumn
+      const cursoreRiga = s.positionLineNumber
+      if (colonnaVoluta === null) colonnaVoluta = s.positionColumn
+      const riga = Math.min(Math.max(1, cursoreRiga + delta), model.getLineCount())
+      const colonna = Math.min(colonnaVoluta, model.getLineMaxColumn(riga))
+      ed.setSelection(new monaco.Selection(ancoraRiga, ancoraColonna, riga, colonna))
+    }
     const onTasti = (ev: KeyboardEvent) => {
       const tasto = {
         code: ev.code,
@@ -428,6 +450,19 @@ export default function SqlEditor({
         ev.stopPropagation()
         return
       }
+      // MODALITÀ A BLOCCHI: il rettangolo vale per il trascinamento del mouse; Maiusc+Su/Giù deve
+      // continuare a selezionare il TESTO (segnalazione utente). Fuori dalla modalità a blocchi
+      // l'evento va a Monaco come sempre.
+      if (blocchiRef.current) {
+        const verso = selezioneVerticale(tasto)
+        if (verso !== 0) {
+          ev.preventDefault()
+          ev.stopPropagation()
+          estendiSelezioneVerticale(verso)
+          return
+        }
+      }
+      if (!ev.shiftKey) colonnaVoluta = null
       const direzione = cursoreDaAggiungere(tasto)
       if (!direzione) return
       ev.preventDefault()

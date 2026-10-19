@@ -74,3 +74,25 @@ export function cursoreDaNeutralizzare(e: TastoPremuto): boolean {
 export function azioneCursore(direzione: DirezioneCursore): string {
   return direzione === 'sotto' ? 'editor.action.insertCursorBelow' : 'editor.action.insertCursorAbove'
 }
+
+/**
+ * SELEZIONE VERTICALE DI TESTO (Shift+Su / Shift+Giù senza Alt/Ctrl).
+ *
+ * Serve perché con la "selezione a blocchi" accesa (columnSelection, Alt+C di SSMS) Monaco trasforma
+ * Shift+Su/Giù in una selezione a RETTANGOLO: partendo da fine riga il rettangolo ha larghezza zero e
+ * la selezione risulta VUOTA (segnalazione utente: "ora sembra non funzionare la selezione di più
+ * testo con il maiusc+su o maiusc+giù"). In SSMS la modalità a blocchi vale per il trascinamento del
+ * mouse, mentre Maiusc+frecce seleziona sempre il testo: qui si riproduce quel comportamento.
+ *
+ * Restituisce -1 (su), +1 (giù) oppure 0 se non è questa combinazione.
+ */
+export function selezioneVerticale(e: TastoPremuto): -1 | 0 | 1 {
+  if (!e.shiftKey || e.altKey || e.ctrlKey || e.metaKey || e.altGraph) return 0
+  const tasto = e.code || e.key || ''
+  if (tasto === 'ArrowUp' || tasto === 'Up') return -1
+  if (tasto === 'ArrowDown' || tasto === 'Down') return 1
+  const codice = e.keyCode ?? e.which ?? 0
+  if (codice === 38) return -1
+  if (codice === 40) return 1
+  return 0
+}
