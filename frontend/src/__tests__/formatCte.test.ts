@@ -68,7 +68,7 @@ describe('CTE in una routine: allineamento', () => {
     const iCte = indiceDi(/^\s*;WITH tbl AS$/)
     expect(righe[iCte].indexOf(';')).toBe(2) // corpo della procedura
     expect(righe[iCte + 1]).toBe('  (')
-    expect(righe[iCte + 2]).toMatch(/^ {4}SELECT TOP 1 UDC_UDC X_UDC$/)
+    expect(righe[iCte + 2]).toMatch(/^ {4}SELECT TOP 1 UDC_UDC +X_UDC$/)
     // FROM allo stesso livello della SELECT, JOIN due spazi più dentro
     expect(indiceDi(/^ {4}FROM DAT_UDC$/)).toBeGreaterThan(iCte)
     expect(indiceDi(/^ {6}INNER JOIN DAT_SCOMPART/)).toBeGreaterThan(iCte)
@@ -78,8 +78,8 @@ describe('CTE in una routine: allineamento', () => {
   })
 
   it('la lista dei campi e la ORDER BY sono impilate con la virgola in testa', () => {
-    expect(out).toMatch(/^ {7},IIF \(UDC_SSCC > '', UDC_SSCC, SCO_SSCC_SOURCE\) X_SSCC --sorgente$/m)
-    expect(out).toMatch(/^ {7},UDC_ARTICOLO X_SKU$/m)
+    expect(out).toMatch(/^ {7},IIF \(UDC_SSCC > '', UDC_SSCC, SCO_SSCC_SOURCE\) +X_SSCC --sorgente$/m)
+    expect(out).toMatch(/^ {7},UDC_ARTICOLO +X_SKU$/m)
   })
 
   it('dopo la CTE lo statement resta indentato nel corpo', () => {

@@ -15,6 +15,8 @@ type Token =
   | { type: 'punct'; text: string; blank?: number }
 
 /** Tokenizza il testo SQL rispettando stringhe, commenti e operatori. */
+import { allineaAliasSelectList } from './aliasAlign'
+
 export function tokenizeSqlText(text: string): Token[] {
   const tokens: Token[] = []
   let i = 0
@@ -381,6 +383,10 @@ function needsStatementLayout(sql: string): boolean {
  * Formatta una query semplice secondo il profilo (motore query: clausole su righe proprie).
  */
 export function formatSqlWithProfile(sql: string, profile: FormatProfile): string {
+  return allineaAliasSelectList(formatSqlConProfilo(sql, profile))
+}
+
+function formatSqlConProfilo(sql: string, profile: FormatProfile): string {
   // La formattazione interviene SEMPRE (richiesta utente: "la formattazione non fa più nulla").
   // La vecchia regola "testo già impaginato → lascialo identico" è stata tolta: due store scritte
   // nello stesso stile venivano trattate in modo diverso, e l'utente non capiva perché.
@@ -751,6 +757,10 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
  * EXEC con parametri allineati, DECLARE con virgola iniziale, label a margine.
  */
 export function formatRoutineWithProfile(sql: string, profile: FormatProfile): string {
+  return allineaAliasSelectList(formatRoutineConProfilo(sql, profile))
+}
+
+function formatRoutineConProfilo(sql: string, profile: FormatProfile): string {
   const tokens = tokenizeSqlText(sql)
   if (tokens.length === 0) return sql
 
@@ -2035,7 +2045,7 @@ const PRIMA_DI_ALIAS_NO = new Set(['.', '(', ',', '+', '-', '*', '/', '%', '=', 
  * Restituisce null quando non c'è un alias: un solo token ("UDC_UDC"), un campo qualificato
  * ("t.col"), un "*" ("a.*"), un'assegnazione ("@x = 1") o una stringa non si toccano.
  */
-function splitAliasItem(
+export function splitAliasItem(
   tokens: Token[],
   up: (t: Token) => string,
 ): { expr: string; alias: string; commento: string } | null {

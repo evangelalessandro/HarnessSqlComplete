@@ -14,7 +14,7 @@ describe('formattazione SELECT INTO con IIF e condizioni', () => {
 
   it('INTO, FROM, WHERE e AND vanno su righe proprie', () => {
     const out = formatSqlWithProfile(sql, profile)
-    expect(out.split('\n').map(l => l.trim())[0]).toMatch(/^SELECT TOP 1 UDC_UDC X_SU_CODE/)
+    expect(out.split('\n').map(l => l.trim())[0]).toMatch(/^SELECT TOP 1 UDC_UDC +X_SU_CODE$/)
     expect(out).toContain('\nINTO # tmpLu')
     expect(out).toContain('\nFROM dat_udc')
     expect(out).toContain('\nWHERE UDC_ORDINE = @pOrder')

@@ -177,8 +177,8 @@ BEGIN
 select CWD_BLOCK from A
 END`
     const out = formatRoutineWithProfile(sql, profile)
-    expect(out).toMatch(/^      SELECT MFC_BLOCK AS CWD_BLOCK$/m)
-    expect(out).toMatch(/^         ,CEL_CORRIDOIO AS CWD_CORRIDOI$/m)
+    expect(out).toMatch(/^      SELECT MFC_BLOCK +AS CWD_BLOCK$/m)
+    expect(out).toMatch(/^ +,CEL_CORRIDOIO +AS CWD_CORRIDOI$/m)
   })
 
   it('ramo UNION: anche il secondo ramo ha la lista impilata', () => {

@@ -263,8 +263,8 @@ END`
     expect(out).toMatch(/^  ;WITH TBL_MASTER_BAYS \/\* Master bays list \*\/ AS$/m)
     expect(out).toMatch(/^  \($/m)
     // anche dentro la CTE la select-list è impilata (virgole in testa), come da sola
-    expect(out).toMatch(/^    SELECT DISTINCT b\.BCO_BAIA AS FLD_MASTER_BAY$/m)
-    expect(out).toMatch(/^       ,b\.BCO_ABI AS FLD_MASTER_BAY_ABI$/m)
+    expect(out).toMatch(/^    SELECT DISTINCT b\.BCO_BAIA +AS FLD_MASTER_BAY$/m)
+    expect(out).toMatch(/^ +,b\.BCO_ABI +AS FLD_MASTER_BAY_ABI$/m)
     expect(out).toMatch(/^    FROM dbo\.MAG_BAIE b$/m)
     expect(out).toMatch(/^      INNER JOIN dbo\.MAG_BAIE bm ON \(bm\.BCO_MASTER = b\.BCO_BAIA\)$/m)
     expect(out).toMatch(/^  \)$/m)

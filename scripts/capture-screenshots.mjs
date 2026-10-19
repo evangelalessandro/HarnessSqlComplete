@@ -7600,7 +7600,19 @@ async function verifyFormattaCte(page) {
       `comma=${cont.indexOf(',')} primo=${colonna}`,
     )
   }
-  check('la SELECT interna alla CTE è indentata di 4', /^ {4}SELECT TOP 1 UDC_UDC X_UDC$/m.test(dopo))
+  check('la SELECT interna alla CTE è indentata di 4', /^ {4}SELECT TOP 1 UDC_UDC +X_UDC$/m.test(dopo))
+  // ALIAS IN COLONNA (segnalazione utente): i tre campi della CTE hanno l'alias alla stessa colonna
+  const colonneAlias = righe
+    .map(r => r.replace(/\s*--.*$/, '').trimEnd())
+    .filter(r => /^\s*,?(SELECT TOP 1 UDC_UDC|IIF \(UDC_SSCC > ''|UDC_ARTICOLO) /.test(r) || /X_(UDC|SSCC|SKU)$/.test(r))
+    .map(r => {
+      const conAs = /(?:^|\s)(AS\s+[A-Za-z_]\w*)$/.exec(r)
+      const nome = /(?:^|\s)([A-Za-z_]\w*)$/.exec(r)
+      return conAs ? r.length - conAs[1].length : nome ? r.length - nome[1].length : -1
+    })
+    .filter(c => c >= 0)
+  console.log(`  colonne degli alias: ${JSON.stringify(colonneAlias)}`)
+  check('gli alias dei campi della CTE sono in colonna', colonneAlias.length >= 3 && new Set(colonneAlias).size === 1, JSON.stringify(colonneAlias))
   check('la parentesi della CTE è a 2 e il corpo dentro', /^ {2}\($/m.test(dopo))
   await page.screenshot('formatta-cte')
 
