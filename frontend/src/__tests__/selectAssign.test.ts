@@ -29,7 +29,7 @@ END`
     expect(out).toMatch(/^\s*OR BCO_TIPIUDC LIKE CONCAT \(N'%', @sTipoUdc, N'%'\)\)$/m)
     // ORDER BY: un elemento per riga con virgola allineata
     expect(out).toMatch(/^  ORDER BY BPZ_PRIOBAIE$/m)
-    expect(out).toMatch(/^            ,BPZ_PRIO$/m)
-    expect(out).toMatch(/^            ,PZ_OK_PIAZZOLA DESC$/m)
+    expect(out).toMatch(/^           ,BPZ_PRIO$/m)
+    expect(out).toMatch(/^           ,PZ_OK_PIAZZOLA DESC$/m)
   })
 })

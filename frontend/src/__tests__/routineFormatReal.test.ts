@@ -162,7 +162,7 @@ end`,
 
   it('CTE multiple: tutte presenti, la seconda e la terza con la virgola in testa', () => {
     const out = formatRoutineWithProfile(casi[1][1], profile)
-    expect(out).toMatch(/^    ; WITH A AS$/m)
+    expect(out).toMatch(/^    ;WITH A AS$/m)
     expect(out).toMatch(/^    , B AS$/m)
     expect(out).toMatch(/^    , C AS$/m)
   })

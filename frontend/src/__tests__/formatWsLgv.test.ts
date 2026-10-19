@@ -53,7 +53,7 @@ describe('fixture ws_LUP_RUPOVIVIDOP (commenti che non devono rompere la SP)', (
 
   it('mantiene tutte le label e le istruzioni chiave della SP', () => {
     const out = formatSqlWithProfile(sql, profile)
-    for (const key of ['Evac:', 'Search_other:', 'ShowOutput:', 'end_ok:', 'end_err:', 'goto Evac', 'ALTER PROCEDURE', 'update dbo.RUN_MISSIONI', 'output inserted.MIS_MISSIONE', '; with tbl_master_bays']) {
+    for (const key of ['Evac:', 'Search_other:', 'ShowOutput:', 'end_ok:', 'end_err:', 'goto Evac', 'ALTER PROCEDURE', 'update dbo.RUN_MISSIONI', 'output inserted.MIS_MISSIONE', ';with tbl_master_bays']) {
       expect(out.toLowerCase()).toContain(key.toLowerCase())
     }
   })

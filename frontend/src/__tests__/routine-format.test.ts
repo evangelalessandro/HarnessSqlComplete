@@ -260,7 +260,7 @@ END`
   SELECT TOP 1 @nDestBay = BCO_BAIA FROM dbo.MAG_BAIE WHERE BCO_MASTER = @nDestBayMaster
 END`
     const out = formatRoutineWithProfile(sql, profile)
-    expect(out).toMatch(/^  ; WITH TBL_MASTER_BAYS \/\* Master bays list \*\/ AS$/m)
+    expect(out).toMatch(/^  ;WITH TBL_MASTER_BAYS \/\* Master bays list \*\/ AS$/m)
     expect(out).toMatch(/^  \($/m)
     // anche dentro la CTE la select-list è impilata (virgole in testa), come da sola
     expect(out).toMatch(/^    SELECT DISTINCT b\.BCO_BAIA AS FLD_MASTER_BAY$/m)

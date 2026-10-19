@@ -231,6 +231,9 @@ const cleanInlineCode = (text: string) =>
     .replace(/\s*\.\s*/g, '.')
     .replace(/\s*,/g, ',')
     .replace(/\s+;/g, ';')
+    // ";WITH" va attaccato (convenzione T-SQL): prima diventava "; WITH", uno spazio di troppo
+    // che nella parte CTE si nota subito.
+    .replace(/;\s+(?=WITH\b)/gi, ';')
     .replace(/\(\s+/g, '(')
     .replace(/\s+\)/g, ')')
     // niente spazio tra tipo e parentesi: NVARCHAR(max), DECIMAL(18,2)
@@ -2755,7 +2758,10 @@ function listRows(basePad: string, tokens: Token[], up: (t: Token) => string, kw
       out.push(`${basePad}${text.toLowerCase().startsWith(kw.trim().toLowerCase()) ? text : `${kw.trim()} ${text}`}`)
       firstCode = false
     } else {
-      out.push(`${basePad}${' '.repeat(kw.length)} ,${text}`)
+      // continuazione: la virgola cade ESATTAMENTE sotto il primo elemento della lista
+      // ("ORDER BY " è lungo kw.length → kw.length spazi, senza spazio aggiuntivo prima della
+      // virgola: prima ce n'era uno di troppo e la lista risultava sfalsata di una colonna).
+      out.push(`${basePad}${' '.repeat(kw.length)},${text}`)
     }
     cur = []
     lastWasComma = false
