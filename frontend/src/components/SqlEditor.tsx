@@ -19,6 +19,7 @@ import type { CallableRef } from '../callables'
 import { provideSqlCompletions } from '../sqlCompletions'
 import { suggerisciInLinea } from '../inlineSuggest'
 import { spezzaDopoVirgola, testoSpezzato } from '../autoIndent'
+import { riempimentiPerColonna } from '../multiCursorColonna'
 import { dentroCommentoOStringa } from '../inlineSuggest'
 
 import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../history'
@@ -576,6 +577,7 @@ export default function SqlEditor({
     registerSchemaCompletions()
     registerInlineCompletions()
     registerVirgolaACapo(editor)
+    registerColonnaMultiCursore(editor)
     registerSqlDiagnostics()
     registerBlockGuides()
     registerFolding()
@@ -662,6 +664,58 @@ export default function SqlEditor({
           },
         ])
         ed.setPosition({ lineNumber: pos.lineNumber + 1, column: spezzatura.rientro + 2 })
+        ed.pushUndoStop()
+      }),
+    )
+  }
+
+  /**
+   * MULTI-CURSORE A COLONNA (richiesta utente: "se fai il multi cursore tra le 2 print comprese,
+   * dovresti aggiungere spazi nella riga vuota per restare allo stesso livello… questo lo fa SSMS e
+   * non Monaco di default").
+   *
+   * Con più cursori su righe diverse, digitando un carattere le righe più CORTE (tipicamente quelle
+   * vuote in mezzo) vengono riempite di spazi fino alla colonna del cursore più avanzato, così il
+   * testo resta allineato. Agisce solo se: il cursore è in fondo alla riga (o la riga è vuota), ci
+   * sono almeno due cursori vuoti su righe diverse e qualcosa va davvero riempito. Il carattere lo
+   * inserisce Monaco come sempre: qui si aggiungono solo gli spazi e si sposta il cursore.
+   */
+  const registerColonnaMultiCursore = (editor: monaco.editor.IStandaloneCodeEditor) => {
+    disposablesRef.current.push(
+      editor.onKeyDown(e => {
+        // solo caratteri digitabili, senza modificatori (Enter, Backspace, frecce… restano a Monaco)
+        const tasto = (e.browserEvent as KeyboardEvent).key
+        if (!tasto || tasto.length !== 1) return
+        if (e.ctrlKey || e.altKey || e.metaKey) return
+        const ed = editorRef.current
+        const model = ed?.getModel()
+        const selezioni = ed?.getSelections()
+        if (!ed || !model || !selezioni || selezioni.length < 2) return
+        // con una selezione attiva si sta sostituendo del testo: si lascia fare a Monaco
+        if (selezioni.some(s => !s.isEmpty())) return
+        const posizioni = selezioni.map(s => ({ lineNumber: s.positionLineNumber, column: s.positionColumn }))
+        const righe: string[] = []
+        for (const p of posizioni) righe[p.lineNumber - 1] = model.getLineContent(p.lineNumber)
+        const riempimenti = riempimentiPerColonna(righe, posizioni)
+        if (riempimenti.length === 0) return
+        ed.pushUndoStop()
+        ed.executeEdits(
+          'sql-intelli-colonna',
+          riempimenti.map(r => {
+            const fine = model.getLineContent(r.lineNumber).length + 1
+            return { range: new monaco.Range(r.lineNumber, fine, r.lineNumber, fine), text: r.spazi }
+          }),
+        )
+        // i cursori delle righe riempite vanno alla colonna allineata (il carattere cade lì)
+        const colonne = new Map(riempimenti.map(r => [r.lineNumber, r.colonna]))
+        ed.setSelections(
+          selezioni.map(s => {
+            const colonna = colonne.get(s.positionLineNumber)
+            return colonna
+              ? new monaco.Selection(s.positionLineNumber, colonna, s.positionLineNumber, colonna)
+              : s
+          }),
+        )
         ed.pushUndoStop()
       }),
     )

@@ -56,6 +56,7 @@ const VERIFY_GHOST = process.argv.includes('--verify-ghost')
 const VERIFY_VIRGOLA = process.argv.includes('--verify-virgola')
 const VERIFY_ANTEPRIMA = process.argv.includes('--verify-anteprima')
 const VERIFY_PIANO = process.argv.includes('--verify-piano')
+const VERIFY_MULTICURSORE = process.argv.includes('--verify-multicursore')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -2866,7 +2867,7 @@ async function verifyCursoriCorti(page) {
   await page.press('ArrowUp', { code: 'ArrowUp', vk: 38, modifiers: 9 })
   await sleep(350)
   const sopra = await cursori()
-  await page.typeText('Y')
+  await digita('Y')
   await sleep(700)
   const aSopra = await righeEditor()
   console.log(`  cursori verso l alto: ${sopra} — righe: ${JSON.stringify(aSopra.slice(0, 3))}`)
@@ -7516,6 +7517,134 @@ async function verifyPiano(page) {
 }
 
 /**
+ * VERIFICA (--verify-multicursore): con il multi cursore su più righe (una vuota in mezzo), digitando
+ * le righe corte vengono riempite di spazi per restare allineate — come fa SSMS.
+ * Richiesta utente: "se fai il multi cursore tra le 2 print comprese, dovresti aggiungere spazi nella
+ * riga vuota per restare allo stesso livello delle altre 2 righe che hanno il print… questo lo fa
+ * SSMS e non Monaco di default".
+ */
+async function verifyMulticursore(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const TESTO = ['SELECT 1', '', 'BEGIN', '  print', '', '  print', '', 'end'].join('\n')
+  const prepara = async posizioni => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(300)
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors()[0];
+      ed.setValue(${JSON.stringify(TESTO)});
+      const pos = ${JSON.stringify(posizioni)};
+      if (pos.length === 0) ed.setSelection(new m.Selection(1, 1, 1, 1));
+      else ed.setSelections(pos.map(p => new m.Selection(p.l, p.c, p.l, p.c)));
+      ed.focus();
+    })()`)
+    await sleep(500)
+  }
+  const testo = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      return m.editor.getEditors()[0].getValue(); })()`)
+  /**
+   * Digitazione VERA: `Input.insertText` non passa dagli eventi di tasto (Monaco inserisce il testo
+   * ma nessun gestore keydown viene chiamato), mentre una persona digita esattamente così.
+   */
+  const digita = async frase => {
+    for (const ch of frase) await page.press(ch, { text: ch })
+  }
+  const cursori = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors()[0];
+      return ed.getSelections().map(s => ({ l: s.positionLineNumber, c: s.positionColumn })); })()`)
+
+  // 1) cursori a fine delle due print + sulla riga vuota in mezzo (come li crea il multi cursore)
+  await prepara([
+    { l: 4, c: 8 },
+    { l: 5, c: 1 },
+    { l: 6, c: 8 },
+  ])
+  await digita('  --x')
+  await sleep(900)
+  const dopo = await testo()
+  const righe = dopo.split('\n')
+  console.log(`  righe: ${JSON.stringify(righe)}`)
+  check('la riga con la prima print ha il testo digitato', righe[3] === '  print  --x', JSON.stringify(righe[3]))
+  check('la riga VUOTA è stata riempita di spazi e allineata', righe[4] === '         --x', JSON.stringify(righe[4]))
+  check('la riga con la seconda print ha il testo digitato', righe[5] === '  print  --x', JSON.stringify(righe[5]))
+  check('le altre righe non sono state toccate', righe[0] === 'SELECT 1' && righe[2] === 'BEGIN' && righe[7] === 'end')
+  const pos = await cursori()
+  check('i cursori sono allineati alla stessa colonna', pos.every(c => c.c === 13), JSON.stringify(pos))
+  await page.screenshot('multicursore-colonna')
+
+  // 2) un solo cursore: nessun riempimento (comportamento normale)
+  await prepara([{ l: 5, c: 1 }])
+  await digita('x')
+  await sleep(700)
+  const singolo = await testo()
+  check('con UN cursore non aggiunge spazi', singolo.split('\n')[4] === 'x', JSON.stringify(singolo.split('\n')[4]))
+
+  // 3) cursore in mezzo al testo di un'altra riga: non viene spostato in fondo
+  await prepara([
+    { l: 4, c: 4 },
+    { l: 5, c: 1 },
+  ])
+  await digita('Y')
+  await sleep(700)
+  const mezzo = await testo()
+  console.log(`  righe (mezzo): ${JSON.stringify(mezzo.split('\n').slice(3, 6))}`)
+  check('la riga col cursore in mezzo NON viene spostata in fondo', mezzo.split('\n')[3] === '  pYrint', JSON.stringify(mezzo.split('\n')[3]))
+  check('la riga vuota è comunque riempita fino alla colonna', mezzo.split('\n')[4] === '   Y', JSON.stringify(mezzo.split('\n')[4]))
+
+  // 4) il flusso completo dell'utente: selezioni le righe 4-6 (le due print "comprese") e
+  //    Shift+Alt+I mette un cursore a fine di ogni riga; poi digiti e le righe si allineano.
+  await prepara([])
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const ed = m.editor.getEditors()[0];
+    ed.setSelection(new m.Selection(4, 1, 6, 8)); // fino a FINE riga 6
+    ed.focus();
+  })()`)
+  await sleep(300)
+  await page.press('I', { code: 'KeyI', vk: 73, modifiers: 9 }) // Shift+Alt+I
+  await sleep(600)
+  const dopoScorciatoia = await cursori()
+  console.log(`  cursori dopo Shift+Alt+I: ${JSON.stringify(dopoScorciatoia)}`)
+  await digita('Z')
+  await sleep(800)
+  const conTasto = (await testo()).split('\n')
+  console.log(`  righe (Shift+Alt+I): ${JSON.stringify(conTasto.slice(3, 6))}`)
+  check('Shift+Alt+I crea un cursore per ogni riga selezionata (3 righe)', dopoScorciatoia.length === 3, JSON.stringify(dopoScorciatoia))
+  check('digitando, la riga vuota si allinea alle altre due', conTasto[4] === '       Z', JSON.stringify(conTasto[4]))
+  check(
+    'le due print ricevono il carattere in fondo',
+    conTasto[3] === '  printZ' && conTasto[5] === '  printZ',
+    JSON.stringify([conTasto[3], conTasto[5]]),
+  )
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -7787,6 +7916,11 @@ async function main() {
 
     if (VERIFY_PIANO) {
       await verifyPiano(page)
+      return
+    }
+
+    if (VERIFY_MULTICURSORE) {
+      await verifyMulticursore(page)
       return
     }
 
