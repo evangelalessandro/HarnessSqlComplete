@@ -58,6 +58,7 @@ const VERIFY_ANTEPRIMA = process.argv.includes('--verify-anteprima')
 const VERIFY_PIANO = process.argv.includes('--verify-piano')
 const VERIFY_MULTICURSORE = process.argv.includes('--verify-multicursore')
 const VERIFY_SHIFT_SELEZIONE = process.argv.includes('--verify-shift-selezione')
+const VERIFY_FORMATTA_CTE = process.argv.includes('--verify-formatta-cte')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -7518,6 +7519,97 @@ async function verifyPiano(page) {
 }
 
 /**
+ * VERIFICA (--verify-formatta-cte): nell'editor vero, Ctrl+Shift+F su una CTE dentro una procedura.
+ * Controlla ";WITH" attaccato, la virgola della ORDER BY allineata sotto il primo elemento e
+ * l'indentazione della CTE. Segnalazione utente: "questa query non la identa bene, nella parte della
+ * cte".
+ */
+async function verifyFormattaCte(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const TESTO = [
+    'CREATE OR ALTER PROCEDURE [dbo].[p]',
+    '(',
+    '        @user  NVARCHAR(50)',
+    ')',
+    'AS',
+    'SET NOCOUNT ON',
+    '; WITH tbl AS',
+    '(',
+    '  SELECT TOP 1 UDC_UDC X_UDC',
+    "     ,IIF (UDC_SSCC > '', UDC_SSCC, SCO_SSCC_SOURCE) X_SSCC --sorgente",
+    '     ,UDC_ARTICOLO X_SKU',
+    '  FROM DAT_UDC',
+    '    INNER JOIN DAT_SCOMPART ON SCO_UDC = UDC_UDC',
+    "  WHERE UDC_CAUSMISS = 'CCKIT'",
+    "        AND (UDC_USER_TASK = ''",
+    '          OR UDC_USER_TASK = @user)',
+    "  ORDER BY IIF (UDC_USER_TASK > '', 0, 1)",
+    '            ,MIS_DCREA',
+    ')',
+    'SELECT TOP 1 a.*',
+    'INTO #tmpMission',
+    'FROM tbl a',
+  ].join('\n')
+
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const ed = m.editor.getEditors()[0];
+    ed.setValue(${JSON.stringify(TESTO)});
+    ed.setPosition({ lineNumber: 1, column: 1 });
+    ed.focus();
+  })()`)
+  await sleep(600)
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(300)
+  await page.press('f', { code: 'KeyF', vk: 70, modifiers: 10 }) // Ctrl+Shift+F
+  await sleep(2500)
+  const dopo = await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+    return m.editor.getEditors()[0].getValue(); })()`)
+  const righe = dopo.split('\n')
+  righe.forEach((x, i) => console.log(`   ${String(i + 1).padStart(2)} ${x.replace(/ /g, '·')}`))
+
+  check('";WITH" attaccato (niente spazio dopo il punto e virgola)', /^\s*;WITH tbl AS$/m.test(dopo))
+  const iOrdine = righe.findIndex(x => /^\s*ORDER BY IIF \(UDC_USER_TASK/.test(x))
+  check('la ORDER BY è nella CTE', iOrdine >= 0)
+  if (iOrdine >= 0) {
+    const colonna = righe[iOrdine].indexOf('IIF')
+    const cont = righe[iOrdine + 1] ?? ''
+    check(
+      'la virgola della ORDER BY è allineata sotto il primo elemento',
+      cont.indexOf(',') === colonna,
+      `comma=${cont.indexOf(',')} primo=${colonna}`,
+    )
+  }
+  check('la SELECT interna alla CTE è indentata di 4', /^ {4}SELECT TOP 1 UDC_UDC X_UDC$/m.test(dopo))
+  check('la parentesi della CTE è a 2 e il corpo dentro', /^ {2}\($/m.test(dopo))
+  await page.screenshot('formatta-cte')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * VERIFICA (--verify-shift-selezione): Shift+Su / Shift+Giù devono SELEZIONARE il testo (regressione
  * segnalata dall'utente). Controlla anche Shift+Fine e che la selezione non venga persa da nessuno dei
  * gestori di tasti aggiunti (virgola a capo, multi cursore, Invio indentato).
@@ -8060,6 +8152,11 @@ async function main() {
 
     if (VERIFY_MULTICURSORE) {
       await verifyMulticursore(page)
+      return
+    }
+
+    if (VERIFY_FORMATTA_CTE) {
+      await verifyFormattaCte(page)
       return
     }
 
