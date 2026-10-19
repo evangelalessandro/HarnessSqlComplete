@@ -63,3 +63,62 @@ export function riempimentiPerColonna(righe: string[], posizioni: PosizioneCurso
   }
   return out
 }
+
+/** Rientro iniziale (spazi/tab) di una riga. */
+function rientroIniziale(riga: string): string {
+  return /^[ \t]*/.exec(riga)?.[0] ?? ''
+}
+
+/**
+ * Rientro "di blocco": quello più frequente fra le righe dei cursori CHE HANNO CONTENUTO.
+ * Serve per le righe vuote in mezzo al blocco: non hanno un rientro proprio, quindi prendono quello
+ * delle altre righe (in SSMS la riga nuova nasce già indentata).
+ */
+export function rientroDiBlocco(righe: string[], posizioni: PosizioneCursore[]): string {
+  const conteggio = new Map<string, number>()
+  for (const p of posizioni) {
+    const riga = righe[p.lineNumber - 1] ?? ''
+    if (riga.trim().length === 0) continue
+    const rientro = rientroIniziale(riga)
+    conteggio.set(rientro, (conteggio.get(rientro) ?? 0) + 1)
+  }
+  let migliore = ''
+  let massimo = 0
+  for (const [rientro, n] of conteggio) {
+    if (n > massimo) {
+      migliore = rientro
+      massimo = n
+    }
+  }
+  return migliore
+}
+
+/** Un Invio da inserire al posto di quello di Monaco: riga nuova con questo rientro. */
+export interface InvioIndentato {
+  lineNumber: number
+  column: number
+  /** Rientro della riga NUOVA (spazi/tab). */
+  rientro: string
+}
+
+/**
+ * INVIO CON PIÙ CURSORI (richiesta utente: "Enter con più cursori deve mantenere il rientro della
+ * riga di partenza anche quando la riga è vuota; in SSMS la riga nuova nasce già indentata").
+ *
+ * Per ogni cursore il rientro della riga nuova è quello della SUA riga; se la sua riga è vuota (o
+ * solo spazi) prende il rientro di blocco, cioè quello delle altre righe del blocco. Restituisce null
+ * quando è meglio lasciar fare a Monaco: un solo cursore, oppure tutti sulla stessa riga.
+ */
+export function inviiIndentati(righe: string[], posizioni: PosizioneCursore[]): InvioIndentato[] | null {
+  if (posizioni.length < 2) return null
+  if (new Set(posizioni.map(p => p.lineNumber)).size < 2) return null
+  const blocco = rientroDiBlocco(righe, posizioni)
+  return posizioni.map(p => {
+    const riga = righe[p.lineNumber - 1] ?? ''
+    return {
+      lineNumber: p.lineNumber,
+      column: p.column,
+      rientro: riga.trim().length === 0 ? blocco : rientroIniziale(riga),
+    }
+  })
+}

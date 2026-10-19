@@ -19,7 +19,7 @@ import type { CallableRef } from '../callables'
 import { provideSqlCompletions } from '../sqlCompletions'
 import { suggerisciInLinea } from '../inlineSuggest'
 import { spezzaDopoVirgola, testoSpezzato } from '../autoIndent'
-import { riempimentiPerColonna } from '../multiCursorColonna'
+import { inviiIndentati, riempimentiPerColonna } from '../multiCursorColonna'
 import { dentroCommentoOStringa } from '../inlineSuggest'
 
 import { historyColumnBoost, historyTableBoost, recordTablesFromSql } from '../history'
@@ -578,6 +578,7 @@ export default function SqlEditor({
     registerInlineCompletions()
     registerVirgolaACapo(editor)
     registerColonnaMultiCursore(editor)
+    registerInvioIndentato(editor)
     registerSqlDiagnostics()
     registerBlockGuides()
     registerFolding()
@@ -650,6 +651,8 @@ export default function SqlEditor({
         const pos = ed?.getPosition()
         if (!ed || !model || !pos) return
         if (ed.getSelections()?.some(s => !s.isEmpty())) return
+        // con più cursori l'Invio lo gestisce registerInvioIndentato (la virgola qui è del cursore principale)
+        if ((ed.getSelections()?.length ?? 1) > 1) return
         if (dentroCommentoOStringa(model.getValue(), model.getOffsetAt(pos))) return
         const spezzatura = spezzaDopoVirgola(model.getLineContent(pos.lineNumber), pos.column)
         if (!spezzatura) return
@@ -680,6 +683,57 @@ export default function SqlEditor({
    * sono almeno due cursori vuoti su righe diverse e qualcosa va davvero riempito. Il carattere lo
    * inserisce Monaco come sempre: qui si aggiungono solo gli spazi e si sposta il cursore.
    */
+  /**
+   * INVIO CON PIÙ CURSORI (richiesta utente: "Enter con più cursori deve mantenere il rientro della
+   * riga di partenza anche quando la riga è vuota; in SSMS la riga nuova nasce già indentata").
+   *
+   * Monaco mantiene il rientro delle righe che hanno contenuto ma su una riga VUOTA crea una riga
+   * vuota; qui l'Invio lo gestiamo noi quando ci sono più cursori su righe diverse: ogni riga nuova
+   * prende il rientro della propria riga e le righe vuote prendono il rientro delle altre righe del
+   * blocco. Con un solo cursore, con una selezione o col popup dei suggerimenti aperto resta Monaco.
+   */
+  const registerInvioIndentato = (editor: monaco.editor.IStandaloneCodeEditor) => {
+    disposablesRef.current.push(
+      editor.onKeyDown(e => {
+        if (e.keyCode !== monaco.KeyCode.Enter) return
+        if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+        if (document.querySelector('.suggest-widget.visible')) return
+        const ed = editorRef.current
+        const model = ed?.getModel()
+        const selezioni = ed?.getSelections()
+        if (!ed || !model || !selezioni || selezioni.length < 2) return
+        if (selezioni.some(s => !s.isEmpty())) return
+        const posizioni = selezioni.map(s => ({ lineNumber: s.positionLineNumber, column: s.positionColumn }))
+        const righe: string[] = []
+        for (const p of posizioni) righe[p.lineNumber - 1] = model.getLineContent(p.lineNumber)
+        const invii = inviiIndentati(righe, posizioni)
+        if (!invii) return
+        e.preventDefault()
+        e.stopPropagation()
+        // dal basso verso l'alto: le posizioni delle righe sopra restano valide
+        const dalBasso = [...invii].sort((a, b) => b.lineNumber - a.lineNumber || b.column - a.column)
+        ed.pushUndoStop()
+        ed.executeEdits(
+          'sql-intelli-invio',
+          dalBasso.map(v => ({
+            range: new monaco.Range(v.lineNumber, v.column, v.lineNumber, v.column),
+            text: `\n${v.rientro}`,
+          })),
+        )
+        // cursori sulle righe nuove: ogni Invio inserito sopra sposta la riga di uno
+        const ordinate = [...invii].sort((a, b) => a.lineNumber - b.lineNumber)
+        ed.setSelections(
+          ordinate.map((v, i) => {
+            const riga = v.lineNumber + i + 1
+            const colonna = v.rientro.length + 1
+            return new monaco.Selection(riga, colonna, riga, colonna)
+          }),
+        )
+        ed.pushUndoStop()
+      }),
+    )
+  }
+
   const registerColonnaMultiCursore = (editor: monaco.editor.IStandaloneCodeEditor) => {
     disposablesRef.current.push(
       editor.onKeyDown(e => {

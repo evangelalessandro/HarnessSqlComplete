@@ -2,7 +2,7 @@
 // Richiesta utente: con il multi cursore su più righe (una vuota in mezzo), digitando SSMS riempie
 // la riga vuota di spazi per restare allineato alle altre; Monaco no.
 import { describe, expect, it } from 'vitest'
-import { riempimentiPerColonna } from '../multiCursorColonna'
+import { inviiIndentati, riempimentiPerColonna, rientroDiBlocco } from '../multiCursorColonna'
 
 const QUERY = ['SELECT 1', '', 'BEGIN', '  print', '', '  print', '', 'end']
 
@@ -84,5 +84,53 @@ describe('riempimentiPerColonna', () => {
     expect(r).toHaveLength(1)
     expect(r[0].lineNumber).toBe(1)
     expect(r[0].spazi).toHaveLength(2)
+  })
+})
+
+describe('inviiIndentati (Enter con più cursori)', () => {
+  it('la riga nuova mantiene il rientro della propria riga', () => {
+    const r = inviiIndentati(QUERY, [
+      { lineNumber: 4, column: 8 },
+      { lineNumber: 6, column: 8 },
+    ])
+    expect(r).toHaveLength(2)
+    expect(r!.map(x => x.rientro)).toEqual(['  ', '  '])
+  })
+
+  it('la riga vuota in mezzo prende il rientro delle altre righe del blocco', () => {
+    const r = inviiIndentati(QUERY, [
+      { lineNumber: 4, column: 8 },
+      { lineNumber: 5, column: 1 },
+      { lineNumber: 6, column: 8 },
+    ])
+    console.log(`  rientri: ${JSON.stringify(r)}`)
+    expect(r!.map(x => x.rientro)).toEqual(['  ', '  ', '  '])
+  })
+
+  it('rientroDiBlocco: vince quello più frequente fra le righe con contenuto', () => {
+    const righe = ['    a', '    b', '  c', '']
+    expect(rientroDiBlocco(righe, [
+      { lineNumber: 1, column: 6 },
+      { lineNumber: 2, column: 6 },
+      { lineNumber: 3, column: 4 },
+      { lineNumber: 4, column: 1 },
+    ])).toBe('    ')
+  })
+
+  it('un solo cursore o stessa riga → lascia fare a Monaco (null)', () => {
+    expect(inviiIndentati(QUERY, [{ lineNumber: 4, column: 8 }])).toBeNull()
+    expect(
+      inviiIndentati(QUERY, [
+        { lineNumber: 4, column: 3 },
+        { lineNumber: 4, column: 8 },
+      ]),
+    ).toBeNull()
+  })
+
+  it('senza righe con contenuto il rientro è vuoto', () => {
+    expect(inviiIndentati(['', '', ''], [
+      { lineNumber: 1, column: 1 },
+      { lineNumber: 3, column: 1 },
+    ])!.map(x => x.rientro)).toEqual(['', ''])
   })
 })

@@ -7613,6 +7613,20 @@ async function verifyMulticursore(page) {
   check('la riga col cursore in mezzo NON viene spostata in fondo', mezzo.split('\n')[3] === '  pYrint', JSON.stringify(mezzo.split('\n')[3]))
   check('la riga vuota è comunque riempita fino alla colonna', mezzo.split('\n')[4] === '   Y', JSON.stringify(mezzo.split('\n')[4]))
 
+  // 5) INVIO con più cursori: la riga nuova deve mantenere il rientro (e la riga vuota diventare
+  //    indentata), come in SSMS.
+  await prepara([
+    { l: 4, c: 8 },
+    { l: 5, c: 1 },
+    { l: 6, c: 8 },
+  ])
+  await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
+  await sleep(800)
+  const dopoInvio = (await testo()).split('\n')
+  console.log(`  INVIO → righe 3-9: ${JSON.stringify(dopoInvio.slice(2, 9))}`)
+  check('INVIO: la riga nuova sotto "print" mantiene il rientro', dopoInvio[4] === '  ', JSON.stringify(dopoInvio[4]))
+  check('INVIO: la riga vuota è diventata indentata', dopoInvio[6] === '  ', JSON.stringify(dopoInvio[6]))
+
   // 4) il flusso completo dell'utente: selezioni le righe 4-6 (le due print "comprese") e
   //    Shift+Alt+I mette un cursore a fine di ogni riga; poi digiti e le righe si allineano.
   await prepara([])
