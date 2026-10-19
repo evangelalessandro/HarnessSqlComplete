@@ -7626,6 +7626,7 @@ async function verifyMulticursore(page) {
   console.log(`  INVIO → righe 3-9: ${JSON.stringify(dopoInvio.slice(2, 9))}`)
   check('INVIO: la riga nuova sotto "print" mantiene il rientro', dopoInvio[4] === '  ', JSON.stringify(dopoInvio[4]))
   check('INVIO: la riga vuota è diventata indentata', dopoInvio[6] === '  ', JSON.stringify(dopoInvio[6]))
+  await page.screenshot('multicursore-invio')
 
   // 4) il flusso completo dell'utente: selezioni le righe 4-6 (le due print "comprese") e
   //    Shift+Alt+I mette un cursore a fine di ogni riga; poi digiti e le righe si allineano.
