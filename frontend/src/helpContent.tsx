@@ -146,6 +146,11 @@ export const HELP_SECTIONS: HelpSection[] = [
           'I suggerimenti dipendono dalla posizione: dopo FROM/JOIN solo tabelle e viste, dopo EXEC solo stored procedure, nella select-list e in WHERE/ON/GROUP/ORDER solo colonne e funzioni, dopo un alias (r.) le colonne qualificate di quella tabella. Nella ORDER BY le direzioni ASC/DESC compaiono solo dopo aver scelto il campo.',
       },
       {
+        title: 'Nomi dei DATABASE',
+        detail:
+          'Dopo "USE " il popup propone solo i database del server (quello corrente e gli altri), e in posizione di tabella (FROM/JOIN/INTO/UPDATE) i database compaiono in coda alle tabelle dello schema: servono per scrivere nomi in tre parti come "[WSBASE].dbo.Tabella". I nomi con spazi vengono inseriti fra parentesi quadre.',
+      },
+      {
         title: 'Abilitare o disabilitare un trigger',
         detail:
           'Le direttive sui trigger si scrivono con l\u2019intellisense: digitando "DIS" (o "ENA") a inizio statement esce lo snippet "DISABLE TRIGGER <trigger> ON <tabella>" (e la variante ALL), e dopo "DISABLE " la parola TRIGGER. Dopo il nome del trigger il popup propone "ON <tabella>" con la tabella SU CUI quel trigger è definito, e dopo ON propone solo le tabelle giuste (più DATABASE / ALL SERVER / ALL): così non si scrivono istruzioni che SQL Server rifiuta, come "DISABLE TRIGGER tr_X ON <altra tabella>". Anche la forma "ALTER TABLE t DISABLE TRIGGER " propone i trigger di quella tabella.',

@@ -60,6 +60,7 @@ const VERIFY_MULTICURSORE = process.argv.includes('--verify-multicursore')
 const VERIFY_SHIFT_SELEZIONE = process.argv.includes('--verify-shift-selezione')
 const VERIFY_FORMATTA_CTE = process.argv.includes('--verify-formatta-cte')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
+const VERIFY_DATABASE_INTELLISENSE = process.argv.includes('--verify-database-intellisense')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -7520,6 +7521,57 @@ async function verifyPiano(page) {
 }
 
 /**
+ * VERIFICA (--verify-database-intellisense): i NOMI DEI DATABASE compaiono nell'intellisense.
+ * Richiesta utente: "permetti anche di fare con l'intellisense i nomi dei database, che adesso non
+ * vengono fuori". Controlla che dopo "USE " il popup elenchi i database veri del server.
+ */
+async function verifyDatabaseIntellisense(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await sleep(150)
+  await page.typeText('USE ')
+  await sleep(800)
+  // popup dei suggerimenti forzato (in una persona arriva da solo digitando)
+  await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors(); const area = e => { const r = e.getDomNode().getBoundingClientRect(); return r.width * r.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    ed.focus(); ed.trigger('verify', 'editor.action.triggerSuggest', {}); })()`)
+  await sleep(1200)
+  const popup = await page.eval(`(() => { const w = document.querySelector('.suggest-widget.visible'); return w ? (w.textContent || '').replace(/\\s+/g, ' ').slice(0, 400) : null })()`)
+  console.log(`  popup: ${JSON.stringify(popup)}`)
+  check('dopo "USE " il popup dei suggerimenti è aperto', !!popup)
+  check('il popup elenca i DATABASE del server (WSGSDMALTA)', !!popup && /WSGSDMALTA/i.test(popup))
+  check('il popup elenca anche gli ALTRI database (WSBASE)', !!popup && /WSBASE/i.test(popup))
+  await page.screenshot('intellisense-database')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+/**
  * VERIFICA (--verify-copia-cella): una cella con tanto testo è troncata a video; con il tasto destro
  * sulla cella si apre il menu con "Copia valore", "Copia riga" e "Vedi valore intero".
  * Richiesta utente: "non riesco a copiarlo dalla griglia dei risultati, perché è tagliato. Mi dai un
@@ -8306,6 +8358,11 @@ async function main() {
 
     if (VERIFY_FORMATTA_CTE) {
       await verifyFormattaCte(page)
+      return
+    }
+
+    if (VERIFY_DATABASE_INTELLISENSE) {
+      await verifyDatabaseIntellisense(page)
       return
     }
 

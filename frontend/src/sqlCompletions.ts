@@ -163,6 +163,30 @@ export function provideSqlCompletions({
             rank++
           }
 
+          /**
+           * NOMI DEI DATABASE del server (richiesta utente: "permetti anche di fare con l'intellisense
+           * i nomi dei database, che adesso non vengono fuori").
+           * L'elenco arriva con il sommario (`summary.databases`, lo stesso che usa la barra laterale):
+           * niente da chiedere al backend. Servono dopo "USE " e in posizione di tabella, per scrivere
+           * nomi in tre parti tipo "[WSBASE].dbo.Tabella".
+           */
+          const pushDatabase = (nome: string) =>
+            push({
+              label: nome,
+              detail: 'database del server',
+              documentation: `**${nome}** — database sul server (si usa come \`${nome}.schema.tabella\` oppure \`USE ${nome}\`)`,
+              kind: monaco.languages.CompletionItemKind.Module,
+              insertText: sqlIdent(nome),
+              range,
+              filterText: nome,
+            })
+
+          // Dopo "USE " si propongono SOLO i database (è l'unica cosa che può venire dopo USE).
+          if (/\bUSE\s+(\[[^\]]*\]?|[\w$#@]*)$/i.test(stmtBefore)) {
+            for (const d of st.summary?.databases ?? []) pushDatabase(d.name)
+            return { suggestions }
+          }
+
           // GOTO: si propongono TUTTE le label definite nel documento, anche quelle scritte
           // più sotto (è il caso normale: "goto lblExit" e la label in fondo alla procedura).
           // Se il documento non ha label si prosegue con i suggerimenti normali: il popup non
@@ -1382,8 +1406,13 @@ export function provideSqlCompletions({
               }
             }
 
-            // Posizione FROM/JOIN/UPDATE/INTO: SOLO tabelle, viste e funzioni tabellari
-            if (isTablePosition) return { suggestions }
+            // Posizione FROM/JOIN/UPDATE/INTO: SOLO tabelle, viste e funzioni tabellari…
+            // …più i DATABASE del server, in coda (le tabelle dello schema vengono prima): servono
+            // per i nomi in tre parti, es. "FROM [WSBASE].dbo.Tabella".
+            if (isTablePosition) {
+              for (const d of st.summary?.databases ?? []) pushDatabase(d.name)
+              return { suggestions }
+            }
 
             // Stored procedure: solo se il contesto le ammette (statementStart/generic, non dopo tabella)
             if (!isExecPosition && ctx.allowed.includes('procedures')) {
