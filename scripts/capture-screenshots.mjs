@@ -61,6 +61,7 @@ const VERIFY_SHIFT_SELEZIONE = process.argv.includes('--verify-shift-selezione')
 const VERIFY_FORMATTA_CTE = process.argv.includes('--verify-formatta-cte')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
 const VERIFY_DATABASE_INTELLISENSE = process.argv.includes('--verify-database-intellisense')
+const VERIFY_UNDO_REDO = process.argv.includes('--verify-undo-redo')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -7521,6 +7522,108 @@ async function verifyPiano(page) {
 }
 
 /**
+ * VERIFICA (--verify-undo-redo): i pulsanti "Annulla" e "Ripeti" della tab annullano/ripetono le
+ * modifiche e sono abilitati solo quando c'è qualcosa da annullare/ripetere.
+ * Richiesta utente: "Aggiungi anche per ogni tab la possibilità di fare undo e redo con i pulsanti".
+ */
+async function verifyUndoRedo(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const testo = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors(); const area = e => { const r = e.getDomNode().getBoundingClientRect(); return r.width * r.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      return ed ? ed.getValue() : '' })()`)
+  const stato = async () =>
+    await page.eval(`(() => {
+      const u = document.querySelector('[data-undo]');
+      const r = document.querySelector('[data-redo]');
+      return { undo: u ? !u.disabled : null, redo: r ? !r.disabled : null };
+    })()`)
+  const clic = async sel => {
+    const punto = await page.eval(`(() => { const b = document.querySelector('${sel}'); if (!b) return null;
+      const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 } })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(600)
+  }
+
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await sleep(150)
+  await page.typeText('SELECT 1')
+  await sleep(900)
+  const conTesto = await testo()
+  const statoIniziale = await stato()
+  console.log(`  stato dopo la modifica: ${JSON.stringify(statoIniziale)}`)
+  check('i pulsanti Annulla e Ripeti esistono', statoIniziale.undo !== null && statoIniziale.redo !== null)
+  check('dopo una modifica "Annulla" è abilitato', statoIniziale.undo === true)
+
+  await clic('[data-undo]')
+  const dopoAnnulla = await testo()
+  const statoDopoAnnulla = await stato()
+  console.log(`  dopo Annulla: ${JSON.stringify(dopoAnnulla.slice(0, 40))} · stato ${JSON.stringify(statoDopoAnnulla)}`)
+  check('il pulsante Annulla toglie il testo appena scritto', dopoAnnulla !== conTesto)
+  check('dopo Annulla "Ripeti" si abilita', statoDopoAnnulla.redo === true)
+
+  await clic('[data-redo]')
+  const dopoRipeti = await testo()
+  console.log(`  dopo Ripeti: ${JSON.stringify(dopoRipeti.slice(0, 40))}`)
+  check('il pulsante Ripeti rimette il testo', dopoRipeti.includes('SELECT 1'))
+  check('dopo Ripeti si torna a poter annullare', (await stato()).undo === true)
+  // 2) PER OGNI TAB: scrivo in questa tab, apro una tab nuova, torno e provo ad annullare
+  const clicTab = async titolo => {
+    const punto = await page.eval(`(() => { const b = [...document.querySelectorAll('.sql-tab button')].find(b => (b.textContent || '').includes(${JSON.stringify(titolo)})); if (!b) return null;
+      const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 } })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(900)
+  }
+  const clicNuova = async () => {
+    const punto = await page.eval(`(() => { const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Nuova'); if (!b) return null;
+      const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 } })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(1000)
+  }
+  await clicNuova()
+  await clicTab('Query 1')
+  const statoRitorno = await stato()
+  console.log(`  tornando sulla tab: stato ${JSON.stringify(statoRitorno)} · testo ${JSON.stringify((await testo()).slice(0, 30))}`)
+  check('tornando sulla tab il testo è quello della tab', (await testo()).includes('SELECT 1'))
+  if (statoRitorno.undo) {
+    await clic('[data-undo]')
+    const testoDopoUndo = await testo()
+    console.log(`  Annulla dopo il ritorno: ${JSON.stringify(testoDopoUndo.slice(0, 30))}`)
+    check('lo storico della tab è ancora lì (Annulla funziona dopo il ritorno)', testoDopoUndo !== 'SELECT 1')
+  } else {
+    console.log('  (storico azzerato al cambio tab: Annulla disabilitato al ritorno)')
+  }
+  await page.screenshot('undo-redo')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * VERIFICA (--verify-database-intellisense): i NOMI DEI DATABASE compaiono nell'intellisense.
  * Richiesta utente: "permetti anche di fare con l'intellisense i nomi dei database, che adesso non
  * vengono fuori". Controlla che dopo "USE " il popup elenchi i database veri del server.
@@ -8358,6 +8461,11 @@ async function main() {
 
     if (VERIFY_FORMATTA_CTE) {
       await verifyFormattaCte(page)
+      return
+    }
+
+    if (VERIFY_UNDO_REDO) {
+      await verifyUndoRedo(page)
       return
     }
 

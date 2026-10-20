@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { Activity, Eraser, Eye, FolderOpen, IndentDecrease, IndentIncrease, Loader2, MessageSquare, Moon, Pilcrow, Play, Save, Settings2, Sun, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
+import { Activity, Eraser, Eye, FolderOpen, IndentDecrease, IndentIncrease, Loader2, MessageSquare, Moon, Pilcrow, Play, Redo2, Save, Settings2, Sun, Undo2, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
 import monaco from '../monacoSetup'
 import { api } from '../api'
 import { syntaxIssuesFromCheck } from '../syntaxCheck'
@@ -163,6 +163,8 @@ export default function SqlEditor({
   }, [summary, connectionId])
   // Pannello impostazioni di formattazione
   const [profileOpen, setProfileOpen] = useState(false)
+  /** Undo/Redo della TAB attiva: abilitati solo quando c'è qualcosa da annullare/ripetere. */
+  const [undoRedo, setUndoRedo] = useState({ undo: false, redo: false })
   /** Virgola a capo: il ref serve alla scorciatoia (il gestore dei tasti non si ricrea a ogni render). */
   const virgolaACapoRef = useRef(virgolaACapo)
   virgolaACapoRef.current = virgolaACapo
@@ -614,6 +616,15 @@ export default function SqlEditor({
     registerVirgolaACapo(editor)
     registerColonnaMultiCursore(editor)
     registerInvioIndentato(editor)
+    // UNDO/REDO della tab: i pulsanti seguono lo storico del modello (si aggiorna a ogni modifica e
+    // al cambio di modello, cioè passando da una tab all'altra).
+    const aggiornaUndoRedo = () => {
+      const m = editor.getModel()
+      setUndoRedo({ undo: m?.canUndo() ?? false, redo: m?.canRedo() ?? false })
+    }
+    aggiornaUndoRedo()
+    disposablesRef.current.push(editor.onDidChangeModelContent(aggiornaUndoRedo))
+    disposablesRef.current.push(editor.onDidChangeModel(aggiornaUndoRedo))
     registerSqlDiagnostics()
     registerBlockGuides()
     registerFolding()
@@ -1112,6 +1123,33 @@ export default function SqlEditor({
           </Button>
         </div>
         <div className="flex items-center gap-3">
+          {/* UNDO / REDO della tab attiva (richiesta utente: pulsanti per annullare e ripetere) */}
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              disabled={!undoRedo.undo}
+              onClick={() => {
+                editorRef.current?.focus()
+                editorRef.current?.trigger('sqlIntelli', 'undo', null)
+              }}
+              title="Annulla l'ultima modifica di questa tab (Ctrl+Z)"
+              data-undo=""
+            >
+              <Undo2 className="h-4 w-4 text-violet-300" /> Annulla
+            </Button>
+            <Button
+              variant="ghost"
+              disabled={!undoRedo.redo}
+              onClick={() => {
+                editorRef.current?.focus()
+                editorRef.current?.trigger('sqlIntelli', 'redo', null)
+              }}
+              title="Ripeti la modifica annullata (Ctrl+Y oppure Ctrl+Shift+Z)"
+              data-redo=""
+            >
+              <Redo2 className="h-4 w-4 text-violet-300" /> Ripeti
+            </Button>
+          </div>
           <div className="flex items-center gap-1">
             <Button variant="ghost" onClick={() => onZoomFont?.(-1)} title="Riduci testo (Ctrl+rotella giù)">
               <ZoomOut className="h-4 w-4 text-sky-300/80" />
