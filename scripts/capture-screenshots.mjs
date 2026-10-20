@@ -59,6 +59,7 @@ const VERIFY_PIANO = process.argv.includes('--verify-piano')
 const VERIFY_MULTICURSORE = process.argv.includes('--verify-multicursore')
 const VERIFY_SHIFT_SELEZIONE = process.argv.includes('--verify-shift-selezione')
 const VERIFY_FORMATTA_CTE = process.argv.includes('--verify-formatta-cte')
+const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -7519,6 +7520,142 @@ async function verifyPiano(page) {
 }
 
 /**
+ * VERIFICA (--verify-copia-cella): una cella con tanto testo è troncata a video; con il tasto destro
+ * sulla cella si apre il menu con "Copia valore", "Copia riga" e "Vedi valore intero".
+ * Richiesta utente: "non riesco a copiarlo dalla griglia dei risultati, perché è tagliato. Mi dai un
+ * modo per copiarlo? qualcosa come tasto destro sulla cella e copia?".
+ */
+async function verifyCopiaCella(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+  // permesso per LEGGERE gli appunti: così si verifica che il valore copiato sia quello intero
+  try {
+    await page.send('Browser.grantPermissions', {
+      origin: 'http://localhost:5173',
+      permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+    })
+  } catch {
+    console.log('  (permesso appunti non concesso dal browser: verifico solo il feedback)')
+  }
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // query con un valore LUNGO (500 caratteri) e uno corto
+  const SQL = "SELECT REPLICATE(CAST('x' AS VARCHAR (MAX)), 500) AS LUNGO, 'corto' AS CORTO"
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(400)
+  // si SOSTITUISCE tutto il testo (il modello iniziale ha "BEGIN TRAN": eseguirlo lascerebbe una
+  // transazione aperta e la griglia non arriverebbe)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await sleep(200)
+  await page.typeText(SQL)
+  await sleep(800)
+  const dentro = await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors();
+    const area = e => { const r = e.getDomNode().getBoundingClientRect(); return r.width * r.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    return ed ? ed.getValue().slice(0, 80) : '(nessun editor)' })()`)
+  console.log(`  testo nell'editor: ${JSON.stringify(dentro)}`)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(3000)
+
+  /** Apre il menu col tasto destro sulla prima cella "LUNGO" e restituisce se è comparso. */
+  const apriMenu = async () => {
+    const punto = await page.eval(`(() => {
+      const td = [...document.querySelectorAll('td')].find(t => (t.textContent || '').startsWith('xxxx'));
+      if (!td) return null;
+      const r = td.getBoundingClientRect();
+      return { x: r.left + Math.min(40, r.width / 2), y: r.top + r.height / 2, lunghezza: (td.textContent || '').length, tagliata: td.scrollWidth > td.clientWidth + 2 };
+    })()`)
+    if (!punto) return null
+    await page.clickPoint(punto.x, punto.y, 'right')
+    await sleep(600)
+    return punto
+  }
+  const menu = async () => await page.eval(`(() => { const m = document.querySelector('[data-menu-cella]'); return m ? (m.textContent || '').replace(/\\s+/g, ' ').trim() : null })()`)
+  const chiudiMenu = async () => {
+    await page.press('Escape', { code: 'Escape', vk: 27 })
+    await sleep(200)
+    if (await menu()) {
+      await page.eval(`(() => { const m = document.querySelector('[data-menu-cella]'); if (m && m.parentElement) m.parentElement.querySelector('div')?.click(); })()`)
+      await sleep(200)
+    }
+  }
+
+  await page.screenshot('copia-cella-stato')
+  const diagnostica = await page.eval(`(() => {
+    const tds = [...document.querySelectorAll('td')];
+    return { celle: tds.length, primi: tds.slice(0, 4).map(t => (t.textContent || '').slice(0, 20)), corpo: (document.body.textContent || '').replace(/\\s+/g, ' ').slice(0, 200) };
+  })()`)
+  console.log(`  diagnostica: ${JSON.stringify(diagnostica)}`)
+  const cella = await apriMenu()
+  const testoMenu = await menu()
+  console.log(`  cella: ${JSON.stringify(cella)}`)
+  console.log(`  menu: ${JSON.stringify(testoMenu)}`)
+  check(
+    "la cella è TAGLIATA a video (il testo intero c'è nel DOM ma non si vede)",
+    !!cella && cella.tagliata,
+    `tagliata=${cella?.tagliata}, ${cella?.lunghezza} caratteri nel DOM`,
+  )
+  await page.screenshot('copia-cella-menu')
+  check('il tasto destro apre il menu della cella', !!testoMenu)
+  check('il menu propone "Copia valore"', !!testoMenu && /Copia valore/i.test(testoMenu))
+  check('il menu propone "Copia riga"', !!testoMenu && /Copia riga/i.test(testoMenu))
+  check('il menu propone "Vedi valore intero"', !!testoMenu && /Vedi valore intero/i.test(testoMenu))
+
+  // 1) VEDI VALORE INTERO: il testo completo è disponibile e selezionabile
+  await page.clickWhere(`document.querySelector('[data-copia="intero"]')`)
+  await sleep(700)
+  const nelModale = await page.eval(`(() => { const t = document.querySelector('[data-valore-testo]'); return t ? t.value.length : -1 })()`)
+  console.log(`  caratteri nella finestra "valore intero": ${nelModale}`)
+  check('"Vedi valore intero" mostra tutti i 500 caratteri', nelModale === 500, String(nelModale))
+  await page.screenshot('copia-cella-valore-intero')
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await sleep(300)
+  if (await page.eval(`!!document.querySelector('[data-valore-intero]')`)) {
+    await page.clickWhere(`[...document.querySelectorAll('[data-valore-intero] button')].find(b => (b.textContent || '').trim() === 'Chiudi')`)
+    await sleep(300)
+  }
+
+  // 2) COPIA VALORE: finisce negli appunti il valore INTERO
+  await apriMenu()
+  await page.clickWhere(`document.querySelector('[data-copia="valore"]')`)
+  await sleep(800)
+  const dopoCopia = await menu()
+  console.log(`  menu dopo la copia: ${JSON.stringify(dopoCopia)}`)
+  check('dopo la copia il menu mostra "Copiato"', !!dopoCopia && /Copiato/i.test(dopoCopia))
+  const appunti = await page.eval(`(async () => { try { return await navigator.clipboard.readText() } catch (e) { return 'ERRORE:' + e.message } })()`)
+  console.log(`  appunti: ${typeof appunti === 'string' ? `${appunti.length} caratteri` : appunti}`)
+  check(
+    'negli appunti c\'è il valore INTERO (500 x)',
+    typeof appunti === 'string' && appunti.length === 500 && /^x+$/.test(appunti),
+    typeof appunti === 'string' ? `${appunti.length} caratteri` : String(appunti),
+  )
+  await chiudiMenu()
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * VERIFICA (--verify-formatta-cte): nell'editor vero, Ctrl+Shift+F su una CTE dentro una procedura.
  * Controlla ";WITH" attaccato, la virgola della ORDER BY allineata sotto il primo elemento e
  * l'indentazione della CTE. Segnalazione utente: "questa query non la identa bene, nella parte della
@@ -8169,6 +8306,11 @@ async function main() {
 
     if (VERIFY_FORMATTA_CTE) {
       await verifyFormattaCte(page)
+      return
+    }
+
+    if (VERIFY_COPIA_CELLA) {
+      await verifyCopiaCella(page)
       return
     }
 
