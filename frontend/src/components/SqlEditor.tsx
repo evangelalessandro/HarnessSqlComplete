@@ -915,6 +915,19 @@ export default function SqlEditor({
    * Righe verticali tra BEGIN e END (e CASE/END): disegna una linea continua nella
    * colonna della keyword di apertura per ogni riga del blocco, come in Visual Studio.
    */
+  /**
+   * EVIDENZIAZIONE DELLE KEYWORD DI BLOCCO (BEGIN/END, CASE/END, IF…).
+   *
+   * Prima qui si disegnavano anche le LINEE verticali dei blocchi con delle decorazioni ad hoc: su
+   * codice reale il risultato era pessimo (segnalazione utente su ws_L2_Engine_Automatismi) perché
+   *  - la linea partiva dalla colonna della keyword "begin" (a metà riga in "if … begin");
+   *  - sulle righe vuote/corte la posizione andava aggiustata con un margine in "ch", che però non
+   *    combacia con la larghezza reale dei caratteri (zoom, font) e spezzava la linea;
+   *  - si sovrapponeva alle guide di indentazione NATIVE di Monaco (linee doppie e sfalsate).
+   * Ora le linee verticali sono SOLO quelle di Monaco (continue e allineate per costruzione: vedi
+   * `guides.indentation` nelle opzioni) e qui resta l'evidenziazione delle keyword, che non ha problemi
+   * di geometria.
+   */
   const registerBlockGuides = () => {
     const model = editorRef.current?.getModel()
     if (!model) return
@@ -925,35 +938,8 @@ export default function SqlEditor({
       const text = m.getValue()
       const guides = computeBlockGuides(text)
       const newDecorations: monaco.editor.IModelDeltaDecoration[] = []
-      // più guide sulla STESSA colonna di una riga (es. IF agganciato al BEGIN) →
-      // una sola linea: niente linee doppie
-      const guideKeys = new Set<string>()
       for (const g of guides) {
-        // linea verticale su ogni riga compresa tra apertura e chiusura (incluse).
-        // Sulle righe vuote o più corte della colonna della guida Monaco non disegna
-        // il box (la linea si interrompe): si usa la fine della riga e si compensa con
-        // un margine in "ch" (classe sql-guide-offset-N) per restare sulla colonna giusta.
-        for (let line = g.openLine; line <= g.closeLine; line++) {
-          const key = `${line}:${g.column}`
-          if (guideKeys.has(key)) continue
-          guideKeys.add(key)
-          const lineLen = m.getLineLength(line)
-          const effCol = Math.min(g.column, Math.max(1, lineLen + 1))
-          const offset = g.column - effCol
-          const cls =
-            `sql-block-guide sql-guide-depth-${Math.min(g.depth, 4)}` +
-            (offset > 0 ? ` sql-guide-offset-${Math.min(offset, 20)}` : '')
-          newDecorations.push({
-            range: new monaco.Range(line, effCol, line, effCol),
-            options: {
-              isWholeLine: false,
-              // classe custom: disegna il bordo verticale (CSS in index.css)
-              beforeContentClassName: cls,
-            },
-          })
-        }
-        // evidenzia le keyword di apertura/chiusura (END alla colonna della guida,
-        // non alla colonna 1: per i blocchi indentati l'evidenza sarebbe sugli spazi)
+        // evidenzia le keyword di apertura/chiusura
         const openRange = new monaco.Range(g.openLine, g.column, g.openLine, g.column + (g.kind === 'if' ? 2 : 5))
         newDecorations.push({
           range: openRange,
@@ -1213,7 +1199,9 @@ export default function SqlEditor({
             wordSeparators: SQL_WORD_SEPARATORS,
             padding: { top: 10 },
             renderLineHighlight: 'all',
-            // guide di indentazione verticali (visibili nei blocchi BEGIN/END dopo la formattazione)
+            // Righe verticali di indentazione: quelle NATIVE di Monaco (continue e allineate per
+            // costruzione). Le guide disegnate da noi sono state tolte: sulle SP reali si sovrapponevano
+            // a queste e si spezzavano sulle righe corte (segnalazione utente).
             guides: { bracketPairs: false, indentation: true, highlightActiveIndentation: true },
             // folding: frecce nella gutter per chiudere porzioni di codice (BEGIN/END, --#region, commenti)
             folding: true,

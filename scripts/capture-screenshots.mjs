@@ -22,7 +22,7 @@
 // Prerequisiti: backend su :5213 e dev server su :5173 attivi.
 
 import { spawn } from 'node:child_process'
-import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -62,6 +62,7 @@ const VERIFY_FORMATTA_CTE = process.argv.includes('--verify-formatta-cte')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
 const VERIFY_DATABASE_INTELLISENSE = process.argv.includes('--verify-database-intellisense')
 const VERIFY_UNDO_REDO = process.argv.includes('--verify-undo-redo')
+const DUMP_GUIDE = process.argv.find(a => a.startsWith('--dump-guide='))?.slice('--dump-guide='.length) ?? null
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
@@ -7522,6 +7523,54 @@ async function verifyPiano(page) {
 }
 
 /**
+ * DIAGNOSTICA (--dump-guide): carica una SP da file nell editor e fotografa le righe verticali
+ * (guide di indentazione e guide dei blocchi BEGIN/END), con il conteggio delle decorazioni.
+ */
+async function dumpGuide(page, file) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+  const sql = readFileSync(file, 'utf8')
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(400)
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors(); const area = e => { const r = e.getDomNode().getBoundingClientRect(); return r.width * r.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    ed.setValue(${JSON.stringify('@@SQL@@')});
+    ed.setPosition({ lineNumber: 99, column: 1 });
+    ed.revealLineInCenter(99);
+    ed.focus();
+  })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+  await sleep(1500)
+  const guide = await page.eval(`(() => {
+    const deco = document.querySelectorAll('.sql-block-guide');
+    const ind = document.querySelectorAll('.indent-guide');
+    const perColonna = {};
+    for (const d of deco) {
+      const rect = d.getBoundingClientRect();
+      const key = Math.round(rect.left);
+      perColonna[key] = (perColonna[key] || 0) + 1;
+    }
+    return { decorazioni: deco.length, guideMonaco: ind.length, colonne: perColonna };
+  })()`)
+  console.log(`  guide dei blocchi: ${guide.decorazioni} · guide di indentazione Monaco: ${guide.guideMonaco}`)
+  console.log(`  colonne (px) delle guide dei blocchi: ${JSON.stringify(guide.colonne)}`)
+  await page.screenshot('guide-editor')
+}
+/**
  * VERIFICA (--verify-undo-redo): i pulsanti "Annulla" e "Ripeti" della tab annullano/ripetono le
  * modifiche e sono abilitati solo quando c'è qualcosa da annullare/ripetere.
  * Richiesta utente: "Aggiungi anche per ogni tab la possibilità di fare undo e redo con i pulsanti".
@@ -7866,7 +7915,8 @@ async function verifyFormattaCte(page) {
     const m = (await import('/src/monacoSetup.ts')).default;
     const ed = m.editor.getEditors()[0];
     ed.setValue(${JSON.stringify(TESTO)});
-    ed.setPosition({ lineNumber: 1, column: 1 });
+    ed.setPosition({ lineNumber: 99, column: 1 });
+    ed.revealLineInCenter(99);
     ed.focus();
   })()`)
   await sleep(600)
@@ -7944,7 +7994,8 @@ async function verifyShiftSelezione(page) {
     const m = (await import('/src/monacoSetup.ts')).default;
     const ed = m.editor.getEditors()[0];
     ed.setValue(${JSON.stringify(TESTO)});
-    ed.setPosition({ lineNumber: 1, column: 1 });
+    ed.setPosition({ lineNumber: 99, column: 1 });
+    ed.revealLineInCenter(99);
     ed.focus();
   })()`)
   await sleep(500)
@@ -8461,6 +8512,11 @@ async function main() {
 
     if (VERIFY_FORMATTA_CTE) {
       await verifyFormattaCte(page)
+      return
+    }
+
+    if (DUMP_GUIDE) {
+      await dumpGuide(page, DUMP_GUIDE)
       return
     }
 
