@@ -6,9 +6,11 @@ import {
   Boxes,
   ChevronDown,
   ChevronRight,
+  ClipboardCopy,
   Database as DbIcon,
   Eye,
   FileCode2,
+  FilePlus2,
   GitMerge,
   History,
   Play,
@@ -21,6 +23,7 @@ import {
   X,
 } from 'lucide-react'
 import TypeIcon from './TypeIcon'
+import { copiaTesto } from '../clipboard'
 import type {
   CheckConstraintInfo,
   ColumnInfo,
@@ -73,7 +76,10 @@ interface Props {
   activeDatabase: string
   /** Id della connessione attiva (per backup/ripristino del database). */
   connectionId?: string
-  onInsertText: (text: string) => void
+  /** Apre una NUOVA tab con il testo indicato (mai la tab attiva). */
+  onNuovaTab?: (titolo: string, testo: string) => void
+  /** @deprecated non si inserisce più nella tab attiva (richiesta utente) */
+  onInsertText?: (text: string) => void
   /** Apre la preview (SELECT TOP 100 *) in una nuova tab dell'editor. */
   onPreviewInEditor?: (sql: string) => void
   /** Apre uno script generato (CREATE/MERGE) in una nuova tab con titolo. */
@@ -154,7 +160,7 @@ export default function Sidebar({
   loading,
   activeDatabase,
   connectionId,
-  onInsertText,
+  onNuovaTab,
   onPreviewInEditor,
   onOpenScript,
   onOpenReport,
@@ -604,8 +610,8 @@ export default function Sidebar({
             id: 'exec',
             label: 'Esegui stored procedure',
             icon: <Play className="h-3.5 w-3.5" />,
-            hint: 'Inserisci EXEC con i parametri',
-            run: () => onInsertText(scriptExecProcedure(p)),
+            hint: 'EXEC con i parametri in una nuova tab',
+            run: () => apriScriptFiglia(`EXEC ${p.name}`, scriptExecProcedure(p)),
           },
           {
             id: 'modify',
@@ -630,7 +636,7 @@ export default function Sidebar({
               { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('procedure', hit.schema, hit.name, 'open') },
               { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('procedure', hit.schema, hit.name, 'alter') },
               { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => apriScriptFiglia(`DROP ${qname}`, scriptDropObject('procedure', hit.schema, hit.name)) },
-              { id: 'execute', label: 'EXECUTE', icon: <Play className="h-3.5 w-3.5" />, run: () => onInsertText(scriptExecProcedure(p)) },
+              { id: 'execute', label: 'EXECUTE', icon: <Play className="h-3.5 w-3.5" />, run: () => apriScriptFiglia('EXEC ' + p.name, scriptExecProcedure(p)) },
             ],
           },
         ]
@@ -952,7 +958,7 @@ export default function Sidebar({
                 <button
                   key={`${h.kind}-${h.schema}-${h.name}-${i}`}
                   data-nodo={chiaveNodo(h.kind, h.schema, h.name)}
-                  onClick={isProc ? undefined : () => onInsertText(qualified(h.schema, h.name))}
+                  onClick={isProc ? undefined : () => setNodoSel(chiaveNodo(h.kind, h.schema, h.name))}
                   onContextMenu={e => openObjectMenu(e, h)}
                   draggable={isProc}
                   onDragStart={
@@ -969,7 +975,7 @@ export default function Sidebar({
                   title={
                     isProc
                       ? 'Trascina nel editor per generare EXEC con i parametri — tasto destro per le azioni'
-                      : 'Clicca per inserire nel editor — tasto destro per le azioni'
+                      : 'Clicca per selezionare — tasto destro: copia negli appunti o apri in nuova tab'
                   }
                 >
                   <KindIcon kind={h.kind} />
@@ -1034,7 +1040,7 @@ export default function Sidebar({
                               usageText={usageDetail(t.usage)}
                               expanded={expanded}
                               onToggleExpand={() => toggleTable(tKey)}
-                              onInsert={() => onInsertText(qualified(t.schema, t.name))}
+                              onInsert={() => setNodoSel(chiaveNodo('tabella', t.schema, t.name))}
                               onHover={e => hoverTable(e, t)}
                               onHoverLeave={scheduleClose}
                               onQuickPreview={onPreviewInEditor ? () => onPreviewInEditor(quickPreviewSql(t)) : undefined}
@@ -1057,7 +1063,7 @@ export default function Sidebar({
                                       <button
                                         key={c.name}
                                         data-nodo={chiaveNodo('colonna', t.schema, t.name, c.name)}
-                                        onClick={() => onInsertText(sqlIdent(c.name))}
+                                        onClick={() => void copiaTesto(sqlIdent(c.name))}
                                         onMouseEnter={e => hoverColumn(e, t.name, c)}
                                         onMouseLeave={scheduleClose}
                                         className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-12 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
@@ -1191,7 +1197,7 @@ export default function Sidebar({
                                         <button
                                           key={trg.name}
                                           data-nodo={chiaveNodo('trigger', trg.schema, trg.name)}
-                                          onClick={() => onInsertText(qualified(trg.schema, trg.name))}
+                                          onClick={() => setNodoSel(chiaveNodo('trigger', trg.schema, trg.name))}
                                           onContextMenu={e =>
                                             openObjectMenu(e, { kind: 'trigger', schema: trg.schema, name: trg.name, detail: trg.tableName, trigger: trg })
                                           }
@@ -1228,7 +1234,7 @@ export default function Sidebar({
                   key={`${v.schema}.${v.name}`}
                   nodo={chiaveNodo('vista', v.schema, v.name)}
                   label={v.schema !== 'dbo' ? `${v.schema}.${v.name}` : v.name}
-                  onInsert={() => onInsertText(qualified(v.schema, v.name))}
+                  onInsert={() => setNodoSel(chiaveNodo('vista', v.schema, v.name))}
                   onContextMenu={e =>
                     openObjectMenu(e, { kind: 'vista', schema: v.schema, name: v.name, view: v })
                   }
@@ -1291,7 +1297,7 @@ export default function Sidebar({
                       key={`${f.schema}.${f.name}`}
                       nodo={chiaveNodo('funzione', f.schema, f.name)}
                       label={f.schema !== 'dbo' ? `${f.schema}.${f.name}` : f.name}
-                      onInsert={() => onInsertText(qualified(f.schema, f.name))}
+                      onInsert={() => setNodoSel(chiaveNodo('funzione', f.schema, f.name))}
                       onContextMenu={e =>
                         openObjectMenu(e, { kind: 'funzione', schema: f.schema, name: f.name })
                       }
@@ -1314,7 +1320,7 @@ export default function Sidebar({
                         nodo={chiaveNodo('trigger', t.schema, t.name)}
                         label={t.name}
                         detail={t.schema !== 'dbo' ? `${t.schema}.${t.tableName}` : t.tableName}
-                        onInsert={() => onInsertText(qualified(t.schema, t.name))}
+                        onInsert={() => setNodoSel(chiaveNodo('trigger', t.schema, t.name))}
                         onContextMenu={e =>
                           openObjectMenu(e, { kind: 'trigger', schema: t.schema, name: t.name, detail: t.tableName, trigger: t })
                         }
@@ -1604,7 +1610,30 @@ export default function Sidebar({
             y={objectMenu.y}
             title={`${objectMenu.hit.schema}.${objectMenu.hit.name}`}
             subtitle={objectMenu.hit.kind}
-            actions={objectActions(objectMenu.hit)}
+            actions={[
+              // RICHIESTA UTENTE: "aggiungi due opzioni, o copia in clipboard o apri in nuova tab,
+              // ma mai che metti il testo nella tab attiva". Queste due voci ci sono per OGNI oggetto.
+              {
+                id: 'copia-nome',
+                label: 'Copia negli appunti',
+                hint: qualified(objectMenu.hit.schema, objectMenu.hit.name),
+                icon: <ClipboardCopy className="h-3.5 w-3.5 text-sky-400" />,
+                run: () => {
+                  void copiaTesto(qualified(objectMenu.hit.schema, objectMenu.hit.name))
+                },
+              },
+              {
+                id: 'nuova-tab',
+                label: 'Apri in nuova tab',
+                hint: 'il nome in una tab nuova, senza toccare quella attiva',
+                icon: <FilePlus2 className="h-3.5 w-3.5 text-emerald-400" />,
+                run: () => {
+                  const nome = qualified(objectMenu.hit.schema, objectMenu.hit.name)
+                  onNuovaTab?.(objectMenu.hit.name, `${nome}\n`)
+                },
+              },
+              ...objectActions(objectMenu.hit),
+            ]}
             onClose={() => setObjectMenu(null)}
           />
         </>
@@ -1798,7 +1827,7 @@ function ObjectRow({
         }`}
         title={
           onInsert
-            ? 'Clicca per inserire nel editor — tasto destro per le azioni'
+            ? 'Clicca per selezionare — tasto destro: copia negli appunti o apri in nuova tab'
             : draggable
               ? 'Trascina nel editor per generare EXEC con i parametri — tasto destro per le azioni'
               : 'Tasto destro per le azioni'

@@ -1115,19 +1115,8 @@ export default function App() {
     }
   }, [connection, summary, summaryRetryTick])
 
-  const handleInsertText = useCallback(
-    (text: string) => {
-      if (!editor) return
-      editor.focus()
-      const sel = editor.getSelection()
-      if (sel) {
-        editor.executeEdits('insert-object', [{ range: sel, text }])
-        const pos = editor.getPosition()
-        if (pos) editor.setPosition(pos)
-      }
-    },
-    [editor],
-  )
+  // NOTA: non c'è più un "inserisci nella tab attiva" dalla treeview (richiesta utente): i comandi
+  // del tasto destro offrono "Copia negli appunti" e "Apri in nuova tab".
 
   /** Cambia database dalla combo/treeview: lega il db alla tab attiva. */
   const handleSwitchDatabase = useCallback(
@@ -1712,7 +1701,7 @@ export default function App() {
               loading={loadingSummary && !summary}
               activeDatabase={connection.database}
               connectionId={connection.connectionId}
-              onInsertText={handleInsertText}
+              onNuovaTab={(titolo, testo) => newEditorTab(titolo, testo, connection?.database, false, null)}
               onPreviewInEditor={handlePreviewInEditor}
               onOpenScript={handleOpenScript}
               onOpenReport={openReportTab}

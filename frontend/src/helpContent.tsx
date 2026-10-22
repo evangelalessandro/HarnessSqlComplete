@@ -97,12 +97,12 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Click su un oggetto',
         detail:
-          'Inserisce il nome qualificato nel editor alla posizione del cursore. Passare sopra una tabella mostra le proprietà e l\u2019anteprima dati.',
+          'Seleziona l\u2019oggetto: NON scrive più nel editor (la tab attiva non viene toccata). Passare sopra una tabella mostra le proprietà e l\u2019anteprima dati; su una colonna il clic copia il nome negli appunti.',
       },
       {
         title: 'Tasto destro su un oggetto',
         detail:
-          'Menu contestuale stile SSMS: per le tabelle "Seleziona le prime 1000 righe" e gli script per ogni operazione (Script CREATE, Script DROP, Script SELECT, Script INSERT, Script UPDATE, Script DELETE, Script MERGE); per procedure/funzioni/viste/trigger "Modifica" (CREATE OR ALTER), "Script …" (CREATE, CREATE OR ALTER, DROP, EXECUTE con i parametri) e "Diagramma chiamate".',
+          'In cima a ogni menu ci sono "Copia negli appunti" (il nome qualificato) e "Apri in nuova tab" (il nome in una tab nuova, senza toccare quella attiva). Sotto, il menu contestuale stile SSMS: per le tabelle "Seleziona le prime 1000 righe" e gli script per ogni operazione (Script CREATE, Script DROP, Script SELECT, Script INSERT, Script UPDATE, Script DELETE, Script MERGE); per procedure/funzioni/viste/trigger "Modifica" (CREATE OR ALTER), "Script …" (CREATE, CREATE OR ALTER, DROP, EXECUTE con i parametri) e "Diagramma chiamate".',
       },
       {
         title: 'Diagramma chiamate',

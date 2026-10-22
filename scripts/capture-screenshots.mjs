@@ -60,6 +60,7 @@ const VERIFY_MULTICURSORE = process.argv.includes('--verify-multicursore')
 const VERIFY_SHIFT_SELEZIONE = process.argv.includes('--verify-shift-selezione')
 const VERIFY_FORMATTA_CTE = process.argv.includes('--verify-formatta-cte')
 const VERIFY_FORMATTA_ASSIGN = process.argv.includes('--verify-formatta-assign')
+const VERIFY_TREEVIEW_COMANDI = process.argv.includes('--verify-treeview-comandi')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
 const VERIFY_DATABASE_INTELLISENSE = process.argv.includes('--verify-database-intellisense')
 const VERIFY_UNDO_REDO = process.argv.includes('--verify-undo-redo')
@@ -7989,6 +7990,132 @@ async function verifyCopiaCella(page) {
 }
 
 /**
+ * VERIFICA (--verify-treeview-comandi): dalla treeview i comandi offrono "Copia negli appunti" e
+ * "Apri in nuova tab" e NON scrivono più nella tab attiva.
+ * Richiesta utente: "ai comandi aggiungi due opzioni, o copia in clipboard o apri in nuova tab, ma mai
+ * che metti il testo nella tab attiva".
+ */
+async function verifyTreeviewComandi(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2000)
+  try {
+    await page.send('Browser.grantPermissions', {
+      origin: 'http://localhost:5173',
+      permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+    })
+  } catch {
+    /* senza permesso si verifica solo il resto */
+  }
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const testoEditor = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors(); const area = e => { const r = e.getDomNode().getBoundingClientRect(); return r.width * r.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      return ed ? ed.getValue() : '' })()`)
+  const tabs = async () => await page.eval(`[...document.querySelectorAll('.sql-tab')].length`)
+  const menuAperto = async () =>
+    await page.eval(`(() => {
+      const voci = [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim());
+      return voci.filter(t => t === 'Copia negli appunti' || t === 'Apri in nuova tab');
+    })()`)
+  const clicMenu = async etichetta => {
+    const punto = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim().startsWith(${JSON.stringify(etichetta)}));
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(1200)
+    return !!punto
+  }
+
+  // filtro laterale per avere un oggetto a portata di clic
+  const campo = await page.eval(`(() => {
+    const i = [...document.querySelectorAll('input')].find(i => (i.placeholder || '').startsWith('Cerca (spazio'));
+    if (!i) return null;
+    const r = i.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  await page.clickPoint(campo.x, campo.y)
+  await sleep(200)
+  await page.typeText('DAT_ARTICOLI')
+  await sleep(1500)
+
+  const testoPrima = await testoEditor()
+  const tabsPrima = await tabs()
+
+  const puntoRiga = async () =>
+    await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('DAT_ARTICOLI'));
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+
+  // 1) clic SINISTRO su un risultato: NON deve scrivere nella tab attiva
+  const riga = await puntoRiga()
+  if (riga) {
+    await page.clickPoint(riga.x, riga.y)
+    await sleep(800)
+  }
+  check('clic sinistro: la tab attiva NON cambia', (await testoEditor()) === testoPrima)
+
+  // 2) tasto destro: il menu ha le due voci nuove
+  const riga2 = await puntoRiga()
+  if (riga2) {
+    await page.clickPoint(riga2.x, riga2.y, 'right')
+    await sleep(800)
+  }
+  const voci = await menuAperto()
+  console.log(`  voci nuove nel menu: ${JSON.stringify(voci)}`)
+  check('il menu ha "Copia negli appunti"', voci.includes('Copia negli appunti'))
+  check('il menu ha "Apri in nuova tab"', voci.includes('Apri in nuova tab'))
+  await page.screenshot('treeview-comandi')
+
+  // 3) Copia negli appunti
+  await clicMenu('Copia negli appunti')
+  const appunti = await page.eval(`(async () => { try { return await navigator.clipboard.readText() } catch (e) { return 'ERRORE:' + e.message } })()`)
+  console.log(`  appunti: ${JSON.stringify(appunti)}`)
+  check('"Copia negli appunti" mette il nome negli appunti', typeof appunti === 'string' && /DAT_ARTICOLI/i.test(appunti))
+  check('dopo la copia la tab attiva NON cambia', (await testoEditor()) === testoPrima)
+
+  // 4) Apri in nuova tab
+  if (riga2) {
+    await page.clickPoint(riga2.x, riga2.y, 'right')
+    await sleep(700)
+  }
+  await clicMenu('Apri in nuova tab')
+  const tabsDopo = await tabs()
+  const testoNuova = await testoEditor()
+  console.log(`  tab: ${tabsPrima} → ${tabsDopo} · testo nuova tab: ${JSON.stringify(testoNuova.slice(0, 40))}`)
+  check('"Apri in nuova tab" apre una tab in più', tabsDopo > tabsPrima, `${tabsPrima} → ${tabsDopo}`)
+  check('la nuova tab contiene il nome dell oggetto', /DAT_ARTICOLI/i.test(testoNuova))
+  check('la prima tab è rimasta intatta', testoPrima.length > 0)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * VERIFICA (--verify-formatta-assign): nell'editor vero, Ctrl+Shift+F su un "SELECT TOP 1 @x = …" con
  * un commento su riga propria prima della FROM. Le clausole devono finire su righe proprie e il
  * commento deve restare sulla sua (segnalazione utente).
@@ -8703,6 +8830,11 @@ async function main() {
 
     if (VERIFY_MULTICURSORE) {
       await verifyMulticursore(page)
+      return
+    }
+
+    if (VERIFY_TREEVIEW_COMANDI) {
+      await verifyTreeviewComandi(page)
       return
     }
 
