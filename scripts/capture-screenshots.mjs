@@ -59,6 +59,7 @@ const VERIFY_PIANO = process.argv.includes('--verify-piano')
 const VERIFY_MULTICURSORE = process.argv.includes('--verify-multicursore')
 const VERIFY_SHIFT_SELEZIONE = process.argv.includes('--verify-shift-selezione')
 const VERIFY_FORMATTA_CTE = process.argv.includes('--verify-formatta-cte')
+const VERIFY_FORMATTA_ASSIGN = process.argv.includes('--verify-formatta-assign')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
 const VERIFY_DATABASE_INTELLISENSE = process.argv.includes('--verify-database-intellisense')
 const VERIFY_UNDO_REDO = process.argv.includes('--verify-undo-redo')
@@ -7988,6 +7989,73 @@ async function verifyCopiaCella(page) {
 }
 
 /**
+ * VERIFICA (--verify-formatta-assign): nell'editor vero, Ctrl+Shift+F su un "SELECT TOP 1 @x = …" con
+ * un commento su riga propria prima della FROM. Le clausole devono finire su righe proprie e il
+ * commento deve restare sulla sua (segnalazione utente).
+ */
+async function verifyFormattaAssign(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const SQL = [
+    'SELECT TOP 1',
+    '   @x_id         = X_ID',
+    '  ,@x_type       = X_TYPE',
+    '  ,@X_DST_BAY    = X_DST_BAY -- 999',
+    '  ,@X_QTY        = X_GIAC',
+    '--,@x_note=X_NOTE',
+    "FROM #TMP_ACTIONS INNER JOIN DAT_UDC ON UDC_UDC = X_UDC WHERE X_PROCESSED = 0 AND X_MSGKO = '' ORDER BY X_PALLETMANCANTI DESC, X_ART_FEFOFIFO_PRIO",
+  ].join('\n')
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await sleep(150)
+  await page.typeText(SQL)
+  await sleep(800)
+  await page.press('f', { code: 'KeyF', vk: 70, modifiers: 10 }) // Ctrl+Shift+F
+  await sleep(2500)
+  const dopo = await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors(); const area = e => { const r = e.getDomNode().getBoundingClientRect(); return r.width * r.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    return ed ? ed.getValue() : '' })()`)
+  const righe = dopo.split('\n')
+  righe.forEach((x, i) => console.log(`   ${String(i + 1).padStart(2)} ${x.replace(/ /g, '·')}`))
+  check('FROM su riga propria', righe.includes('FROM #TMP_ACTIONS'))
+  check('INNER JOIN su riga propria', righe.some(x => /^\s+INNER JOIN DAT_UDC/.test(x)))
+  check('WHERE su riga propria', righe.includes('WHERE X_PROCESSED = 0'))
+  check("AND su riga propria", righe.some(x => /^\s+AND X_MSGKO = ''$/.test(x)))
+  check('ORDER BY su riga propria', righe.some(x => /^ORDER BY X_PALLETMANCANTI DESC$/.test(x)))
+  check('la seconda voce della ORDER BY va a capo', righe.some(x => /^\s+,X_ART_FEFOFIFO_PRIO$/.test(x)))
+  check('il commento resta sulla sua riga', righe.includes('--,@x_note=X_NOTE'))
+  check(
+    "il commento NON è in coda all'assegnazione",
+    !righe.some(x => /@X_QTY\s+= X_GIAC\s+--,/.test(x)),
+  )
+  await page.screenshot('formatta-assign')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+/**
  * VERIFICA (--verify-formatta-cte): nell'editor vero, Ctrl+Shift+F su una CTE dentro una procedura.
  * Controlla ";WITH" attaccato, la virgola della ORDER BY allineata sotto il primo elemento e
  * l'indentazione della CTE. Segnalazione utente: "questa query non la identa bene, nella parte della
@@ -8635,6 +8703,11 @@ async function main() {
 
     if (VERIFY_MULTICURSORE) {
       await verifyMulticursore(page)
+      return
+    }
+
+    if (VERIFY_FORMATTA_ASSIGN) {
+      await verifyFormattaAssign(page)
       return
     }
 

@@ -1076,9 +1076,26 @@ function formatRoutineConProfilo(sql: string, profile: FormatProfile): string {
   }
   for (let k = startIdx; k < body.length; k++) {
     const t = body[k]
-    // commento su riga propria (già indentato): segmento a sé, così resta sulla sua riga
-    // invece di essere aggregato allo statement precedente o scartato da BEGIN/END/IF
+    // commento su riga propria (già indentato).
+    // Di norma è un segmento a sé, così resta sulla sua riga. ECCEZIONE: se lo statement è una
+    // SELECT ancora "aperta" (non è ancora arrivata a FROM/WHERE/…), il commento RESTA dentro lo
+    // statement: prima spezzava la query in due e la parte FROM/WHERE/ORDER BY finiva tutta su una
+    // riga (segnalazione utente: commento "--,@x_note=X_NOTE" fra le assegnazioni e la FROM).
+    const statementAperto =
+      seg.length > 0 &&
+      seg[0]?.type === 'word' &&
+      seg[0].text.toUpperCase() === 'SELECT' &&
+      !seg.some(
+        (tk, iTk) =>
+          iTk > 0 &&
+          tk.type === 'word' &&
+          ['FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING', 'UNION', 'VALUES', 'OPTION'].includes(tk.text.toUpperCase()),
+      )
     if (t.type === 'comment' && t.ownLine && segDepth === 0 && caseDepth === 0) {
+      if (statementAperto) {
+        seg.push(t)
+        continue
+      }
       if (seg.length > 0) segments.push(seg)
       segments.push([t])
       seg = []
@@ -1778,10 +1795,15 @@ function detailedSelectRows(
       const maxVar = Math.max(...items.map(it => it[0].text.length))
       items.forEach((it, idx) => {
         const name = it[0].text
-        const tail = cleanInline(it.slice(1).map(up).join(' '))
+        // Un commento su RIGA PROPRIA dentro la lista (es. "--,@x_note=X_NOTE" fra le assegnazioni)
+        // resta sulla sua riga: prima finiva in coda all'assegnazione precedente.
+        const commentiPropri = it.filter(t => t.type === 'comment' && t.ownLine)
+        const senzaCommenti = it.filter(t => !(t.type === 'comment' && t.ownLine))
+        const tail = cleanInline(senzaCommenti.slice(1).map(up).join(' '))
         const gap = maxVar - name.length + 1
         if (idx === 0) out.push(`${basePad}   ${name}${' '.repeat(gap)}${tail}`)
         else out.push(`${basePad}  ,${name}${' '.repeat(gap)}${tail}`)
+        for (const c of commentiPropri) out.push(`${basePad}${up(c)}`)
       })
     } else {
       // NON è una lista di assegnazioni: la testata è una select-list che contiene una
