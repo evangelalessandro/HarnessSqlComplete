@@ -198,15 +198,21 @@ describe('searchMatches: gli spazi valgono come %', () => {
     expect(searchMatches('udc', 'RUN_MISSIONI')).toBe(false)
   })
 
-  it('più parole = token in ordine con wildcard tra loro', () => {
-    // "dat udc" → %dat%udc% : DAT_UDC corrisponde, UDC_DAT no
+  it('più parole = tutte presenti, in QUALSIASI ordine (richiesta utente)', () => {
+    // "dat udc" trova DAT_UDC e anche UDC_DAT: le parole non devono essere in sequenza
     expect(searchMatches('dat udc', 'DAT_UDC')).toBe(true)
-    expect(searchMatches('dat udc', 'UDC_DAT')).toBe(false)
+    expect(searchMatches('dat udc', 'UDC_DAT')).toBe(true)
+    // il caso segnalato: "automatismi engine" deve trovare ws_L2_Engine_Automatismi
+    expect(searchMatches('automatismi engine', 'ws_L2_Engine_Automatismi')).toBe(true)
+    expect(searchMatches('engine automatismi', 'ws_L2_Engine_Automatismi')).toBe(true)
+    // una parola che non c'è continua a escludere il risultato
+    expect(searchMatches('dat zzz', 'DAT_UDC')).toBe(false)
   })
 
   it('case-insensitive e match su schema o nome', () => {
     expect(searchMatches('run mis', 'RUN_MISSIONI')).toBe(true)
-    expect(searchMatches('mis run', 'RUN_MISSIONI')).toBe(false)
+    expect(searchMatches('mis run', 'RUN_MISSIONI')).toBe(true)
+    expect(searchMatches('RUN missioni', 'RUN_MISSIONI')).toBe(true)
   })
 
   it('spazi multipli equivalgono a uno', () => {

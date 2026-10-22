@@ -62,6 +62,7 @@ const VERIFY_FORMATTA_CTE = process.argv.includes('--verify-formatta-cte')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
 const VERIFY_DATABASE_INTELLISENSE = process.argv.includes('--verify-database-intellisense')
 const VERIFY_UNDO_REDO = process.argv.includes('--verify-undo-redo')
+const VERIFY_RICERCA_PAROLE = process.argv.includes('--verify-ricerca-parole')
 const DUMP_GUIDE = process.argv.find(a => a.startsWith('--dump-guide='))?.slice('--dump-guide='.length) ?? null
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
@@ -7571,6 +7572,107 @@ async function dumpGuide(page, file) {
   await page.screenshot('guide-editor')
 }
 /**
+ * VERIFICA (--verify-ricerca-parole): due richieste utente.
+ * 1) ricerca LATERALE: le parole si possono dare in ordine invertito ("automatismi engine" trova
+ *    ws_L2_Engine_Automatismi);
+ * 2) ricerca (pannello Cerca): nell'anteprima dell'oggetto sono sottolineate TUTTE le righe in cui
+ *    compare il testo cercato, non solo la prima.
+ */
+async function verifyRicercaParole(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // ---- 1) RICERCA LATERALE con le parole INVERTITE
+  const scriviFiltro = async testo => {
+    const punto = await page.eval(`(() => {
+      const i = [...document.querySelectorAll('input')].find(i => (i.placeholder || '').startsWith('Cerca (spazio'));
+      if (!i) return null;
+      const r = i.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) return false
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(200)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await sleep(100)
+    await page.typeText(testo)
+    await sleep(1200)
+    return true
+  }
+  /** True se nella lista dei risultati laterali compare l'oggetto indicato. */
+  const inLista = async nome => await page.eval(`(document.body.textContent || '').includes(${JSON.stringify(nome)})`)
+
+  await scriviFiltro('automatismi engine')
+  const invertite = await inLista('ws_L2_Engine_Automatismi')
+  console.log(`  "automatismi engine" trova ws_L2_Engine_Automatismi: ${invertite}`)
+  check('la ricerca laterale trova con le parole INVERTITE', invertite === true)
+  await scriviFiltro('engine automatismi')
+  check('e anche nell ordine naturale', (await inLista('ws_L2_Engine_Automatismi')) === true)
+  await page.screenshot('ricerca-parole-invertite')
+
+  // ---- 2) SOTTOLINEATURA di TUTTE le righe con il match (pannello Cerca)
+  await scriviFiltro('')
+  const apriCerca = await page.eval(`(() => { const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Cerca'); if (!b) return null;
+    const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 } })()`)
+  if (apriCerca) await page.clickPoint(apriCerca.x, apriCerca.y)
+  await sleep(1500)
+  // nel pannello di ricerca c'è un campo: si cerca una parola che compare più volte in una SP
+  const campoRicerca = await page.eval(`(() => {
+    const i = [...document.querySelectorAll('[data-ricerca="pannello"] input')].find(i => /cerca|testo|definizion/i.test(i.placeholder || '') ) || [...document.querySelectorAll('[data-ricerca="pannello"] input')][0];
+    if (!i) return null;
+    const r = i.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (campoRicerca) {
+    await page.clickPoint(campoRicerca.x, campoRicerca.y)
+    await sleep(200)
+    await page.typeText('pGestore')
+    await page.press('Enter', { code: 'Enter', vk: 13 })
+    await sleep(4000)
+    // seleziona la SP che contiene @pGestore su PIÙ righe (è il caso da verificare)
+    await page.eval(`(() => {
+      const righe = [...document.querySelectorAll('[data-ricerca="riga"]')];
+      const r = righe.find(b => (b.textContent || '').includes('ws_L2_Engine_Automatismi')) ?? righe[0];
+      if (r) r.click();
+    })()`)
+    await sleep(2500)
+    const righeEvidenziate = await page.eval(`(() => {
+      const righe = [...document.querySelectorAll('[data-riga]')];
+      const conSfondo = righe.filter(r => /bg-amber-500/.test(r.className) || /bg-amber-500/.test(r.getAttribute('class') || ''));
+      const conMark = righe.filter(r => r.querySelector('mark')).length;
+      return { totali: righe.length, sfondo: conSfondo.length, conMark };
+    })()`)
+    console.log(`  anteprima: ${JSON.stringify(righeEvidenziate)}`)
+    check('nell anteprima sono sottolineate PIÙ righe (tutte quelle con il testo)', righeEvidenziate.sfondo >= 2, `${righeEvidenziate.sfondo} righe con sfondo`)
+    check('le occorrenze sono evidenziate anche nel testo (mark)', righeEvidenziate.conMark >= 2, `${righeEvidenziate.conMark} righe con mark`)
+    await page.screenshot('ricerca-righe-sottolineate')
+  } else {
+    check('campo di ricerca del pannello trovato', false)
+  }
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+/**
  * VERIFICA (--verify-undo-redo): i pulsanti "Annulla" e "Ripeti" della tab annullano/ripetono le
  * modifiche e sono abilitati solo quando c'è qualcosa da annullare/ripetere.
  * Richiesta utente: "Aggiungi anche per ogni tab la possibilità di fare undo e redo con i pulsanti".
@@ -8517,6 +8619,11 @@ async function main() {
 
     if (DUMP_GUIDE) {
       await dumpGuide(page, DUMP_GUIDE)
+      return
+    }
+
+    if (VERIFY_RICERCA_PAROLE) {
+      await verifyRicercaParole(page)
       return
     }
 

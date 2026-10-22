@@ -2,6 +2,7 @@
 // ricerca — evidenziazione del testo trovato, etichette dei tipi, riepilogo della scansione.
 // Stanno qui per poter essere testati senza montare React.
 
+import { searchTokens } from './helpers'
 import type { TextSearchHit, TextSearchResult } from './types'
 
 /** Etichetta italiana del tipo di risultato. */
@@ -137,23 +138,38 @@ export interface HighlightPart {
 
 /**
  * Spezza il testo nelle parti da evidenziare: ritorna i segmenti in ordine, con `hit = true`
- * sulle occorrenze del testo cercato (confronto senza distinzione di maiuscole).
+ * sulle occorrenze delle parole cercate (confronto senza distinzione di maiuscole).
+ *
+ * RICHIESTA UTENTE: "quando faccio la ricerca sottolinea bene, nell'oggetto in cui trovi quello che
+ * cerco, tutte le righe in cui si trova". Prima si cercava la query INTERA come sequenza: con più
+ * parole ("attendi utente") si evidenziava solo quella sequenza esatta. Ora si evidenzia ogni PAROLA
+ * della query, in qualsiasi ordine, così si vede subito cosa ha fatto scattare il risultato.
  */
 export function splitHighlight(text: string, query: string): HighlightPart[] {
-  const q = query.trim()
-  if (!q) return [{ text, hit: false }]
+  const parole = searchTokens(query)
+    .map(p => p.toLowerCase())
+    // prima le parole più lunghe: "corridoio" non deve essere coperto da "corr"
+    .sort((a, b) => b.length - a.length)
+  if (parole.length === 0) return [{ text, hit: false }]
   const hay = text.toLowerCase()
-  const needle = q.toLowerCase()
+  const hits: Array<{ da: number; a: number }> = []
+  for (const parola of parole) {
+    let da = hay.indexOf(parola)
+    while (da !== -1) {
+      const occupato = hits.some(h => da < h.a && da + parola.length > h.da)
+      if (!occupato) hits.push({ da, a: da + parola.length })
+      if (hits.length > 400) break
+      da = hay.indexOf(parola, da + parola.length)
+    }
+  }
+  if (hits.length === 0) return [{ text, hit: false }]
+  hits.sort((a, b) => a.da - b.da)
   const parti: HighlightPart[] = []
   let da = 0
-  for (;;) {
-    const at = hay.indexOf(needle, da)
-    if (at === -1) break
-    if (at > da) parti.push({ text: text.slice(da, at), hit: false })
-    parti.push({ text: text.slice(at, at + needle.length), hit: true })
-    da = at + needle.length
-    // limite di sicurezza: un testo enorme con molte occorrenze non deve generare migliaia di nodi
-    if (parti.length > 400) break
+  for (const h of hits) {
+    if (h.da > da) parti.push({ text: text.slice(da, h.da), hit: false })
+    parti.push({ text: text.slice(h.da, h.a), hit: true })
+    da = h.a
   }
   if (da < text.length) parti.push({ text: text.slice(da), hit: false })
   return parti.length > 0 ? parti : [{ text, hit: false }]

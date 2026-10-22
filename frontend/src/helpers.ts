@@ -1658,11 +1658,32 @@ export function searchPatternFromQuery(query: string): RegExp | null {
   return new RegExp(tokens.join('.*'), 'i')
 }
 
-/** True se una delle candidate corrisponde alla query (spazi = %). */
+/**
+ * Parole della query (già "pulite"): spazi = separatori. Serve sia alla ricerca laterale sia
+ * all'evidenziazione dei risultati.
+ */
+export function searchTokens(query: string): string[] {
+  return query
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+}
+
+/**
+ * True se una delle candidate corrisponde alla query.
+ *
+ * RICHIESTA UTENTE: "nella ricerca laterale permetti anche di invertire l'ordine delle parole per
+ * trovare comunque il risultato tra i nomi degli oggetti". Prima le parole dovevano comparire NELLO
+ * STESSO ORDINE (la query diventava "parola1.*parola2"): "automatismi engine" NON trovava
+ * "ws_L2_Engine_Automatismi". Ora ogni parola deve essere presente, in QUALSIASI ordine.
+ */
 export function searchMatches(query: string, ...candidates: string[]): boolean {
-  const re = searchPatternFromQuery(query)
-  if (!re) return false
-  return candidates.some(c => re.test(c))
+  const token = searchTokens(query)
+  if (token.length === 0) return false
+  // i candidati (nome, schema…) si guardano INSIEME: "dbo missioni" trova dbo.RUN_MISSIONI anche se
+  // le parole stanno "una nel nome e una nello schema".
+  const testo = candidates.join(' ').toLowerCase()
+  return token.every(t => testo.includes(t.toLowerCase()))
 }
 
 // ---------- Affinità colonne digitate (autocompletamento) ----------

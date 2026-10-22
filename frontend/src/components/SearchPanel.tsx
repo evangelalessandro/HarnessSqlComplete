@@ -37,6 +37,7 @@ import {
   splitHighlight,
   tableOfHit,
 } from '../sqlSearch'
+import { searchTokens } from '../helpers'
 import type { DatabaseSummary, TextSearchHit, TextSearchResult } from '../types'
 
 interface Props {
@@ -75,6 +76,17 @@ function saveCronologia(voci: string[]): void {
   }
 }
 
+/**
+ * Classi CSS di una riga dell'anteprima: tutte le righe che contengono il testo cercato hanno lo
+ * sfondo giallino e un bordo a sinistra (le "sottolinea"); quella segnalata dal backend è più marcata.
+ * Richiesta utente: "sottolinea bene … tutte le righe in cui si trova".
+ */
+export function classiRiga(rigaDelMatch: number | null, riga: number, righeConMatch: Set<number>): string | undefined {
+  if (riga === rigaDelMatch) return 'bg-amber-500/20 shadow-[inset_2px_0_0_0_#f59e0b]'
+  if (righeConMatch.has(riga)) return 'bg-amber-500/10 shadow-[inset_2px_0_0_0_rgba(245,158,11,0.55)]'
+  return undefined
+}
+
 /** Evidenzia le occorrenze del testo cercato dentro una riga. */
 function Evidenzia({ testo, cerca }: { testo: string; cerca: string }) {
   return (
@@ -101,9 +113,12 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  * "class" — si romperebbe l'HTML.
  */
 export function evidenziaHtml(html: string, cerca: string): string {
-  const termine = cerca.trim()
-  if (termine.length < 2) return html
-  const re = new RegExp(escapeRegExp(termine), 'gi')
+  const parole = searchTokens(cerca)
+    .map(p => escapeRegExp(p))
+    // prima le parole più lunghe: "corridoio" non deve essere coperto da "corr"
+    .sort((a, b) => b.length - a.length)
+  if (parole.length === 0 || cerca.trim().length < 2) return html
+  const re = new RegExp(parole.join('|'), 'gi')
   return html
     .split(/(<[^>]*>)/)
     .map(parte => (parte.startsWith('<') ? parte : parte.replace(re, m => `<mark class="rounded bg-amber-500/30 px-0.5 text-amber-100">${m}</mark>`)))
@@ -267,6 +282,22 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
   }, [scelto, summary])
 
   const righeDefinizione = useMemo(() => definizione.testo.split('\n'), [definizione.testo])
+  /**
+   * TUTTE le righe della definizione in cui compare il testo cercato (richiesta utente: "sottolinea
+   * bene, nell'oggetto in cui trovi quello che cerco, tutte le righe in cui si trova"). Prima veniva
+   * evidenziata solo la riga segnalata dal backend; ora si evidenziano tutte quelle che contengono le
+   * parole cercate (in qualsiasi ordine), con la riga del match più marcata.
+   */
+  const righeConMatch = useMemo(() => {
+    const insieme = new Set<number>()
+    const token = searchTokens(testo).map(t => t.toLowerCase())
+    if (token.length === 0) return insieme
+    righeDefinizione.forEach((r, i) => {
+      const basso = r.toLowerCase()
+      if (token.every(t => basso.includes(t))) insieme.add(i + 1)
+    })
+    return insieme
+  }, [righeDefinizione, testo])
   /** Le stesse righe con la SINTASSI A COLORI (coloratore di Monaco, come nell'editor). */
   const htmlColorato = useSqlColorato(righeDefinizione)
 
@@ -528,7 +559,7 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
                       <div
                         key={i}
                         data-riga={i + 1}
-                        className={scelto.line === i + 1 ? 'bg-amber-500/10' : undefined}
+                        className={classiRiga(scelto.line, i + 1, righeConMatch)}
                       >
                         <span className="mr-3 inline-block w-10 select-none text-right text-zinc-600">{i + 1}</span>
                         {htmlColorato[i] !== undefined ? (
@@ -549,7 +580,7 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
                       <div
                         key={i}
                         data-riga={i + 1}
-                        className={scelto.line === i + 1 ? 'bg-amber-500/10' : undefined}
+                        className={classiRiga(scelto.line, i + 1, righeConMatch)}
                       >
                         <span className="mr-3 inline-block w-10 select-none text-right text-zinc-600">{i + 1}</span>
                         <Evidenzia testo={r} cerca={testo.trim()} />
