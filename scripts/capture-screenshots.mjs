@@ -7663,6 +7663,32 @@ async function verifyRicercaParole(page) {
     console.log(`  anteprima: ${JSON.stringify(righeEvidenziate)}`)
     check('nell anteprima sono sottolineate PIÙ righe (tutte quelle con il testo)', righeEvidenziate.sfondo >= 2, `${righeEvidenziate.sfondo} righe con sfondo`)
     check('le occorrenze sono evidenziate anche nel testo (mark)', righeEvidenziate.conMark >= 2, `${righeEvidenziate.conMark} righe con mark`)
+    // BARRA DEI MATCH accanto all'anteprima: un segnalino per ogni riga trovata
+    const barra = await page.eval(`(() => {
+      const b = document.querySelector('[data-barra-match]');
+      if (!b) return null;
+      const segnalini = [...b.querySelectorAll('[data-match-riga]')];
+      return { presente: true, segnalini: segnalini.length, righe: segnalini.map(s => Number(s.dataset.matchRiga)).slice(0, 20) };
+    })()`)
+    console.log(`  barra dei match: ${JSON.stringify(barra)}`)
+    check("c'è la barra con i segnalini dei match", !!barra && barra.segnalini >= 2)
+    check(
+      'i segnalini sono uno per riga trovata',
+      !!barra && barra.segnalini === righeEvidenziate.sfondo,
+      `${barra?.segnalini} segnalini vs ${righeEvidenziate.sfondo} righe`,
+    )
+    // clic su un segnalino → l'anteprima scorre
+    const scorrimento = await page.eval(`(() => {
+      const pre = document.querySelector('[data-anteprima-righe]');
+      const segnalini = [...document.querySelectorAll('[data-barra-match] [data-match-riga]')];
+      const ultimo = segnalini[segnalini.length - 1];
+      if (!pre || !ultimo) return null;
+      const prima = pre.scrollTop;
+      ultimo.click();
+      return { prima, dopo: pre.scrollTop };
+    })()`)
+    console.log(`  clic sull'ultimo segnalino: ${JSON.stringify(scorrimento)}`)
+    check("cliccando un segnalino l'anteprima si sposta", !!scorrimento && scorrimento.dopo !== scorrimento.prima)
     await page.screenshot('ricerca-righe-sottolineate')
   } else {
     check('campo di ricerca del pannello trovato', false)

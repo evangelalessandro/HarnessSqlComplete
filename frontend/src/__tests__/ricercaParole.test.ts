@@ -8,7 +8,7 @@
 //     righe in cui si trova".
 import { describe, expect, it } from 'vitest'
 import { searchMatches, searchTokens } from '../helpers'
-import { splitHighlight } from '../sqlSearch'
+import { posizioneSegnalino, splitHighlight } from '../sqlSearch'
 import { classiRiga } from '../components/SearchPanel'
 
 describe('searchTokens', () => {
@@ -75,5 +75,26 @@ describe('classiRiga: tutte le righe con il match sono sottolineate', () => {
   it('senza riga del match (null) restano comunque evidenziate le righe trovate', () => {
     expect(classiRiga(null, 4, new Set([4]))).toContain('bg-amber-500/10')
     expect(classiRiga(null, 9, new Set([4]))).toBeUndefined()
+  })
+})
+
+describe('posizioneSegnalino: segnalini dei match nella barra laterale', () => {
+  it('la prima riga sta in cima, l ultima in fondo', () => {
+    expect(posizioneSegnalino(1, 101)).toBe(0)
+    expect(posizioneSegnalino(101, 101)).toBe(100)
+  })
+
+  it('è proporzionale alla riga', () => {
+    expect(posizioneSegnalino(51, 101)).toBeCloseTo(50, 5)
+    expect(posizioneSegnalino(11, 21)).toBeCloseTo(50, 5)
+  })
+
+  it('un file di una riga sola non divide per zero', () => {
+    expect(posizioneSegnalino(1, 1)).toBe(0)
+  })
+
+  it('righe fuori range vengono riportate dentro', () => {
+    expect(posizioneSegnalino(0, 11)).toBe(0)
+    expect(posizioneSegnalino(999, 11)).toBe(100)
   })
 })

@@ -34,6 +34,7 @@ import {
   removeFromSearchHistory,
   searchMeta,
   SEARCH_HISTORY_KEY,
+  posizioneSegnalino,
   splitHighlight,
   tableOfHit,
 } from '../sqlSearch'
@@ -74,6 +75,48 @@ function saveCronologia(voci: string[]): void {
   } catch {
     /* storage pieno o disabilitato: la cronologia resta solo in memoria */
   }
+}
+
+/**
+ * BARRA DEI MATCH accanto all'anteprima (come l'"overview ruler" degli editor): un segnalino per ogni
+ * riga che contiene il testo cercato, così si vede DOVE sono le occorrenze anche quando sono fuori
+ * dalla parte visibile. Cliccando un segnalino si salta a quella riga.
+ * Richiesta utente: "oltre a fare la riga gialla, potresti anche mettere qualcosa anche nella
+ * scrollbar per far vedere dov'è il punto?".
+ */
+function BarraMatch({
+  totale,
+  righe,
+  corrente,
+  onVai,
+}: {
+  totale: number
+  righe: Set<number>
+  corrente: number | null
+  onVai: (riga: number) => void
+}) {
+  const elenco = [...righe].sort((a, b) => a - b)
+  return (
+    <div
+      className="relative w-3 shrink-0 rounded bg-zinc-800/80"
+      title={elenco.length > 0 ? `${elenco.length} righe con il testo cercato` : 'nessuna riga con il testo'}
+      data-barra-match=""
+      data-match-totali={elenco.length}
+    >
+      {elenco.map(r => (
+        <button
+          key={r}
+          data-match-riga={r}
+          onClick={() => onVai(r)}
+          title={`Vai alla riga ${r}`}
+          className={`absolute left-0 h-[3px] w-full rounded transition-colors ${
+            r === corrente ? 'bg-amber-300' : 'bg-amber-500/70 hover:bg-amber-400'
+          }`}
+          style={{ top: `calc(${posizioneSegnalino(r, totale)}% - 1px)` }}
+        />
+      ))}
+    </div>
+  )
 }
 
 /**
@@ -282,6 +325,15 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
   }, [scelto, summary])
 
   const righeDefinizione = useMemo(() => definizione.testo.split('\n'), [definizione.testo])
+  /** Contenitore scrollabile dell'anteprima: serve a "saltare" alla riga cliccando la barra dei match. */
+  const preRef = useRef<HTMLPreElement | null>(null)
+  const vaiAllaRiga = (riga: number) => {
+    const el = preRef.current
+    if (!el) return
+    const totale = Math.max(1, righeDefinizione.length)
+    const quota = (riga - 1) / Math.max(1, totale - 1)
+    el.scrollTop = quota * Math.max(0, el.scrollHeight - el.clientHeight)
+  }
   /**
    * TUTTE le righe della definizione in cui compare il testo cercato (richiesta utente: "sottolinea
    * bene, nell'oggetto in cui trovi quello che cerco, tutte le righe in cui si trova"). Prima veniva
@@ -553,40 +605,58 @@ export default function SearchPanel({ connectionId, database, summary, onClose, 
                   </p>
                 )}
                 {definizione.errore && <p className="text-xs text-rose-300">{definizione.errore}</p>}
-                {definizione.testo && htmlColorato && (
-                  <pre className="overflow-x-auto font-mono text-[11px] leading-5 text-zinc-300">
-                    {righeDefinizione.map((r, i) => (
-                      <div
-                        key={i}
-                        data-riga={i + 1}
-                        className={classiRiga(scelto.line, i + 1, righeConMatch)}
+                {definizione.testo && (
+                  <div className="flex min-h-0 items-stretch gap-1" data-anteprima-corpo="">
+                    {htmlColorato ? (
+                      <pre
+                        ref={preRef}
+                        className="max-h-[45vh] flex-1 overflow-auto font-mono text-[11px] leading-5 text-zinc-300"
+                        data-anteprima-righe=""
                       >
-                        <span className="mr-3 inline-block w-10 select-none text-right text-zinc-600">{i + 1}</span>
-                        {htmlColorato[i] !== undefined ? (
-                          <span
-                            data-sintassi="colorata"
-                            dangerouslySetInnerHTML={{ __html: evidenziaHtml(htmlColorato[i], testo) }}
-                          />
-                        ) : (
-                          <Evidenzia testo={r} cerca={testo.trim()} />
-                        )}
-                      </div>
-                    ))}
-                  </pre>
-                )}
-                {definizione.testo && !htmlColorato && (
-                  <pre className="overflow-x-auto font-mono text-[11px] leading-5 text-zinc-300">
-                    {righeDefinizione.map((r, i) => (
-                      <div
-                        key={i}
-                        data-riga={i + 1}
-                        className={classiRiga(scelto.line, i + 1, righeConMatch)}
+                        {righeDefinizione.map((r, i) => (
+                          <div
+                            key={i}
+                            data-riga={i + 1}
+                            className={classiRiga(scelto.line, i + 1, righeConMatch)}
+                          >
+                            <span className="mr-3 inline-block w-10 select-none text-right text-zinc-600">{i + 1}</span>
+                            {htmlColorato![i] !== undefined ? (
+                              <span
+                                data-sintassi="colorata"
+                                dangerouslySetInnerHTML={{ __html: evidenziaHtml(htmlColorato![i], testo) }}
+                              />
+                            ) : (
+                              <Evidenzia testo={r} cerca={testo.trim()} />
+                            )}
+                          </div>
+                        ))}
+                      </pre>
+                    ) : (
+                      <pre
+                        ref={preRef}
+                        className="max-h-[45vh] flex-1 overflow-auto font-mono text-[11px] leading-5 text-zinc-300"
+                        data-anteprima-righe=""
                       >
-                        <span className="mr-3 inline-block w-10 select-none text-right text-zinc-600">{i + 1}</span>
-                        <Evidenzia testo={r} cerca={testo.trim()} />
-                      </div>
-                    ))}
-                  </pre>
+                        {righeDefinizione.map((r, i) => (
+                          <div
+                            key={i}
+                            data-riga={i + 1}
+                            className={classiRiga(scelto.line, i + 1, righeConMatch)}
+                          >
+                            <span className="mr-3 inline-block w-10 select-none text-right text-zinc-600">{i + 1}</span>
+                            <Evidenzia testo={r} cerca={testo.trim()} />
+                          </div>
+                        ))}
+                      </pre>
+                    )}
+                    {/* barra sulla destra: i segnalini mostrano DOVE sono i match e ci si può saltare */}
+                    <BarraMatch
+                      totale={righeDefinizione.length}
+                      righe={righeConMatch}
+                      corrente={scelto.line}
+                      onVai={vaiAllaRiga}
+                    />
+                  </div>
                 )}
               </>
             )}

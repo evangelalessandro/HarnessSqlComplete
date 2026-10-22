@@ -256,3 +256,15 @@ export function parseSearchHistory(raw: string | null): string[] {
     return []
   }
 }
+
+/**
+ * Posizione (percentuale, 0-100) del segnalino di una riga nella barra dei match accanto all'anteprima.
+ * Righe del file, non pixel: così il segnalino resta proporzionato qualunque sia l'altezza del testo.
+ * Richiesta utente: "oltre alla riga gialla, metti qualcosa anche nella scrollbar per mostrare dov'è
+ * il punto".
+ */
+export function posizioneSegnalino(riga: number, totale: number): number {
+  if (totale <= 1) return 0
+  const r = Math.min(Math.max(1, riga), totale)
+  return ((r - 1) / (totale - 1)) * 100
+}
