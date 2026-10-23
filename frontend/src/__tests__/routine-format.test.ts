@@ -319,3 +319,28 @@ end`
     expect(lines[decl + 1]).toBe('         ,@bb NVARCHAR(10)')
   })
 })
+
+// RICHIESTA UTENTE: "permetti anche di eseguire il comando GO seguito da un numero, che esegue, come in
+// ssms, la query fino al GO x volte". Il formattatore non deve rovinare "GO n": resta a margine come il
+// GO semplice (prima veniva indentato dentro il corpo della routine).
+describe('GO con numero di ripetizioni (GO n)', () => {
+  it('fuori dalle routine resta a margine', () => {
+    const out = formatSqlWithProfile(`select 1 as N\ngo 5\nselect 2\ngo`, profile)
+    out.split('\n').forEach(r => console.log(`  |${r}`))
+    expect(out).toContain('GO 5')
+    expect(out).toMatch(/^GO 5$/m)
+    expect(out).toMatch(/^GO$/m)
+  })
+
+  it('dentro una routine resta a margine (non indentato)', () => {
+    const out = formatRoutineWithProfile(`create procedure p as\nbegin\n  select 1\nend\ngo 2`, profile)
+    out.split('\n').forEach(r => console.log(`  |${r}`))
+    expect(out).toMatch(/^GO 2$/m)
+    expect(out).not.toMatch(/^\s+GO 2$/m)
+  })
+
+  it('il "; " finale viene tolto: "GO 3;" → "GO 3"', () => {
+    const out = formatSqlWithProfile(`select 1\ngo 3;`, profile)
+    expect(out).toContain('GO 3')
+  })
+})

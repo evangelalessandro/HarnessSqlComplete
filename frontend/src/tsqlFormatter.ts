@@ -1168,12 +1168,20 @@ function formatRoutineConProfilo(sql: string, profile: FormatProfile): string {
       for (let b = 0; b < blanks; b++) lines.push({ indent: 0, text: '' })
     }
     emittedAny = true
-    // GO → a margine
-    if (segment.length === 1 && segment[0].type === 'word' && segment[0].text.toUpperCase() === 'GO') {
-      flushLine()
-      pendingIndent = null
-      pushLine('GO', 0)
-      continue
+    // GO (eventualmente con il numero di ripetizioni: "GO 5" come in SSMS) → a margine
+    if (segment[0].type === 'word' && segment[0].text.toUpperCase() === 'GO') {
+      const soloGoONumero = segment.slice(1).every(t => (t.type === 'punct' && t.text === ';') || /^\d+$/.test(t.text))
+      if (soloGoONumero) {
+        flushLine()
+        pendingIndent = null
+        const numero = segment
+          .slice(1)
+          .map(t => t.text)
+          .filter(t => t !== ';')
+          .join(' ')
+        pushLine(numero ? `GO ${numero}` : 'GO', 0)
+        continue
+      }
     }
     // label (es. "end_ok:") → a margine
     if (isLabel(segment, 0)) {

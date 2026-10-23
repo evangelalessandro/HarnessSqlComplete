@@ -64,6 +64,7 @@ const VERIFY_FORMATTA_ASSIGN = process.argv.includes('--verify-formatta-assign')
 const VERIFY_TREEVIEW_COMANDI = process.argv.includes('--verify-treeview-comandi')
 const VERIFY_FORMATTA_UNION = process.argv.includes('--verify-formatta-union')
 const VERIFY_JOIN_FREQUENZA = process.argv.includes('--verify-join-frequenza')
+const VERIFY_GO_N = process.argv.includes('--verify-go-n')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
 const VERIFY_DATABASE_INTELLISENSE = process.argv.includes('--verify-database-intellisense')
 const VERIFY_UNDO_REDO = process.argv.includes('--verify-undo-redo')
@@ -8058,6 +8059,73 @@ async function setupDemo(files) {
   console.log('\ndatabase dimostrativo pronto: si possono rifare gli screenshot con SHOT_DB=DEMO_STORE')
 }
 /**
+ * VERIFICA (--verify-go-n): "GO n" esegue il batch n volte, come in SSMS.
+ * Richiesta utente: "permetti anche di eseguire il comando GO seguito da un numero, che esegue, come in
+ * ssms, la query fino al go x volte".
+ */
+async function verifyGoN(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  const esegui = async sql => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors(); const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      if (ed) { ed.setValue(${JSON.stringify('@@SQL@@')}); ed.focus(); }
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+    await sleep(600)
+    await page.press('F5', { code: 'F5', vk: 116 })
+    // si aspetta che la griglia (o i messaggi) mostri il risultato
+    await sleep(4000)
+    return await page.eval(`(() => {
+      const celle = [...document.querySelectorAll('tbody td')].map(td => (td.textContent || '').trim());
+      const messaggi = document.querySelector('[data-risultati="messaggi"]')?.textContent || '';
+      return { celle: celle.slice(0, 20), testo: (document.body.textContent || '').slice(0, 400), messaggi };
+    })()`)
+  }
+
+  // 1) tabella temporanea riempita con "GO 5": il conteggio finale deve essere 5
+  const r1 = await esegui('CREATE TABLE #go_n (x int)\nGO\nINSERT INTO #go_n VALUES (1)\nGO 5\nSELECT COUNT(*) AS righe FROM #go_n')
+  console.log(`  celle: ${JSON.stringify(r1.celle.slice(0, 6))}`)
+  check('"GO 5" esegue il batch cinque volte (COUNT = 5)', r1.celle.includes('5'), r1.celle.slice(0, 6).join(','))
+  await page.screenshot('go-n')
+
+  // 2) tre SELECT con "GO 3" sull ultima: si vedono più result set
+  const r2 = await esegui('SELECT 10 AS A\nGO 3')
+  const setMostrati = await page.eval(`(() => {
+    // con più set il pannello mostra un pulsante per set: "Set 1 · N righe", "Set 2 · N righe", …
+    const bottoni = [...document.querySelectorAll('button')]
+      .map(b => (b.textContent || '').trim())
+      .filter(t => /^Set \\d+ \\u00b7/.test(t));
+    return { set: bottoni.length, testi: bottoni.slice(0, 6) };
+  })()`)
+  console.log(`  selettore result set: ${JSON.stringify(setMostrati)}`)
+  check('"GO 3" produce più result set nella griglia', r2.celle.includes('10') && setMostrati.set >= 2, `${setMostrati.set} set`)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+/**
  * VERIFICA (--verify-join-frequenza): i suggerimenti di JOIN col drago sono ordinati per FREQUENZA
  * d'uso nel database (JOIN trovati nel codice delle procedure/viste/funzioni).
  * Richiesta utente: "i join con l'icona del drago devono essere ordinati per frequenza di uso trovato
@@ -9042,6 +9110,11 @@ async function main() {
 
     if (VERIFY_MULTICURSORE) {
       await verifyMulticursore(page)
+      return
+    }
+
+    if (VERIFY_GO_N) {
+      await verifyGoN(page)
       return
     }
 

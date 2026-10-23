@@ -197,8 +197,9 @@ export function splitExecutedStatements(sql: string): string[] {
     }
   }
   push(n)
-  // "GO" separa i batch ma non è un'istruzione: non conta come statement
-  return chunks.filter(c => c.toUpperCase() !== 'GO')
+  // "GO" separa i batch ma non è un'istruzione: non conta come statement.
+  // Vale anche per "GO 5" (batch ripetuto 5 volte, come in SSMS).
+  return chunks.filter(c => !/^GO(\s+\d+)?\s*;?$/i.test(c.trim()))
 }
 
 /**

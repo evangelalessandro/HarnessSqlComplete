@@ -65,7 +65,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       {
         title: 'Esegui query',
         detail:
-          'F5 o Ctrl+Invio esegue lo statement corrente. Supporta più batch separati da GO, cattura i PRINT e mostra più result set (limite 5000 righe per griglia).',
+          'F5 o Ctrl+Invio esegue lo statement corrente. Supporta più batch separati da GO e, come in SSMS, "GO n" (es. "GO 5") esegue il batch n volte — i result set tornano uno per esecuzione. Cattura i PRINT e mostra più result set (limite 5000 righe per griglia).',
       },
       {
         title: 'File SQL',

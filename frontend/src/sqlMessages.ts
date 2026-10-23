@@ -54,10 +54,10 @@ export function routineDefinitionRange(text: string, name: string): { start: num
     if (!m) continue
     const trovato = (m[1] ?? '').replace(/^\[|\]$/g, '').toLowerCase()
     if (trovato !== atteso) continue
-    // fine del batch: la riga del prossimo "GO" (o la fine del testo)
+    // fine del batch: la riga del prossimo "GO" (anche "GO n", batch ripetuto n volte) o la fine del testo
     let fine = righe.length
     for (let k = i + 1; k < righe.length; k++) {
-      if (/^\s*GO\s*;?\s*$/i.test(righe[k])) {
+      if (/^\s*GO(\s+\d+)?\s*;?\s*$/i.test(righe[k])) {
         fine = k
         break
       }

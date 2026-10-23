@@ -231,52 +231,59 @@ public class QueryService
                 foreach (var batch in batches)
                 {
                     currentStartLine = batch.StartLine;
-                    await using var cmd = conn.CreateCommand();
-                    cmd.CommandText = batch.Text;
-                    cmd.Transaction = tran;
-                    cmd.CommandTimeout = checkSyntax ? Math.Min(timeoutSeconds ?? 30, 10) : (timeoutSeconds ?? 30);
-                    cmd.StatementCompleted += (_, e) => totalAffected += e.RecordCount;
-
-                    await using var reader = await cmd.ExecuteReaderAsync(ct);
-                    do
+                    // "GO n" (come in SSMS): lo stesso batch eseguito n volte. I result set tornano
+                    // uno per esecuzione; un errore interrompe il giro come farebbe SSMS.
+                    if (batch.Repeat > 1)
+                        messages.Add($"(GO {batch.Repeat}: batch eseguito {batch.Repeat} volte)");
+                    for (var giro = 0; giro < batch.Repeat; giro++)
                     {
-                        var schema = reader.GetColumnSchema();
-                        if (schema.Count == 0)
-                        {
-                            // Statement senza result set (UPDATE/INSERT/DELETE/PRINT…):
-                            // niente set vuoto — come SSMS, le righe interessate finiscono nei messaggi,
-                            // così il client mostra la schermata dei PRINT quando non c'è una SELECT.
-                            var affected = reader.RecordsAffected;
-                            if (affected >= 0)
-                            {
-                                totalAffected += affected;
-                                messages.Add(affected == 1 ? "(1 riga interessata)" : $"({affected} righe interessate)");
-                            }
-                            continue;
-                        }
+                        await using var cmd = conn.CreateCommand();
+                        cmd.CommandText = batch.Text;
+                        cmd.Transaction = tran;
+                        cmd.CommandTimeout = checkSyntax ? Math.Min(timeoutSeconds ?? 30, 10) : (timeoutSeconds ?? 30);
+                        cmd.StatementCompleted += (_, e) => totalAffected += e.RecordCount;
 
-                        var columns = schema
-                            .Select(c => new ColumnResult(
-                                string.IsNullOrEmpty(c.ColumnName) ? $"Column{schema.IndexOf(c) + 1}" : c.ColumnName,
-                                c.DataTypeName ?? c.DataType?.Name ?? "unknown"))
-                            .ToList();
-
-                        var rows = new List<List<object?>>();
-                        var truncated = false;
-                        while (await reader.ReadAsync(ct))
+                        await using var reader = await cmd.ExecuteReaderAsync(ct);
+                        do
                         {
-                            if (rows.Count >= MaxRowsPerSet)
+                            var schema = reader.GetColumnSchema();
+                            if (schema.Count == 0)
                             {
-                                truncated = true;
-                                break;
+                                // Statement senza result set (UPDATE/INSERT/DELETE/PRINT…):
+                                // niente set vuoto — come SSMS, le righe interessate finiscono nei messaggi,
+                                // così il client mostra la schermata dei PRINT quando non c'è una SELECT.
+                                var affected = reader.RecordsAffected;
+                                if (affected >= 0)
+                                {
+                                    totalAffected += affected;
+                                    messages.Add(affected == 1 ? "(1 riga interessata)" : $"({affected} righe interessate)");
+                                }
+                                continue;
                             }
-                            var row = new List<object?>(reader.FieldCount);
-                            for (var i = 0; i < reader.FieldCount; i++)
-                                row.Add(ConvertValue(reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i)));
-                            rows.Add(row);
-                        }
-                        sets.Add(new QueryResultSet(columns, rows, rows.Count, 0, truncated));
-                    } while (await reader.NextResultAsync(ct));
+
+                            var columns = schema
+                                .Select(c => new ColumnResult(
+                                    string.IsNullOrEmpty(c.ColumnName) ? $"Column{schema.IndexOf(c) + 1}" : c.ColumnName,
+                                    c.DataTypeName ?? c.DataType?.Name ?? "unknown"))
+                                .ToList();
+
+                            var rows = new List<List<object?>>();
+                            var truncated = false;
+                            while (await reader.ReadAsync(ct))
+                            {
+                                if (rows.Count >= MaxRowsPerSet)
+                                {
+                                    truncated = true;
+                                    break;
+                                }
+                                var row = new List<object?>(reader.FieldCount);
+                                for (var i = 0; i < reader.FieldCount; i++)
+                                    row.Add(ConvertValue(reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i)));
+                                rows.Add(row);
+                            }
+                            sets.Add(new QueryResultSet(columns, rows, rows.Count, 0, truncated));
+                        } while (await reader.NextResultAsync(ct));
+                    }
                 }
             }
             finally
