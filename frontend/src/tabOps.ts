@@ -69,6 +69,19 @@ export function countClosableTabs(tabs: EditorTab[], anchorId: string, mode: Tab
 export type NewTabPosition = 'start' | 'afterActive' | 'end'
 
 /**
+ * Il pannello dei RISULTATI si mostra? Dipende dalla TAB attiva (richiesta utente: "se nascondo
+ * il pannello dei risultati è collegato alla tab alla cui lo faccio"), quindi:
+ * - nessuna tab attiva → no;
+ * - tab di ricerca o diagramma (`pannelloAlPostoDiMonaco`) → mai, lì lo spazio è tutto del pannello;
+ * - altrimenti vale la scelta della tab (assente = visibile).
+ */
+export function risultatiVisibiliPer(tab: EditorTab | undefined, pannelloAlPostoDiMonaco: boolean): boolean {
+  if (!tab) return false
+  if (pannelloAlPostoDiMonaco) return false
+  return tab.resultsVisible !== false
+}
+
+/**
  * Posizione in cui inserire una nuova tab.
  * - `start`: come PRIMA tab, cioè tutto a sinistra (tab A B C → N A B C);
  * - `afterActive`: subito dopo quella attiva, l'ultima aperta (A B C con attiva B → A B N C);
@@ -101,4 +114,38 @@ export function newTabIndex(tabs: EditorTab[], activeId: string): number {
 /** Inserisce la nuova tab dopo quella attiva, senza modificare l'ordine delle altre. */
 export function insertTabAfterActive(tabs: EditorTab[], tab: EditorTab, activeId: string): EditorTab[] {
   return insertTabAt(tabs, tab, activeId, 'afterActive')
+}
+
+/**
+ * Indice della tab di RICERCA già aperta (-1 se non c'è): la ricerca vive in una tab e non va
+ * duplicata — se c'è, la si riporta semplicemente in primo piano.
+ */
+export function searchTabIndex(tabs: EditorTab[]): number {
+  return tabs.findIndex(t => t.kind === 'search')
+}
+
+/**
+ * Indice della tab del REPORT utilizzo tabelle già aperta (-1 se non c'è): anche il report vive in
+ * una tab (richiesta utente) e non va duplicato — se c'è, lo si riporta in primo piano.
+ */
+export function reportTabIndex(tabs: EditorTab[]): number {
+  return tabs.findIndex(t => t.kind === 'report')
+}
+
+/**
+ * Indice della tab con il DIAGRAMMA della stessa routine (-1 se non c'è): riaprendo il diagramma
+ * si torna su quella tab invece di duplicarla.
+ */
+export function graphTabIndex(
+  tabs: EditorTab[],
+  routine: { schema: string; name: string; kind: 'procedure' | 'function' },
+): number {
+  return tabs.findIndex(
+    t =>
+      t.kind === 'graph' &&
+      !!t.routine &&
+      t.routine.name.toLowerCase() === routine.name.toLowerCase() &&
+      t.routine.schema.toLowerCase() === routine.schema.toLowerCase() &&
+      t.routine.kind === routine.kind,
+  )
 }

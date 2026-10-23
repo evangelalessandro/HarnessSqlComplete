@@ -1,9 +1,12 @@
 // Hover nell'editor: passando il mouse su un campo mostra tipo, flag, descrizione
 // e proprietà estese; su un NOME TABELLA mostra anche l'anteprima dei dati (TOP 10),
-// caricata in modo asincrono (cache con TTL breve).
+// caricata in modo asincrono (cache con TTL breve). Su una STORED PROCEDURE / FUNZIONE mostra la
+// firma con i PARAMETRI e il COMMENTO di testata (richiesta utente).
 import * as monaco from 'monaco-editor'
 import { api } from './api'
+import { resolveCallableAt } from './callables'
 import { columnInfoMarkdown, resolveTokenAt, rowsToMarkdown, tokenizeSql } from './helpers'
+import { estraiCommentoRoutine, routineHoverMarkdown, unisciParametri } from './routineHover'
 import type { DatabaseSummary } from './types'
 
 export interface HoverContext {
@@ -17,6 +20,28 @@ export interface HoverContext {
 const previewCache = new Map<string, { at: number; md: string | null }>()
 const PREVIEW_TTL_MS = 30_000
 
+// Cache della DEFINIZIONE delle routine (stessa durata dell'anteprima): serve sia al commento di
+// testata sia ai tipi precisi dei parametri, ed è grande, quindi non va richiesta a ogni passaggio
+// del mouse.
+const definizioneCache = new Map<string, { at: number; testo: string | null }>()
+
+/** Definizione di una routine (sys.sql_modules), con cache. */
+async function definizioneRoutine(
+  connectionId: string,
+  rif: { schema: string; name: string },
+): Promise<string | null> {
+  const key = `${rif.schema}.${rif.name}`
+  const cached = definizioneCache.get(key)
+  if (cached && Date.now() - cached.at < PREVIEW_TTL_MS) return cached.testo
+  try {
+    const r = await api.getObjectDefinition(connectionId, rif.schema, rif.name)
+    definizioneCache.set(key, { at: Date.now(), testo: r.definition ?? null })
+    return r.definition ?? null
+  } catch {
+    return null
+  }
+}
+
 export function registerSqlHover(getContext: () => HoverContext): monaco.IDisposable {
   return monaco.languages.registerHoverProvider('sql', {
     provideHover: async (model, position) => {
@@ -27,7 +52,34 @@ export function registerSqlHover(getContext: () => HoverContext): monaco.IDispos
       const offset = model.getOffsetAt(position)
       const text = model.getValue()
       const resolved = resolveTokenAt(text, offset, summary)
-      if (!resolved) return null
+
+      // STORED PROCEDURE / FUNZIONE: parametri della firma + commento di testata
+      if (!resolved) {
+        const rif = resolveCallableAt(text, offset, summary)
+        if (!rif) return null
+        const info =
+          rif.kind === 'procedure'
+            ? summary.procedures.find(p => p.name.toLowerCase() === rif.name.toLowerCase() && p.schema.toLowerCase() === rif.schema.toLowerCase())
+            : summary.functions.find(f => f.name.toLowerCase() === rif.name.toLowerCase() && f.schema.toLowerCase() === rif.schema.toLowerCase())
+        // i parametri della firma stanno solo nelle procedure (le funzioni del sommario non li hanno)
+        const params = info && 'parameters' in info ? (info.parameters ?? null) : null
+        // una sola richiesta per la definizione: da lì commento di testata e tipi precisi
+        const definizione = ctx.connectionId ? await definizioneRoutine(ctx.connectionId, rif) : null
+        const commento = estraiCommentoRoutine(definizione)
+        const md = routineHoverMarkdown(rif, unisciParametri(definizione, params), commento)
+        const tokenRif = tokenizeSql(text).find(t => t.start <= offset && offset < t.end)
+        return {
+          contents: [{ value: md }],
+          range: tokenRif
+            ? new monaco.Range(
+                model.getPositionAt(tokenRif.start).lineNumber,
+                model.getPositionAt(tokenRif.start).column,
+                model.getPositionAt(tokenRif.start).lineNumber,
+                model.getPositionAt(tokenRif.end).column,
+              )
+            : undefined,
+        }
+      }
 
       const md = columnInfoMarkdown(resolved.table, resolved.column, resolved.owners)
       const contents: monaco.IMarkdownString[] = [{ value: md }]

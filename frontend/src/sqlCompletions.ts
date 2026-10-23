@@ -5,10 +5,11 @@
 import * as monaco from 'monaco-editor'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
 import { isTextOffsetInComment } from './helpers'
-import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from './helpers'
+import { etichettaDrago } from './dragon'
+import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, columnsByFragment, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from './helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
-import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, extractDeclaredVariables, extractRoutineParameters, systemVariablePrefixLen, variablePrefixLen } from './tsqlSnippets'
-import { extractCteTables, extractLocalTables } from './localTables'
+import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectAlterTableTrigger, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectEnableDisableTriggerName, detectEnableDisableTriggerOn, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, dropColumnSnippet, extractDeclaredVariables, extractRoutineParameters, nomiTriggerDigitati, setOptionInsertText, setOptionLabel, systemVariablePrefixLen, tabellaDelTrigger, variablePrefixLen, vincoliCollegati } from './tsqlSnippets'
+import { extractCteTables, extractDerivedTables, extractLocalTables } from './localTables'
 import { extractLabels } from './labels'
 import { ORDER_DIRECTIONS } from './intellisenseContext'
 import { classifyContext, filterKeywordsForContext, isAfterOrderKeyword, isOrderWordTyped, shouldSuggestJoinConditions } from './intellisenseContext'
@@ -39,6 +40,9 @@ const SQL_KEYWORDS = [
   'REFERENCES', 'CONSTRAINT', 'INDEX', 'UNIQUE', 'CHECK', 'DEFAULT', 'OVER', 'PARTITION', 'ROW_NUMBER',
   'RANK', 'DENSE_RANK', 'OUTPUT', 'MERGE', 'OPTION', 'RECOMPILE', 'NOCOUNT', 'TRANSACTION', 'COMMIT',
   'ROLLBACK', 'SAVE', 'WAITFOR', 'RAISERROR',
+  // Trigger: servono per scrivere "DISABLE TRIGGER <nome> ON <tabella>" (il nome del trigger e
+  // "ON" li propone l'intellisense degli oggetti, ma le PAROLE vanno proposte anche qui)
+  'ENABLE', 'DISABLE', 'TRIGGER', 'INSTEAD',
   // Statement e language elements ufficiali (riferimento Microsoft T-SQL)
   'BACKUP', 'RESTORE', 'GRANT', 'REVOKE', 'DENY', 'BULK', 'DBCC', 'CHECKPOINT', 'KILL',
   'RECONFIGURE', 'SHUTDOWN', 'IF', 'WHILE', 'BREAK', 'CONTINUE', 'GOTO', 'OPEN', 'CLOSE', 'FETCH',
@@ -123,21 +127,26 @@ export function provideSqlCompletions({
           // (qualsiasi errore del parser locale non deve mai svuotare il popup)
           let localTables: TableInfo[] = []
           let cteTables: TableInfo[] = []
+          let derivedTables: TableInfo[] = []
           try {
             const note = baseSt.summary?.tables ?? []
             localTables = extractLocalTables(fullText, note)
             cteTables = extractCteTables(fullText, note)
+            // tabelle derivate "(select …) t": lo "*" dentro la sottoquery si risolve anche
+            // con le temporanee e le CTE del testo, non solo con lo schema
+            derivedTables = extractDerivedTables(fullText, [...cteTables, ...note, ...localTables])
           } catch {
             localTables = []
             cteTables = []
+            derivedTables = []
           }
           const st =
-            baseSt.summary && localTables.length + cteTables.length > 0
+            baseSt.summary && localTables.length + cteTables.length + derivedTables.length > 0
               ? {
                   ...baseSt,
                   summary: {
                     ...baseSt.summary,
-                    tables: [...cteTables, ...baseSt.summary.tables, ...localTables],
+                    tables: [...cteTables, ...baseSt.summary.tables, ...localTables, ...derivedTables],
                   },
                 }
               : baseSt
@@ -152,6 +161,30 @@ export function provideSqlCompletions({
           const push = (item: monaco.languages.CompletionItem) => {
             suggestions.push({ ...item, sortText: completionSortText(rank) })
             rank++
+          }
+
+          /**
+           * NOMI DEI DATABASE del server (richiesta utente: "permetti anche di fare con l'intellisense
+           * i nomi dei database, che adesso non vengono fuori").
+           * L'elenco arriva con il sommario (`summary.databases`, lo stesso che usa la barra laterale):
+           * niente da chiedere al backend. Servono dopo "USE " e in posizione di tabella, per scrivere
+           * nomi in tre parti tipo "[WSBASE].dbo.Tabella".
+           */
+          const pushDatabase = (nome: string) =>
+            push({
+              label: nome,
+              detail: 'database del server',
+              documentation: `**${nome}** — database sul server (si usa come \`${nome}.schema.tabella\` oppure \`USE ${nome}\`)`,
+              kind: monaco.languages.CompletionItemKind.Module,
+              insertText: sqlIdent(nome),
+              range,
+              filterText: nome,
+            })
+
+          // Dopo "USE " si propongono SOLO i database (è l'unica cosa che può venire dopo USE).
+          if (/\bUSE\s+(\[[^\]]*\]?|[\w$#@]*)$/i.test(stmtBefore)) {
+            for (const d of st.summary?.databases ?? []) pushDatabase(d.name)
+            return { suggestions }
           }
 
           // GOTO: si propongono TUTTE le label definite nel documento, anche quelle scritte
@@ -219,16 +252,38 @@ export function provideSqlCompletions({
             const setCtx = detectSetContext(textBefore)
             if (setCtx) {
               if (setCtx.kind === 'options') {
-                for (const opt of TSQL_SET_OPTIONS) {
-                  push({
-                    label: opt.name,
-                    detail: opt.detail,
-                    kind: monaco.languages.CompletionItemKind.Keyword,
-                    insertText: opt.name,
-                    range,
-                    filterText: opt.name,
-                  })
+                // si propongono le opzioni che iniziano con quanto già digitato ("SET NO" →
+                // NOCOUNT); l'etichetta è la direttiva intera ("SET NOCOUNT ON") e accettandola si
+                // scrive la direttiva COMPLETA: il "SET" è già nel documento, quindi si inserisce
+                // il resto ("NOCOUNT ON"). Per le opzioni che vogliono un valore si inserisce solo
+                // il nome e i valori arrivano subito dopo, come prima.
+                const filtro = setCtx.prefisso.toUpperCase()
+                const opzioni = filtro ? TSQL_SET_OPTIONS.filter(o => o.name.toUpperCase().startsWith(filtro)) : TSQL_SET_OPTIONS
+                if (opzioni.length > 0) {
+                  // le opzioni di più parole ("STATISTICS IO") si sostituiscono da capo: il
+                  // suggerimento riporta tutta la direttiva, non solo l'ultima parola
+                  const rangeSet =
+                    setCtx.sostituisci > 0
+                      ? new monaco.Range(
+                          position.lineNumber,
+                          Math.max(1, position.column - setCtx.sostituisci),
+                          position.lineNumber,
+                          position.column,
+                        )
+                      : range
+                  for (const opt of opzioni) {
+                    push({
+                      label: setOptionLabel(opt),
+                      detail: opt.detail,
+                      kind: monaco.languages.CompletionItemKind.Keyword,
+                      insertText: setOptionInsertText(opt),
+                      range: rangeSet,
+                      filterText: opt.name,
+                    })
+                  }
+                  return { suggestions }
                 }
+                // nessuna opzione SET con questo inizio: si prosegue con gli altri suggerimenti
               } else {
                 const opt = TSQL_SET_OPTIONS.find(o => o.name.toUpperCase() === setCtx.option) ?? {
                   name: setCtx.option,
@@ -245,8 +300,168 @@ export function provideSqlCompletions({
                     filterText: v,
                   })
                 }
+                return { suggestions }
               }
-              return { suggestions }
+            }
+
+            // ALTER TABLE <tabella> DROP [COLUMN|CONSTRAINT] → colonne e vincoli della tabella
+            // (come SSMS: dopo DROP COLUMN si propongono i campi, dopo DROP CONSTRAINT i vincoli)
+            const dropCtx = detectAlterTableDropContext(textBefore)
+            if (dropCtx) {
+              // Se manca la parola TABLE ("ALTER DAT_SPEDIZIONI DROP …", come capita di
+              // scrivere) la si aggiunge accettando il suggerimento: il testo diventa valido.
+              const correzioneTable =
+                dropCtx.senzaTable && dropCtx.tableAt !== undefined
+                  ? [
+                      {
+                        range: (() => {
+                          const p = model.getPositionAt(dropCtx.tableAt!)
+                          return new monaco.Range(p.lineNumber, p.column, p.lineNumber, p.column)
+                        })(),
+                        text: 'TABLE ',
+                      },
+                    ]
+                  : undefined
+              const notaTable = correzioneTable ? 'manca TABLE: lo aggiungo io · ' : ''
+              if (dropCtx.kind === 'keywords') {
+                push({
+                  label: 'COLUMN',
+                  detail: `${notaTable}Rimuove una colonna della tabella`,
+                  kind: monaco.languages.CompletionItemKind.Keyword,
+                  insertText: 'COLUMN ',
+                  range,
+                  additionalTextEdits: correzioneTable,
+                  filterText: 'COLUMN',
+                })
+                push({
+                  label: 'CONSTRAINT',
+                  detail: `${notaTable}Rimuove un vincolo (CHECK, FOREIGN KEY, PRIMARY KEY, UNIQUE…)`,
+                  kind: monaco.languages.CompletionItemKind.Keyword,
+                  insertText: 'CONSTRAINT ',
+                  range,
+                  additionalTextEdits: correzioneTable,
+                  filterText: 'CONSTRAINT',
+                })
+                return { suggestions }
+              }
+              const tabella = st.summary?.tables.find(
+                t =>
+                  t.name.toLowerCase() === dropCtx.table.toLowerCase() &&
+                  (!dropCtx.schema || t.schema.toLowerCase() === dropCtx.schema.toLowerCase()),
+              )
+              if (dropCtx.kind === 'column') {
+                // SNIPPET: elimina la colonna togliendo prima i vincoli collegati, con il
+                // controllo che la colonna esista ancora. Sostituisce tutto lo statement
+                // (range largo), così non resta "ALTER TABLE … DROP COLUMN" davanti al blocco.
+                const nomeTabella = dropCtx.schema ? `${dropCtx.schema}.${dropCtx.table}` : dropCtx.table
+                // Lo snippet sostituisce TUTTO lo statement: il testo prima del cursore
+                // ("ALTER TABLE … DROP COLUMN ") si cancella con additionalTextEdits (il range
+                // resta quello della parola, così Monaco non scarta la voce dal popup).
+                const inizioStmt = model.getPositionAt(stmtRange.start)
+                const inizioParola = model.getPositionAt(Math.max(stmtRange.start, cursorOffset - (word.word?.length ?? 0)))
+                push({
+                  label: 'DROP COLUMN sicuro (vincoli + controllo esistenza)',
+                  detail: `${notaTable}Toglie prima i vincoli collegati e controlla che la colonna esista: IF EXISTS + DROP COLUMN`,
+                  documentation: {
+                    value: [
+                      '**DROP COLUMN sicuro** — sostituisce lo statement con uno script che:',
+                      '',
+                      '1. dichiara **una volta** la colonna in `@colonna` (il segnaposto si scrive lì) e controlla che esista ancora (`IF EXISTS` su `sys.columns`);',
+                      '2. toglie i vincoli collegati: **DEFAULT** sulla colonna, **CHECK** che la citano, **chiavi esterne uscenti**, **PK/UNIQUE** fatte sulla sola colonna;',
+                      '3. elimina la colonna (anche il `DROP COLUMN` entra nello script dinamico, perché non accetta variabili);',
+                      '4. se la colonna non c’è, lo dice con una `PRINT` invece di dare errore.',
+                      '',
+                      'Scrivi il nome della colonna senza parentesi quadre: ci pensa `QUOTENAME`.',
+                    ].join('\n'),
+                  },
+                  kind: monaco.languages.CompletionItemKind.Snippet,
+                  insertText: dropColumnSnippet(nomeTabella),
+                  insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                  range,
+                  additionalTextEdits: [
+                    {
+                      range: new monaco.Range(
+                        inizioStmt.lineNumber,
+                        inizioStmt.column,
+                        inizioParola.lineNumber,
+                        inizioParola.column,
+                      ),
+                      text: '',
+                    },
+                    ...(correzioneTable ?? []),
+                  ],
+                  filterText: 'DROP COLUMN sicuro vincoli controllo esistenza if exists snippet',
+                })
+                for (const c of tabella?.columns ?? []) {
+                  // se la colonna fa parte della chiave primaria va tolta prima: lo diciamo
+                  const inPk = (tabella?.indexes ?? []).some(
+                    ix => ix.isPrimaryKey && (ix.columns ?? []).some(x => x.toLowerCase() === c.name.toLowerCase()),
+                  )
+                  // vincoli collegati (CHECK che la citano, FK, PK/UNIQUE): vanno tolti prima
+                  const collegati = st.summary
+                    ? vincoliCollegati(st.summary, dropCtx.schema, dropCtx.table, c.name, tabella?.indexes)
+                    : []
+                  push({
+                    label: c.name,
+                    detail: [
+                      notaTable + columnTypeText(c.dataType, c.isNullable).trim(),
+                      inPk ? 'chiave primaria: va tolta prima' : null,
+                      collegati.length ? `vincoli collegati: ${collegati.map(v => v.name).join(', ')}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · '),
+                    documentation: tabella ? columnInfoMarkdown(tabella, c) : undefined,
+                    kind: monaco.languages.CompletionItemKind.Field,
+                    insertText: sqlIdent(c.name),
+                    range,
+                    additionalTextEdits: correzioneTable,
+                    filterText: c.name,
+                  })
+                }
+                if (suggestions.length > 0) return { suggestions }
+              } else {
+                for (const cc of st.summary?.checkConstraints ?? []) {
+                  if (cc.tableName.toLowerCase() !== dropCtx.table.toLowerCase()) continue
+                  if (dropCtx.schema && cc.schema.toLowerCase() !== dropCtx.schema.toLowerCase()) continue
+                  push({
+                    label: cc.name,
+                    detail: `${notaTable}CHECK ${cc.definition}${cc.isDisabled ? ' · disabilitato' : ''}`,
+                    kind: monaco.languages.CompletionItemKind.Constant,
+                    insertText: sqlIdent(cc.name),
+                    range,
+                    additionalTextEdits: correzioneTable,
+                    filterText: cc.name,
+                  })
+                }
+                for (const fk of st.summary?.foreignKeys ?? []) {
+                  if (fk.table.toLowerCase() !== dropCtx.table.toLowerCase()) continue
+                  if (dropCtx.schema && fk.schema.toLowerCase() !== dropCtx.schema.toLowerCase()) continue
+                  push({
+                    label: fk.name,
+                    detail: `${notaTable}FOREIGN KEY ${fk.column} → ${fk.refSchema}.${fk.refTable}.${fk.refColumn}`,
+                    kind: monaco.languages.CompletionItemKind.Constant,
+                    insertText: sqlIdent(fk.name),
+                    range,
+                    additionalTextEdits: correzioneTable,
+                    filterText: fk.name,
+                  })
+                }
+                for (const ix of tabella?.indexes ?? []) {
+                  if (!ix.isPrimaryKey && !ix.isUnique) continue
+                  push({
+                    label: ix.name,
+                    detail: `${notaTable}${ix.isPrimaryKey ? 'PRIMARY KEY' : 'UNIQUE'}${ix.columns?.length ? ` (${ix.columns.join(', ')})` : ''}`,
+                    kind: monaco.languages.CompletionItemKind.Constant,
+                    insertText: sqlIdent(ix.name),
+                    range,
+                    additionalTextEdits: correzioneTable,
+                    filterText: ix.name,
+                  })
+                }
+                // i vincoli possono non essere nello schema letto (o la tabella non ne ha):
+                // in quel caso NON si resta vuoti, si prosegue con i suggerimenti normali
+                if (suggestions.length > 0) return { suggestions }
+              }
             }
 
             // ALTER TABLE <tabella> → snippet (constraint, colonne, abilita/disabilita trigger)
@@ -290,6 +505,112 @@ export function provideSqlCompletions({
               }
             }
 
+            // ALTER TABLE <t> ENABLE|DISABLE TRIGGER → i trigger di QUELLA tabella (+ ALL)
+            const alterTrigger = detectAlterTableTrigger(textBefore)
+            if (alterTrigger) {
+              const tab = alterTrigger.table.toLowerCase()
+              for (const tr of st.summary.triggers.filter(x => x.tableName.toLowerCase() === tab)) {
+                push({
+                  label: qualified(tr.schema, tr.name),
+                  detail: `trigger di ${tr.tableName}`,
+                  kind: monaco.languages.CompletionItemKind.Event,
+                  insertText: sqlIdent(tr.name),
+                  range,
+                  filterText: tr.name,
+                })
+              }
+              push({
+                label: 'ALL',
+                detail: `tutti i trigger di ${alterTrigger.table}`,
+                kind: monaco.languages.CompletionItemKind.Keyword,
+                insertText: 'ALL',
+                range,
+                filterText: 'ALL',
+              })
+              return { suggestions }
+            }
+
+            /**
+             * ENABLE/DISABLE TRIGGER ha DUE pezzi: il nome (o ALL) e poi "ON <tabella>".
+             * Dopo il nome si propone "ON <tabella>" — la tabella SU CUI è definito il trigger —
+             * perché è l'errore tipico dimenticarlo, e dopo "ON" si propongono SOLO le tabelle di
+             * quei trigger: proponendo altre tabelle si scriverebbe un'istruzione che SQL Server
+             * rifiuta (il trigger non è definito lì).
+             */
+            const nomiTrigger = nomiTriggerDigitati(textBefore)
+            const elencoTrigger = st.summary.triggers
+            if (detectEnableDisableTriggerOn(textBefore)) {
+              const tabelleTrigger = [
+                ...new Set(nomiTrigger?.map(n => tabellaDelTrigger(elencoTrigger, n)).filter(Boolean) ?? []),
+              ]
+              // se il trigger scritto non si conosce, si ripiega su tutte le tabelle con trigger
+              const tabelle =
+                tabelleTrigger.length > 0
+                  ? tabelleTrigger
+                  : [...new Set(elencoTrigger.map(x => x.tableName))].sort((a, b) => a.localeCompare(b, 'it'))
+              for (const tab of tabelle) {
+                push({
+                  label: sqlIdent(tab),
+                  detail:
+                    tabelleTrigger.length > 0
+                      ? 'tabella su cui è definito il trigger'
+                      : `tabella con trigger (${elencoTrigger.filter(x => x.tableName === tab).length})`,
+                  kind: monaco.languages.CompletionItemKind.Struct,
+                  insertText: sqlIdent(tab),
+                  range,
+                  filterText: tab,
+                })
+              }
+              for (const kw of ['DATABASE', 'ALL SERVER', 'ALL']) {
+                push({
+                  label: kw,
+                  detail: 'ambito del trigger (database intero, tutto il server, tutte le tabelle)',
+                  kind: monaco.languages.CompletionItemKind.Keyword,
+                  insertText: kw,
+                  range,
+                  filterText: kw,
+                })
+              }
+              if (suggestions.length > 0) return { suggestions }
+            } else if (nomiTrigger && nomiTrigger.length > 0) {
+              // nome (o nomi) scritti ma manca "ON": si completa la direttiva
+              for (const nome of nomiTrigger) {
+                const tab = tabellaDelTrigger(elencoTrigger, nome)
+                if (!tab) continue
+                push({
+                  label: `ON ${sqlIdent(tab)}`,
+                  detail: 'tabella su cui è definito il trigger',
+                  kind: monaco.languages.CompletionItemKind.Struct,
+                  insertText: `ON ${sqlIdent(tab)}`,
+                  range,
+                  filterText: `ON ${tab}`,
+                })
+              }
+              push({
+                label: 'ON',
+                detail: 'manca "ON <tabella>": la tabella su cui il trigger è definito',
+                kind: monaco.languages.CompletionItemKind.Keyword,
+                insertText: 'ON',
+                range,
+                filterText: 'ON',
+              })
+              return { suggestions }
+            }
+
+            // "ENABLE " / "DISABLE " a inizio statement → l'unica continuazione è TRIGGER:
+            // si propone quella, invece di lasciarla in fondo a un elenco di tabelle
+            if (/(?:^|;|\bGO\b|\n)[ \t]*(?:ENABLE|DISABLE)\s+$/i.test(textBefore)) {
+              push({
+                label: 'TRIGGER',
+                detail: 'ENABLE/DISABLE TRIGGER <nome> ON <tabella>',
+                kind: monaco.languages.CompletionItemKind.Keyword,
+                insertText: 'TRIGGER',
+                range,
+                filterText: 'TRIGGER',
+              })
+              return { suggestions }
+            }
+
             // Oggetti dopo DROP/TRUNCATE/ALTER/USE (niente tabelle generiche)
             const objKind = detectObjectNameContext(textBefore)
             if (objKind) {
@@ -316,11 +637,50 @@ export function provideSqlCompletions({
               } else if (objKind === 'function') {
                 for (const f of st.summary.functions) pushObj(qualified(f.schema, f.name), f.type, qualified(f.schema, f.name), monaco.languages.CompletionItemKind.Method)
               } else if (objKind === 'trigger') {
-                for (const tr of st.summary.triggers) pushObj(qualified(tr.schema, tr.name), tr.tableName, qualified(tr.schema, tr.name), monaco.languages.CompletionItemKind.Event)
+                for (const tr of st.summary.triggers) pushObj(qualified(tr.schema, tr.name), `tabella ${tr.tableName}`, qualified(tr.schema, tr.name), monaco.languages.CompletionItemKind.Event)
+                // "DISABLE TRIGGER ALL ON t": la sintassi accetta anche ALL (scrivendo "ALL"
+                // l'elenco si filtra da solo, quindi può stare in coda ai trigger)
+                if (detectEnableDisableTriggerName(textBefore)) {
+                  push({
+                    label: 'ALL',
+                    detail: 'tutti i trigger della tabella',
+                    kind: monaco.languages.CompletionItemKind.Keyword,
+                    insertText: 'ALL',
+                    range,
+                    filterText: 'ALL',
+                  })
+                }
               } else if (objKind === 'database') {
                 for (const d of st.summary.databases) pushObj(d.name, 'database', d.name, monaco.languages.CompletionItemKind.Folder)
               }
               return { suggestions }
+            }
+
+            // "ENABLE/DISABLE TRIGGER nome ON " → la tabella del trigger (o ALL/DATABASE/ALL SERVER)
+            if (detectEnableDisableTriggerOn(textBefore)) {
+              const tr = st.summary.triggers
+              const tabelle = [...new Set(tr.map(x => x.tableName))].sort((a, b) => a.localeCompare(b, 'it'))
+              for (const tab of tabelle) {
+                push({
+                  label: tab,
+                  detail: `tabella con trigger (${tr.filter(x => x.tableName === tab).length})`,
+                  kind: monaco.languages.CompletionItemKind.Struct,
+                  insertText: sqlIdent(tab),
+                  range,
+                  filterText: tab,
+                })
+              }
+              for (const kw of ['DATABASE', 'ALL SERVER']) {
+                push({
+                  label: kw,
+                  detail: 'ambito del trigger (a livello di database o di server)',
+                  kind: monaco.languages.CompletionItemKind.Keyword,
+                  insertText: kw,
+                  range,
+                  filterText: kw,
+                })
+              }
+              if (suggestions.length > 0) return { suggestions }
             }
 
             // CREATE TABLE t (id → tipi di dato
@@ -461,7 +821,11 @@ export function provideSqlCompletions({
                   push({
                     label: sn.label,
                     detail: sn.detail,
-                    kind: monaco.languages.CompletionItemKind.Snippet,
+                    // le direttive sui trigger si presentano come PAROLE CHIAVE (icona blu come
+                    // EXEC), pur inserendo il testo con i segnaposto
+                    kind: sn.keyword
+                      ? monaco.languages.CompletionItemKind.Keyword
+                      : monaco.languages.CompletionItemKind.Snippet,
                     insertText: sn.insertText,
                     insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                     range,
@@ -723,6 +1087,27 @@ export function provideSqlCompletions({
             // suggerisce le colonne delle tabelle referenziate in tutto lo statement (anche dopo il cursore)
             if (inSelectList) {
               const sel = buildSelectListSuggestions(stmtText, stmtBefore, st.summary)
+              // Parola appena finita (spazio dopo): "SELECT fefo " → "fefo". Serve per non
+              // perdere i campi mentre si sta per scrivere la FROM (segnalazione utente).
+              const parolaPrima = (/([A-Za-z_#@][\w#@]*)\s+$/.exec(textBefore) ?? [])[1] ?? ''
+              const frammento = word.word.length > 0 ? word.word : parolaPrima
+              /** Ripiego "cerca fra le colonne di tutto lo schema" (vedi columnsByFragment). */
+              const pushColonneDaFrammento = (gia: Set<string>) => {
+                if (frammento.length < 2 || !st.summary) return
+                for (const c of columnsByFragment(st.summary, frammento, 25)) {
+                  if (gia.has(c.name.toLowerCase())) continue
+                  push({
+                    label: c.name,
+                    detail: [columnTypeText(c.dataType, c.isNullable), `colonna di ${c.tableLabel}`]
+                      .filter(Boolean)
+                      .join(' · '),
+                    kind: monaco.languages.CompletionItemKind.Field,
+                    insertText: sqlIdent(c.name),
+                    range,
+                    filterText: completionFilterText(c.name),
+                  })
+                }
+              }
               // Con una parola in corso: solo i campi con affinità, ordinati per punteggio.
               // filterText = NOME colonna (stabile): Monaco rifiltra le voci memorizzate
               // con la parola corrente, quindi con la parola digitata come filterText il
@@ -749,6 +1134,10 @@ export function provideSqlCompletions({
                     filterText: completionFilterText(col.name),
                   })
                 }
+                // RIPIEGO (richiesta utente: "mi dovrebbe cercare almeno tra le colonne"): se
+                // non c'è (ancora) una tabella da cui prendere i campi — la FROM non è scritta —
+                // si cercano le colonne di TUTTO lo schema che contengono la parola digitata.
+                pushColonneDaFrammento(new Set(rankedCols.map(r => r.col.name.toLowerCase())))
                 // anche le funzioni (SUM/AVG/RANK/…) se matchano la parola digitata
                 pushSqlFunctions()
                 return { suggestions }
@@ -779,6 +1168,10 @@ export function provideSqlCompletions({
                   range: itemRange,
                 })
               }
+              // Senza parola in corso (es. "SELECT fefo " appena scritto): oltre ai campi dello
+              // statement si ripescano le colonne che contengono la parola appena finita, così
+              // il popup non si svuota mentre si sta per scrivere la FROM.
+              pushColonneDaFrammento(new Set(sel.columns.map(c => c.name.toLowerCase())))
               for (const col of sel.columns) {
                 push({
                   label: col.name,
@@ -804,15 +1197,50 @@ export function provideSqlCompletions({
             const contextTableInfos = contextTables
               .map(name => summaryTables.find(x => x.name.toLowerCase() === name))
               .filter((x): x is TableInfo => x !== undefined)
+            /**
+             * A INIZIO STATEMENT (foglio vuoto, dopo ';' o GO) si comincia con le PAROLE CHIAVE —
+             * SELECT, INSERT, UPDATE, DELETE, MERGE, CREATE, ALTER, DROP, EXEC… — non con le
+             * tabelle: prima le keyword finivano in fondo all'elenco e il popup era pieno di
+             * tabelle e procedure (segnalazione utente: "a foglio vuoto mi propone le tabelle e non
+             * le chiavi per cominciare una query").
+             */
+            const inizioStatement = (ctx.kind === 'statementStart' || ctx.statementStart) && !isTablePosition
+            let keywordsProposte = false
+            if (inizioStatement) {
+              // Solo le PAROLE CHIAVE di statement: a inizio statement non può cominciare
+              // nient'altro (tabelle, funzioni e procedure si propongono dopo FROM/EXEC…).
+              // Se però il testo digitato non è una keyword (es. una tabella scritta a mano) si
+              // prosegue con i suggerimenti normali, così il popup non resta mai vuoto.
+              const keywordStatement = filterKeywordsForContext(ctx, SQL_KEYWORDS)
+              const digitato = word.word.toUpperCase()
+              const filtrate = digitato ? keywordStatement.filter(k => k.toUpperCase().startsWith(digitato)) : keywordStatement
+              if (filtrate.length > 0) {
+                for (const k of filtrate) {
+                  push({
+                    label: k,
+                    detail: 'inizio di uno statement',
+                    kind: monaco.languages.CompletionItemKind.Keyword,
+                    insertText: k,
+                    range,
+                    filterText: k,
+                  })
+                }
+                return { suggestions }
+              }
+            }
             // Posizione FROM/INTO/UPDATE/TABLE o inizio statement: clausola NUOVA →
             // si propongono TUTTE le tabelle per utilizzo reale (le query precedenti
             // non devono nascondere tabelle riscrivibili, es. RUN_MISSIONI).
             // Posizione JOIN (o contesti generici): solo le tabelle collegabili al contesto.
+            // La posizione JOIN NON deve azzerare il contesto: "SELECT * FROM T INNER JOIN " ha
+            // isTablePosition=true (JOIN chiude la regex di FROM/JOIN) e azzerando il contesto le
+            // voci restavano senza clausola ON (niente drago e niente join pronto da inserire).
+            const clausolaNuova = (isTablePosition && !isJoinPosition) || ctx.statementStart
             const rankedTables = rankTablesForPosition(
               st.summary.tables,
               st.summary.foreignKeys,
               contextTables,
-              isTablePosition || ctx.statementStart,
+              clausolaNuova,
               st.summary.cooccurrences ?? undefined,
               historyTableBoost,
             )
@@ -908,8 +1336,13 @@ export function provideSqlCompletions({
                 const details = [usageDetail(ranked.table.usage)]
                 if (ranked.hints.length > 0) details.push(`${ranked.hints.length} FK`)
                 const detail = details.filter(Boolean).join(' · ') || `tabella · ${ranked.table.columnCount} colonne`
+                // Il DRAGO segna i suggerimenti di JOIN veri (quelli che inseriscono la clausola
+                // ON): si vede subito quali voci costruiscono il join. È solo l'etichetta: il
+                // filtro continua a usare filterText (il nome della tabella), quindi scrivere
+                // "dat_" trova ancora DAT_UDC.
+                const inserisceJoin = item.insertText.includes(' ON (')
                 push({
-                  label: item.label,
+                  label: inserisceJoin ? etichettaDrago(item.label) : item.label,
                   detail: item.detail || detail,
                   documentation: columnInfoMarkdown(ranked.table, null),
                   kind: monaco.languages.CompletionItemKind.Struct,
@@ -973,8 +1406,13 @@ export function provideSqlCompletions({
               }
             }
 
-            // Posizione FROM/JOIN/UPDATE/INTO: SOLO tabelle, viste e funzioni tabellari
-            if (isTablePosition) return { suggestions }
+            // Posizione FROM/JOIN/UPDATE/INTO: SOLO tabelle, viste e funzioni tabellari…
+            // …più i DATABASE del server, in coda (le tabelle dello schema vengono prima): servono
+            // per i nomi in tre parti, es. "FROM [WSBASE].dbo.Tabella".
+            if (isTablePosition) {
+              for (const d of st.summary?.databases ?? []) pushDatabase(d.name)
+              return { suggestions }
+            }
 
             // Stored procedure: solo se il contesto le ammette (statementStart/generic, non dopo tabella)
             if (!isExecPosition && ctx.allowed.includes('procedures')) {
@@ -1014,8 +1452,9 @@ export function provideSqlCompletions({
                 }
               }
 
-              // Keyword filtrate per contesto (dopo "FROM t " solo clausole, all'inizio solo statement)
-              if (ctx.allowed.includes('keywords')) {
+              // Keyword filtrate per contesto (dopo "FROM t " solo clausole, all'inizio solo
+              // statement). A inizio statement sono già state proposte PRIMA delle tabelle.
+              if (ctx.allowed.includes('keywords') && !keywordsProposte) {
                 // "order" (o prefisso) → "ORDER BY" come voce unica (non serve cercare BY a parte)
                 if (isOrderWordTyped(word.word)) {
                   push({
@@ -1047,7 +1486,9 @@ export function provideSqlCompletions({
               push({
                 label: sn.label,
                 detail: sn.detail,
-                kind: monaco.languages.CompletionItemKind.Snippet,
+                kind: sn.keyword
+                  ? monaco.languages.CompletionItemKind.Keyword
+                  : monaco.languages.CompletionItemKind.Snippet,
                 insertText: sn.insertText,
                 insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                 range,

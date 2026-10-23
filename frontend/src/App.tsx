@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { BookOpen, Database as DbIcon, FilePlus2, Pin, Plus, RefreshCw, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { AlertTriangle, BookOpen, CornerDownRight, Database as DbIcon, FilePlus2, Pin, Plus, RefreshCw, Search, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
@@ -9,10 +9,38 @@ import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
-import { buildTabClosePlan, countClosableTabs, insertTabAt } from './tabOps'
+import { buildTabClosePlan, countClosableTabs, graphTabIndex, insertTabAt, reportTabIndex, risultatiVisibiliPer, searchTabIndex } from './tabOps'
+import type { MotoreFormattazione, OpzioniSqlFluff } from './formatEngine'
+import {
+  MAX_TAB_DEPTH,
+  childParentFor,
+  closeTabIds,
+  descendants,
+  insertTabAsChild,
+  moveTabSubtree,
+  sanitizeTabParents,
+  tabDepth,
+
+} from './tabTree'
 import type { NewTabPosition, TabCloseMode } from './tabOps'
 import type { AutocompleteStatus, ConnectResponse, DatabaseSummary, EditorTab, QueryMessage, QueryResult, RoutineCallGraph } from './types'
 import { chooseResultTab } from './queryTabs'
+import { pickSqlToExecute } from './executeSelection'
+import { costruisciAnteprima } from './dmlPreview'
+import { analizzaPiano } from './executionPlan'
+import type { PianoEsecuzione } from './executionPlan'
+import ExecutionPlanPanel from './components/ExecutionPlanPanel'
+import { statementAttorno } from './inlineSuggest'
+import {
+  etichettaOggetto,
+  improntaDefinizione,
+  nuovoObjectRef,
+  quandoAperta,
+  stessaDefinizione,
+  testoPerLaTab,
+  trovaTabOggetto,
+  versioneSuperata,
+} from './objectVersion'
 import { isRefreshSchemaShortcut, isToggleResultsShortcut } from './shortcuts'
 import {
   clearQueryStats,
@@ -26,8 +54,9 @@ import {
 import { QueryStatsBadge, QueryStatsModal } from './components/QueryStatsPanel'
 import { hasErrorMessage, messageRevealLine, errorObjectsFor, routineStartLine } from './sqlMessages'
 import type { ErrorObjectRef } from './sqlMessages'
-import CallGraphModal from './components/CallGraphModal'
-import type { CallGraphTarget } from './components/CallGraphModal'
+import CallGraphPanel from './components/CallGraphPanel'
+import SearchPanel from './components/SearchPanel'
+import TableReportPanel from './components/TableReportPanel'
 import LoginScreen from './components/LoginScreen'
 import Sidebar from './components/Sidebar'
 import SqlEditor, { DEFAULT_SQL } from './components/SqlEditor'
@@ -47,15 +76,17 @@ export default function App() {
   const [summary, setSummary] = useState<DatabaseSummary | null>(null)
   const [loadingSummary, setLoadingSummary] = useState(false)
   // DIAGRAMMA CHIAMATE: legami fra routine (chi chiama chi) di tutto il database,
-  // caricati alla prima apertura del diagramma e riusati; routine analizzata + stato.
+  // caricati alla prima apertura del diagramma e riusati; lo stato "quale routine" sta nella tab.
   const [callGraph, setCallGraph] = useState<RoutineCallGraph | null>(null)
-  const [callGraphTarget, setCallGraphTarget] = useState<CallGraphTarget | null>(null)
   const [callGraphLoading, setCallGraphLoading] = useState(false)
   const [callGraphError, setCallGraphError] = useState<string | null>(null)
   // Risultati LEGATI alla singola tab dell'editor (non condivisi tra le tab)
   const [tabResults, setTabResults] = useState<Record<string, QueryResult | null>>({})
   const [tabExecuting, setTabExecuting] = useState<Record<string, boolean>>({})
   const [tabResultTab, setTabResultTab] = useState<Record<string, Tab>>({})
+  // Vista dei risultati "tutti i result set in sequenza": IMPOSTAZIONE DELLA TAB (la ricorda
+  // ogni editor, così tornando sulla tab si ritrova la stessa vista)
+  const [tabSetsInSequenza, setTabSetsInSequenza] = useState<Record<string, boolean>>({})
   // SQL eseguito per tab: propone la tabella target del generatore della griglia risultati
   const [tabSql, setTabSql] = useState<Record<string, string>>({})
   // GAMIFICATION: statistiche di lavoro per tab (tempo, esecuzioni ok/errore, XP)
@@ -69,6 +100,11 @@ export default function App() {
   const [iconDraft, setIconDraft] = useState('')
   // Menu contestuale della tab (tasto destro): chiusure multiple in stile SSMS
   const [tabMenu, setTabMenu] = useState<{ id: string; x: number; y: number } | null>(null)
+  /**
+   * Chiusura di una tab che ha figlie aperte: si chiede se chiudere anche loro
+   * (richiesta utente). `childIds` sono tutte le discendenti ancora aperte.
+   */
+  const [closeConfirm, setCloseConfirm] = useState<{ id: string; childIds: string[] } | null>(null)
   /**
    * Riga su cui portare il cursore quando si apre un oggetto da un errore
    * (es. "Procedura ws_X, Riga 42"): la consuma l'effetto che carica il testo della tab.
@@ -88,7 +124,18 @@ export default function App() {
   const [aiEnabled, setAiEnabled] = useState(true)
   const [aiStatus, setAiStatus] = useState<AutocompleteStatus | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
+  /**
+   * NOTA (non è un errore): messaggio breve e non invadente, es. "«dbo.X» era già aperta: sei
+   * sulla tab esistente". Si chiude da sola dopo qualche secondo o con un clic.
+   */
+  const [nota, setNota] = useState<{ testo: string; tono: 'info' | 'attenzione'; chiave?: 'transazione' } | null>(null)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
+  /** PIANO DI ESECUZIONE: pannello, piano analizzato, errore, caricamento. */
+  const [piano, setPiano] = useState<PianoEsecuzione | null>(null)
+  const [pianoErrore, setPianoErrore] = useState<string | null>(null)
+  const [pianoInCorso, setPianoInCorso] = useState(false)
+  const [pianoAperto, setPianoAperto] = useState(false)
+  const [pianoAltri, setPianoAltri] = useState(0)
 
   // Drago e fuoco: compaiono SOLO se la query eseguita contiene PRINT 'drago' / PRINT 'fuoco'.
   // Il drago si "nutre" (livello 0-100 persistito) a ogni invocazione e resta visibile ~8s.
@@ -130,7 +177,12 @@ export default function App() {
       return 52
     }
   })
-  const [resultsVisible, setResultsVisible] = useState<boolean>(() => {
+  /**
+   * PANNELLO RISULTATI: la visibilità è PER TAB (prima era globale: nascondendolo in una tab
+   * spariva in tutte). Ctrl+R agisce sulla tab attiva. La preferenza dell'ultima scelta si
+   * ricorda solo come valore iniziale delle tab NUOVE.
+   */
+  const [risultatiPredefiniti, setRisultatiPredefiniti] = useState<boolean>(() => {
     try {
       return (localStorage.getItem('sql-intelli:split-results') ?? '1') !== '0'
     } catch {
@@ -146,11 +198,11 @@ export default function App() {
   }, [editorPct])
   useEffect(() => {
     try {
-      localStorage.setItem('sql-intelli:split-results', resultsVisible ? '1' : '0')
+      localStorage.setItem('sql-intelli:split-results', risultatiPredefiniti ? '1' : '0')
     } catch {
       /* ignora */
     }
-  }, [resultsVisible])
+  }, [risultatiPredefiniti])
 
   const editorPaneRef = useRef<HTMLDivElement | null>(null)
   const resultsPaneRef = useRef<HTMLDivElement | null>(null)
@@ -178,17 +230,7 @@ export default function App() {
     window.addEventListener('mouseup', onUp)
   }
 
-  // Ctrl+R (o Cmd+R): nasconde/mostra il pannello dei risultati (evita il refresh del browser)
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (isToggleResultsShortcut(e)) {
-        e.preventDefault()
-        setResultsVisible(v => !v)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  // (Ctrl+R: vedi più sotto, dopo la definizione di "risultatiVisibili" — dipende dalla tab attiva)
 
   // Layout dei pannelli: larghezza della sidebar e pannello agganciato a destra (persistiti)
   const [layout, setLayout] = useState<{
@@ -285,6 +327,33 @@ export default function App() {
   const zoomFont = useCallback((delta: number) => {
     setSettings(prev => {
       const next: EditorSettings = { ...prev, fontSize: Math.min(40, Math.max(8, prev.fontSize + delta)) }
+      saveSettings(next)
+      return next
+    })
+  }, [])
+
+  /** Virgola a capo automatica (Invio dopo la virgola): impostazione di scrittura, persistita. */
+  const setVirgolaACapo = useCallback((virgolaACapo: boolean) => {
+    setSettings(prev => {
+      const next: EditorSettings = { ...prev, virgolaACapo }
+      saveSettings(next)
+      return next
+    })
+  }, [])
+
+  /** Motore di formattazione scelto (nostro profilo T-SQL oppure SQLFluff, che gira sul backend). */
+  const setFormatter = useCallback((formatter: MotoreFormattazione) => {
+    setSettings(prev => {
+      const next: EditorSettings = { ...prev, formatter }
+      saveSettings(next)
+      return next
+    })
+  }, [])
+
+  /** Opzioni di SQLFluff (rientri, maiuscole, virgola, larghezza riga). */
+  const setSqlFluffOptions = useCallback((sqlFluff: OpzioniSqlFluff) => {
+    setSettings(prev => {
+      const next: EditorSettings = { ...prev, sqlFluff }
       saveSettings(next)
       return next
     })
@@ -389,6 +458,8 @@ export default function App() {
     if (!editor) return
     const tabId = activeEditorTab
     const tab = editorTabs.find(t => t.id === tabId)
+    // la tab di ricerca non usa Monaco: niente testo da sincronizzare
+    if (tab?.kind === 'search') return
     if (tab && editor.getValue() !== tab.sql) editor.setValue(tab.sql)
     // Apertura di un oggetto DA UN ERRORE: il cursore va sulla riga indicata da SQL Server,
     // così si vede subito dove ha fallito ("Procedura X, Riga N").
@@ -425,8 +496,10 @@ export default function App() {
 
   const saveActiveEditor = useCallback(() => {
     if (!editor) return
+    // la tab di RICERCA non ha editor: non c'è niente da salvare (e l'editor non è montato)
+    if (editorTabs.find(t => t.id === activeEditorTab)?.kind === 'search') return
     setEditorTabs(prev => prev.map(t => (t.id === activeEditorTab ? { ...t, sql: editor.getValue() } : t)))
-  }, [editor, activeEditorTab])
+  }, [editor, activeEditorTab, editorTabs])
 
   /** Cambia database della connessione (e lo lega alla tab indicata o a quella attiva). */
   const switchDatabase = useCallback(
@@ -478,10 +551,17 @@ export default function App() {
       fileName?: string,
       /** Dove mettere la nuova tab; se non indicato si usa la preferenza dell'utente. */
       position?: NewTabPosition,
+      /**
+       * Apre la tab come FIGLIA di quella attiva (voci del tasto destro, link nei messaggi):
+       * si inserisce in fondo al gruppo del padre, entro MAX_TAB_DEPTH livelli.
+       */
+      asChild = false,
     ) => {
       // il progressivo si azzera quando non c'è nessuna tab
       if (editorTabs.length === 0) tabCounter.current = 1
       const n = tabCounter.current++
+      // il padre si calcola ORA: al livello massimo la nuova tab diventa una sorella
+      const padre = asChild ? childParentFor(editorTabs, activeEditorTab) : undefined
       const tab: EditorTab = {
         id: `tab-${n}`,
         title: title ?? `Query ${n}`,
@@ -491,56 +571,109 @@ export default function App() {
         fromFile,
         fileHandle,
         fileName: fileName ?? (fromFile ? title : undefined),
+        parentId: padre,
+        // la visibilità dei risultati è della tab: le nuove partono dall'ultima scelta fatta
+        resultsVisible: risultatiPredefiniti,
       }
       const dove = position ?? newTabPositionRef.current
-      setEditorTabs(prev => insertTabAt(prev, tab, activeEditorTab, dove))
+      setEditorTabs(prev => (padre ? insertTabAsChild(prev, tab, padre) : insertTabAt(prev, tab, activeEditorTab, dove)))
       setActiveEditorTab(tab.id)
       return tab.id
     },
-    [editorTabs.length, activeEditorTab, connection],
+    [editorTabs, activeEditorTab, connection, risultatiPredefiniti],
   )
 
-  const closeEditorTab = useCallback(
-    (id: string) => {
-      setEditorTabs(prev => {
-        const target = prev.find(t => t.id === id)
-        if (!target || target.pinned) return prev // le tab appuntate non si chiudono
-        const next = prev.filter(t => t.id !== id)
-        // rimuove anche i risultati legati alla tab chiusa
-        setTabResults(r => {
-          const c = { ...r }
-          delete c[id]
-          return c
-        })
-        setTabExecuting(r => {
-          const c = { ...r }
-          delete c[id]
-          return c
-        })
-        setTabResultTab(r => {
-          const c = { ...r }
-          delete c[id]
-          return c
-        })
-        setTabSql(r => {
-          const c = { ...r }
-          delete c[id]
-          return c
-        })
-        forgetTabStats([id])
-        if (next.length === 0) {
-          setActiveEditorTab('') // tutte chiuse: stato vuoto, il prossimo progressivo riparte da 1
-          return []
-        }
-        if (id === activeEditorTab) {
-          const idx = prev.findIndex(t => t.id === id)
-          setActiveEditorTab(next[Math.min(idx, next.length - 1)].id)
-        }
-        return next
-      })
+  /**
+   * RICERCA GENERALE: si apre in una TAB (come gli altri strumenti), non in una finestra.
+   * Se la tab di ricerca esiste già la si riporta in primo piano, senza duplicarla.
+   */
+  const openSearchTab = useCallback(() => {
+    const idx = searchTabIndex(editorTabs)
+    if (idx >= 0) {
+      switchEditorTab(editorTabs[idx].id)
+      return
+    }
+    saveActiveEditor()
+    if (editorTabs.length === 0) tabCounter.current = 1
+    const tab: EditorTab = {
+      id: `tab-${tabCounter.current++}`,
+      title: 'Ricerca',
+      icon: '🔎',
+      sql: '',
+      pinned: false,
+      database: connection?.database ?? '',
+      kind: 'search',
+    }
+    setEditorTabs(prev => insertTabAt(prev, tab, activeEditorTab, newTabPositionRef.current))
+    setActiveEditorTab(tab.id)
+  }, [editorTabs, activeEditorTab, connection, saveActiveEditor, switchEditorTab])
+
+  /**
+   * REPORT UTILIZZO TABELLE: si apre in una TAB come la Ricerca (richiesta utente: "la form si
+   * apre come le tab"). Se la tab del report esiste già la si riporta in primo piano.
+   */
+  const openReportTab = useCallback(() => {
+    const idx = reportTabIndex(editorTabs)
+    if (idx >= 0) {
+      switchEditorTab(editorTabs[idx].id)
+      return
+    }
+    saveActiveEditor()
+    if (editorTabs.length === 0) tabCounter.current = 1
+    const tab: EditorTab = {
+      id: `tab-${tabCounter.current++}`,
+      title: 'Report tabelle',
+      icon: '📊',
+      sql: '',
+      pinned: false,
+      database: connection?.database ?? '',
+      kind: 'report',
+    }
+    setEditorTabs(prev => insertTabAt(prev, tab, activeEditorTab, newTabPositionRef.current))
+    setActiveEditorTab(tab.id)
+  }, [editorTabs, activeEditorTab, connection, saveActiveEditor, switchEditorTab])
+
+  /** La tab attiva è il pannello di ricerca? (nell'area editor si mostra lui, non Monaco) */
+  const activeTabIsSearch = editorTabs.find(t => t.id === activeEditorTab)?.kind === 'search'
+  /** La tab attiva è un diagramma delle chiamate? (occupa tutta l'area editor) */
+  const activeTabIsGraph = editorTabs.find(t => t.id === activeEditorTab)?.kind === 'graph'
+  /** La tab attiva è il report utilizzo tabelle? (anche lui vive in una tab, non in una finestra) */
+  const activeTabIsReport = editorTabs.find(t => t.id === activeEditorTab)?.kind === 'report'
+  /** In queste tab Monaco non si vede: va nascosto, altrimenti spinge il pannello fuori posto. */
+  const pannelloAlPostoDiMonaco = activeTabIsSearch || activeTabIsGraph || activeTabIsReport
+
+  /**
+   * PANNELLO RISULTATI legato alla TAB ATTIVA: ognuna ricorda se lo vuole visibile o no
+   * (Ctrl+R agisce solo su questa). Nelle tab di ricerca/diagramma non c'è: lì lo spazio è
+   * tutto del pannello.
+   */
+  const tabAttiva = editorTabs.find(t => t.id === activeEditorTab)
+  const risultatiVisibili = risultatiVisibiliPer(tabAttiva, pannelloAlPostoDiMonaco)
+  const setRisultatiVisibili = useCallback(
+    (visibile: boolean) => {
+      setRisultatiPredefiniti(visibile)
+      setEditorTabs(prev => prev.map(t => (t.id === activeEditorTab ? { ...t, resultsVisible: visibile } : t)))
     },
     [activeEditorTab],
   )
+
+  // Ctrl+R (o Cmd+R): nasconde/mostra il pannello dei risultati DELLA TAB ATTIVA
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isToggleResultsShortcut(e)) {
+        e.preventDefault()
+        setRisultatiVisibili(!risultatiVisibili)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [risultatiVisibili, setRisultatiVisibili])
+
+  // Tornando dalle tab di ricerca/diagramma, Monaco è stato nascosto: si ricalcola la sua
+  // impaginazione (altrimenti resta con la larghezza sbagliata e le righe sembrano tagliate).
+  useEffect(() => {
+    if (!pannelloAlPostoDiMonaco) editor?.layout()
+  }, [pannelloAlPostoDiMonaco, editor])
 
   /** GAMIFICATION: dimentica le statistiche delle tab chiuse. */
   const forgetTabStats = useCallback(
@@ -566,8 +699,51 @@ export default function App() {
     setTabResults(without)
     setTabExecuting(without)
     setTabResultTab(without)
+    setTabSetsInSequenza(without)
     setTabSql(without)
   }, [])
+
+  /** Chiude le tab indicate (le appuntate restano) e ripulisce i dati laterali. */
+  const removeTabs = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return
+      const richieste = new Set(ids)
+      const daChiudere = editorTabs.filter(t => richieste.has(t.id) && !t.pinned)
+      if (daChiudere.length === 0) return
+      const gone = new Set(daChiudere.map(t => t.id))
+      dropTabSideData([...gone])
+      forgetTabStats([...gone])
+      setEditorTabs(prev => {
+        const next = sanitizeTabParents(prev.filter(t => !gone.has(t.id)))
+        if (next.length === 0) {
+          setActiveEditorTab('') // tutte chiuse: stato vuoto, il prossimo progressivo riparte da 1
+          return []
+        }
+        if (activeEditorTab && gone.has(activeEditorTab)) {
+          const idx = prev.findIndex(t => t.id === activeEditorTab)
+          setActiveEditorTab(next[Math.min(idx, next.length - 1)].id)
+        }
+        return next
+      })
+    },
+    [editorTabs, activeEditorTab, dropTabSideData, forgetTabStats],
+  )
+
+  /**
+   * Chiude una tab. Se ha figlie ancora aperte NON chiude subito: chiede se chiudere anche
+   * loro (richiesta utente), perché il ramo resterebbe altrimenti appeso a una tab sparita.
+   */
+  const closeEditorTab = useCallback(
+    (id: string) => {
+      const figlie = descendants(editorTabs, id)
+      if (figlie.length > 0) {
+        setCloseConfirm({ id, childIds: figlie.map(t => t.id) })
+        return
+      }
+      removeTabs([id])
+    },
+    [editorTabs, removeTabs],
+  )
 
   /** Applica un'azione di chiusura multipla (menu tasto destro) della tab `anchorId`. */
   const applyTabClosePlan = useCallback(
@@ -581,28 +757,65 @@ export default function App() {
       if (plan.removedIds.length === 0) return
       dropTabSideData(plan.removedIds)
       forgetTabStats(plan.removedIds)
-      setEditorTabs(plan.kept)
+      // le figlie di una tab chiusa in blocco non restano appese a un padre sparito
+      setEditorTabs(sanitizeTabParents(plan.kept))
       setActiveEditorTab(prev => (prev && plan.removedIds.includes(prev) ? plan.focusId : prev))
     },
     [editorTabs, dropTabSideData, forgetTabStats],
   )
 
-  // Tab in overflow: a capo automatico fino a 2 righe; oltre compare "»" con l'elenco.
+  /**
+   * GERARCHIA: livello di ogni tab (0 = principale). Si calcola una volta per insieme di tab:
+   * le figlie rientrano sotto la loro principale, fino a MAX_TAB_DEPTH livelli.
+   */
+  const livelliTab = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const t of editorTabs) m.set(t.id, tabDepth(editorTabs, t.id))
+    return m
+  }, [editorTabs])
+
+  /**
+   * BARRA delle tab: i GRUPPI stanno consecutivi — il padre per primo, subito dopo i suoi figli —
+   * e si va a capo solo quando non c'è più spazio (richiesta utente: "i padri devono stare in alto
+   * e non in basso"; prima ogni livello apriva una riga propria sotto la madre).
+   */
+  // Tab in overflow: a capo automatico su due righe, poi l'elenco "»".
+  const righeTabRef = useRef(2)
+  righeTabRef.current = 2
+
+  /** Esc chiude la richiesta "chiudo anche le figlie?" senza fare nulla. */
+  useEffect(() => {
+    if (!closeConfirm) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCloseConfirm(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [closeConfirm])
+
   const measureTabOverflow = useCallback(() => {
     const el = wrapRef.current
     if (!el) return
-    const probe = el.querySelector<HTMLElement>('.sql-tab')
-    if (!probe) {
+    const tab = [...el.querySelectorAll<HTMLElement>('.sql-tab')]
+    if (tab.length === 0) {
       setTabOverflow(false)
       setOverflowOpen(false)
+      el.style.maxHeight = ''
       return
     }
-    const twoRows = probe.offsetHeight * 2 + 4 // gap-1 tra le righe
-    const top = el.getBoundingClientRect().top
-    const clipped = [...el.children].some(
-      c => c.getBoundingClientRect().bottom > top + twoRows + 1,
-    )
-    el.style.maxHeight = clipped ? `${twoRows}px` : ''
+    // Righe REALI: le figlie occupano righe dedicate, quindi non basta contare le tab.
+    // Si raggruppa per coordinata `top` e si tiene il fondo maggiore di ogni riga.
+    const perRiga = new Map<number, number>()
+    for (const t of tab) {
+      const r = t.getBoundingClientRect()
+      const chiave = Math.round(r.top)
+      perRiga.set(chiave, Math.max(perRiga.get(chiave) ?? r.bottom, r.bottom))
+    }
+    const righe = [...perRiga.entries()].sort((a, b) => a[0] - b[0])
+    const tenute = righe.slice(0, righeTabRef.current)
+    const altezza = Math.round(tenute[tenute.length - 1][1] - tenute[0][0])
+    const clipped = righe.length > righeTabRef.current
+    el.style.maxHeight = clipped ? `${altezza}px` : ''
     setTabOverflow(clipped)
     if (!clipped) setOverflowOpen(false)
   }, [])
@@ -659,15 +872,8 @@ export default function App() {
 
   const moveTab = useCallback((fromId: string, toId: string) => {
     if (fromId === toId) return
-    setEditorTabs(prev => {
-      const fromIdx = prev.findIndex(t => t.id === fromId)
-      const toIdx = prev.findIndex(t => t.id === toId)
-      if (fromIdx === -1 || toIdx === -1) return prev
-      const next = [...prev]
-      const [moved] = next.splice(fromIdx, 1)
-      next.splice(toIdx, 0, moved)
-      return next
-    })
+    // trascinare una tab la STACCA dal padre (torna "in prima linea") e si porta le figlie
+    setEditorTabs(prev => moveTabSubtree(prev, fromId, toId))
   }, [])
 
   const handleConnected = useCallback(
@@ -676,8 +882,10 @@ export default function App() {
       // tab e query sono salvate PER ISTANZA SQL: carica quelle dell'istanza appena connessa
       setTabsInstance(res.server)
       const persisted = loadPersistedTabs(res.server)
-      setEditorTabs(persisted?.tabs ?? [firstTab()])
-      setActiveEditorTab(persisted?.tabs.some(t => t.id === persisted.active) ? persisted.active : 'tab-1')
+      // i legami padre/figlia salvati possono puntare a tab non più esistenti: si ripuliscono
+      const persistedTabs = persisted ? sanitizeTabParents(persisted.tabs) : []
+      setEditorTabs(persisted ? persistedTabs : [firstTab()])
+      setActiveEditorTab(persistedTabs.some(t => t.id === persisted?.active) ? persisted!.active : 'tab-1')
         // nuova connessione: i risultati delle tab appartenevano al DB precedente
         setTabResults({})
         setTabExecuting({})
@@ -698,6 +906,48 @@ export default function App() {
       }
     },
     [],
+  )
+
+  const ultimoControlloRef = useRef<Record<string, number>>({})
+  /**
+   * CONTROLLO "VERSIONE VECCHIA": rilegge la definizione dal database e la confronta con la
+   * versione di partenza della tab (al massimo ogni 5 s per tab, per non tempestare il backend;
+   * con `forza` si controlla subito, es. dopo un'esecuzione).
+   *
+   * IMPORTANTE: se il testo della tab COINCIDE con la definizione sul database non c'è nessuna
+   * versione vecchia — quella versione l'ha scritta la tab stessa (tipico dopo aver eseguito da qui
+   * il CREATE OR ALTER). In quel caso si aggiorna la versione di partenza e l'avviso non compare
+   * (segnalazione utente: "dopo che la eseguo però una store mi dice Stai lavorando da una versione
+   * vecchia…").
+   */
+  const controllaVersioneOggetto = useCallback(
+    /**
+     * @param testoEseguito testo DAVVERO eseguito (dopo un'esecuzione): il testo della tab viene
+     *   salvato con un debounce, quindi subito dopo F5 `tab.sql` potrebbe essere ancora il vecchio.
+     */
+    async (tabId: string, forza = false, testoEseguito?: string) => {
+      const tab = editorTabs.find(t => t.id === tabId)
+      const ref = tab?.objectRef
+      if (!connection || !tab || !ref) return
+      if (!forza && Date.now() - (ultimoControlloRef.current[tabId] ?? 0) < 5000) return
+      try {
+        const { definition } = await api.getObjectDefinition(connection.connectionId, ref.schema, ref.name)
+        ultimoControlloRef.current[tabId] = Date.now()
+        // testo che la tab avrebbe ADESSO dal database (stessa trasformazione usata all'apertura:
+        // CREATE OR ALTER per la "Modifica", definizione grezza per "Apri")
+        const atteso = testoPerLaTab(ref.modo ?? 'alter', definition, toCreateOrAlterStatement)
+        // la tab è ALLINEATA al database? (si ignorano solo gli spazi in coda)
+        const allineata = stessaDefinizione(testoEseguito ?? tab.sql, atteso)
+        const baseHash = allineata ? improntaDefinizione(atteso) : ref.baseHash
+        const stale = allineata ? false : versioneSuperata(ref.baseHash, atteso)
+        setEditorTabs(prev =>
+          prev.map(t => (t.id === tabId && t.objectRef ? { ...t, objectRef: { ...t.objectRef, baseHash, stale } } : t)),
+        )
+      } catch {
+        /* il controllo e' un di piu': se il backend non risponde non si avvisa nulla */
+      }
+    },
+    [connection, editorTabs],
   )
 
   const handleExecute = useCallback(
@@ -721,7 +971,7 @@ export default function App() {
         setFireTick(t => t + 1)
       }
       // eseguendo una query i risultati compaiono sempre, anche se nascosti con Ctrl+R
-      setResultsVisible(true)
+      setRisultatiVisibili(true)
       // il risultato va alla tab ATTIVA al momento dell'esecuzione
       const tabId = activeEditorTab
       if (!tabId) return
@@ -735,6 +985,25 @@ export default function App() {
         updateTabStats(tabId, s => recordExecution(s, r.elapsedMs, !r.error, Date.now()))
         // senza SELECT (solo PRINT/messaggi) si apre la schermata dei print
         setTabResultTab(prev => ({ ...prev, [tabId]: chooseResultTab(r) }))
+        // TRANSAZIONE ANCORA APERTA: la sessione SQL resta aperta fra un'esecuzione e l'altra (come
+        // in SSMS), quindi se una transazione è rimasta aperta le modifiche non sono salvate: lo si
+        // dice con la striscia in alto, che si vede anche con la griglia dei risultati aperta.
+        if (r.trancount && r.trancount > 0) {
+          const quante = r.trancount === 1 ? '1 transazione aperta' : `${r.trancount} transazioni annidate aperte`
+          setNota({
+            testo: `⚠ ${quante}: le modifiche NON sono salvate. Chiudila con COMMIT TRANSACTION oppure ROLLBACK TRANSACTION.`,
+            tono: 'attenzione',
+            chiave: 'transazione',
+          })
+        } else {
+          // la transazione è stata chiusa: via la striscia (se era quella)
+          setNota(n => (n?.chiave === 'transazione' ? null : n))
+        }
+        // Se questa tab modifica un oggetto: se l'esecuzione ha applicato PROPRIO il testo della
+        // tab (CREATE OR ALTER eseguito da qui) la versione di partenza si aggiorna e non compare
+        // nessun avviso di "versione vecchia" (lo fa controllaVersioneOggetto, che riconosce
+        // l'allineamento tab↔database confrontando il testo ESEGUITO).
+        if (!r.error) void controllaVersioneOggetto(tabId, true, sql)
       } catch (e) {
         // errore di trasporto/API: conta come esecuzione fallita
         updateTabStats(tabId, s => recordExecution(s, 0, false, Date.now()))
@@ -743,7 +1012,7 @@ export default function App() {
         setTabExecuting(prev => ({ ...prev, [tabId]: false }))
       }
     },
-    [connection, activeEditorTab, updateTabStats],
+    [connection, activeEditorTab, updateTabStats, controllaVersioneOggetto],
   )
 
   const handleDisconnect = useCallback(async () => {
@@ -846,19 +1115,8 @@ export default function App() {
     }
   }, [connection, summary, summaryRetryTick])
 
-  const handleInsertText = useCallback(
-    (text: string) => {
-      if (!editor) return
-      editor.focus()
-      const sel = editor.getSelection()
-      if (sel) {
-        editor.executeEdits('insert-object', [{ range: sel, text }])
-        const pos = editor.getPosition()
-        if (pos) editor.setPosition(pos)
-      }
-    },
-    [editor],
-  )
+  // NOTA: non c'è più un "inserisci nella tab attiva" dalla treeview (richiesta utente): i comandi
+  // del tasto destro offrono "Copia negli appunti" e "Apri in nuova tab".
 
   /** Cambia database dalla combo/treeview: lega il db alla tab attiva. */
   const handleSwitchDatabase = useCallback(
@@ -876,10 +1134,13 @@ export default function App() {
     [newEditorTab],
   )
 
-  /** Apre uno script generato (CREATE/MERGE) in una nuova tab con titolo. */
+  /**
+   * Apre uno script generato (CREATE/MERGE) in una nuova tab con titolo.
+   * Con `asChild` (voci del tasto destro) la tab nasce FIGLIA di quella attiva.
+   */
   const handleOpenScript = useCallback(
-    (title: string, sql: string) => {
-      newEditorTab(title, sql, connection?.database)
+    (title: string, sql: string, asChild = false) => {
+      newEditorTab(title, sql, connection?.database, false, null, undefined, undefined, asChild)
     },
     [newEditorTab, connection],
   )
@@ -896,22 +1157,220 @@ export default function App() {
       name: string,
       mode: 'alter' | 'open',
       revealLine?: number,
+      /** Apre la tab come FIGLIA di quella attiva (voci del tasto destro, link negli errori). */
+      asChild = false,
     ) => {
       if (!connection) return
       setBanner(null)
       try {
+        // L'OGGETTO ERA GIA' APERTO? Non si duplica la tab: si va su quella esistente e lo si dice
+        // (richiesta utente: "mostrami se ce n'era gia' una aperta").
+        const giaAperta = trovaTabOggetto(editorTabs, schema, name)
+        if (giaAperta) {
+          setActiveEditorTab(giaAperta.id)
+          setNota({
+            testo: `«${etichettaOggetto(schema, name)}» era gia' aperta (${quandoAperta(
+              giaAperta.objectRef?.openedAt ?? Date.now(),
+            )}): sei sulla tab esistente${giaAperta.objectRef?.stale ? ' — ATTENZIONE: sul database e\' cambiata' : ''}.`,
+            tono: giaAperta.objectRef?.stale ? 'attenzione' : 'info',
+          })
+          return
+        }
         const { definition } = await api.getObjectDefinition(connection.connectionId, schema, name)
         const sql = mode === 'alter' ? toCreateOrAlterStatement(definition) : definition
-        const title = `${mode === 'alter' ? 'CREATE OR ALTER ' : ''}${schema === 'dbo' ? name : `${schema}.${name}`}`
-        const tabId = newEditorTab(title, sql, connection?.database)
-        // la riga si applica DOPO che la tab è attiva: l'effetto che carica il testo la usa
+        // il titolo della tab e' il NOME dell'oggetto (richiesta utente): la "Modifica" si
+        // riconosce dal contenuto (CREATE OR ALTER) e dalla tooltip della tab
+        const title = schema === 'dbo' ? name : `${schema}.${name}`
+        const tabId = newEditorTab(title, sql, connection?.database, false, null, undefined, undefined, asChild)
+        // VERSIONE DI PARTENZA: si memorizza l'impronta del TESTO messo nella tab, cosi' poi si
+        // puo' capire se sul database e' cambiata (e non sovrascrivere una versione nuova).
+        const ref = nuovoObjectRef(schema, name, _kind, mode, sql)
+        setEditorTabs(prev => prev.map(t => (t.id === tabId ? { ...t, objectRef: ref } : t)))
+        // la riga si applica DOPO che la tab e' attiva: l'effetto che carica il testo la usa
         if (revealLine && revealLine > 0) pendingRevealRef.current = { tabId, line: revealLine }
       } catch (e) {
         setBanner(e instanceof Error ? e.message : String(e))
       }
     },
-    [connection, newEditorTab],
+    [connection, editorTabs, newEditorTab],
   )
+
+  // La nota ("era gia' aperta") si chiude da sola dopo 8 secondi.
+  useEffect(() => {
+    if (!nota) return
+    const t = window.setTimeout(() => setNota(null), 8000)
+    return () => window.clearTimeout(t)
+  }, [nota])
+
+  /**
+   * F5 GLOBALE (richiesta utente: "se non ho il focus sulla scheda mi ricarica tutta la pagina").
+   *
+   * Con il fuoco sull'editor ci pensa già Monaco (registra anche l'uso delle tabelle); negli altri
+   * casi — albero laterale, griglie dei risultati, pulsanti — il tasto arrivava al browser e
+   * RICARICAVA l'app, perdendo il lavoro. Qui lo si prende a livello di finestra e si esegue la
+   * selezione (o tutto il testo) della tab attiva, esattamente come il pulsante "Esegui".
+   * Senza connessione (schermata di login) si lascia fare al browser; nelle tab di ricerca e nei
+   * diagrammi F5 non esegue niente ma viene comunque fermato, per non perdere lo stato.
+   */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const f5 = e.key === 'F5' || e.keyCode === 116
+      if (!f5 || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return
+      if (!connection) return
+      // con il fuoco nell'editor F5 è già gestito da Monaco (e registra l'uso delle tabelle)
+      if (editor?.hasTextFocus()) return
+      e.preventDefault()
+      e.stopPropagation()
+      const tab = editorTabs.find(t => t.id === activeEditorTab)
+      // ricerca / diagramma / report: niente da eseguire, ma il tasto non deve ricaricare la pagina
+      if (!tab || (tab.kind && tab.kind !== 'query')) return
+      const model = editor?.getModel()
+      const sel = model ? editor?.getSelection() : null
+      const selected = model && sel && !sel.isEmpty() ? model.getValueInRange(sel) : null
+      const sql = pickSqlToExecute(selected, model?.getValue() ?? tab.sql)
+      if (sql.trim()) void handleExecute(sql)
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [connection, editorTabs, activeEditorTab, editor, handleExecute])
+
+  /**
+   * CONTROLLO "VERSIONE VECCHIA": rilegge la definizione dal database e la confronta con la
+   * versione di partenza della tab (al massimo ogni 5 s per tab, per non tempestare il backend;
+   * con `forza` si controlla subito, es. dopo un'esecuzione). Vedi la definizione completa sopra:
+   * se la tab è ALLINEATA al database non si segnala nulla e la versione di partenza si aggiorna.
+   */
+  useEffect(() => {
+    const tab = editorTabs.find(t => t.id === activeEditorTab)
+    if (!connection || !tab?.objectRef) return
+    const attesa = 5000 - (Date.now() - (ultimoControlloRef.current[tab.id] ?? 0))
+    // controllo fatto da poco su questa tab: si RIPROGRAMMA (non si perde l'occasione)
+    if (attesa > 0) {
+      const t = window.setTimeout(() => void controllaVersioneOggetto(tab.id, true), attesa)
+      return () => window.clearTimeout(t)
+    }
+    void controllaVersioneOggetto(tab.id)
+  }, [activeEditorTab, editorTabs, connection, controllaVersioneOggetto])
+
+  /**
+   * RICARICA DAL DATABASE (dal banner "versione vecchia"): rilegge la definizione, la rimette
+   * nella tab e aggiorna la versione di partenza. Se nel frattempo si e' modificato il testo si
+   * chiede conferma: si sta per sovrascrivere il lavoro in corso.
+   */
+  /**
+   * ANTEPRIMA DELLE MODIFICHE (richiesta utente: "fai anteprima delle modifiche").
+   *
+   * Da un UPDATE/DELETE costruisce la SELECT che mostra le righe che verrebbero toccate — con la
+   * STESSA FROM/JOIN/WHERE scritta dall'utente — e la esegue nel pannello dei risultati. Nulla viene
+   * modificato: il testo nello statement vero non viene toccato.
+   */
+  const anteprimaModifiche = useCallback(() => {
+    if (!connection) return
+    const model = editor?.getModel()
+    const pos = editor?.getPosition()
+    const testo = model?.getValue() ?? ''
+    const sel = model ? editor?.getSelection() : null
+    const selezionato = model && sel && !sel.isEmpty() ? model.getValueInRange(sel) : null
+    let statement = selezionato ?? testo
+    if (!selezionato && model && pos) {
+      const { inizio, fine } = statementAttorno(testo, model.getOffsetAt(pos))
+      statement = testo.slice(inizio, fine)
+    }
+    const anteprima = costruisciAnteprima(statement, summary)
+    if (!anteprima) {
+      setNota({
+        testo: "L'anteprima vale per un UPDATE o un DELETE: metti il cursore su uno di questi statement.",
+        tono: 'info',
+      })
+      return
+    }
+    setNota({
+      testo: `Anteprima di ${anteprima.tipo === 'update' ? 'UPDATE' : 'DELETE'} su «${anteprima.tabella}»: le righe nel pannello sono quelle che verrebbero modificate (nulla è stato toccato).`,
+      tono: 'info',
+    })
+    void handleExecute(anteprima.sql)
+  }, [connection, editor, handleExecute, summary])
+
+  /**
+   * PIANO DI ESECUZIONE (richiesta utente: "piano di esecuzione + indice suggerito").
+   *
+   * Chiede a SQL Server il piano STIMATO dello statement sotto il cursore (o della selezione):
+   * SHOWPLAN_XML non esegue la query, quindi nessun dato viene letto o modificato. Il pannello mostra
+   * gli operatori e, se SQL Server ne propone, gli indici mancanti con lo script CREATE INDEX pronto.
+   */
+  const mostraPiano = useCallback(async () => {
+    if (!connection) return
+    const model = editor?.getModel()
+    const pos = editor?.getPosition()
+    const testo = model?.getValue() ?? ''
+    const sel = model ? editor?.getSelection() : null
+    const selezionato = model && sel && !sel.isEmpty() ? model.getValueInRange(sel) : null
+    let statement = selezionato ?? testo
+    if (!selezionato && model && pos) {
+      const { inizio, fine } = statementAttorno(testo, model.getOffsetAt(pos))
+      statement = testo.slice(inizio, fine)
+    }
+    if (!statement.trim()) return
+    setPianoAperto(true)
+    setPianoInCorso(true)
+    setPianoErrore(null)
+    setPiano(null)
+    setPianoAltri(0)
+    try {
+      const r = await api.executionPlan(connection.connectionId, statement)
+      if (r.error) {
+        setPianoErrore(r.error)
+        return
+      }
+      const piani = r.plans ?? []
+      if (piani.length === 0) {
+        setPianoErrore('SQL Server non ha restituito un piano per questo statement.')
+        return
+      }
+      const analizzato = analizzaPiano(piani[0])
+      setPianoAltri(Math.max(0, piani.length - 1))
+      if (!analizzato) setPianoErrore('Il piano restituito non è leggibile.')
+      else setPiano(analizzato)
+    } catch (e) {
+      setPianoErrore(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPianoInCorso(false)
+    }
+  }, [connection, editor])
+
+  const ricaricaOggettoNellaTab = useCallback(async () => {
+    const tab = editorTabs.find(t => t.id === activeEditorTab)
+    const ref = tab?.objectRef
+    if (!connection || !tab || !ref) return
+    try {
+      const { definition } = await api.getObjectDefinition(connection.connectionId, ref.schema, ref.name)
+      const modificato = improntaDefinizione(tab.sql) !== ref.baseHash
+      if (modificato && !window.confirm('La tab e\' stata modificata: sovrascriverla con la versione del database?')) {
+        return
+      }
+      const sql = testoPerLaTab(ref.modo ?? 'alter', definition, toCreateOrAlterStatement)
+      setEditorTabs(prev =>
+        prev.map(t =>
+          t.id === tab.id
+            ? { ...t, sql, objectRef: nuovoObjectRef(ref.schema, ref.name, ref.kind, ref.modo ?? 'alter', sql) }
+            : t,
+        ),
+      )
+      editor?.setValue(sql)
+      setNota({ testo: `«${etichettaOggetto(ref.schema, ref.name)}» ricaricata dal database.`, tono: 'info' })
+    } catch (e) {
+      setBanner(e instanceof Error ? e.message : String(e))
+    }
+  }, [activeEditorTab, connection, editor, editorTabs])
+
+  /** IGNORA l'avviso di versione vecchia per questa tab (smette di segnalarlo). */
+  const ignoraVersioneVecchia = useCallback(() => {
+    const id = activeEditorTab
+    setEditorTabs(prev =>
+      prev.map(t => (t.id === id && t.objectRef ? { ...t, objectRef: { ...t.objectRef, stale: false } } : t)),
+    )
+    setNota(null)
+  }, [activeEditorTab])
 
   /**
    * DIAGRAMMA CHIAMATE: apre la finestra con i legami della routine indicata.
@@ -935,14 +1394,46 @@ export default function App() {
     [connection, callGraph],
   )
 
+  /**
+   * DIAGRAMMA CHIAMATE: si apre in una TAB (come la ricerca), una per routine: riaprendo lo
+   * stesso diagramma si torna sulla tab esistente senza duplicarla.
+   */
   const openCallGraph = useCallback(
-    (schema: string, name: string, kind: 'procedure' | 'function') => {
-      setCallGraphTarget({ schema, name, kind })
+    /**
+     * `asChild` (default true): il diagramma nasce FIGLIO della tab attiva quando lo si apre da un
+     * link/tasto destro dentro l'editor o dalla ricerca; dal pannello a SINISTRA invece è una tab
+     * principale (richiesta utente: "se la apro dalla ricerca dal pannello a sinistra non deve
+     * essere figlia di nessuno").
+     */
+    (schema: string, name: string, kind: 'procedure' | 'function', asChild = true) => {
       void loadCallGraph()
+      const routine = { schema, name, kind }
+      const idx = graphTabIndex(editorTabs, routine)
+      if (idx >= 0) {
+        switchEditorTab(editorTabs[idx].id)
+        return
+      }
+      saveActiveEditor()
+      if (editorTabs.length === 0) tabCounter.current = 1
+      const titolo = schema === 'dbo' ? name : `${schema}.${name}`
+      const tab: EditorTab = {
+        id: `tab-${tabCounter.current++}`,
+        title: `Diagramma: ${titolo}`,
+        icon: '📈',
+        sql: '',
+        pinned: false,
+        database: connection?.database ?? '',
+        kind: 'graph',
+        routine,
+      }
+      // FIGLIA della tab attiva quando lo si apre da un link/tasto destro o dalla ricerca;
+      // principale quando arriva dal pannello a sinistra.
+      const padre = asChild ? childParentFor(editorTabs, activeEditorTab) : undefined
+      setEditorTabs(prev => (padre ? insertTabAsChild(prev, tab, padre) : insertTabAt(prev, tab, activeEditorTab, newTabPositionRef.current)))
+      setActiveEditorTab(tab.id)
     },
-    [loadCallGraph],
+    [loadCallGraph, editorTabs, activeEditorTab, connection, saveActiveEditor, switchEditorTab],
   )
-
   /**
    * Apre un oggetto citato in un messaggio di errore, con lo stesso risultato del tasto destro
    * nell'albero: "Modifica" (CREATE OR ALTER) per routine, viste e trigger; per le tabelle lo
@@ -952,11 +1443,11 @@ export default function App() {
     (o: ErrorObjectRef) => {
       if (o.kind === 'table') {
         const t = summary?.tables.find(x => x.name.toLowerCase() === o.name.toLowerCase())
-        if (t) handleOpenScript(`CREATE ${o.schema}.${o.name}`, scriptCreateTable(t))
+        if (t) handleOpenScript(`CREATE ${o.schema}.${o.name}`, scriptCreateTable(t, {}, connection?.database), true)
         return
       }
       // la riga dell'errore è quella interna alla procedura: aprendola si va direttamente lì
-      void handleOpenObject(o.kind, o.schema, o.name, 'alter', o.line)
+      void handleOpenObject(o.kind, o.schema, o.name, 'alter', o.line, true)
     },
     [summary, handleOpenScript, handleOpenObject],
   )
@@ -1107,10 +1598,29 @@ export default function App() {
     if (!activeEditorTab) return
     setTabResultTab(prev => ({ ...prev, [activeEditorTab]: t }))
   }
+  // vista "tutti i result set in sequenza" della tab attiva
+  const activeSetsInSequenza = activeEditorTab ? (tabSetsInSequenza[activeEditorTab] ?? false) : false
+  const setActiveSetsInSequenza = (v: boolean) => {
+    if (!activeEditorTab) return
+    setTabSetsInSequenza(prev => ({ ...prev, [activeEditorTab]: v }))
+  }
 
   return (
     <FileDropZone onFiles={handleOpenFiles}>
       <div className="flex h-full flex-col">
+        {pianoAperto && (
+          <ExecutionPlanPanel
+            piano={piano}
+            inCorso={pianoInCorso}
+            errore={pianoErrore}
+            altriStatement={pianoAltri}
+            onClose={() => setPianoAperto(false)}
+            onApriScript={(titolo, sql) => {
+              newEditorTab(titolo, sql, connection?.database, false, null)
+              setPianoAperto(false)
+            }}
+          />
+        )}
         <DragonBackground level={dragonLevel} visible={dragonShow} />
         <header className="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900/70 px-4 py-2">
         <div className="flex items-center gap-2 font-semibold text-zinc-100">
@@ -1132,26 +1642,52 @@ export default function App() {
           className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
           title="Aggiorna lo schema dal database (Ctrl+Shift+R) — rilegge tabelle, colonne, viste e routine"
         >
-          <RefreshCw className={`h-4 w-4 ${summaryReloading ? 'animate-spin' : ''}`} /> Aggiorna schema
+          <RefreshCw className={`h-4 w-4 text-emerald-300 ${summaryReloading ? 'animate-spin' : ''}`} /> Aggiorna schema
+        </button>
+        <button
+          onClick={openSearchTab}
+          className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
+          title={`Ricerca testuale nel database ${connection.database}: nomi, definizioni e (opzionale) dati — si apre in una tab`}
+        >
+          <Search className="h-4 w-4 text-sky-300" /> Cerca
         </button>
         <button
           onClick={() => setHelpOpen(true)}
           className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
           title="Apri la guida con tutte le funzioni"
         >
-          <BookOpen className="h-4 w-4" /> Aiuto
+          <BookOpen className="h-4 w-4 text-amber-300" /> Aiuto
         </button>
         {activeStats && <QueryStatsBadge stats={activeStats} onClick={() => setStatsOpen(true)} />}
         <button
           onClick={() => void handleDisconnect()}
           className="ml-auto inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
         >
-          <Unplug className="h-4 w-4" /> Disconnetti
+          <Unplug className="h-4 w-4 text-rose-300" /> Disconnetti
         </button>
       </header>
 
       {banner && (
         <div className="shrink-0 border-b border-rose-900 bg-rose-950/60 px-4 py-2 text-sm text-rose-200">{banner}</div>
+      )}
+
+      {/* NOTA (non è un errore): "era già aperta", "ricaricata dal database", "versione cambiata".
+          Si chiude da sola dopo 8 secondi oppure con un clic. */}
+      {nota && (
+        <button
+          onClick={() => setNota(null)}
+          title="Chiudi l'avviso"
+          className={`flex w-full shrink-0 items-center gap-2 border-b px-4 py-1.5 text-left text-sm transition-colors ${
+            nota.tono === 'attenzione'
+              ? 'border-amber-900 bg-amber-950/70 text-amber-100 hover:bg-amber-950'
+              : 'border-sky-900 bg-sky-950/50 text-sky-100 hover:bg-sky-950/70'
+          }`}
+          data-nota={nota.tono}
+        >
+          <AlertTriangle className={`h-4 w-4 shrink-0 ${nota.tono === 'attenzione' ? 'text-amber-400' : 'text-sky-400'}`} />
+          <span className="min-w-0 flex-1">{nota.testo}</span>
+          <X className="h-3.5 w-3.5 shrink-0 opacity-60" />
+        </button>
       )}
 
       <div className="flex min-h-0 flex-1">
@@ -1165,11 +1701,14 @@ export default function App() {
               loading={loadingSummary && !summary}
               activeDatabase={connection.database}
               connectionId={connection.connectionId}
-              onInsertText={handleInsertText}
+              onNuovaTab={(titolo, testo) => newEditorTab(titolo, testo, connection?.database, false, null)}
               onPreviewInEditor={handlePreviewInEditor}
               onOpenScript={handleOpenScript}
-              onOpenObject={handleOpenObject}
-              onShowCallGraph={openCallGraph}
+              onOpenReport={openReportTab}
+              onOpenObject={(kind, schema, name, mode) =>
+                void handleOpenObject(kind, schema, name, mode, undefined, false)
+              }
+              onShowCallGraph={(schema, name, kind) => openCallGraph(schema, name, kind, false)}
               onSwitchDatabase={handleSwitchDatabase}
               dbColors={dbColors}
               onSetDbColor={handleSetDbColor}
@@ -1235,8 +1774,16 @@ export default function App() {
                     ? 'border-x border-x-zinc-700 border-b-2 border-b-zinc-900 bg-zinc-700/90 font-semibold text-white shadow-[0_-2px_10px_rgba(56,189,248,0.12)]'
                     : 'border-r-zinc-800 text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300'
                 }`}
-                style={{ borderTopColor: dbTabColor(t.database ?? connection.database, dbColors) }}
-                title={`${t.title} · db: ${t.database || connection.database}${t.description ? ` — ${t.description}` : ''}${t.pinned ? ' (appuntata)' : ''}${t.id === activeEditorTab ? ' — SCHEDA ATTIVA — trascina per riordinare' : ''} — tasto destro: chiudi le altre / a destra / a sinistra / le non appuntate`}
+                style={{
+                  borderTopColor: dbTabColor(t.database ?? connection.database, dbColors),
+                  // gerarchia: le figlie rientrano sotto la loro principale
+                  marginLeft: (livelliTab.get(t.id) ?? 0) * 12,
+                }}
+                title={`${t.title} · db: ${t.database || connection.database}${t.description ? ` — ${t.description}` : ''}${t.pinned ? ' (appuntata)' : ''}${
+                  (livelliTab.get(t.id) ?? 0) > 0
+                    ? ` — FIGLIA di “${editorTabs.find(p => p.id === t.parentId)?.title ?? '?'}” (livello ${livelliTab.get(t.id)} di ${MAX_TAB_DEPTH}; trascinala per staccarla)`
+                    : ''
+                }${t.id === activeEditorTab ? ' — SCHEDA ATTIVA — trascina per riordinare' : ''} — tasto destro: chiudi le altre / a destra / a sinistra / le non appuntate`}
               >
                 {t.id === activeEditorTab && (
                   <span
@@ -1245,6 +1792,14 @@ export default function App() {
                   />
                 )}
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: dbTabColor(t.database ?? connection.database, dbColors) }} />
+                {(livelliTab.get(t.id) ?? 0) > 0 && (
+                  <span
+                    className="shrink-0 text-sky-500/80"
+                    title={`Tab figlia — livello ${livelliTab.get(t.id)} di ${MAX_TAB_DEPTH}`}
+                  >
+                    <CornerDownRight className="h-3 w-3" />
+                  </span>
+                )}
                 {t.icon && (
                   <span className="shrink-0 text-[13px] leading-none" title="Icona della tab">
                     {t.icon}
@@ -1257,6 +1812,17 @@ export default function App() {
                 >
                   {t.title}
                 </button>
+                {/* La definizione sul database è cambiata dopo l'apertura: la tab lo mostra
+                    anche quando non è quella attiva (richiesta utente: una cosa ad impatto). */}
+                {t.objectRef?.stale && (
+                  <span
+                    className="shrink-0 text-amber-400"
+                    data-versione-tab={t.id}
+                    title={`${etichettaOggetto(t.objectRef.schema, t.objectRef.name)}: sul database la definizione è cambiata dopo l'apertura (versione di partenza vecchia)`}
+                  >
+                    <AlertTriangle className="h-3 w-3" />
+                  </span>
+                )}
                 <button
                   onClick={() => {
                     setTitleDraft(t.title)
@@ -1303,14 +1869,14 @@ export default function App() {
                   false,
                   null,
                   undefined,
-                  e.shiftKey ? 'start' : 'afterActive',
+                  e.shiftKey ? 'start' : 'end',
                 )
               }
               onAuxClick={e => {
                 if (e.button === 1) newEditorTab(undefined, DEFAULT_SQL, undefined, false, null, undefined, 'start')
               }}
               className="inline-flex h-7 shrink-0 items-center gap-1 rounded px-2 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-              title="Nuova query (a destra, dopo quella attiva) — Shift+clic o clic col tasto centrale per aprirla a sinistra"
+              title="Nuova query in fondo (tutto a destra) — Shift+clic o clic col tasto centrale per aprirla come PRIMA tab"
             >
               <Plus className="h-3.5 w-3.5" />
               Nuova
@@ -1379,14 +1945,49 @@ export default function App() {
             ref={editorPaneRef}
             className="shrink-0"
             style={{
-              flexGrow: resultsVisible ? editorPct : 1,
+              flexGrow: risultatiVisibili ? editorPct : 1,
               flexBasis: 0,
               border: `2px solid ${activeDbColor}`,
               minHeight: 0,
             }}
             title={`Query su database: ${activeDbName} — trascina il divisore sotto per ridimensionare`}
           >
-            {activeEditorTab ? (
+            {/* AVVISO "VERSIONE VECCHIA": la tab attiva modifica un oggetto la cui definizione sul
+                database è cambiata dopo l'apertura. Ben visibile, con le due azioni possibili. */}
+            {tabAttiva?.objectRef?.stale && activeEditorTab && (
+              <div
+                className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-800 bg-amber-950/80 px-3 py-1.5 text-xs text-amber-100"
+                data-versione="vecchia"
+              >
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
+                <span className="min-w-0 flex-1">
+                  <b className="text-amber-300">Stai lavorando da una versione vecchia</b> di{' '}
+                  <span className="font-mono">{etichettaOggetto(tabAttiva.objectRef.schema, tabAttiva.objectRef.name)}</span>:
+                  sul database la definizione è cambiata dopo l'apertura di questa tab (
+                  {quandoAperta(tabAttiva.objectRef.openedAt)}).
+                </span>
+                <button
+                  onClick={() => void ricaricaOggettoNellaTab()}
+                  className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-700 px-2 py-0.5 font-medium transition-colors hover:bg-amber-900/60"
+                  title="Sostituisce il testo della tab con la definizione del database (chiede conferma se la tab è stata modificata)"
+                >
+                  <RefreshCw className="h-3 w-3" /> Ricarica dal database
+                </button>
+                <button
+                  onClick={ignoraVersioneVecchia}
+                  className="inline-flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-amber-200/80 transition-colors hover:bg-amber-900/40 hover:text-amber-100"
+                  title="Continua con la versione di partenza (l'avviso sparisce per questa tab)"
+                >
+                  <X className="h-3 w-3" /> Ignora
+                </button>
+              </div>
+            )}
+            {/* La ricerca e i diagrammi vivono in TAB: il pannello resta MONTATO (nascosto quando
+                non è la tab attiva) così i risultati non si perdono passando da una tab all'altra.
+                L'editor Monaco resta montato per la stessa ragione, ma va NASCOSTO quando la tab
+                attiva è un pannello: altrimenti occupa l'area e spinge il pannello fuori vista. */}
+            <div className={`h-full min-h-0 ${pannelloAlPostoDiMonaco ? 'hidden' : ''}`}>
+              {activeEditorTab ? (
               <SqlEditor
                 connectionId={connection.connectionId}
                 summary={summary}
@@ -1398,34 +1999,91 @@ export default function App() {
                 dragonLevel={dragonLevel}
                 fireTick={fireTick}
                 onExecute={(sql: string) => void handleExecute(sql)}
+                onAnteprimaModifiche={anteprimaModifiche}
+                onPiano={() => void mostraPiano()}
                 onContentChange={handleContentChange}
                 onSave={() => saveActiveTab(false)}
                 onSaveAs={() => saveActiveTab(true)}
                 onOpenFile={handleOpenFilePicker}
                 fontSize={settings.fontSize}
                 theme={settings.theme}
+                formatter={settings.formatter}
+                onFormatterChange={setFormatter}
+                virgolaACapo={settings.virgolaACapo}
+                onVirgolaACapoChange={setVirgolaACapo}
+                sqlFluff={settings.sqlFluff}
+                onSqlFluffChange={setSqlFluffOptions}
                 onZoomFont={zoomFont}
                 onToggleTheme={toggleTheme}
                 registerEditor={setEditor}
-                onOpenObject={handleOpenObject}
+                onOpenObject={(kind, schema, name, mode) =>
+                  void handleOpenObject(kind, schema, name, mode, undefined, true)
+                }
                 onShowCallGraph={(kind, schema, name) => openCallGraph(schema, name, kind)}
               />
-            ) : (
-              <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-zinc-600">
-                <FilePlus2 className="h-8 w-8 text-zinc-700" />
-                <p>Nessuna query aperta.</p>
-                <button
-                  onClick={() => newEditorTab()}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-sky-500"
-                >
-                  <FilePlus2 className="h-4 w-4" /> Nuova query
-                </button>
-                <p className="text-xs text-zinc-700">…oppure trascina un file .sql qui</p>
+              ) : (
+                <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-zinc-600">
+                  <FilePlus2 className="h-8 w-8 text-zinc-700" />
+                  <p>Nessuna query aperta.</p>
+                  <button
+                    onClick={() => newEditorTab()}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-sky-500"
+                  >
+                    <FilePlus2 className="h-4 w-4" /> Nuova query
+                  </button>
+                  <p className="text-xs text-zinc-700">…oppure trascina un file .sql qui</p>
+                </div>
+              )}
+            </div>
+
+            {/* RICERCA GENERALE (stile Redgate SQL Search): risultati sopra, anteprima sotto */}
+            {searchTabIndex(editorTabs) >= 0 && connection && (
+              <div className={`h-full min-h-0 ${activeTabIsSearch ? '' : 'hidden'}`}>
+                <SearchPanel
+                  connectionId={connection.connectionId}
+                  database={connection.database}
+                  summary={summary}
+                  onOpenObject={(kind, schema, name, mode) =>
+                    void handleOpenObject(kind, schema, name, mode, undefined, true)
+                  }
+                  onShowCallGraph={(schema, name, kind) => openCallGraph(schema, name, kind)}
+                />
               </div>
             )}
+
+            {/* REPORT UTILIZZO TABELLE: vive in una tab (non in una finestra), con elenco,
+                istogramma delle più pesanti e script di svuotamento in una nuova tab */}
+            {reportTabIndex(editorTabs) >= 0 && connection && (
+              <div className={`h-full min-h-0 ${activeTabIsReport ? '' : 'hidden'}`}>
+                <TableReportPanel
+                  connectionId={connection.connectionId}
+                  database={connection.database}
+                  onOpenScript={(title, sql) => handleOpenScript(title, sql, true)}
+                />
+              </div>
+            )}
+
+            {/* DIAGRAMMI delle chiamate: una tab per routine, tutte MONTATE (nascoste se non
+                attive) così non si perde il centro/direzione passando da una tab all'altra */}
+            {editorTabs
+              .filter(t => t.kind === 'graph' && t.routine)
+              .map(t => (
+                <div key={t.id} className={`h-full min-h-0 ${t.id === activeEditorTab ? '' : 'hidden'}`}>
+                  <CallGraphPanel
+                    target={t.routine!}
+                    graph={callGraph}
+                    loading={callGraphLoading}
+                    error={callGraphError}
+                    onReload={() => void loadCallGraph(true)}
+                    onOpenObject={(kind, schema, name) =>
+                      void handleOpenObject(kind, schema, name, 'alter', undefined, true)
+                    }
+                  />
+                </div>
+              ))}
           </div>
 
-          {resultsVisible && (
+          {risultatiVisibili && (
             <div
               onMouseDown={startSplitDrag}
               className="group relative z-10 flex h-1.5 shrink-0 cursor-row-resize items-center justify-center border-y border-zinc-800 bg-zinc-900/80 hover:bg-sky-950/60"
@@ -1435,11 +2093,12 @@ export default function App() {
             </div>
           )}
 
-          {resultsVisible && (
+          {risultatiVisibili && (
             <div
               ref={resultsPaneRef}
               className="flex min-h-0 flex-col"
               style={{ flexGrow: 100 - editorPct, flexBasis: 0 }}
+              data-risultati="pannello"
             >
               <div className="flex shrink-0 items-center gap-1 border-b border-zinc-800 bg-zinc-900/40 px-2">
                 <TabButton
@@ -1467,6 +2126,8 @@ export default function App() {
                     summary={summary}
                     onOpenObject={openObjectFromError}
                     onJumpToLine={revealErrorLine}
+                    continuous={activeSetsInSequenza}
+                    onContinuousChange={setActiveSetsInSequenza}
                   />
                 ) : (
                   <PrintPanel
@@ -1499,19 +2160,6 @@ export default function App() {
       </div>
       {helpOpen && <HelpPage onClose={() => setHelpOpen(false)} />}
       {statsOpen && activeStats && <QueryStatsModal stats={activeStats} onClose={() => setStatsOpen(false)} />}
-
-      {/* Diagramma delle chiamate: chi chiama una routine, fino al chiamante più lontano */}
-      {callGraphTarget && (
-        <CallGraphModal
-          target={callGraphTarget}
-          graph={callGraph}
-          loading={callGraphLoading}
-          error={callGraphError}
-          onClose={() => setCallGraphTarget(null)}
-          onReload={() => void loadCallGraph(true)}
-          onOpenObject={(kind, schema, name) => handleOpenObject(kind, schema, name, 'alter')}
-        />
-      )}
 
       {/* Popover: titolo e descrizione libera della tab */}
       {descEditingTab && (
@@ -1600,6 +2248,61 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* Chiusura di una tab con figlie aperte: si chiede se chiudere anche loro (tasto destro
+          o "×" passano da qui) */}
+      {closeConfirm &&
+        (() => {
+          const padre = editorTabs.find(t => t.id === closeConfirm.id)
+          const n = closeConfirm.childIds.length
+          return (
+            <div
+              className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+              onClick={() => setCloseConfirm(null)}
+            >
+              <div
+                className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-4 shadow-2xl"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-zinc-100">
+                  <CornerDownRight className="h-4 w-4 text-sky-400" />
+                  Chiudere anche le tab figlie?
+                </div>
+                <p className="mb-4 text-xs text-zinc-400">
+                  “{padre?.title ?? 'La tab'}” ha {n === 1 ? '1 tab figlia aperta' : `${n} tab figlie aperte`} (la
+                  gerarchia arriva a {MAX_TAB_DEPTH} livelli). Se chiudi solo questa, le figlie tornano in prima linea.
+                </p>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <button
+                    className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                    onClick={() => setCloseConfirm(null)}
+                  >
+                    Annulla
+                  </button>
+                  <button
+                    className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800"
+                    onClick={() => {
+                      const p = closeConfirm
+                      setCloseConfirm(null)
+                      removeTabs(closeTabIds(editorTabs, p.id, false))
+                    }}
+                  >
+                    Chiudi solo questa
+                  </button>
+                  <button
+                    className="rounded bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
+                    onClick={() => {
+                      const p = closeConfirm
+                      setCloseConfirm(null)
+                      removeTabs(closeTabIds(editorTabs, p.id, true))
+                    }}
+                  >
+                    {n === 1 ? 'Chiudi anche la figlia' : `Chiudi anche le ${n} figlie`}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
       {/* Menu contestuale della tab (tasto destro): chiusure multiple in stile SSMS */}
       {tabMenu &&
         (() => {

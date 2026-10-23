@@ -38,20 +38,30 @@ function skipNoise(text: string, i: number): number {
   return i
 }
 
-/** Indice della prossima '(' fuori da stringhe/commenti (o -1). */
-function findOpenParen(text: string, from: number): number {
-  const n = text.length
+/**
+ * Indice della prossima '(' fuori da stringhe/commenti, anche a capo (o -1).
+ * Nelle store di questo database la lista delle colonne comincia sulla riga DOPO il nome
+ * ("create table #t\n  ("): una ricerca che si ferma al primo a capo lasciava la temporanea
+ * senza colonne e l'intellisense non ne proponeva i campi.
+ * Fra il nome e la parentesi sono ammessi SOLO spazi, a capo e commenti: se il primo
+ * carattere "vero" non è una parentesi non c'è nessuna lista e non si va a prendere la
+ * parentesi di un altro statement.
+ */
+function findOpenParenMultiRiga(text: string, from: number): number {
+  const limite = Math.min(text.length, from + 4000)
   let i = from
-  while (i < n) {
+  while (i < limite) {
     const skipped = skipNoise(text, i)
     if (skipped !== i) {
       i = skipped
       continue
     }
     const ch = text[i]
-    if (ch === '(') return i
-    if (ch === ';' || ch === ')' || ch === '\n') return -1
-    i++
+    if (/\s/.test(ch)) {
+      i++
+      continue
+    }
+    return ch === '(' ? i : -1
   }
   return -1
 }
@@ -269,9 +279,9 @@ export function parseSelectListNames(list: string): string[] {
   return selectListInfo(list).names
 }
 
-/** Trova l'indice del token '(' della lista, se il segmento è "nome (" (senza righe di mezzo). */
+/** Trova l'indice della '(' della lista colonne, anche se è sulla riga successiva al nome. */
 function columnListOf(text: string, nameTokEnd: number): ColumnInfo[] {
-  const open = findOpenParen(text, nameTokEnd)
+  const open = findOpenParenMultiRiga(text, nameTokEnd)
   if (open === -1) return []
   const close = matchParen(text, open)
   if (close === -1) return []
@@ -290,6 +300,68 @@ function primaPrimaDi(text: string, from: number): string {
   let inizio = k
   while (inizio > 0 && /[A-Za-z0-9_]/.test(text[inizio - 1])) inizio--
   return text.slice(inizio, k + 1)
+}
+
+/**
+ * Nome della tabella sorgente dopo FROM, saltando la qualifica dello schema:
+ * "from dbo.DAT_UDC x" → "DAT_UDC" (l'alias non serve: le colonne sono quelle della tabella).
+ * Senza questo lo "*" di "[dbo].[T]" non si risolveva (il token dopo FROM è "dbo").
+ */
+function sourceNameAfter(text: string, tokens: SqlToken[], fromIdx: number): string {
+  let nome = ''
+  for (let i = fromIdx + 1; i < tokens.length; i++) {
+    const t = tokens[i]
+    if (!nome) {
+      nome = nameAt(text, t)
+      continue
+    }
+    // si prosegue solo se i due token sono uniti da un punto (stesso nome qualificato);
+    // altrimenti è un alias, un hint ("with (nolock)") o l'inizio di un'altra clausola
+    if (!text.slice(tokens[i - 1].end, t.start).includes('.')) break
+    nome = nameAt(text, t)
+  }
+  return nome
+}
+
+/**
+ * Colonne della SELECT-list di una sottoquery racchiusa fra `open` (la sua "(") e `close`.
+ * `columnsOf` risolve una sorgente nota quando la lista è "*" (tabelle dello schema,
+ * temporanee, CTE). Vale sia per il corpo di una CTE sia per una tabella derivata.
+ */
+function subqueryColumns(
+  text: string,
+  open: number,
+  close: number,
+  columnsOf: (name: string, depth?: number) => ColumnInfo[],
+  depth = 0,
+): ColumnInfo[] {
+  const body = text.slice(open + 1, close)
+  const bodyTokens = tokenizeSql(body)
+  const selectTok = bodyTokens.find(t => t.lower === 'select')
+  if (!selectTok) return []
+  let fromTok: SqlToken | undefined
+  let par = 0
+  for (let i = 0; i < bodyTokens.length; i++) {
+    const t = bodyTokens[i]
+    if (t.start < selectTok.start) continue
+    // il FROM di primo livello del corpo chiude la select-list
+    const between = body.slice(bodyTokens[i - 1]?.end ?? 0, t.start)
+    par += (between.match(/\(/g) ?? []).length - (between.match(/\)/g) ?? []).length
+    if (par <= 0 && t.lower === 'from') {
+      fromTok = t
+      break
+    }
+  }
+  const listText = body.slice(selectTok.end, fromTok ? fromTok.start : body.length)
+  const info = selectListInfo(listText)
+  const cols: ColumnInfo[] = info.names.map(n => makeColumn(n, ''))
+  if (info.star && fromTok) {
+    const src = sourceNameAfter(body, bodyTokens, bodyTokens.indexOf(fromTok))
+    for (const c of columnsOf(src, depth + 1)) {
+      if (!cols.some(x => x.name.toLowerCase() === c.name.toLowerCase())) cols.push(makeColumn(c.name, c.dataType))
+    }
+  }
+  return cols
 }
 
 /**
@@ -315,35 +387,8 @@ function extractCteColumns(
   }
 
   /** Colonne del corpo di una CTE a partire dalla sua SELECT. */
-  const bodyColumns = (openParen: number, closeParen: number, depth: number): ColumnInfo[] => {
-    const body = text.slice(openParen + 1, closeParen)
-    const bodyTokens = tokenizeSql(body)
-    const selectTok = bodyTokens.find(t => t.lower === 'select')
-    if (!selectTok) return []
-    let fromTok: SqlToken | undefined
-    let par = 0
-    for (let i = 0; i < bodyTokens.length; i++) {
-      const t = bodyTokens[i]
-      if (t.start < selectTok.start) continue
-      // il FROM di primo livello del corpo chiude la select-list
-      const between = body.slice(bodyTokens[i - 1]?.end ?? 0, t.start)
-      par += (between.match(/\(/g) ?? []).length - (between.match(/\)/g) ?? []).length
-      if (par <= 0 && t.lower === 'from') {
-        fromTok = t
-        break
-      }
-    }
-    const listText = body.slice(selectTok.end, fromTok ? fromTok.start : body.length)
-    const info = selectListInfo(listText)
-    const cols: ColumnInfo[] = info.names.map(n => makeColumn(n, ''))
-    if (info.star && fromTok) {
-      const src = bodyTokens[bodyTokens.indexOf(fromTok) + 1]
-      for (const c of columnsOf(src?.text ?? '', depth + 1)) {
-        if (!cols.some(x => x.name.toLowerCase() === c.name.toLowerCase())) cols.push(makeColumn(c.name, c.dataType))
-      }
-    }
-    return cols
-  }
+  const bodyColumns = (openParen: number, closeParen: number, depth: number): ColumnInfo[] =>
+    subqueryColumns(text, openParen, closeParen, columnsOf, depth)
 
   // "with NOME as ( … )" e le CTE successive ", NOME as ( … )": il tokenizer non restituisce
   // la virgola, quindi si guarda il TESTO prima del nome
@@ -392,6 +437,85 @@ export function extractCteTables(text: string, knownTables: TableInfo[] = []): T
   return [...extractCteColumns(text, tokens, knownTables).values()]
     .filter(cte => cte.columns.length > 0)
     .map(cte => makeLocalTable(cte.name, cte.columns))
+}
+
+/** Parole che non possono essere l'alias di una tabella derivata ("… ) on …", "… ) where …"). */
+const NON_ALIAS_DERIVATA = new Set([
+  'on', 'where', 'group', 'order', 'having', 'inner', 'left', 'right', 'full', 'cross', 'outer',
+  'join', 'union', 'except', 'intersect', 'select', 'and', 'or', 'not', 'set', 'values', 'when',
+  'then', 'else', 'end', 'option', 'for', 'with', 'as', 'pivot', 'unpivot', 'apply', 'return',
+  'begin', 'if', 'go', 'insert', 'update', 'delete', 'from', 'into', 'declare', 'exec', 'execute',
+])
+
+/** Salta spazi e commenti a partire da `i` (per leggere l'alias dopo la ")" di una derivata). */
+function saltaSpaziECommenti(text: string, from: number): number {
+  let i = from
+  const n = text.length
+  for (;;) {
+    if (i >= n) return n
+    if (/\s/.test(text[i])) {
+      i++
+      continue
+    }
+    const skipped = skipNoise(text, i)
+    if (skipped !== i) {
+      i = skipped
+      continue
+    }
+    return i
+  }
+}
+
+/** Alias dopo la ")" di una tabella derivata: "… ) t", "… ) AS t", "… ) AS [t]". */
+function aliasDopoParen(text: string, from: number): string | null {
+  let i = saltaSpaziECommenti(text, from)
+  // "AS" facoltativo (confronto su una fetta minima: nessuna scansione del testo intero)
+  if (text.slice(i, i + 2).toLowerCase() === 'as' && !/[A-Za-z0-9_]/.test(text[i + 2] ?? '')) {
+    i = saltaSpaziECommenti(text, i + 2)
+  }
+  if (text[i] === '[') {
+    const close = text.indexOf(']', i + 1)
+    if (close === -1) return null
+    const nome = text.slice(i + 1, close).trim()
+    return nome && !NON_ALIAS_DERIVATA.has(nome.toLowerCase()) ? nome : null
+  }
+  const m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(text.slice(i, i + 128))
+  if (!m) return null
+  return NON_ALIAS_DERIVATA.has(m[0].toLowerCase()) ? null : m[0]
+}
+
+/**
+ * Tabelle derivate: "( select … ) alias" nel FROM/JOIN, comprese le funzioni tabellari
+ * richiamate nel FROM ("from dbo.fn_Mia(1) t"). Il sommario le porta con il NOME DELL'ALIAS,
+ * così scrivendo "t." compaiono le colonne della sottoquery (segnalazione utente: con
+ * "inside join (select dbo.fn_X() X_BAIA) t on …" il "t." non proponeva X_BAIA).
+ * Lo "*" dentro la sottoquery si risolve con le tabelle note (schema, temporanee, CTE).
+ */
+export function extractDerivedTables(text: string, knownTables: TableInfo[] = []): TableInfo[] {
+  const out: TableInfo[] = []
+  const byAlias = new Map<string, TableInfo>()
+  const columnsOf = (name: string, depth = 0): ColumnInfo[] => {
+    if (depth > 4 || !name) return []
+    return knownTables.find(t => t.name.toLowerCase() === name.toLowerCase())?.columns ?? []
+  }
+  // "from (…)", "join (…)" e anche "cross/outer apply (…)" (tutte tabelle derivate)
+  const re = /\b(?:from|join|apply)\s*\(/gi
+  for (const m of text.matchAll(re)) {
+    const open = m.index + m[0].length - 1
+    const close = matchParen(text, open)
+    if (close === -1) continue
+    const alias = aliasDopoParen(text, close + 1)
+    if (!alias) continue
+    const key = alias.toLowerCase()
+    if (byAlias.has(key)) continue
+    // una parentesi su un join ("from (t1 join t2 on …) x") non ha una select-list: si scarta
+    const cols = subqueryColumns(text, open, close, columnsOf, 0)
+    if (cols.length === 0) continue
+    const tabella = makeLocalTable(alias, cols)
+    byAlias.set(key, tabella)
+    out.push(tabella)
+  }
+  return out
 }
 
 /**
@@ -515,7 +639,7 @@ export function extractLocalTables(text: string, knownTables: TableInfo[] = []):
       const insName = nameTok ? nameAt(text, nameTok) : ''
       if (nameTok && isLocalTableName(insName)) {
         const table = ensure(insName)
-        const open = findOpenParen(text, nameTok.end)
+        const open = findOpenParenMultiRiga(text, nameTok.end)
         if (open !== -1) {
           const close = matchParen(text, open)
           if (close !== -1) {

@@ -8,9 +8,15 @@ public class MetadataService
 {
     public async Task<List<string>> ListDatabasesAsync(string connectionString, CancellationToken ct = default)
     {
-        var dbs = new List<string>();
         await using var conn = new SqlConnection(connectionString);
         await conn.OpenAsync(ct);
+        return await ListDatabasesAsync(conn, ct);
+    }
+
+    /// <summary>Elenco database sulla connessione già aperta (evita un secondo connect nello schema).</summary>
+    private static async Task<List<string>> ListDatabasesAsync(SqlConnection conn, CancellationToken ct)
+    {
+        var dbs = new List<string>();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT name FROM sys.databases ORDER BY name;";
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -41,27 +47,41 @@ public class MetadataService
         {
             cmd.CommandText = """
                 SELECT s.name, t.name, t.create_date, t.modify_date,
-                       (SELECT COUNT(*) FROM sys.columns c WHERE c.object_id = t.object_id) AS ColumnCount
+                       (SELECT COUNT(*) FROM sys.columns c WHERE c.object_id = t.object_id) AS ColumnCount,
+                       -- FILEGROUP dei dati LOB: SSMS lo scrive in coda alla CREATE (TEXTIMAGE_ON […])
+                       ISNULL(ds.name, '')
                 FROM sys.tables t
                 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+                LEFT JOIN sys.data_spaces ds ON ds.data_space_id = t.lob_data_space_id
                 WHERE t.is_ms_shipped = 0
                 ORDER BY s.name, t.name;
                 """;
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
-                tables.Add(new TableInfo(r.GetString(0), r.GetString(1), r.GetInt32(4), r.GetDateTime(2)));
+                tables.Add(new TableInfo(r.GetString(0), r.GetString(1), r.GetInt32(4), r.GetDateTime(2))
+                {
+                    LobFileGroup = r.GetString(5) is { Length: > 0 } lob ? lob : null,
+                });
         }
 
         // Colonne (una sola query per tutte le tabelle)
+        // Il DEFAULT si raggiunge con dc.object_id = c.default_object_id (ricerca sulla chiave
+        // primaria): con il join su (parent_object_id, parent_column_id) SQL Server faceva una
+        // scansione per OGNI colonna e la query passava da ~190 ms a ~710 ms.
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = """
                 SELECT s.name, t.name, c.name, ty.name, c.max_length, c.precision, c.scale,
-                       c.is_nullable, c.is_identity, c.is_computed
+                       c.is_nullable, c.is_identity, c.is_computed,
+                       -- DEFAULT della colonna (testo e nome del vincolo) e colonne calcolate:
+                       -- servono allo script CREATE per rispecchiare il database di origine
+                       dc.definition, dc.name, cc.definition
                 FROM sys.columns c
                 INNER JOIN sys.tables t ON c.object_id = t.object_id
                 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
                 INNER JOIN sys.types ty ON c.user_type_id = ty.user_type_id
+                LEFT JOIN sys.default_constraints dc ON dc.object_id = c.default_object_id
+                LEFT JOIN sys.computed_columns cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id
                 WHERE t.is_ms_shipped = 0
                 ORDER BY s.name, t.name, c.column_id;
                 """;
@@ -78,7 +98,10 @@ public class MetadataService
                     r.GetBoolean(8),
                     r.GetBoolean(9),
                     r.IsDBNull(4) ? null : (int)r.GetInt16(4),
-                    Description: null));
+                    Description: null,
+                    DefaultDefinition: r.IsDBNull(10) ? null : r.GetString(10),
+                    DefaultName: r.IsDBNull(11) ? null : r.GetString(11),
+                    ComputedDefinition: r.IsDBNull(12) ? null : r.GetString(12)));
             }
         }
 
@@ -94,10 +117,43 @@ public class MetadataService
                          INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
                          WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0
                          ORDER BY ic.key_ordinal
-                         FOR XML PATH('')), 1, 2, ''), '') AS Cols
+                         FOR XML PATH('')), 1, 2, ''), '') AS Cols,
+                       -- Colonne chiave in ordine DISCENDENTE: nello script vanno scritte [col] DESC
+                       ISNULL(STUFF((
+                         SELECT ', ' + c.name
+                         FROM sys.index_columns ic
+                         INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                         WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id
+                               AND ic.is_included_column = 0 AND ic.is_descending_key = 1
+                         ORDER BY ic.key_ordinal
+                         FOR XML PATH('')), 1, 2, ''), '') AS ColsDesc,
+                       -- OPZIONI dell'indice: servono allo script CREATE ("WITH (PAD_INDEX = …, FILLFACTOR = …)")
+                       i.fill_factor, i.is_padded, i.ignore_dup_key, i.allow_row_locks, i.allow_page_locks,
+                       -- CONVERT(bit, …): senza il cast l'espressione torna INT e GetBoolean fallisce (era l'errore 500)
+                       CASE WHEN COL_LENGTH('sys.indexes', 'optimize_for_sequential_key') IS NULL
+                            THEN CONVERT(bit, 0) ELSE i.optimize_for_sequential_key END,
+                       ISNULL((SELECT TOP 1 st.no_recompute FROM sys.stats st
+                               WHERE st.object_id = i.object_id AND st.stats_id = i.index_id), CONVERT(bit, 0)),
+                       -- TIPO di indice (CLUSTERED/NONCLUSTERED: cambia la struttura fisica della tabella!)
+                       i.type,
+                       -- FILEGROUP dell'indice (nell'esempio dell'utente: [SECONDARY])
+                       ISNULL(ds.name, ''),
+                       -- VINCOLO o indice? is_unique_constraint: decide DROP CONSTRAINT vs DROP INDEX
+                       i.is_unique_constraint,
+                       -- Colonne INCLUDE (copertura): nello script CREATE INDEX vanno in INCLUDE (…)
+                       ISNULL(STUFF((
+                         SELECT ', ' + c.name
+                         FROM sys.index_columns ic
+                         INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                         WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 1
+                         ORDER BY ic.index_column_id
+                         FOR XML PATH('')), 1, 2, ''), '') AS ColsInclude,
+                       -- Filtro degli indici filtrati (CREATE INDEX … WHERE …)
+                       ISNULL(i.filter_definition, '') AS Filtro
                 FROM sys.tables t
                 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
                 INNER JOIN sys.indexes i ON i.object_id = t.object_id
+                LEFT JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
                 WHERE t.is_ms_shipped = 0 AND i.index_id > 0
                 ORDER BY s.name, t.name, i.index_id;
                 """;
@@ -110,7 +166,32 @@ public class MetadataService
                 var cols = r.GetString(5)
                     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .ToList();
-                list.Add(new IndexInfo(r.GetString(2), r.GetBoolean(3), r.GetBoolean(4), cols));
+                var colsDesc = r.GetString(6)
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .ToList();
+                list.Add(new IndexInfo(r.GetString(2), r.GetBoolean(3), r.GetBoolean(4), cols)
+                {
+                    FillFactor = r.IsDBNull(7) ? 0 : Convert.ToInt32(r.GetValue(7)),
+                    IsPadded = r.GetBoolean(8),
+                    IgnoreDupKey = r.GetBoolean(9),
+                    AllowRowLocks = r.GetBoolean(10),
+                    AllowPageLocks = r.GetBoolean(11),
+                    OptimizeForSequentialKey = r.GetBoolean(12),
+                    StatisticsNoRecompute = r.GetBoolean(13),
+                    // ordine delle colonne nella SELECT: 14 = i.type, 15 = filegroup
+                    // i.type e' TINYINT: GetInt32 non lo legge (era l'errore 500)
+                    IsClustered = Convert.ToInt32(r.GetValue(14)) == 1,
+                    FileGroup = r.GetString(15) is { Length: > 0 } fg ? fg : null,
+                    DescendingColumns = colsDesc.Count > 0 ? colsDesc : null,
+                    // 16 = is_unique_constraint, 17 = colonne INCLUDE, 18 = filtro
+                    IsUniqueConstraint = r.GetBoolean(16),
+                    IncludedColumns = r.GetString(17)
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .ToList() is { Count: > 0 } inc
+                        ? inc
+                        : null,
+                    FilterDefinition = r.GetString(18) is { Length: > 0 } filtro ? filtro : null,
+                });
             }
         }
 
@@ -272,8 +353,9 @@ public class MetadataService
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = """
-                SELECT ISNULL(s.name, ''), ISNULL(OBJECT_NAME(tr.parent_id), ''), tr.name
+                SELECT ISNULL(s.name, ''), ISNULL(OBJECT_NAME(tr.parent_id), ''), tr.name, ISNULL(m.definition, '')
                 FROM sys.triggers tr
+                LEFT JOIN sys.sql_modules m ON m.object_id = tr.object_id
                 LEFT JOIN sys.objects o ON tr.parent_id = o.object_id
                 LEFT JOIN sys.schemas s ON o.schema_id = s.schema_id
                 WHERE tr.is_ms_shipped = 0
@@ -281,7 +363,10 @@ public class MetadataService
                 """;
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
-                triggers.Add(new TriggerInfo(r.GetString(0), r.GetString(1), r.GetString(2)));
+                triggers.Add(new TriggerInfo(r.GetString(0), r.GetString(1), r.GetString(2))
+                {
+                    Definition = r.GetString(3) is { Length: > 0 } def ? def : null,
+                });
         }
 
         // Vincoli CHECK (una riga per vincolo: nome, tabella e testo della condizione)
@@ -318,6 +403,45 @@ public class MetadataService
             await using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
                 functions.Add(new FunctionInfo(r.GetString(0), r.GetString(1), r.GetString(2)));
+        }
+
+        // Colonne RESTITUITE dalle funzioni tabellari (IF = inline, TF = multi-istruzione):
+        // servono all'intellisense per proporre i campi di "FROM dbo.fn_x() a" quando si scrive "a.".
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT s.name, f.name, c.name, ty.name, c.is_nullable, c.max_length
+                FROM sys.objects f
+                INNER JOIN sys.schemas s ON f.schema_id = s.schema_id
+                INNER JOIN sys.columns c ON c.object_id = f.object_id
+                INNER JOIN sys.types ty ON ty.user_type_id = c.user_type_id
+                WHERE f.type IN ('IF','TF') AND f.is_ms_shipped = 0
+                ORDER BY s.name, f.name, c.column_id;
+                """;
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            var perFunzione = new Dictionary<(string, string), List<ColumnInfo>>();
+            while (await r.ReadAsync(ct))
+            {
+                var key = (r.GetString(0), r.GetString(1));
+                if (!perFunzione.TryGetValue(key, out var list))
+                    perFunzione[key] = list = [];
+                list.Add(new ColumnInfo(
+                    r.GetString(2),
+                    r.GetString(3),
+                    r.GetBoolean(4),
+                    false,
+                    false,
+                    r.IsDBNull(5) ? null : (int)r.GetInt16(5),
+                    Description: null));
+            }
+            if (perFunzione.Count > 0)
+            {
+                functions = functions
+                    .Select(f => perFunzione.TryGetValue((f.Schema, f.Name), out var cols)
+                        ? f with { Columns = cols }
+                        : f)
+                    .ToList();
+            }
         }
 
         // Foreign key (TUTTE le coppie di colonne: le composite generano più righe con lo stesso Name,
@@ -441,7 +565,7 @@ public class MetadataService
             .Take(500)
             .ToList();
 
-        var databases = (await ListDatabasesAsync(connectionString, ct)).Select(d => new DatabaseInfo(d)).ToList();
+        var databases = (await ListDatabasesAsync(conn, ct)).Select(d => new DatabaseInfo(d)).ToList();
         return new DatabaseSummary(tables, views, procs, triggers, checkConstraints, functions, foreignKeys, databases, cooccurrences);
     }
 
@@ -582,6 +706,26 @@ public class MetadataService
     /// <summary>
     /// Estrae i valori di default dei parametri dalla definizione CREATE PROCEDURE
     /// (sys.parameters.has_default_value è inaffidabile: restituisce 0 anche con default espliciti).
+    /// <summary>
+    /// Regex usate mentre si leggono i metadati: create UNA volta (compilate) e non a ogni
+    /// definizione. Prima erano istanziate dentro il ciclo sulle ~2000 routine: solo quello
+    /// costava quasi un secondo a ogni lettura dello schema.
+    /// </summary>
+    private static readonly System.Text.RegularExpressions.Regex ReParametroDefault = new(
+        @"@\s*([A-Za-z_][A-Za-z0-9_]*)\s+([^=]+?)\s*=\s*(.+?)\s*$",
+        System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.IgnoreCase
+        | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex ReOutputReadonly = new(
+        @"\s+(OUTPUT|READONLY)\s*$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>FROM/JOIN/UPDATE/INTO/TABLE nome (con schema opzionale) nelle definizioni.</summary>
+    private static readonly System.Text.RegularExpressions.Regex ReTabelleReferenziate = new(
+        @"\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
     /// Gestisce tipi con parentesi (nvarchar(50)), OUTPUT, commenti e virgole nei default (es. GETDATE()).
     /// </summary>
     internal static Dictionary<string, string> ExtractParameterDefaults(string definition)
@@ -611,15 +755,11 @@ public class MetadataService
         // Divide in parametri: virgole fuori da parentesi e stringhe
         foreach (var raw in SplitSignatureParams(signature))
         {
-            var m = System.Text.RegularExpressions.Regex.Match(
-                raw,
-                @"@\s*([A-Za-z_][A-Za-z0-9_]*)\s+([^=]+?)\s*=\s*(.+?)\s*$",
-                System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var m = ReParametroDefault.Match(raw);
             if (!m.Success) continue;
             var defaultValue = m.Groups[3].Value.Trim();
             // toglie OUTPUT/READONLY residui dal default (raro ma possibile)
-            defaultValue = System.Text.RegularExpressions.Regex.Replace(
-                defaultValue, @"\s+(OUTPUT|READONLY)\s*$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            defaultValue = ReOutputReadonly.Replace(defaultValue, "");
             result[m.Groups[1].Value.Trim()] = defaultValue;
         }
         return result;
@@ -663,11 +803,8 @@ public class MetadataService
     {
         // estrae la sequenza di tabelle referenziate (FROM/JOIN/UPDATE/INTO/TABLE) ignorando commenti e stringhe
         var clean = StripCommentsAndStrings(definition);
-        var re = new System.Text.RegularExpressions.Regex(
-            @"\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         var names = new List<string>();
-        foreach (System.Text.RegularExpressions.Match m in re.Matches(clean))
+        foreach (System.Text.RegularExpressions.Match m in ReTabelleReferenziate.Matches(clean))
         {
             var token = m.Groups[1].Value.Replace("[", "").Replace("]", "").Trim();
             if (token.Length == 0) continue;

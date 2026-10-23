@@ -13,12 +13,16 @@
 //   node scripts/capture-screenshots.mjs --verify-alias           (alias. → campi della tabella)
 //   node scripts/capture-screenshots.mjs --verify-labels          (GOTO → label del documento)
 //   node scripts/capture-screenshots.mjs --verify-error-line      (doppio clic sull'errore → riga)
+//   node scripts/capture-screenshots.mjs --verify-create          (script CREATE della tabella = SSMS)
+//   node scripts/capture-screenshots.mjs --verify-set             (direttive SET nell'intellisense)
+//   node scripts/capture-screenshots.mjs --verify-copia           (Copia SQL a sinistra + tasto destro)
+//   node scripts/capture-screenshots.mjs --verify-report          (istogramma tabelle + DELETE contenuto)
 //   node scripts/capture-screenshots.mjs --measure-typing         (latenza digitando in una store grande)
 //
 // Prerequisiti: backend su :5213 e dev server su :5173 attivi.
 
 import { spawn } from 'node:child_process'
-import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -37,10 +41,59 @@ const VERIFY_SCHEMA_REFRESH = process.argv.includes('--verify-schema-refresh')
 const VERIFY_PAIR_HIGHLIGHT = process.argv.includes('--verify-pair-highlight')
 const VERIFY_LOCAL_TABLES = process.argv.includes('--verify-local-tables')
 const VERIFY_ALIAS = process.argv.includes('--verify-alias')
+const VERIFY_RISULTATI_SEQUENZA = process.argv.includes('--verify-risultati-sequenza')
+const VERIFY_SPAZI = process.argv.includes('--verify-spazi')
+const VERIFY_INDICI_VINCOLI = process.argv.includes('--verify-indici-vincoli')
+const VERIFY_DRAGO_JOIN = process.argv.includes('--verify-drago-join')
+const VERIFY_OGGETTO_VERSIONE = process.argv.includes('--verify-oggetto-versione')
+const VERIFY_MAIUSCOLO = process.argv.includes('--verify-maiuscolo')
+const VERIFY_TRANSAZIONE = process.argv.includes('--verify-transazione')
+const VERIFY_SELEZIONE_TREEVIEW = process.argv.includes('--verify-selezione-treeview')
+const VERIFY_GRUPPI_ALBERO = process.argv.includes('--verify-gruppi-albero')
+const VERIFY_F5_GLOBALE = process.argv.includes('--verify-f5-globale')
+const MEASURE_SCHEMA = process.argv.includes('--measure-schema')
+const VERIFY_GHOST = process.argv.includes('--verify-ghost')
+const VERIFY_VIRGOLA = process.argv.includes('--verify-virgola')
+const VERIFY_ANTEPRIMA = process.argv.includes('--verify-anteprima')
+const VERIFY_PIANO = process.argv.includes('--verify-piano')
+const VERIFY_MULTICURSORE = process.argv.includes('--verify-multicursore')
+const VERIFY_SHIFT_SELEZIONE = process.argv.includes('--verify-shift-selezione')
+const VERIFY_FORMATTA_CTE = process.argv.includes('--verify-formatta-cte')
+const VERIFY_FORMATTA_ASSIGN = process.argv.includes('--verify-formatta-assign')
+const VERIFY_TREEVIEW_COMANDI = process.argv.includes('--verify-treeview-comandi')
+const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
+const VERIFY_DATABASE_INTELLISENSE = process.argv.includes('--verify-database-intellisense')
+const VERIFY_UNDO_REDO = process.argv.includes('--verify-undo-redo')
+const VERIFY_RICERCA_PAROLE = process.argv.includes('--verify-ricerca-parole')
+const DUMP_GUIDE = process.argv.find(a => a.startsWith('--dump-guide='))?.slice('--dump-guide='.length) ?? null
 const VERIFY_LABELS = process.argv.includes('--verify-labels')
 const VERIFY_ERROR_LINE = process.argv.includes('--verify-error-line')
 const MEASURE_TYPING = process.argv.includes('--measure-typing')
 const VERIFY_SCROLLBARS = process.argv.includes('--verify-scrollbars')
+const VERIFY_TABTREE = process.argv.includes('--verify-tabtree')
+const VERIFY_SEARCH = process.argv.includes('--verify-search')
+const VERIFY_INDENT = process.argv.includes('--verify-indent')
+const VERIFY_DROP = process.argv.includes('--verify-drop')
+const VERIFY_FRAGMENT = process.argv.includes('--verify-fragment')
+const VERIFY_SIDEBAR = process.argv.includes('--verify-sidebar')
+const VERIFY_CHANGES = process.argv.includes('--verify-changes')
+const VERIFY_MERGE = process.argv.includes('--verify-merge')
+const VERIFY_PARAMS = process.argv.includes('--verify-params')
+const VERIFY_MULTIRIGA = process.argv.includes('--verify-multiriga')
+const VERIFY_TEMA = process.argv.includes('--verify-tema')
+const VERIFY_CREATE = process.argv.includes('--verify-create')
+const VERIFY_SET = process.argv.includes('--verify-set')
+const VERIFY_COPIA = process.argv.includes('--verify-copia')
+const VERIFY_TRIGGER = process.argv.includes('--verify-trigger')
+const VERIFY_INIZIO = process.argv.includes('--verify-inizio')
+const VERIFY_CURSORI_CORTI = process.argv.includes('--verify-cursori-corti')
+const VERIFY_REPORT = process.argv.includes('--verify-report')
+const VERIFY_HOVER = process.argv.includes('--verify-hover')
+/**
+ * Finestra molto alta per --verify-create: Monaco disegna nel DOM solo le righe VISIBILI, quindi
+ * per leggere tutto lo script CREATE (colonne, vincoli, DEFAULT, trigger) serve un editor alto.
+ */
+const WINDOW_H = VERIFY_CREATE ? 2600 : VERIFY_HOVER ? 1400 : 1000
 
 const CHROME_CANDIDATES = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -58,8 +111,75 @@ const QUERY =
 const EXEC_LINE = process.env.SHOT_EXEC ?? 'EXEC dbo.ws_L2_SetCorridoioMiss @idMissione = 1'
 /** Routine di cui mostrare il diagramma delle chiamate. */
 const ROUTINE_NAME = process.env.SHOT_ROUTINE ?? 'ws_L2_SetCorridoioMiss'
+/**
+ * Tabella e trigger usati da --verify-trigger: si abilita/disabilita il trigger di una tabella
+ * reale del database di prova.
+ */
+const TRIGGER_TABLE = process.env.SHOT_TRIGGER_TABLE ?? 'DAT_CLASSI_MERC'
+const TRIGGER_NAME = process.env.SHOT_TRIGGER ?? `tr_${TRIGGER_TABLE}`
+/**
+ * Store usata da --verify-search per il controllo "nessun doppione": cercandone il NOME deve
+ * comparire UNA volta sola (non anche come match nella sua definizione).
+ */
+const STORE_UNICA = process.env.SHOT_STORE_UNICA ?? 'ws_CUSTOM_TRANSFER'
+/**
+ * Tabella con PRIMARY KEY COMPOSITA usata dalla verifica della MERGE (--verify-merge):
+ * serve a controllare che NESSUN campo chiave finisca nell'UPDATE SET.
+ */
+const TABELLA_CHIAVE = process.env.SHOT_TABLE ?? 'L1_AZIONI_PERCORSI'
+/**
+ * Tabella usata da --verify-create: è piccola (2 colonne) ma ha TUTTO quello che serve per
+ * confrontare lo script con quello di SSMS: PRIMARY KEY NONCLUSTERED con opzioni e FILLFACTOR,
+ * un vincolo UNIQUE, un DEFAULT, un CHECK e un trigger con il corpo.
+ */
+const TABELLA_CREATE = process.env.SHOT_CREATE_TABLE ?? 'DAT_CLASSI_MERC'
+/**
+ * Seconda tabella usata da --verify-create: ha una colonna `varbinary(max)`, quindi lo script deve
+ * chiudere con ") ON [SECONDARY] TEXTIMAGE_ON [SECONDARY]" come fa SSMS.
+ */
+const TABELLA_CREATE_LOB = process.env.SHOT_CREATE_TABLE_LOB ?? 'UTI_LINGUA_XML'
+/** Database attivo della connessione di prova: SSMS apre lo script con "USE [<database>]". */
+const DB_CREATE = process.env.SHOT_CREATE_DB ?? 'WSGSDMALTA'
+/** Opzioni dell'indice di TABELLA_CREATE, lette dai metadati veri (sys.indexes) del database. */
+const OPZIONI_CREATE =
+  'PAD_INDEX = ON, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ' +
+  'ALLOW_PAGE_LOCKS = OFF, FILLFACTOR = 90, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF'
+/**
+ * Funzione TABELLARE usata da --verify-alias: con "FROM dbo.<fn>() a" l'intellisense deve
+ * proporre i campi che la funzione restituisce (era il caso in cui il popup restava vuoto).
+ */
+const FUNZIONE_TABELLARE = process.env.SHOT_TVF ?? 'fn_Calc_ORD_RIGHE_FIELDS'
+/** Una colonna restituita da FUNZIONE_TABELLARE (per il controllo nel popup). */
+const FUNZIONE_TABELLARE_CAMPO = process.env.SHOT_TVF_COL ?? 'CALC_ORD_ORDINE'
+/**
+ * Store usata da --verify-params: è una di quelle scritte con lo stile "@param as tipo", dove la
+ * lettura della firma si fermava al primo "as" (i parametri non comparivano nell'intellisense).
+ */
+const ROUTINE_PARAMS_NAME = process.env.SHOT_PARAMS_ROUTINE ?? 'ws_HDL_TestPrio'
+/**
+ * Parametri della routine ROUTINE_PARAMS_NAME (dalla firma nel database): la verifica
+ * --verify-params controlla che l'intellisense li proponga mentre la si modifica.
+ */
+const ROUTINE_PARAMS = (process.env.SHOT_PARAMS ?? '@mId,@nNoBack,@fExist,@Errore')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean)
 /** Quanti caratteri spostare il cursore per finire DENTRO il nome della routine ("EXEC dbo." = 9). */
 const EXEC_NAME_OFFSET = Number(process.env.SHOT_EXEC_OFFSET ?? 13)
+/**
+ * Store usata da --verify-hover: ha il COMMENTO di testata (blocco di commento prima della CREATE),
+ * 23 parametri e un parametro OUTPUT con lunghezza esatta (@errore nvarchar(255) OUTPUT).
+ */
+const STORE_HOVER = process.env.SHOT_HOVER_STORE ?? 'ws_L2_GenMissIng'
+/** Numero di parametri della firma di STORE_HOVER (letta da sys.parameters del database). */
+const STORE_HOVER_PARAMS = Number(process.env.SHOT_HOVER_PARAMS ?? 23)
+/**
+ * FUNZIONE usata da --verify-hover: le funzioni del sommario NON hanno i parametri, quindi qui si
+ * controlla che vengano letti dalla DEFINIZIONE (10 parametri, commento di testata in blocco).
+ */
+const FUNZIONE_HOVER = process.env.SHOT_HOVER_FUNCTION ?? 'fn_APS_Detect_ErrBF'
+/** Parametri della firma di FUNZIONE_HOVER (senza il valore di ritorno: sys.parameters ha una riga con nome NULL). */
+const FUNZIONE_HOVER_PARAMS = Number(process.env.SHOT_HOVER_FUNCTION_PARAMS ?? 10)
 
 /**
  * Batch usato dalla verifica degli errori: crea una procedura TEMPORANEA (vive solo nella
@@ -90,6 +210,26 @@ const BATCH_ERROR_AND_RESULTS =
 
 /** Query a più righe usata dalla verifica della posizione del cursore. */
 const TAB1_SQL = 'SELECT 1 AS uno;\nSELECT 2 AS due;\nSELECT 3 AS tre;\nSELECT 4 AS quattro;'
+
+/**
+ * ACCESSO all'app con un paio di tentativi: mentre Vite ricompila i moduli la pagina può
+ * ricaricarsi e il clic sulla login andare perso (era il motivo dei fallimenti "a freddo" dei modi
+ * di verifica appena dopo una modifica al codice). Aspetta editor e schema pronti.
+ */
+async function accediApp(page, attesa = `document.body.textContent.includes('Schema:')`) {
+  for (let tentativo = 1; tentativo <= 3; tentativo++) {
+    await page.waitFor(`document.querySelector('input')`, 30000, 'pagina pronta')
+    await page.clickWhere(
+      `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+         .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    )
+    if (await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, `editor pronto (${tentativo})`)) {
+      if (await page.waitFor(attesa, 60000, `schema caricato (${tentativo})`)) return true
+    }
+    await sleep(1500)
+  }
+  throw new Error('app non caricata: editor o schema non pronti dopo 3 tentativi')
+}
 
 /**
  * Rettangolo dell'area di testo dell'editor: serve a cliccare "dentro" l'editor con un
@@ -160,7 +300,7 @@ function launchBrowser() {
       '--no-default-browser-check',
       `--remote-debugging-port=${PORT}`,
       `--user-data-dir=${profileDir}`,
-      '--window-size=1600,1000',
+      `--window-size=1600,${WINDOW_H}`,
       'about:blank',
     ],
     { stdio: 'ignore' },
@@ -280,10 +420,17 @@ class Session {
   async typeText(text) {
     await this.send('Input.insertText', { text })
   }
-  /** Preme un tasto (es. F5) o una combinazione (ctrl+space). */
-  async press(key, { code, vk, modifiers = 0 } = {}) {
+  /** Preme un tasto (es. F5) o una combinazione (ctrl+space). Per i tasti che INSERISCONO un
+   *  carattere serve `text` (es. Enter: text '\r'); con `eventType: 'keyDown'` si manda la
+   *  pressione "vera" (senza testo), che è il percorso del keybinding di Monaco. */
+  async press(key, { code, vk, modifiers = 0, text, eventType } = {}) {
     const base = { key, code: code ?? key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers }
-    await this.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base })
+    const tipo = eventType ?? (text !== undefined ? 'keyDown' : 'rawKeyDown')
+    await this.send('Input.dispatchKeyEvent', {
+      type: tipo,
+      ...base,
+      ...(text !== undefined ? { text, unmodifiedText: text } : {}),
+    })
     await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
   }
   /** Clic del mouse in coordinate di pagina (con eventuale tasto destro). */
@@ -293,6 +440,23 @@ class Session {
     await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...common, buttons: 0 })
     await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...common, buttons })
     await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...common, buttons: 0 })
+  }
+  /**
+   * Trascinamento del mouse da un punto a un altro (per la selezione col mouse).
+   * `modifiers`: 0 nessuno, 1 Alt (selezione a BLOCCHI come SSMS).
+   */
+  async dragPoint(x1, y1, x2, y2, modifiers = 0) {
+    const base = { button: 'left', clickCount: 1, buttons: 1, modifiers }
+    await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(x1), y: Math.round(y1), button: 'none', buttons: 0, modifiers })
+    await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: Math.round(x1), y: Math.round(y1), ...base })
+    const passi = 8
+    for (let i = 1; i <= passi; i++) {
+      const x = x1 + ((x2 - x1) * i) / passi
+      const y = y1 + ((y2 - y1) * i) / passi
+      // eslint-disable-next-line no-await-in-loop
+      await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(x), y: Math.round(y), button: 'left', buttons: 1, modifiers })
+    }
+    await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: Math.round(x2), y: Math.round(y2), button: 'left', buttons: 0, modifiers })
   }
   /** Attende che una condizione JS diventi vera. */
   async waitFor(expression, timeoutMs = 15000, label = expression) {
@@ -345,9 +509,9 @@ async function newPage() {
 }
 
 /**
- * VERIFICA (--verify-tabs): nella barra delle tab, la nuova tab finisce davvero a sinistra?
- * Controlla il comportamento vero nel browser: pulsante "a sinistra", "Nuova" con la
- * preferenza attiva, e la voce del menu della tab. Stampa PASS/FAIL per ogni caso.
+ * VERIFICA (--verify-tabs): nella barra delle tab, dove finisce la nuova tab?
+ * Un solo pulsante "Nuova" (a destra, dopo quella attiva): Shift+clic o clic col tasto
+ * centrale la aprono come PRIMA tab, cioè a sinistra. Stampa PASS/FAIL per ogni caso.
  */
 async function verifyTabPositions(page) {
   await page.waitFor(`document.querySelector('input')`, 10000)
@@ -363,8 +527,22 @@ async function verifyTabPositions(page) {
     page.eval(`[...document.querySelectorAll('[title*="\\u00b7 db:"]')]
       .map(b => (b.getAttribute('title') || '').split(' \\u00b7 db: ')[0].trim())`)
   const clickNew = () => page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').startsWith('Nuova query'))`)
-  const clickNewLeft = () =>
-    page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('PRIMA tab'))`)
+  /** Shift+clic sul pulsante "Nuova" (scorciatoia "apri come prima tab"). */
+  const shiftClickNew = () =>
+    page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(x => (x.getAttribute('title') || '').startsWith('Nuova query'));
+      if (!b) return false;
+      b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, shiftKey: true }));
+      return true;
+    })()`)
+  /** Clic col tasto centrale sul pulsante "Nuova" (stessa scorciatoia). */
+  const middleClickNew = () =>
+    page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(x => (x.getAttribute('title') || '').startsWith('Nuova query'));
+      if (!b) return false;
+      b.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, view: window, button: 1 }));
+      return true;
+    })()`)
 
   const results = []
   const check = (name, ok, detail) => {
@@ -378,17 +556,39 @@ async function verifyTabPositions(page) {
   const before = await tabs()
   console.log(`  tab attuali: ${JSON.stringify(before)}`)
 
-  // 1. pulsante dedicato "a sinistra"
-  await clickNewLeft()
+  // 1. Shift+clic su "Nuova": la nuova tab nasce come PRIMA (a sinistra)
+  await shiftClickNew()
+  await sleep(400)
   const afterLeft = await tabs()
-  check('il pulsante apre la nuova tab come PRIMA', afterLeft[0] === afterLeft[0] && afterLeft.length === before.length + 1 && !before.includes(afterLeft[0]), JSON.stringify(afterLeft))
+  check(
+    'Shift+clic su "Nuova" apre la tab come PRIMA',
+    afterLeft.length === before.length + 1 && !before.includes(afterLeft[0]),
+    JSON.stringify(afterLeft),
+  )
 
-  // 2. "Nuova" normale: con la preferenza su "dopo l'attiva" la tab va dopo quella attiva
+  // 2. clic col tasto centrale su "Nuova": stessa scorciatoia
+  await middleClickNew()
+  await sleep(400)
+  const afterMiddle = await tabs()
+  check(
+    'clic col tasto centrale apre la tab come PRIMA',
+    afterMiddle.length === afterLeft.length + 1 && !afterLeft.includes(afterMiddle[0]),
+    JSON.stringify(afterMiddle),
+  )
+
+  // 3. clic normale: la nuova tab va TUTTO A DESTRA (in fondo), non accanto a quella attiva
   await clickNew()
+  await sleep(400)
   const afterNormal = await tabs()
-  check('"Nuova" rispetta la preferenza (dopo quella attiva)', afterNormal.length === afterLeft.length + 1, JSON.stringify(afterNormal))
+  check(
+    '"Nuova" apre la tab TUTTO A DESTRA (in fondo, non accanto a quella attiva)',
+    afterNormal.length === afterMiddle.length + 1 &&
+      !afterMiddle.includes(afterNormal[afterNormal.length - 1]),
+    JSON.stringify(afterNormal),
+  )
 
-  // 3. dal menu della tab: "Nuove tab a sinistra" rende la scelta permanente
+  // 4. il tasto destro sulla tab non deve offrire voci "nuove tab a sinistra" (le scorciatoie
+  //    sono Shift+clic e tasto centrale): si controlla che il menu si apra e non le contenga
   const openedMenu = await page.eval(`(() => {
     const b = document.querySelector('[title*="\\u00b7 db:"]');
     if (!b) return false;
@@ -396,16 +596,53 @@ async function verifyTabPositions(page) {
     return true;
   })()`)
   await sleep(600)
-  const toggled = openedMenu && (await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim().startsWith('Nuove tab a sinistra'))`))
+  const vociMenu = await page.eval(
+    `[...document.querySelectorAll('button')].filter(b => b.offsetParent).map(b => (b.textContent || '').trim()).filter(t => t.startsWith('Chiudi') || t.includes('nuove tab'))`,
+  )
+  console.log(`  voci del menu della tab: ${JSON.stringify(vociMenu)}`)
+  check(
+    'il menu della tab ha le voci di chiusura e nessun doppione "nuove tab"',
+    openedMenu === true && vociMenu.some(v => v.startsWith('Chiudi')) && !vociMenu.some(v => v.includes('nuove tab')),
+    JSON.stringify(vociMenu),
+  )
+  await page.press('Escape', { code: 'Escape', vk: 27 })
   await sleep(300)
-  const persisted = await page.eval(`JSON.parse(localStorage.getItem('sqlIntelli.settings.v1') || '{}').newTabPosition || ''`)
-  check('il menu imposta la preferenza "a sinistra"', !!toggled && persisted === 'start', `preferenza salvata: ${JSON.stringify(persisted)}`)
 
-  // 4. ora "Nuova" deve aprire a sinistra
+  // 5) il pannello dei RISULTATI è legato alla TAB: nascondendolo qui non sparisce nell'altra
+  const risultati = () => page.eval(`!!document.querySelector('[data-risultati="pannello"]')`)
+  /** Si assicura che nella tab attiva i risultati siano VISIBILI (Ctrl+R se sono nascosti). */
+  const assicuraVisibili = async () => {
+    if (!(await risultati())) {
+      await page.press('r', { code: 'KeyR', vk: 82, modifiers: 2 })
+      await sleep(600)
+    }
+  }
+  await page.clickWhere(`document.querySelectorAll('.sql-tab')[0]`)
+  await sleep(500)
+  await assicuraVisibili()
   await clickNew()
-  const afterPref = await tabs()
-  const firstIsNew = !afterNormal.includes(afterPref[0]) || afterPref[0] === afterPref[0]
-  check('con la preferenza attiva "Nuova" apre a sinistra', afterPref.length === afterNormal.length + 1 && firstIsNew, JSON.stringify(afterPref))
+  await sleep(600)
+  await assicuraVisibili()
+  const titoloNuova = (await tabs()).slice(-1)[0]
+  const primaDelToggle = await risultati()
+  await page.press('r', { code: 'KeyR', vk: 82, modifiers: 2 }) // Ctrl+R: nasconde QUI
+  await sleep(600)
+  const dopoIlToggle = await risultati()
+  // si passa all'altra tab (il clic va sul PULSANTE del titolo: il div della tab non cambia tab)
+  await page.clickWhere(
+    `(() => {
+      const t = [...document.querySelectorAll('.sql-tab')].find(x => !(x.textContent || '').includes(${JSON.stringify(titoloNuova)}));
+      return t ? t.querySelector('button') : null;
+    })()`,
+  )
+  await sleep(600)
+  const altraTab = await risultati()
+  console.log(`  risultati: prima=${primaDelToggle} dopo Ctrl+R=${dopoIlToggle} altra tab=${altraTab}`)
+  check(
+    'Ctrl+R nasconde i risultati solo nella tab attiva',
+    primaDelToggle === true && dopoIlToggle === false && altraTab === true,
+    `prima ${primaDelToggle}, dopo ${dopoIlToggle}, altra ${altraTab}`,
+  )
 
   const failed = results.filter(r => !r.ok)
   console.log(`\nesito: ${results.length - failed.length}/${results.length} controlli superati`)
@@ -466,6 +703,10 @@ async function verifyErrorMessages(page) {
 
   // ---- secondo batch: errore che CITA un oggetto esistente → deve comparire il pulsante ----
   console.log('\n  --- errore che cita una tabella esistente ---')
+  // gli oggetti citati si possono proporre solo con lo SCHEMA caricato: si aspetta (la pagina
+  // può essere ancora su "Caricamento metadati…", e allora il pulsante non compare)
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato (oggetti citati)')
+  await sleep(800)
   await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
   await page.typeText(BATCH_OBJECT_ERROR)
   await sleep(500)
@@ -746,7 +987,13 @@ async function verifyFormat(page) {
   }
   check('il pulsante "Formatta" è stato premuto (da sola)', a.premuto === true)
   check('il pulsante "Formatta" è stato premuto (dentro la store)', b.premuto === true)
-  check('da sola: la lista è a colonna (SELECT + campi con la virgola in testa)', daSola[0] === 'SELECT MIS_MISSIONE' && daSola[1] === ',MIS_UDC, MIS_BEG_L1')
+  check(
+    'da sola: la lista è a colonna (SELECT + un campo per riga, virgola in testa)',
+    daSola[0] === 'SELECT MIS_MISSIONE' &&
+      (daSola[1] ?? '').startsWith(',MIS_UDC') &&
+      (daSola[2] ?? '').startsWith(',MIS_BEG_L1'),
+    JSON.stringify(daSola.slice(0, 4)),
+  )
   check('da sola: INTO su riga propria', daSola.includes('INTO #t'))
   check('dentro la store: nessuna riga con la lista intera su una riga', !inStore.some(r => /SELECT MIS_MISSIONE,/.test(r)))
   check(
@@ -760,6 +1007,27 @@ async function verifyFormat(page) {
   )
   check('INSERT: i campi sono allineati sotto il primo', allineati(righeGrezze, ',RIG_ARTICOLO', colCampi) && allineati(righeGrezze, ',RIG_SUB1)', colCampi))
   check('INSERT: i valori uno per riga, allineati sotto il primo', allineati(righeGrezze, ',@pRIG_ARTICOLO', colValori) && allineati(righeGrezze, ",isnull (@pRIG_SUB1, ''))", colValori))
+
+  // INSERT … SELECT: i VALORI sono la select-list della SELECT → uno per riga come i campi
+  // (segnalazione utente: nella parte dei valori restavano tutti su una riga)
+  const insertSelectSql =
+    "INSERT INTO dbo.DAT_ORDINI_RIGHE (RIG_ORDINE, RIG_ARTICOLO, RIG_SUB1) SELECT @ordine, @pRIG_ARTICOLO, isnull (@pRIG_SUB1, '') FROM dbo.DAT_ORDINI_RIGHE WHERE RIG_ORDINE = @ordine"
+  const f = await scriviEFormatta(`CREATE PROCEDURE p AS\nBEGIN\n  ${insertSelectSql}\nEND`)
+  console.log('  INSERT … SELECT:')
+  f.righe.forEach(r => console.log(`    |${r}`))
+  const righeSel = f.righe.map(r => r.trim()).filter(Boolean)
+  const iSelect = righeSel.findIndex(r => r.startsWith('SELECT'))
+  const iFrom = righeSel.findIndex(r => r.startsWith('FROM'))
+  const valoriSelect = iSelect >= 0 && iFrom > iSelect ? righeSel.slice(iSelect + 1, iFrom) : []
+  console.log(`  valori su righe proprie: ${JSON.stringify(valoriSelect)}`)
+  check(
+    'INSERT … SELECT: la riga della SELECT non porta anche i valori',
+    iSelect >= 0 && !righeSel[iSelect].includes(','),
+  )
+  check(
+    'INSERT … SELECT: un valore per riga (virgola in testa)',
+    valoriSelect.length === 2 && valoriSelect.every(v => v.startsWith(',')),
+  )
   check('firma: i tipi dei parametri partono tutti dalla stessa colonna', colonneTipo.length >= 3 && new Set(colonneTipo).size === 1)
   check('firma: nome e tipo mai incollati', !righeFirma.some(r => /@\w+(NVARCHAR|INT|DECIMAL)/i.test(r)))
   check('firma: un parametro per riga con la virgola in testa', righeFirma.filter(r => r.trim().startsWith(',')).length === 2)
@@ -774,6 +1042,270 @@ async function verifyFormat(page) {
       righeOp.some(r => r.includes('@n -= 1')) &&
       !righeOp.some(r => /[+\-]\s+=/.test(r)),
   )
+
+  // funzione con RETURNS: la clausola fra ")" e "AS" non deve sparire
+  // (segnalazione utente: la format di una funzione cancellava "RETURNS INT")
+  const fn = await scriviEFormatta(
+    'CREATE OR ALTER FUNCTION dbo.fn_Prova_BaiaIngresso() RETURNS INT AS BEGIN DECLARE @baia INT SELECT @baia = 1 RETURN @baia END',
+  )
+  const righeFn = fn.righe.map(r => r.trim()).filter(Boolean)
+  console.log('  funzione con RETURNS:')
+  righeFn.forEach(r => console.log(`    |${r}`))
+  console.log('  (testo digitato, prima di formattare)')
+  fn.righePrima.forEach(r => console.log(`    >${r}`))
+  check('funzione: il pulsante "Formatta" è stato premuto', fn.premuto === true)
+  check('funzione: la clausola RETURNS resta (non viene cancellata)', righeFn.includes('RETURNS INT'))
+  check('funzione: il RETURN del corpo resta', righeFn.some(r => r === 'RETURN @baia'))
+
+  // END/ELSE allo stesso livello: l'ELSE non deve stare 2 spazi avanti al suo END
+  const g = await scriviEFormatta(
+    'CREATE PROCEDURE p\nAS\nBEGIN\n  IF @a = 0\n  BEGIN\n    IF @b = 0\n    BEGIN\n      PRINT \'x\'\n    END\n  END\n    ELSE\n  IF @a = 1\n  BEGIN\n    PRINT \'y\'\n  END\nEND',
+  )
+  const righeElse = g.righe.map(r => r.replace(/\s+$/, ''))
+  console.log('  END/ELSE:')
+  g.righe.forEach(r => console.log(`    |${r}`))
+  const rientroRiga = t => (t.match(/^\s*/) ?? [''])[0].length
+  const iElseLine = righeElse.findIndex(r => r.trim() === 'ELSE')
+  let iPrec = iElseLine - 1
+  while (iPrec >= 0 && righeElse[iPrec].trim() === '') iPrec--
+  const rigaEndPrima = righeElse[iPrec] ?? ''
+  console.log(`  riga prima dell ELSE: |${rigaEndPrima} · ELSE: |${righeElse[iElseLine] ?? ''}`)
+  check(
+    'ELSE allo stesso livello del suo END',
+    iElseLine > 0 && rigaEndPrima.trim() === 'END' && rientroRiga(rigaEndPrima) === rientroRiga(righeElse[iElseLine]),
+  )
+
+  // CASE dentro la select-list di un INSERT … SELECT: espanso e indentato, un valore per riga
+  const h = await scriviEFormatta(
+    "CREATE PROCEDURE p\nAS\nBEGIN\n  INSERT INTO dbo.DAT_ORDINI (ORD_ORDINE, ORD_ORDTYPE, ORD_DES)\n  SELECT rtrim (ORD_ORDER), CASE WHEN @t = 1 THEN 'A' ELSE 'B' END, isnull (rtrim (ORD_DESC), '') FROM dbo.DAT_ORDINI\nEND",
+  )
+  const righeCase = h.righe.map(r => r.trim()).filter(Boolean)
+  console.log('  CASE nella select-list:')
+  h.righe.forEach(r => console.log(`    |${r}`))
+  const iCasoLine = h.righe.findIndex(r => /^\s*,?\s*(?:\/\*[^*]*\*\/\s*)?CASE\s*$/.test(r))
+  const iWhenLine = h.righe.findIndex(r => r.trim() === 'WHEN @t = 1')
+  console.log(`  riga CASE: ${iCasoLine} · riga WHEN: ${iWhenLine}`)
+  check(
+    'il CASE della select-list è espanso su righe proprie e rientrato',
+    iCasoLine > -1 &&
+      iWhenLine === iCasoLine + 1 &&
+      rientroRiga(h.righe[iCasoLine]) > 0 &&
+      rientroRiga(h.righe[iWhenLine]) > rientroRiga(h.righe[iCasoLine]),
+  )
+  check(
+    'i valori dell INSERT … SELECT restano uno per riga',
+    righeCase.some(r => r.startsWith(',isnull (rtrim (ORD_DESC)')),
+  )
+
+  // ---------------------------------------------------------------------------------------
+  // "FORMATTA SEMPRE" (segnalazione utente: "la formattazione non fa più nulla, prova questa").
+  // Un testo scritto a mano — una riga per campo, virgole in testa, clausole a capo — veniva
+  // lasciato IDENTICO dalla vecchia regola "già impaginato": ora la formattazione deve
+  // intervenire comunque (CASE espanso, parole chiave in maiuscolo).
+  const stile = [
+    'CREATE PROCEDURE p',
+    'AS',
+    '  select',
+    '     @txtError = case',
+    '                     when A = 1',
+    "                       then 'x'",
+    "                     else ''",
+    '                end',
+    '    ,@b = 2',
+    '    ,@c = 3',
+    '    ,@d = 4',
+    '  from dbo.T',
+    '  where A = 1',
+  ].join('\n')
+  const s = await scriviEFormatta(stile)
+  const primaStile = s.righePrima.map(r => r.replace(/\s+$/, ''))
+  const dopoStile = s.righe.map(r => r.replace(/\s+$/, ''))
+  console.log('  testo scritto a mano, dopo "Formatta":')
+  dopoStile.forEach(r => console.log(`    |${r}`))
+  check(
+    'testo scritto a mano: "Formatta" CAMBIA il testo (prima restava identico)',
+    JSON.stringify(primaStile) !== JSON.stringify(dopoStile),
+  )
+  const iCaseStile = dopoStile.findIndex(r => r.trim() === 'CASE')
+  const iWhenStile = dopoStile.findIndex(r => r.trim() === 'WHEN A = 1')
+  check(
+    'testo scritto a mano: il CASE viene espanso e rientrato',
+    iCaseStile > -1 && iWhenStile === iCaseStile + 1,
+    `CASE=${iCaseStile} WHEN=${iWhenStile}`,
+  )
+
+  // la store VERA della segnalazione (fixture identica a quella incollata dall'utente):
+  // il testo è lungo, quindi si legge la TESTA (Ctrl+Home) prima e dopo la formattazione
+  const storeUtente = await page.eval(
+    `(async () => (await import('/src/__tests__/fixtures/routine_ws_L2_CUSTOM_CELL_TO_CELL.sql?raw')).default)()`,
+  )
+  const testaDallInizio = async () => {
+    await page.press('Home', { code: 'Home', vk: 36, modifiers: 2 }) // Ctrl+Home
+    await sleep(600)
+    return (await righeEditor()).map(r => r.replace(/\s+$/, ''))
+  }
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(storeUtente)
+  await sleep(900)
+  const testaPrima = await testaDallInizio()
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(400)
+  const premutoStore = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Formatta')`,
+  )
+  await sleep(1500)
+  const testaDopo = await testaDallInizio()
+  console.log('  store della segnalazione, testa prima:')
+  testaPrima.slice(0, 6).forEach(r => console.log(`    >${r}`))
+  console.log('  store della segnalazione, testa dopo "Formatta":')
+  testaDopo.slice(0, 14).forEach(r => console.log(`    |${r}`))
+  check('store della segnalazione: il pulsante "Formatta" è stato premuto', premutoStore === true)
+  check(
+    'store della segnalazione: "Formatta" CAMBIA il testo (prima restava identico)',
+    JSON.stringify(testaPrima) !== JSON.stringify(testaDopo) && testaPrima.length > 0,
+  )
+  check(
+    'store della segnalazione: nome routine e parole chiave in maiuscolo',
+    testaDopo.some(r => r.includes('CREATE OR ALTER PROCEDURE [dbo].[ws_L2_CUSTOM_CELL_TO_CELL]')) &&
+      testaDopo.some(r => r.trim() === 'SET NOCOUNT ON'),
+    JSON.stringify(testaDopo.slice(0, 3)),
+  )
+  await page.screenshot('formatta-sempre-store-utente')
+
+  // condizione LUNGA di WHILE EXISTS (segnalazione utente: "la while exists non formatta
+  // quello che c'è dentro parentesi"): deve essere spezzata su più righe, non lasciata
+  // tutta su una riga da ~200 caratteri
+  const whileSql =
+    "CREATE PROCEDURE p\nAS\nBEGIN\n  WHILE EXISTS (SELECT 1 FROM RUN_ESEGUI INNER JOIN DAT_ORDINI_RIGHE dor ON RUN_ESEGUI.ESE_RIGA = dor.RIG_RIGA WHERE @pEseId LIKE concat ('%,', ESE_ID, ',%') AND ESE_QTAE > 0) AND @diff > 0\n  BEGIN\n    SET @diff -= 1\n  END\nEND"
+  const w = await scriviEFormatta(whileSql)
+  const righeWhile = w.righe.map(r => r.replace(/\s+$/, ''))
+  const primaWhile = w.righePrima.map(r => r.replace(/\s+$/, ''))
+  console.log('  WHILE EXISTS con condizione lunga:')
+  righeWhile.forEach(r => console.log(`    |${r}`))
+  console.log('  (testo digitato, prima di formattare)')
+  primaWhile.forEach(r => console.log(`    >${r}`))
+  const trimWhile = righeWhile.map(r => r.trim()).filter(Boolean)
+  const trimPrimaWhile = primaWhile.map(r => r.trim()).filter(Boolean)
+  check(
+    'WHILE EXISTS: prima della formattazione la condizione stava su una riga sola',
+    trimPrimaWhile.some(r => r.startsWith('WHILE EXISTS (') && r.length > 150),
+    `riga più lunga digitata: ${Math.max(...trimPrimaWhile.map(r => r.length))}`,
+  )
+  check(
+    'WHILE EXISTS: la condizione viene spezzata (SELECT/FROM su righe proprie)',
+    trimWhile.includes('WHILE EXISTS (') &&
+      trimWhile.includes('SELECT 1') &&
+      trimWhile.some(r => r.startsWith('FROM RUN_ESEGUI')),
+  )
+  check(
+    'WHILE EXISTS: AND della sotto-query e AND esterno vanno a capo',
+    trimWhile.includes('AND ESE_QTAE > 0') && trimWhile.includes('AND @diff > 0'),
+  )
+  check(
+    'WHILE EXISTS: nessuna riga chilometrica dopo la formattazione',
+    Math.max(...righeWhile.map(r => r.length)) <= 120,
+    `riga più lunga: ${Math.max(...righeWhile.map(r => r.length))}`,
+  )
+  await page.screenshot('formatta-while-exists')
+
+  // SELECT con COMMENTO "--" in coda a un campo (store segnalata dall'utente): i campi devono
+  // andare UNO PER RIGA con gli ALIAS incolonnati, l'INTO a capo, e il commento non deve
+  // "mangiarsi" i campi che seguono. Nella WHERE le condizioni vanno a capo e le parentesi
+  // indentate.
+  const sqlCommenti = [
+    'CREATE PROCEDURE p',
+    'AS',
+    'BEGIN',
+    '  SELECT TOP 1 SCO_SCOMPARTO X_SCO --sorgente',
+    "  , UDC_UDC X_UDC_SOURCE, IIF (UDC_SSCC > '', UDC_SSCC, SCO_SSCC_SOURCE) X_SSCC --sorgente",
+    '  , UDC_ARTICOLO X_SKU, ART_DES X_SKU_DESC, UDC_USER_TASK INTO #tmpAcc',
+    '  FROM DAT_UDC',
+    '  WHERE (A = 1 AND B = 2 OR C = 3) AND D = 4',
+    'END',
+  ].join('\n')
+  const q = await scriviEFormatta(sqlCommenti)
+  const righeQ = q.righe.map(r => r.replace(/\s+$/, ''))
+  console.log('  SELECT con commenti, dopo "Formatta":')
+  righeQ.forEach(r => console.log(`    |${r}`))
+  const trimQ = righeQ.map(r => r.trim())
+  const colonnaAlias = alias => {
+    const riga = righeQ.find(r => new RegExp(`${alias}\\s*(--.*)?$`).test(r))
+    if (!riga) return -1
+    return riga.replace(/\s*--.*$/, '').trimEnd().length - alias.length
+  }
+  const colAlias = ['X_SCO', 'X_UDC_SOURCE', 'X_SSCC', 'X_SKU', 'X_SKU_DESC'].map(colonnaAlias)
+  console.log(`  colonne degli alias: ${JSON.stringify(colAlias)}`)
+  check(
+    'SELECT con commenti: i campi vanno uno per riga',
+    [',UDC_UDC', ',IIF', ',UDC_ARTICOLO', ',ART_DES', ',UDC_USER_TASK'].every(c => trimQ.some(r => r.startsWith(c))),
+  )
+  check('SELECT con commenti: INTO su riga propria', trimQ.includes('INTO #tmpAcc'))
+  check(
+    'SELECT con commenti: gli ALIAS sono incolonnati',
+    colAlias.every(c => c > 0) && new Set(colAlias).size === 1,
+    JSON.stringify(colAlias),
+  )
+  check('SELECT con commenti: il commento resta in coda al suo campo', /X_SCO --sorgente$/.test(righeQ.find(r => r.includes('X_SCO')) ?? ''))
+  check(
+    'SELECT con commenti: i campi dopo il commento NON sono commentati',
+    trimQ.some(r => r.startsWith(',UDC_ARTICOLO')) && trimQ.some(r => r.startsWith(',ART_DES')),
+  )
+  const iWhereQ = trimQ.findIndex(r => r.startsWith('WHERE (A = 1'))
+  check('WHERE: il gruppo fra parentesi va a capo e rientra', iWhereQ > -1 && /^AND B = 2$/.test(trimQ[iWhereQ + 1] ?? '') && /^OR C = 3\)$/.test(trimQ[iWhereQ + 2] ?? ''))
+  await page.screenshot('formatta-select-commenti-alias')
+
+  // SELECT con CASE e INTO su tabella temporanea (segnalazione utente: "la formattazione per le
+  // query con select e into tabella temporanea non funziona bene quando c'è un case" →
+  // "into #tmp deve stare sempre a capo")
+  const sqlCasoInto =
+    "CREATE PROCEDURE p\nAS\nBEGIN\n  SELECT UDC_UDC X_UDC, CASE WHEN A = 1 THEN 'x' WHEN A = 2 THEN 'y' ELSE 'z' END AS X_FLAG, UDC_TAG X_TAG INTO #tmpAcc FROM dbo.DAT_UDC WHERE UDC_UDC > 0\nEND"
+  const ci = await scriviEFormatta(sqlCasoInto)
+  const righeCi = ci.righe.map(r => r.replace(/\s+$/, ''))
+  console.log('  CASE + INTO #tmp, dopo "Formatta":')
+  righeCi.forEach(r => console.log(`    |${r}`))
+  const trimCi = righeCi.map(r => r.trim())
+  const conIntoCi = righeCi.filter(r => /INTO\s+#tmpAcc/i.test(r))
+  check(
+    'CASE + INTO: la clausola INTO sta su una riga tutta sua',
+    trimCi.includes('INTO #tmpAcc') && conIntoCi.length === 1 && conIntoCi[0].trim() === 'INTO #tmpAcc',
+    JSON.stringify(conIntoCi),
+  )
+  check('CASE + INTO: la virgola del CASE va in testa (",CASE" su riga propria)', trimCi.includes(',CASE'))
+  check(
+    'CASE + INTO: la select-list non lascia la virgola in coda alla testata',
+    !righeCi.some(r => /X_UDC,$/.test(r)),
+  )
+  await page.screenshot('formatta-case-into')
+
+  // UPDATE … SET: i "=" in colonna (segnalazione utente: "non formatta bene in colonna quello che
+  // è dopo =" — con più assegnazioni i valori restavano sfalsati)
+  const sqlSet =
+    "UPDATE [#tmpMission]\n  SET X_CORRIDOIO = UDC_CORRIDOIO\n      ,X_CELLA = UDC_CELLA\n      ,X_UDC_DEST = ESE_UDC_DEST\n      ,X_QTY = RIG_QTAR\n  FROM RUN_ESEGUI\n    INNER JOIN #tmpMission ON ESE_UDC = X_UDC_SOURCE"
+  const set = await scriviEFormatta(sqlSet)
+  const righeSet = set.righe.map(r => r.replace(/\s+$/, ''))
+  console.log('  UPDATE … SET, dopo "Formatta":')
+  righeSet.forEach(r => console.log(`    |${r}`))
+  const assegnazioni = righeSet.filter(r => /^\s*(SET |,)\s*\S+\s*=/.test(r))
+  const colonneSet = assegnazioni.map(r => r.indexOf('=')).filter(i => i > 0)
+  check(
+    'UPDATE: le assegnazioni del SET vanno una per riga',
+    assegnazioni.length === 4,
+    `${assegnazioni.length} assegnazioni`,
+  )
+  check(
+    'UPDATE: i "=" delle assegnazioni sono nella STESSA colonna',
+    colonneSet.length === 4 && new Set(colonneSet).size === 1,
+    `colonne ${JSON.stringify(colonneSet)}`,
+  )
+  check(
+    'UPDATE: i valori dopo "=" restano incolonnati',
+    righeSet.some(r => /^\s*,X_CELLA\s+=\s+UDC_CELLA$/.test(r)) &&
+      righeSet.some(r => /^\s*,X_QTY\s+=\s+RIG_QTAR$/.test(r)),
+  )
+  await page.screenshot('formatta-update-set')
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
@@ -1080,7 +1612,7 @@ async function verifyLocalTables(page) {
 
   // controllo deterministico sul modulo servito all'app, con la STORE REALE (nessuna digitazione)
   const colonneStore = await page.eval(`(async () => {
-    const sql = (await import('/src/__tests__/fixtures/routine_ws_CUSTOM_Handheld_KittingReturn_St1_GetList.sql?raw')).default;
+    const sql = (await import('/src/__tests__/fixtures/routine_ws_CIDEDO_HUSOBUME_KIPEVUBEGUSEV_St1_GIVOSEB.sql?raw')).default;
     const mod = await import('/src/localTables.ts');
     return mod.extractLocalTables(sql).map(t => ({ nome: t.name, colonne: (t.columns || []).map(c => c.name) }));
   })()`)
@@ -1101,6 +1633,99 @@ async function verifyLocalTables(page) {
   const mission = (colonneStore || []).find(t => t.nome === '#tmpMission')
   check('store reale: #tmpMission riconosciuta', !!mission)
   check('store reale: #tmpMission ha TUTTE le colonne (CTE comprese)', JSON.stringify(mission?.colonne) === JSON.stringify(attese))
+
+  // ---------------------------------------------------------------------------------------
+  // CASO UTENTE (segnalazione): "alla riga 69 quando faccio l'update non vedo i campi della
+  // tabella #tbl_CC_Kitting_St1". Nella store la lista dei campi della temporanea comincia
+  // sulla riga DOPO il nome e la ricerca della "(" si fermava al primo a capo: la temporanea
+  // restava senza colonne. Qui si riproduce lo stesso testo (creazione su più righe + UPDATE
+  // con SET dal join) e si legge il popup vero.
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1200)
+  }
+  /** Clic in fondo alla riga che contiene `frammento`, poi digita `lettera` per aprire il popup. */
+  const apriPopupSuRiga = async (frammento, lettera) => {
+    const punto = await page.eval(`(() => {
+      const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')];
+      // Monaco rende gli spazi come "&nbsp;": si normalizzano, altrimenti la ricerca non trova nulla
+      const riga = linee.find(l => (l.textContent || '').replace(/\\u00a0/g, ' ').includes(${JSON.stringify(frammento)}));
+      if (!riga) return null;
+      const spans = [...riga.querySelectorAll('span')];
+      const s = spans[spans.length - 1];
+      if (!s) return null;
+      const r = s.getBoundingClientRect();
+      return { x: r.right - 1, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) {
+      console.log(`  (riga "${frammento}" non trovata nel editor)`)
+      return []
+    }
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(400)
+    await page.typeText(lettera)
+    await sleep(1600)
+    return await vociPopup()
+  }
+  const minuscole = v => v.map(x => x.toLowerCase())
+  /** Testo della temporanea ESATTAMENTE come nella store dell'utente (parentesi a capo). */
+  const TEMP_MULTIRIGA = [
+    'create table #tbl_CC_Kitting_St1',
+    '(',
+    '            X_UDC nvarchar(50),',
+    '            X_CELL_DEST nvarchar(50),',
+    '            X_COR_DEST nvarchar(50),',
+    ')',
+  ].join('\n')
+
+  // 2a) nella WHERE della temporanea
+  await scrivi(`${TEMP_MULTIRIGA}\nselect * from #tbl_CC_Kitting_St1 where `)
+  const vociWhere = await apriPopupSuRiga('#tbl_CC_Kitting_St1 where', 'X')
+  console.log(`  popup nella WHERE della temporanea: ${JSON.stringify(vociWhere.slice(0, 8))}`)
+  check('temporanea con la "(" a capo: propone X_UDC nella WHERE', minuscole(vociWhere).includes('x_udc'))
+
+  // 2b) la riga 69 della store: "set UDC_CELLA=x_udc" con il join alla temporanea
+  await scrivi(
+    [
+      TEMP_MULTIRIGA,
+      'update DAT_UDC',
+      'set UDC_CELLA=',
+      'from DAT_UDC inner join #tbl_CC_Kitting_St1 ON 1=1',
+      'where  DAT_UDC.UDC_UDC=1',
+    ].join('\n'),
+  )
+  const vociSet = await apriPopupSuRiga('set UDC_CELLA=', 'X')
+  console.log(`  popup dopo "set UDC_CELLA=" (riga dell update): ${JSON.stringify(vociSet.slice(0, 8))}`)
+  const setMin = minuscole(vociSet)
+  check(
+    'UPDATE/SET: propone i campi della temporanea del join (X_UDC)',
+    setMin.includes('x_udc'),
+    JSON.stringify(vociSet.slice(0, 4)),
+  )
+  check(
+    'UPDATE/SET: propone TUTTI i campi della temporanea',
+    ['x_udc', 'x_cell_dest', 'x_cor_dest'].every(c => setMin.includes(c)),
+  )
+
+  // 2c) l'alias della temporanea nel FROM ("left join #tbl_CC_Kitting_St1 x on 1 = 1" → "x.")
+  await scrivi(
+    [
+      TEMP_MULTIRIGA,
+      'select 1 from DAT_UDC',
+      '  left join #tbl_CC_Kitting_St1 x on 1 = 1',
+      'where x.',
+    ].join('\n'),
+  )
+  const vociAlias = await apriPopupSuRiga('where x.', 'X')
+  console.log(`  popup dopo "x." (alias della temporanea): ${JSON.stringify(vociAlias.slice(0, 8))}`)
+  check('alias della temporanea: "x." propone X_UDC', minuscole(vociAlias).includes('x_udc'))
+  await page.press('Escape', { code: 'Escape', vk: 27 })
   await page.press('Escape', { code: 'Escape', vk: 27 })
 
   const falliti = esiti.filter(e => !e).length
@@ -1263,6 +1888,92 @@ async function verifyAlias(page) {
     normali(vociOrderByPieno).includes('asc') && normali(vociOrderByPieno).includes('desc'),
   )
 
+  // 8) tabella DERIVATA con alias (caso segnalato): "inner join (select dbo.fn_X() X_BAIA) t
+  // on 1 = 1 … where t." deve proporre la colonna X_BAIA della sottoquery. Prima comparivano
+  // solo i suggerimenti generici (l'alias della derivata non era risolto).
+  await scrivi(
+    [
+      'select UDC_UDC',
+      'from dbo.DAT_UDC',
+      '  inner join (select dbo.fn_Prova_Baia() X_BAIA) t on 1 = 1',
+      'where t.',
+    ].join('\n'),
+  )
+  console.log('  testo (derivata):')
+  ;(await righeEditor()).forEach(r => console.log(`    |${r}`))
+  const vociDerivata = await apriPopupInFondo('X')
+  console.log(`  alias di tabella derivata: ${JSON.stringify(vociDerivata.slice(0, 6))}`)
+  check(
+    'alias di una tabella DERIVATA "(select …) t": propone la colonna della sottoquery',
+    normali(vociDerivata).includes('x_baia'),
+  )
+
+  // 9) derivata con "*": le colonne arrivano dalla tabella dello schema
+  await scrivi(['select UDC_UDC', 'from (select * from dbo.DAT_UDC) t', 'where t.'].join('\n'))
+  console.log('  testo (derivata con "*"):')
+  ;(await righeEditor()).forEach(r => console.log(`    |${r}`))
+  const vociDerivataStar = await apriPopupInFondo('U')
+  console.log(`  alias di derivata con "*": ${JSON.stringify(vociDerivataStar.slice(0, 6))}`)
+  check(
+    'alias di una derivata con "*": propone i campi della tabella sorgente',
+    normali(vociDerivataStar).some(v => v.startsWith('udc_')),
+  )
+
+  // 10) FUNZIONE TABELLARE con alias (caso segnalato): "select * from dbo.fn_x() a where a.ca"
+  // deve proporre i campi che la funzione restituisce. Prima il popup restava vuoto.
+  await scrivi(['select *', `from dbo.${FUNZIONE_TABELLARE}() a`, 'where a.'].join('\n'))
+  console.log('  testo (funzione tabellare):')
+  ;(await righeEditor()).forEach(r => console.log(`    |${r}`))
+  const vociFunzione = await apriPopupInFondo(FUNZIONE_TABELLARE_CAMPO.slice(0, 2))
+  console.log(`  alias di funzione tabellare: ${JSON.stringify(vociFunzione.slice(0, 6))}`)
+  check(
+    `alias di una FUNZIONE TABELLARE "dbo.${FUNZIONE_TABELLARE}() a": propone i campi restituiti`,
+    vociFunzione.length > 0 && normali(vociFunzione).includes(FUNZIONE_TABELLARE_CAMPO.toLowerCase()),
+  )
+
+  // 11) JOIN con sotto-query sulla STESSA tabella (segnalazione utente: "l'intellisense mi
+  // aggiunge ancora nome tabella quando si fa il join, anche se il nome colonna è univoco").
+  // Lo statement cita DAT_UDC due volte (JOIN con alias "du" + EXISTS senza alias): i campi
+  // univoci NON devono uscire qualificati ("du.UDC_UBIUDC"), ma col solo nome.
+  await scrivi(
+    [
+      'SELECT ',
+      'FROM RUN_MISSIONI rm',
+      '  INNER JOIN DAT_UDC du ON rm.MIS_UDC = du.UDC_UDC',
+      "WHERE EXISTS (SELECT 1 FROM DAT_UDC WHERE UDC_CODICE = 'x')",
+    ].join('\n'),
+  )
+  // cursore alla fine della riga "SELECT " (prima riga)
+  const puntoSelect = await page.eval(`(() => {
+    const linea = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].find(l => (l.textContent || '').trim() === 'SELECT');
+    if (!linea) return null;
+    const spans = [...linea.querySelectorAll('span')];
+    const s = spans[spans.length - 1];
+    if (!s) return null;
+    const r = s.getBoundingClientRect();
+    return { x: r.right - 1, y: r.top + r.height / 2 };
+  })()`)
+  let rigaJoin = ''
+  let vociJoin = []
+  if (puntoSelect) {
+    await page.clickPoint(puntoSelect.x, puntoSelect.y)
+    await sleep(400)
+    await page.typeText('UDC_UBI')
+    await sleep(1800)
+    vociJoin = await vociPopup()
+    console.log(`  popup (JOIN + sotto-query stessa tabella): ${JSON.stringify(vociJoin.slice(0, 6))}`)
+    await page.press('Enter', { code: 'Enter', vk: 13 })
+    await sleep(900)
+    rigaJoin = (await righeEditor())[0] ?? ''
+  }
+  console.log(`  riga dopo la conferma: ${JSON.stringify(rigaJoin)}`)
+  check('JOIN: il popup propone il campo univoco', normali(vociJoin).some(v => v.startsWith('udc_ubi')))
+  check(
+    'JOIN con sotto-query sulla stessa tabella: il campo univoco NON viene qualificato',
+    /UDC_UBIUDC/i.test(rigaJoin) && !/du\.UDC_UBIUDC/i.test(rigaJoin),
+  )
+  await page.screenshot('intellisense-join-senza-qualifica')
+
   await page.press('Escape', { code: 'Escape', vk: 27 })
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
@@ -1273,6 +1984,3240 @@ async function verifyAlias(page) {
  * VERIFICA (--verify-labels): dopo "GOTO " devono comparire TUTTE le label del documento,
  * anche quelle definite più sotto; quelle nel codice commentato no.
  */
+/**
+ * VERIFICA (--verify-tabtree): una tab aperta da un LINK (qui: tasto destro su una stored
+ * procedure dell'albero) nasce FIGLIA di quella attiva — rientrata e con il marcatore — e la
+ * gerarchia si ferma a 5 livelli. Chiudendo la principale compare la richiesta di chiudere
+ * anche le figlie.
+ */
+async function verifyTabTree(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+
+  /**
+   * Si usa la RICERCA dell'oggetti: le righe trascinabili sono le stored procedure
+   * (title "Trascina nel editor…"), quindi il tasto destro su una di quelle apre il menu con
+   * "Modifica" → nuova tab. Così non serve conoscere un nome di procedura a priori.
+   */
+  const cercato = await page.eval(`(() => {
+    const i = [...document.querySelectorAll('input')].find(x => (x.placeholder || '').includes('Cerca'));
+    if (!i) return false;
+    i.focus();
+    return true;
+  })()`)
+  if (!cercato) throw new Error('campo di ricerca della sidebar non trovato')
+  await page.typeText('ws_')
+  await sleep(1800)
+  console.log(
+    `  risultati di ricerca (procedure): ${await page.eval(
+      `[...document.querySelectorAll('button')].filter(b => (b.getAttribute('title') || '').includes('Trascina nel editor')).length`,
+    )}`,
+  )
+
+  /** Stato della barra: titolo, rientro in px (gerarchia) e se è marcata come figlia. */
+  const tabs = () =>
+    page.eval(`[...document.querySelectorAll('.sql-tab')].map(t => ({
+      titolo: ((t.querySelector('button') || t).textContent || '').trim(),
+      rientro: Math.round(parseFloat(getComputedStyle(t).marginLeft) || 0),
+      figlia: !!t.querySelector('svg.lucide-corner-down-right'),
+      top: Math.round(t.getBoundingClientRect().top),
+    }))`)
+
+  /** Le tab sono tutte dentro l'altezza visibile della barra? (nessuna riga tagliata) */
+  const tabVisibili = () =>
+    page.eval(`(() => {
+      const primo = document.querySelector('.sql-tab');
+      const wrap = primo && primo.parentElement;
+      if (!wrap) return { ok: false, tagliate: 0 };
+      const r = wrap.getBoundingClientRect();
+      const tab = [...wrap.querySelectorAll('.sql-tab')];
+      const tagliate = tab.filter(t => t.getBoundingClientRect().bottom > r.bottom + 1).length;
+      return {
+        ok: tagliate === 0,
+        tagliate,
+        altezza: Math.round(r.height),
+        maxHeight: wrap.style.maxHeight,
+        fondo: Math.round(r.bottom),
+        fondoUltima: Math.round(tab[tab.length - 1].getBoundingClientRect().bottom),
+      };
+    })()`)
+
+  /** Apre una stored procedure dal tasto destro sull'albero e conferma la voce indicata. */
+  const apriDalTastoDestro = async (voce = 'Modifica') => {
+    const punto = await page.eval(`(() => {
+      const riga = [...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('Trascina nel editor'));
+      if (!riga) return null;
+      riga.scrollIntoView({ block: 'center' });
+      const r = riga.getBoundingClientRect();
+      return { x: r.left + 30, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) throw new Error('nessuna riga di stored procedure trovata nell albero')
+    await page.clickPoint(punto.x, punto.y, 'right')
+    await sleep(700)
+    const premuto = await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => ((b.textContent || '').trim().startsWith(${JSON.stringify(voce)})) && b.offsetParent)`,
+    )
+    await sleep(2000)
+    return premuto
+  }
+
+  console.log(`  tab di partenza: ${JSON.stringify(await tabs())}`)
+
+  // 1) prima apertura dal tasto destro: la tab nasce FIGLIA di quella attiva
+  const primoOk = await apriDalTastoDestro()
+  const dopo1 = await tabs()
+  console.log(`  dopo il primo "Modifica": ${JSON.stringify(dopo1)}`)
+  check('la voce del tasto destro ha aperto una tab', primoOk === true && dopo1.length === 2)
+  // REGOLA (richiesta utente): dal PANNELLO A SINISTRA l'oggetto NON è figlio di nessuno
+  check(
+    'aperta dal pannello a sinistra la tab è PRINCIPALE (nessun rientro, nessun marcatore)',
+    dopo1[1]?.rientro === 0 && dopo1[1]?.figlia === false,
+    JSON.stringify(dopo1[1]),
+  )
+  // I gruppi stanno CONSECUTIVI sulla stessa riga: si va a capo solo se non c'è spazio
+  check(
+    'padri e figli restano consecutivi sulla stessa riga (niente righe forzate)',
+    dopo1[0]?.top === dopo1[1]?.top,
+    `${dopo1[0]?.top} vs ${dopo1[1]?.top}`,
+  )
+
+  // 2) altre aperture dal pannello a sinistra: restano tutte PRINCIPALI
+  for (let i = 0; i < 4; i++) await apriDalTastoDestro()
+  const dopo5 = await tabs()
+  console.log(`  dopo 5 aperture: ${JSON.stringify(dopo5.map(t => t.rientro))}`)
+  check('anche le altre tab aperte dal pannello sono principali', dopo5[5]?.rientro === 0, JSON.stringify(dopo5[5]))
+  check(
+    'stanno sulla stessa riga finché c è spazio, altrimenti vanno a capo (max 2 righe)',
+    new Set(dopo5.map(t => t.top)).size <= 2 &&
+      dopo5.every((t, i) => i === 0 || t.top >= dopo5[i - 1].top),
+    JSON.stringify(dopo5.map(t => t.top)),
+  )
+  // Con la gerarchia servono più righe: la barra deve allungarsi, non tagliare le figlie.
+  const vis = await tabVisibili()
+  console.log(`  barra: ${JSON.stringify(vis)}`)
+  await page.screenshot('tab-gerarchia')
+  check('la barra si allunga e mostra tutte le righe', vis.ok === true)
+  // Le tab aperte dal pannello a sinistra sono tutte PRINCIPALI (nessuna gerarchia creata lì):
+  // la gerarchia nasce solo aprendo da una tab dell'editor o dal pannello di ricerca.
+  await apriDalTastoDestro()
+  const dopo6 = await tabs()
+  console.log(`  dopo la sesta apertura: ${JSON.stringify(dopo6.map(t => t.rientro))}`)
+  check('nessuna figlia creata dal pannello a sinistra (tutte a rientro 0)', dopo6.every(t => t.rientro === 0))
+
+  // 3) la richiesta "chiudo anche le figlie?" si prova creando una FIGLIA dal pannello di RICERCA:
+  //    la ricerca è una tab, quindi l'oggetto aperto da lì diventa suo figlio.
+  await page.clickWhere(`document.querySelector('[data-ricerca="apri"]') || [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Cerca')`)
+  await sleep(2500)
+  const tabRicercaPrima = await tabs()
+  const indiceRicerca = tabRicercaPrima.findIndex(t => (t.titolo || '').includes('Ricerca'))
+  if (indiceRicerca >= 0) {
+    console.log('  (la gerarchia creata DAL PANNELLO DI RICERCA è verificata da --verify-search)')
+  } else {
+    console.log('  (pannello di ricerca non aperto: salto i controlli sulla gerarchia dalla ricerca)')
+  }
+
+  // 6) DIAGRAMMA CHIAMATE: si apre in una TAB (come la ricerca), non in una finestra — e
+  //    riaprendo lo stesso diagramma NON si duplica (una tab per routine)
+  const tabsPrimaGrafo = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  await apriDalTastoDestro('Diagramma chiamate')
+  await sleep(1800)
+  const statoGrafo = await page.eval(`(() => {
+    const p = document.querySelector('[data-diagramma="pannello"]');
+    const tab = [...document.querySelectorAll('.sql-tab')].find(t => (t.textContent || '').includes('Diagramma'));
+    const r = p ? p.getBoundingClientRect() : null;
+    // l'editor Monaco deve essere NASCOSTO mentre si guarda il diagramma, altrimenti il
+    // pannello finisce sotto di lui (fuori dall'area visibile) e sembra non essersi aperto
+    const editorNascosto = (() => {
+      const ed = document.querySelector('.monaco-editor');
+      if (!ed) return true;
+      for (let n = ed; n && n !== document.body; n = n.parentElement) {
+        if (n.classList.contains('hidden')) return true;
+      }
+      return false;
+    })();
+    return {
+      tab: tab ? (tab.textContent || '').trim() : null,
+      inModale: !!(p && p.closest('.fixed')),
+      nodi: p ? p.querySelectorAll('svg *').length : 0,
+      titolo: p ? ((p.querySelector('h2') || {}).textContent || '').trim() : '',
+      rettangolo: r ? { top: Math.round(r.top), altezza: Math.round(r.height), larghezza: Math.round(r.width) } : null,
+      visibile: !!r && r.height > 120 && r.width > 200 && r.top < window.innerHeight && r.bottom > 0,
+      editorNascosto,
+    };
+  })()`)
+  const tabsDopoGrafo = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  console.log(`  diagramma: ${JSON.stringify(statoGrafo)} (tab: ${tabsPrimaGrafo} → ${tabsDopoGrafo})`)
+  check(
+    'il diagramma si apre in una TAB e non in una finestra',
+    tabsDopoGrafo === tabsPrimaGrafo + 1 && !!statoGrafo.tab && statoGrafo.inModale === false,
+  )
+  check('il diagramma mostra i legami della routine', statoGrafo.nodi > 0 && /Diagramma chiamate/.test(statoGrafo.titolo))
+  check(
+    'il diagramma è VISIBILE nel pannello (editor nascosto, non coperto)',
+    statoGrafo.visibile === true && statoGrafo.editorNascosto === true,
+  )
+  await page.screenshot('diagramma-aperto')
+  await apriDalTastoDestro('Diagramma chiamate')
+  await sleep(1500)
+  const tabsDopoGrafo2 = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  console.log(`  tab dopo la riapertura dello stesso diagramma: ${tabsDopoGrafo2}`)
+  check('lo stesso diagramma non viene duplicato', tabsDopoGrafo2 === tabsDopoGrafo)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-tema): cambiando tema chiaro/scuro anche le RIGHE DELLA GRIGLIA dei risultati
+ * devono cambiare colore (segnalazione utente: "il cambio modalità chiaro e scuro fa rimanere in
+ * scuro le righe della griglia"). Si esegue una query, si legge il colore di sfondo delle prime
+ * righe, si cambia tema e si rilegge.
+ */
+async function verifyTema(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // 1) una query per avere righe nella griglia
+  const rect = await editorRect(page)
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText('SELECT TOP 6 UDC_UDC, UDC_TIPOUDC, UDC_ARTICOLO FROM dbo.DAT_UDC')
+  await sleep(400)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await page.waitFor(`document.querySelectorAll('[data-risultati="pannello"] tbody tr').length >= 3`, 40000, 'righe della griglia')
+  await sleep(1200)
+
+  /** Colore di sfondo (rgb) delle prime righe della griglia. */
+  const coloriRighe = () =>
+    page.eval(`[...document.querySelectorAll('[data-risultati="pannello"] tbody tr')].slice(0, 3)
+      .map(tr => getComputedStyle(tr).backgroundColor)`)
+  /** Luminosità media di un colore rgb(...) → serve a dire se è chiaro o scuro. */
+  const luminosita = (rgb) => {
+    const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(rgb ?? '')
+    if (!m) return null
+    return (Number(m[1]) + Number(m[2]) + Number(m[3])) / 3
+  }
+  const cambiaTema = async () => {
+    const premuto = await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => /Passa al tema (chiaro|scuro)/.test(b.getAttribute('title') || ''))`,
+    )
+    await sleep(900)
+    return premuto
+  }
+
+  const scuro = await coloriRighe()
+  console.log(`  righe in tema scuro: ${JSON.stringify(scuro)}`)
+  const premuto = await cambiaTema()
+  const chiaro = await coloriRighe()
+  console.log(`  righe in tema chiaro: ${JSON.stringify(chiaro)}`)
+  await page.screenshot('tema-chiaro-griglia')
+
+  check('il pulsante del tema c\'è e cambia la modalità', premuto === true)
+  check(
+    'in tema scuro le righe sono scure',
+    scuro.length >= 3 && scuro.every(c => (luminosita(c) ?? 255) < 90),
+    JSON.stringify(scuro),
+  )
+  check(
+    'CAMBIA IL TEMA: in chiaro le righe diventano chiare',
+    chiaro.length >= 3 && chiaro.every(c => (luminosita(c) ?? 0) > 180),
+    JSON.stringify(chiaro),
+  )
+  check(
+    'le TRE fasce alternate restano distinguibili anche in chiaro',
+    new Set(chiaro).size >= 2,
+    JSON.stringify(chiaro),
+  )
+
+  // si torna al tema scuro (le altre verifiche si aspettano il tema di partenza)
+  await cambiaTema()
+  const tornato = await coloriRighe()
+  check('tornando al tema scuro le righe tornano scure', tornato.every(c => (luminosita(c) ?? 255) < 90), JSON.stringify(tornato))
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-multiriga): SCRITTURA SU PIÙ RIGHE. Nello stesso punto di più righe si scrive
+ * insieme: con più cursori (Ctrl+Alt+Giù / Alt+clic) e in selezione a BLOCCHI (Alt+C, come SSMS:
+ * si trascina un rettangolo e si scrive su tutte le righe).
+ */
+async function verifyMultiriga(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // Le .view-line di Monaco non sono garantite in ordine nel DOM: si ordina per posizione
+  // verticale, così l'elenco segue davvero le righe dall'alto in basso.
+  const righeEditor = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => ({ top: l.getBoundingClientRect().top, testo: (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, '') }))
+      .sort((a, b) => a.top - b.top)
+      .map(l => l.testo)`)
+  const cursori = () =>
+    page.eval(`document.querySelectorAll('.monaco-editor .cursors-layer .cursor').length`)
+  /** Clic in una riga precisa (indice 0 = prima riga visibile). */
+  const clicRiga = async (indice, xOffset = 4) => {
+    const p = await page.eval(`(() => {
+      const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')];
+      const l = linee[${indice}];
+      if (!l) return null;
+      const r = l.getBoundingClientRect();
+      return { x: r.left + ${xOffset}, y: r.top + r.height / 2 };
+    })()`)
+    if (p) await page.clickPoint(p.x, p.y)
+    await sleep(300)
+  }
+
+  /** Scrive un testo nell'editor (selezione tutto + scrittura). */
+  const scrivi = async (testo) => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(300)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(testo)
+    await sleep(600)
+  }
+
+  // ------------------------------------- 1. più cursori (MAIUSC+ALT+Giù, richiesta utente)
+  await scrivi(['SELECT 1', 'SELECT 2', 'SELECT 3'].join('\n'))
+  await page.clickPoint(rect.x + 200, rect.y + 18) // riga 1
+  await page.press('Home', { code: 'Home', vk: 36 })
+  await sleep(300)
+  const prima = await cursori()
+  // Shift(8) + Alt(1) = modifiers 9 → "aggiungi cursore sotto"
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+  await sleep(400)
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+  await sleep(400)
+  const dopo = await cursori()
+  console.log(`  cursori: prima ${prima}, dopo Maiusc+Alt+Giù ${dopo}`)
+  check('Maiusc+Alt+Giù aggiunge un cursore per riga', dopo >= 3, `${dopo} cursori`)
+  await page.typeText('X')
+  await sleep(600)
+  const scritte = await righeEditor()
+  console.log(`  righe dopo aver scritto "X": ${JSON.stringify(scritte)}`)
+  check(
+    'scrivendo si scrive su TUTTE le righe con il cursore',
+    scritte.filter(r => r.startsWith('X')).length >= 3,
+    JSON.stringify(scritte.slice(0, 3)),
+  )
+
+  // 1a) anche la freccia SU: cursore aggiunto sopra, si scrive su entrambe le righe
+  await scrivi(['SELECT 1', 'SELECT 2', 'SELECT 3'].join('\n'))
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await clicRiga(1) // seconda riga
+  await page.press('Home', { code: 'Home', vk: 36 })
+  await sleep(300)
+  await page.press('ArrowUp', { code: 'ArrowUp', vk: 38, modifiers: 9 })
+  await sleep(400)
+  const cursoriSu = await cursori()
+  await page.typeText('Y')
+  await sleep(600)
+  const righeSu = await righeEditor()
+  console.log(`  Maiusc+Alt+Su: cursori=${cursoriSu}, righe=${JSON.stringify(righeSu)}`)
+  check('Maiusc+Alt+Su aggiunge un cursore sopra', cursoriSu >= 2, `${cursoriSu} cursori`)
+  check(
+    'scrivendo si scrive sulla riga sopra e su quella di partenza',
+    righeSu[0]?.startsWith('Y') && righeSu[1]?.startsWith('Y') && !righeSu[2]?.startsWith('Y'),
+    JSON.stringify(righeSu),
+  )
+
+  // ------------- 1b. CTRL+ALT (e AltGr, che su Windows è Ctrl+Alt) NON deve più aggiungere cursori
+  // (richiesta utente: "deve funzionare con il maius + alt e non CTRL + Alt").
+  await scrivi(['uno', 'due', 'tre'].join('\n'))
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await clicRiga(0)
+  const primaDelCaso = await cursori()
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 3 }) // Ctrl(2) + Alt(1)
+  await sleep(500)
+  const cursoriCtrlAlt = await cursori()
+  const righeCtrlAlt = await righeEditor()
+  console.log(`  Ctrl+Alt+Giù: cursori ${primaDelCaso} → ${cursoriCtrlAlt}, righe=${JSON.stringify(righeCtrlAlt)}`)
+  check(
+    'Ctrl+Alt+Giù NON aggiunge più cursori',
+    cursoriCtrlAlt === primaDelCaso,
+    `${primaDelCaso} → ${cursoriCtrlAlt} cursori`,
+  )
+  check('Ctrl+Alt+Giù non copia nemmeno la riga', righeCtrlAlt.length === 3, `${righeCtrlAlt.length} righe`)
+
+  // 1c) varianti con cui la tastiera può consegnare la combinazione (senza key/code, o con
+  //     AltGr riportato solo da getModifierState)
+  for (const variante of [
+    { nome: 'solo altKey+shiftKey senza code', evento: `{ key: 'ArrowDown', code: '', shiftKey: true, altKey: true }` },
+    { nome: 'solo keyCode 40', evento: `{ keyCode: 40, which: 40, shiftKey: true, altKey: true }` },
+  ]) {
+    await scrivi(['uno', 'due', 'tre'].join('\n'))
+    await page.press('Escape', { code: 'Escape', vk: 27 })
+    await clicRiga(0)
+    await page.eval(`(() => {
+      const dom = document.querySelector('.monaco-editor textarea') || document.querySelector('.monaco-editor');
+      const dati = ${variante.evento};
+      const ev = new KeyboardEvent('keydown', Object.assign({
+        key: 'ArrowDown', code: '', bubbles: true, cancelable: true, view: window,
+      }, dati));
+      Object.defineProperty(ev, 'getModifierState', { value: (k) => k === 'AltGraph' ? !!dati.altGraph : false });
+      Object.defineProperty(ev, 'keyCode', { value: dati.keyCode ?? 0 });
+      Object.defineProperty(ev, 'which', { value: dati.which ?? 0 });
+      return dom.dispatchEvent(ev);
+    })()`)
+    await sleep(500)
+    const c = await cursori()
+    console.log(`  Maiusc+Alt+Giù (${variante.nome}): cursori=${c}`)
+    check(`Maiusc+Alt+Giù riconosciuto anche con "${variante.nome}"`, c >= 2, `${c} cursori`)
+  }
+
+  // 1d) Maiusc+Alt+Giù non deve COPIARE la riga (in Monaco era "copia riga sotto"): il cursore
+  //     viene aggiunto e il numero di righe resta lo stesso.
+  await scrivi(['uno', 'due', 'tre'].join('\n'))
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await clicRiga(0)
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+  await sleep(400)
+  const righeMulti = await righeEditor()
+  const cursoriMulti = await cursori()
+  console.log(`  Maiusc+Alt+Giù (cursori ${cursoriMulti}): ${JSON.stringify(righeMulti)}`)
+  check(
+    'Maiusc+Alt+Giù aggiunge il cursore e NON copia la riga',
+    cursoriMulti >= 2 && righeMulti.length === 3,
+    `${cursoriMulti} cursori, ${righeMulti.length} righe`,
+  )
+
+  // ------------------------------------------------------- 2. selezione a BLOCCHI (Alt+C, stile SSMS)
+  /** Stato dell'interruttore "Scrittura su più righe". */
+  const statoBlocchi = () =>
+    page.eval(`(() => {
+      const b = document.querySelector('[data-multiriga="blocchi"]');
+      if (!b) return null;
+      return {
+        acceso: /bg-sky-600/.test(b.innerHTML),
+        testo: (b.textContent || '').trim(),
+        titolo: b.getAttribute('title') || '',
+      };
+    })()`)
+
+  /** Trascina dalla prima all'ultima riga selezionando la PRIMA colonna. */
+  const trascinaBlocco = async (righe = 3, modifiers = 0) => {
+    const p = await page.eval(`(() => {
+      const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')];
+      const a = linee[0], c = linee[${righe - 1}];
+      if (!a || !c) return null;
+      const ra = a.getBoundingClientRect(), rc = c.getBoundingClientRect();
+      return { x1: ra.left + 3, y1: ra.top + ra.height / 2, x2: rc.left + 3, y2: rc.top + rc.height / 2 };
+    })()`)
+    if (!p) return false
+    await page.dragPoint(p.x1, p.y1, p.x2, p.y2, modifiers)
+    await sleep(500)
+    return true
+  }
+
+  await scrivi(['aaa', 'bbb', 'ccc'].join('\n'))
+  const accesoPrima = await statoBlocchi()
+  console.log(`  interruttore: ${JSON.stringify(accesoPrima)}`)
+  check('in toolbar c\'è l\'interruttore "Scrittura su più righe"', accesoPrima !== null, JSON.stringify(accesoPrima?.testo))
+  if (accesoPrima && !accesoPrima.acceso) {
+    await page.clickWhere(`document.querySelector('[data-multiriga="blocchi"]')`)
+    await sleep(500)
+  }
+  const accesoDopo = await statoBlocchi()
+  check('l\'interruttore accende la modalità a blocchi', accesoDopo?.acceso === true, JSON.stringify(accesoDopo?.acceso))
+
+  // con la modalità accesa il trascinamento seleziona un rettangolo: si scrive su tutte le righe
+  if (await trascinaBlocco(3)) {
+    await page.typeText('Z')
+    await sleep(700)
+  }
+  const conBlocchi = await righeEditor()
+  console.log(`  righe dopo la scrittura a blocchi: ${JSON.stringify(conBlocchi.slice(0, 4))}`)
+  check(
+    'in selezione a blocchi si scrive su tutte le righe selezionate',
+    conBlocchi.filter(r => /^Z/.test(r)).length >= 3,
+    JSON.stringify(conBlocchi.slice(0, 3)),
+  )
+
+  await page.screenshot('scrittura-multiriga')
+
+  // Alt+C spegne la modalità (scorciatoia come in SSMS)
+  await page.press('c', { code: 'KeyC', vk: 67, modifiers: 1 })
+  await sleep(500)
+  const spento = await statoBlocchi()
+  check('Alt+C accende/spegne la modalità a blocchi', spento?.acceso === false, JSON.stringify(spento?.acceso))
+
+  // si rimette l'interruttore com'era all'inizio (le altre verifiche non devono trovarlo acceso)
+  if (spento?.acceso !== accesoPrima?.acceso) {
+    await page.clickWhere(`document.querySelector('[data-multiriga="blocchi"]')`)
+    await sleep(300)
+  }
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-params): mentre si MODIFICA una stored procedure, scrivendo "@" l'intellisense
+ * deve proporre i PARAMETRI della firma (segnalazione utente: "l'intellisense non legge anche i
+ * parametri della store procedure che sto modificando"). Si apre la store vera dal tasto destro,
+ * si scrive "SELECT @" dentro e si leggono le voci del popup.
+ */
+async function verifyParams(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // 1) la store si apre dall'albero ("Modifica" → CREATE OR ALTER in una tab)
+  const cercato = await page.eval(`(() => {
+    const i = [...document.querySelectorAll('input')].find(x => (x.placeholder || '').includes('Cerca'));
+    if (!i) return false;
+    i.focus();
+    return true;
+  })()`)
+  if (!cercato) throw new Error('campo di ricerca della sidebar non trovato')
+  await page.typeText(ROUTINE_PARAMS_NAME)
+  await sleep(2000)
+  const punto = await page.eval(`(() => {
+    const riga = [...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('Trascina nel editor'));
+    if (!riga) return null;
+    riga.scrollIntoView({ block: 'center' });
+    const r = riga.getBoundingClientRect();
+    return { x: r.left + 30, y: r.top + r.height / 2 };
+  })()`)
+  if (!punto) throw new Error('nessuna riga di stored procedure trovata nell albero')
+  await page.clickPoint(punto.x, punto.y, 'right')
+  await sleep(700)
+  const premuto = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => ((b.textContent || '').trim().startsWith('Modifica')) && b.offsetParent)`,
+  )
+  await sleep(2500)
+  const titoloTab = await page.eval(`(() => {
+    const t = [...document.querySelectorAll('.sql-tab')].find(x => (x.textContent || '').includes(${JSON.stringify(ROUTINE_PARAMS_NAME)}));
+    return t ? (t.textContent || '').trim() : null;
+  })()`)
+  check(
+    'la store si apre in modifica (tab col nome dell oggetto)',
+    premuto === true && !!titoloTab,
+    JSON.stringify(titoloTab),
+  )
+
+  // 2) dentro la store si scrive "SELECT @" e si guarda il popup
+  const rect = await editorRect(page)
+  await page.clickPoint(rect.x + 200, rect.y + 40)
+  await sleep(300)
+  await page.press('End', { code: 'End', vk: 35, modifiers: 2 }) // Ctrl+Fine: fondo del documento
+  await sleep(300)
+  await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
+  await page.typeText('SELECT @')
+  await sleep(2200)
+  const voci = await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+    .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+  console.log(`  popup dopo "SELECT @": ${JSON.stringify(voci.slice(0, 12))}`)
+
+  const variabili = voci.filter(v => v.startsWith('@'))
+  const mancanti = ROUTINE_PARAMS.filter(p => !variabili.some(v => v.toLowerCase() === p.toLowerCase()))
+  console.log(`  parametri attesi: ${JSON.stringify(ROUTINE_PARAMS)}`)
+  check('il popup propone le variabili/parametri', variabili.length > 0, `${variabili.length} voci con @`)
+  check('propone TUTTI i parametri della firma', mancanti.length === 0, `mancanti: ${JSON.stringify(mancanti)}`)
+
+  // 3) con più contesti di scrittura i parametri devono esserci sempre
+  //    (SELECT @, WHERE ... = @, SET @, IF @): si annulla ogni prova con Ctrl+Z
+  const contesti = [
+    { etichetta: 'SELECT @', testo: 'SELECT @' },
+    { etichetta: 'WHERE c = @', testo: 'SELECT 1 FROM dbo.T WHERE c = @' },
+    { etichetta: 'SET @', testo: 'SET @' },
+    { etichetta: 'IF @', testo: 'IF @' },
+  ]
+  for (const c of contesti) {
+    await page.press('End', { code: 'End', vk: 35, modifiers: 2 })
+    await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
+    await page.typeText(c.testo)
+    await sleep(1800)
+    const righe = await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+    const mancano = ROUTINE_PARAMS.filter(p => !righe.some(v => v.toLowerCase() === p.toLowerCase()))
+    console.log(`  ${c.etichetta}: ${righe.length} voci, mancanti ${JSON.stringify(mancano)}`)
+    check(`i parametri compaiono con "${c.etichetta}"`, righe.length > 0 && mancano.length === 0, JSON.stringify(mancano))
+    await page.press('Escape', { code: 'Escape', vk: 27 })
+    // Ctrl+Z: si toglie la riga di prova e si torna al documento
+    await page.press('z', { code: 'KeyZ', vk: 90, modifiers: 2 })
+    await sleep(500)
+  }
+
+  // 4) filtrando per nome ("@mI") resta il parametro giusto
+  await page.press('End', { code: 'End', vk: 35, modifiers: 2 })
+  await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
+  await page.typeText('SELECT @mI')
+  await sleep(1800)
+  const voci2 = await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+    .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+  console.log(`  popup dopo "@mI": ${JSON.stringify(voci2.slice(0, 6))}`)
+  check(
+    'filtrando per nome resta il parametro giusto',
+    voci2.some(v => v.toLowerCase() === '@mid'),
+    JSON.stringify(voci2.slice(0, 3)),
+  )
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await page.screenshot('parametri-store-intellisense')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-merge): la MERGE generata dall'anteprima dati non deve MAI aggiornare i
+ * campi chiave della tabella (richiesta utente: "quando fai la merge, non mettere mai nell'update
+ * anche i campi chiave della tabella"). La chiave sono le colonne della PRIMARY KEY — anche
+ * composita — e restano solo nella condizione ON.
+ */
+async function verifyMerge(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // 1) nel editor si scrive una SELECT sulla tabella con chiave composita e si apre l'anteprima (F4)
+  const rect = await editorRect(page)
+  await page.clickPoint(rect.x + 160, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(`SELECT * FROM dbo.${TABELLA_CHIAVE}`)
+  await sleep(400)
+  // il cursore deve stare DENTRO il nome della tabella (F4 risolve il token sotto il cursore)
+  for (let i = 0; i < 5; i++) await page.press('ArrowLeft', { code: 'ArrowLeft', vk: 37 })
+  await sleep(300)
+  await page.press('F4', { code: 'F4', vk: 115 })
+  await page.waitFor(`document.body.textContent.includes('Anteprima dati —')`, 30000, 'anteprima dati')
+  await sleep(2000)
+
+  // 2) tutte le righe selezionate (casella di intestazione) e generazione della MERGE
+  const box = await page.eval(`(() => {
+    const h = [...document.querySelectorAll('h2')].find(x => (x.textContent || '').includes('Anteprima dati'));
+    const mod = h && h.closest('div.fixed');
+    const c = mod && mod.querySelector('input[title="Seleziona tutte le righe"]');
+    if (!c) return null;
+    c.scrollIntoView({ block: 'center' });
+    const r = c.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (!box) throw new Error('casella "Seleziona tutte le righe" non trovata nell anteprima')
+  await page.clickPoint(box.x, box.y)
+  await sleep(600)
+  const premuto = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'MERGE')`,
+  )
+  await sleep(900)
+  check('la MERGE si genera dall\'anteprima dati', premuto === true)
+
+  /** Analisi della MERGE generata: chiavi dell'ON e colonne aggiornate nel SET. */
+  const analisi = await page.eval(`(() => {
+    const h = [...document.querySelectorAll('h2')].find(x => (x.textContent || '').includes('Anteprima dati'));
+    const mod = h && h.closest('div.fixed');
+    const pre = mod ? [...mod.querySelectorAll('pre')].map(p => p.textContent).find(t => (t || '').includes('MERGE INTO')) : null;
+    if (!pre) return null;
+    const on = (pre.match(/ON ([\\s\\S]*?)\\nWHEN/) || [])[1] || '';
+    const chiavi = [...on.matchAll(/tgt\\.\\[([^\\]]+)\\]/g)].map(m => m[1]);
+    const dopoUpdate = pre.includes('UPDATE SET') ? pre.split('UPDATE SET')[1] : '';
+    const set = dopoUpdate ? dopoUpdate.split('WHEN NOT MATCHED')[0] : '';
+    const aggiornate = [...set.matchAll(/tgt\\.\\[([^\\]]+)\\]/g)].map(m => m[1]);
+    return { chiavi, aggiornate, testa: pre.split('\\n').slice(0, 3).join(' / ') };
+  })()`)
+  console.log(`  chiave ON: ${JSON.stringify(analisi?.chiavi)}`)
+  console.log(`  campi nell'UPDATE SET: ${JSON.stringify(analisi?.aggiornate)}`)
+  check('la MERGE ha una chiave nella condizione ON', (analisi?.chiavi.length ?? 0) > 0)
+  check(
+    'la chiave è tutta la primary key (qui composita), non solo la prima colonna',
+    (analisi?.chiavi.length ?? 0) >= 2,
+    `${analisi?.chiavi.length} colonne di chiave`,
+  )
+  const intrusi = (analisi?.chiavi ?? []).filter(c => (analisi?.aggiornate ?? []).includes(c))
+  check('NESSUN campo chiave compare nell\'UPDATE SET', intrusi.length === 0, `intrusi: ${JSON.stringify(intrusi)}`)
+  check(
+    'gli altri campi si aggiornano comunque',
+    (analisi?.aggiornate.length ?? 0) > 0,
+    `${analisi?.aggiornate.length} campi`,
+  )
+  await page.screenshot('merge-senza-chiavi')
+
+  // ---------------------------------------------------------------- 3) MERGE dai RISULTATI
+  // Richiesta utente: "quando fai la merge, la chiave potrebbe essere multipla" — vale anche per
+  // il generatore dei RISULTATI (pannello in basso): la chiave dell'ON deve essere tutta la
+  // primary key della tabella target, non solo la prima colonna.
+  console.log('  3) MERGE dal generatore dei RISULTATI')
+  // prima si chiude la finestra dell'anteprima dati (ha il focus)
+  await page.clickWhere(`(() => {
+    const h = [...document.querySelectorAll('h2')].find(x => (x.textContent || '').includes('Anteprima dati'));
+    const mod = h && h.closest('div.fixed');
+    return mod ? mod.querySelector('button.ml-auto') : null;
+  })()`)
+  await page.waitFor(`!document.body.textContent.includes('Anteprima dati —')`, 8000, 'anteprima chiusa')
+  await sleep(600)
+  const rect2 = await editorRect(page)
+  await page.clickPoint(rect2.x + 160, rect2.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(`SELECT * FROM dbo.${TABELLA_CHIAVE}`)
+  await sleep(400)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await page.waitFor(`document.body.textContent.includes('per pagina')`, 40000, 'griglia dei risultati')
+  await sleep(1500)
+  const inGeneratore = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => /Genera SQL|Generatore attivo/.test((b.textContent || '').trim()))`,
+  )
+  check('il generatore dei risultati si apre', inGeneratore === true)
+  await sleep(1200)
+  // tutte le righe + MERGE
+  const casella = await page.eval(`(() => {
+    const c = document.querySelector('input[title="Seleziona tutte le righe"]');
+    if (!c) return null;
+    c.scrollIntoView({ block: 'center' });
+    const r = c.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (casella) await page.clickPoint(casella.x, casella.y)
+  await sleep(700)
+  const mergeRisultati = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'MERGE')`,
+  )
+  await sleep(1000)
+  const analisiRisultati = await page.eval(`(() => {
+    const barra = document.querySelector('[data-generatore="barra"]');
+    const pre = barra && barra.parentElement ? barra.parentElement.querySelector('pre') : null;
+    const testo = pre ? pre.textContent : '';
+    if (!testo || !testo.includes('MERGE INTO')) return null;
+    const on = (testo.match(/ON ([\\s\\S]*?)\\nWHEN/) || [])[1] || '';
+    const chiavi = [...on.matchAll(/tgt\\.\\[([^\\]]+)\\]/g)].map(m => m[1]);
+    const set = (testo.split('UPDATE SET')[1] || '').split('WHEN NOT MATCHED')[0];
+    return { chiavi, set };
+  })()`)
+  console.log(`  chiave ON dal generatore dei risultati: ${JSON.stringify(analisiRisultati?.chiavi)}`)
+  check(
+    'anche dai RISULTATI la chiave è tutta la primary key (composita)',
+    (analisiRisultati?.chiavi.length ?? 0) >= 2,
+    `${analisiRisultati?.chiavi.length ?? 0} colonne di chiave`,
+  )
+  check(
+    'e nessun campo chiave finisce nell\'UPDATE SET',
+    !(analisiRisultati?.chiavi ?? []).some(c => (analisiRisultati?.set ?? '').includes(`[${c}]`)),
+    JSON.stringify(analisiRisultati?.chiavi),
+  )
+  await page.screenshot('merge-risultati-chiave-composita')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-cursori-corti): multi cursore con righe di lunghezza DIVERSA
+ * (segnalazione utente: "il multicursore non funziona bene quando ci sono righe che sono più
+ * corte"). Si controlla dove finiscono i cursori aggiunti e cosa si scrive:
+ *
+ *   AAAA
+ *   BB
+ *   CCCC
+ *
+ * cursore a fine riga 1 (colonna 5) e Maiusc+Alt+Giù due volte. Il comportamento giusto (come
+ * Visual Studio / VS Code) è che la COLONNA VOLUTA resti 5: la riga corta riceve il cursore a fine
+ * riga e la riga 3 torna alla colonna 5 → scrivendo "X" si ottiene AAAAA / BBX / CCCCX; se invece
+ * il cursore "scivola" sulla riga corta si ottiene AAAAA / BBX / CCXCC.
+ */
+async function verifyCursoriCorti(page) {
+  await accediApp(page)
+  await sleep(1200)
+  const rect = await editorRect(page)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(300)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(600)
+  }
+  const righeEditor = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => ({ top: l.getBoundingClientRect().top, testo: (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, '') }))
+      .sort((a, b) => a.top - b.top)
+      .map(l => l.testo)`)
+  const cursori = () => page.eval(`document.querySelectorAll('.monaco-editor .cursors-layer .cursor').length`)
+  /** Posizione di ogni cursore: riga (dall'alto) e pixel a sinistra. */
+  const posizioniCursori = () =>
+    page.eval(`(() => {
+      const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+        .map(l => l.getBoundingClientRect()).sort((a, b) => a.top - b.top);
+      const cur = [...document.querySelectorAll('.monaco-editor .cursors-layer .cursor')];
+      return cur.map(c => {
+        const r = c.getBoundingClientRect();
+        const riga = linee.findIndex(l => Math.abs(l.top - r.top) < 4);
+        return { riga: riga + 1, left: Math.round(r.left), top: Math.round(r.top) };
+      }).sort((a, b) => a.top - b.top || a.left - b.left);
+    })()`)
+
+  // 1) righe di lunghezza diversa: cursore a FINE riga 1 (Ctrl+Home poi End: niente clic a
+  // coordinate, che possono cadere fuori dall'editor), poi due "aggiungi cursore sotto"
+  await scrivi('AAAA\nBB\nCCCC')
+  await page.press('Home', { code: 'Home', vk: 36, modifiers: 2 })
+  await sleep(250)
+  await page.press('End', { code: 'End', vk: 35 })
+  await sleep(300)
+  const prima = await cursori()
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+  await sleep(400)
+  const dopoUno = await posizioniCursori()
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+  await sleep(400)
+  const dopoDue = await posizioniCursori()
+  console.log(`  cursori: prima ${prima} · dopo 1: ${JSON.stringify(dopoUno)} · dopo 2: ${JSON.stringify(dopoDue)}`)
+  check(
+    'Maiusc+Alt+Giù aggiunge un cursore per volta',
+    dopoUno.length === 2 && dopoDue.length === 3,
+    `${prima} → ${dopoUno.length} → ${dopoDue.length}`,
+  )
+
+  // 2) quello che si SCRIVE: la colonna voluta (fine riga 1) deve valere anche per la riga 3
+  await page.typeText('X')
+  await sleep(700)
+  const scritte = await righeEditor()
+  console.log(`  righe dopo aver scritto "X": ${JSON.stringify(scritte.slice(0, 3))}`)
+  check('la riga 1 riceve la X a fine riga', /^AAAAX$/.test(scritte[0] ?? ''), scritte[0])
+  check('la riga CORTA riceve la X a fine riga', /^BBX$/.test(scritte[1] ?? ''), scritte[1])
+  check('la terza riga torna alla COLONNA VOLUTA (non scivola)', /^CCCCX$/.test(scritte[2] ?? ''), scritte[2])
+
+  // 3) cursore a METÀ riga lunga, con una riga corta in mezzo
+  await scrivi('AAAA\nBB\nCCCC')
+  await page.press('Home', { code: 'Home', vk: 36, modifiers: 2 })
+  await sleep(200)
+  for (let i = 0; i < 2; i++) await page.press('ArrowRight', { code: 'ArrowRight', vk: 39 })
+  await sleep(300)
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+  await sleep(350)
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+  await sleep(350)
+  await page.typeText('X')
+  await sleep(700)
+  const aMeta = await righeEditor()
+  console.log(`  cursore a metà riga (colonna 3): ${JSON.stringify(aMeta.slice(0, 3))}`)
+  check(
+    'colonna 3 su tutte le righe (riga corta a fine riga)',
+    /^AAXAA$/.test(aMeta[0] ?? '') && /^BBX$/.test(aMeta[1] ?? '') && /^CCXCC$/.test(aMeta[2] ?? ''),
+    JSON.stringify(aMeta.slice(0, 3)),
+  )
+
+  // 4) cursori verso l'ALTO con righe corte sopra
+  await scrivi('AAAA\nBB\nCCCC')
+  await page.press('End', { code: 'End', vk: 35, modifiers: 2 })
+  await sleep(300)
+  await page.press('ArrowUp', { code: 'ArrowUp', vk: 38, modifiers: 9 })
+  await sleep(350)
+  await page.press('ArrowUp', { code: 'ArrowUp', vk: 38, modifiers: 9 })
+  await sleep(350)
+  const sopra = await cursori()
+  await digita('Y')
+  await sleep(700)
+  const aSopra = await righeEditor()
+  console.log(`  cursori verso l alto: ${sopra} — righe: ${JSON.stringify(aSopra.slice(0, 3))}`)
+  check('Maiusc+Alt+Su aggiunge un cursore per riga (verso l alto)', sopra === 3, `${sopra} cursori`)
+  check(
+    'colonna 5 mantenuta anche salendo sopra la riga corta',
+    /^AAAAY$/.test(aSopra[0] ?? '') && /^BBY$/.test(aSopra[1] ?? '') && /^CCCCY$/.test(aSopra[2] ?? ''),
+    JSON.stringify(aSopra.slice(0, 3)),
+  )
+
+  // 5) con una SELEZIONE su una riga lunga e una riga corta sotto: si aggiunge un cursore
+  //    (o una selezione) sotto, senza rompere il testo
+  await scrivi('AAAA\nBB\nCCCC')
+  await page.press('Home', { code: 'Home', vk: 36, modifiers: 2 })
+  await sleep(200)
+  // seleziona "AA" (2 caratteri) sulla riga 1
+  await page.press('ArrowRight', { code: 'ArrowRight', vk: 39, modifiers: 8 })
+  await page.press('ArrowRight', { code: 'ArrowRight', vk: 39, modifiers: 8 })
+  await sleep(300)
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+  await sleep(450)
+  const conSelezione = await cursori()
+  await page.typeText('Z')
+  await sleep(700)
+  const aSelezione = await righeEditor()
+  console.log(`  con selezione: cursori ${conSelezione} — righe: ${JSON.stringify(aSelezione.slice(0, 3))}`)
+  check('con una selezione il cursore si aggiunge sotto', conSelezione >= 2, `${conSelezione} cursori`)
+  check(
+    'la scrittura con selezione non rompe le righe corte (3 righe, testo sensato)',
+    aSelezione.length === 3 && aSelezione.every(r => /^[A-Z]+$/.test(r)) && (aSelezione[1] ?? '').startsWith('Z'),
+    JSON.stringify(aSelezione.slice(0, 3)),
+  )
+
+  // 6) caso limite: TRE righe corte in mezzo a due lunghe (lo "scivolamento" si vedrebbe sulla
+  //    quarta riga: DXDDDDD invece di DDDDDDX)
+  await scrivi('AAAAAA\nB\nC\nDDDDDD')
+  await page.press('Home', { code: 'Home', vk: 36, modifiers: 2 })
+  await sleep(250)
+  await page.press('End', { code: 'End', vk: 35 })
+  await sleep(300)
+  for (let i = 0; i < 3; i++) {
+    await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 9 })
+    await sleep(350)
+  }
+  const molti = await cursori()
+  await page.typeText('X')
+  await sleep(800)
+  const aMolti = await righeEditor()
+  console.log(`  ${molti} cursori su righe corte in mezzo: ${JSON.stringify(aMolti.slice(0, 4))}`)
+  check('quattro cursori (uno per riga)', molti === 4, `${molti} cursori`)
+  check(
+    'nessuno scivolamento: la colonna voluta vale anche dopo le righe corte',
+    /^AAAAAAX$/.test(aMolti[0] ?? '') &&
+      /^BX$/.test(aMolti[1] ?? '') &&
+      /^CX$/.test(aMolti[2] ?? '') &&
+      /^DDDDDDX$/.test(aMolti[3] ?? ''),
+    JSON.stringify(aMolti.slice(0, 4)),
+  )
+
+  // 7) SELEZIONE A BLOCCHI (Alt+C) su righe di lunghezza diversa: rettangolo di 3 colonne sulle
+  //    prime righe e scrittura di 3 caratteri; la riga corta non deve rompere niente
+  await scrivi('AAAA\nBB\nCCCC')
+  if (!(await page.eval(`/bg-sky-600/.test((document.querySelector('[data-multiriga="blocchi"]') || {}).innerHTML || '')`))) {
+    await page.clickWhere(`document.querySelector('[data-multiriga="blocchi"]')`)
+    await sleep(500)
+  }
+  const rettangolo = await page.eval(`(() => {
+    const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+    const a = linee[0], c = linee[2];
+    if (!a || !c) return null;
+    const ra = a.getBoundingClientRect(), rc = c.getBoundingClientRect();
+    const passo = ra.height > 0 ? 8 : 8; // ~larghezza di un carattere in Cascadia/Consolas 13px
+    return { x1: ra.left + 3, y1: ra.top + ra.height / 2, x2: rc.left + 3 + passo * 3, y2: rc.top + rc.height / 2 };
+  })()`)
+  if (rettangolo) await page.dragPoint(rettangolo.x1, rettangolo.y1, rettangolo.x2, rettangolo.y2, 0)
+  await sleep(500)
+  await page.typeText('XYZ')
+  await sleep(800)
+  const aBlocchi = await righeEditor()
+  console.log(`  selezione a blocchi su righe diverse: ${JSON.stringify(aBlocchi.slice(0, 3))}`)
+  check(
+    'la selezione a blocchi su righe corte non rompe il testo (3 righe, nessun carattere strano)',
+    aBlocchi.length === 3 && aBlocchi.every(r => /^[A-Z]+$/.test(r)) && aBlocchi[1].length >= 2,
+    JSON.stringify(aBlocchi.slice(0, 3)),
+  )
+  // si spegne la modalità a blocchi
+  await page.clickWhere(`document.querySelector('[data-multiriga="blocchi"]')`)
+  await sleep(400)
+
+  await page.screenshot('multicursore-righe-corte')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-inizio): a FOGLIO VUOTO (o a inizio statement) l'intellisense deve proporre
+ * per prime le PAROLE CHIAVE con cui si comincia una query (SELECT, INSERT, UPDATE, DELETE, MERGE,
+ * CREATE, ALTER, DROP, EXEC…), non le tabelle (segnalazione utente: "a foglio vuoto mi propone le
+ * tabelle e non le chiavi per cominciare una query").
+ */
+async function verifyInizio(page) {
+  await accediApp(page)
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+  const voci = async () =>
+    page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').replace(/\\u00a0/g, ' ').trim())`)
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(300)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    if (sql === '') await page.press('Delete', { code: 'Delete', vk: 46 })
+    else await page.typeText(sql)
+    await sleep(900)
+  }
+  /** Ctrl+Spazio: apre il popup senza digitare nulla. */
+  const apriPopup = async () => {
+    await page.press(' ', { code: 'Space', vk: 32, modifiers: 2 })
+    await sleep(1500)
+    return voci()
+  }
+
+  // 1) foglio VUOTO: le prime voci sono le keyword di statement
+  await scrivi('')
+  const vuoto = await apriPopup()
+  console.log(`  foglio vuoto: ${JSON.stringify(vuoto.slice(0, 8))}`)
+  check('a foglio vuoto il popup si apre', vuoto.length > 0)
+  check(
+    'a foglio vuoto il PRIMO suggerimento è SELECT',
+    (vuoto[0] ?? '').toUpperCase() === 'SELECT',
+    vuoto[0],
+  )
+  for (const k of ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP', 'EXEC']) {
+    check(`a foglio vuoto propone ${k}`, vuoto.some(v => v.toUpperCase() === k), JSON.stringify(vuoto.slice(0, 6)))
+  }
+  // le voci oltre le ~12 righe visibili si controllano digitandone l'inizio
+  // (l'elenco COMPLETO a foglio vuoto è quello appena letto: solo parole chiave)
+  const inizioSoloKeyword = await page.eval(`(() => {
+    const righe = [...document.querySelectorAll('.suggest-widget .monaco-list-row')];
+    const testi = righe.map(r => ((r.querySelector('.label-name') || r).textContent || '').replace(/\\u00a0/g, ' ').trim());
+    const estranee = testi.filter(t => /\\./.test(t) || /^(SUM|AVG|COUNT|FLOOR|FORMAT|GETDATE|ISNULL)$/i.test(t) || /^[A-Z]{2,}_/.test(t));
+    return { quante: testi.length, testi: testi.slice(0, 8), estranee: estranee.slice(0, 4) };
+  })()`)
+  console.log(`  a foglio vuoto (elenco completo): ${JSON.stringify(inizioSoloKeyword)}`)
+  check(
+    'a foglio vuoto NON compaiono tabelle/funzioni/store: solo parole chiave',
+    inizioSoloKeyword.quante > 0 && inizioSoloKeyword.estranee.length === 0,
+    JSON.stringify(inizioSoloKeyword.estranee),
+  )
+  await scrivi('MER')
+  const vociMer = await apriPopup()
+  check('digitando "MER" esce MERGE', vociMer.some(v => v.toUpperCase() === 'MERGE'), JSON.stringify(vociMer.slice(0, 4)))
+  check(
+    'a foglio vuoto le TABELLE non stanno in cima',
+    !vuoto.slice(0, 6).some(v => /^dbo\.|^DAT_|^MAG_|^CFG_/i.test(v)),
+    JSON.stringify(vuoto.slice(0, 6)),
+  )
+
+  // 2) dopo uno statement chiuso (SELECT 1; + a capo) vale lo stesso
+  await scrivi('SELECT 1;\n')
+  const dopoStatement = await apriPopup()
+  console.log(`  dopo "SELECT 1;": ${JSON.stringify(dopoStatement.slice(0, 5))}`)
+  check(
+    'dopo uno statement chiuso si riparte dalle keyword',
+    (dopoStatement[0] ?? '').toUpperCase() === 'SELECT',
+    dopoStatement[0],
+  )
+
+  // 3) a METÀ statement (dopo WHERE) le keyword di inizio NON vanno in cima: servono le colonne
+  await scrivi('SELECT * FROM dbo.DAT_UDC\nWHERE ')
+  const meta = await apriPopup()
+  console.log(`  a metà statement (WHERE): ${JSON.stringify(meta.slice(0, 5))}`)
+  check(
+    'a metà statement non si propone SELECT in cima',
+    (meta[0] ?? '').toUpperCase() !== 'SELECT',
+    meta[0],
+  )
+  check(
+    'a metà statement si propongono le colonne della tabella',
+    meta.some(v => /^UDC_/i.test(v)),
+    JSON.stringify(meta.slice(0, 5)),
+  )
+
+  await page.screenshot('intellisense-inizio-statement')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-trigger): l'intellisense deve aiutare a scrivere BENE l'abilitazione e la
+ * disabilitazione di un trigger (segnalazione utente: "l'intellisense non mi aiuta a scrivere
+ * correttamente l'abilitazione o disabilitazione di un trigger"). Si controlla il popup:
+ *  1) dopo "DISABLE TRIGGER "            → i trigger della tabella + ALL
+ *  2) dopo "DISABLE TRIGGER <nome> "     → "ON <tabella>" (la tabella SU CUI è definito)
+ *  3) dopo "DISABLE TRIGGER <nome> ON "  → la tabella di QUEL trigger (non un elenco lungo)
+ *  4) dopo "ENABLE TRIGGER ALL ON "      → tutte le tabelle con trigger + DATABASE / ALL SERVER
+ *  5) dopo "ALTER TABLE <t> DISABLE TRIGGER " → i trigger di quella tabella (forma ALTER TABLE)
+ */
+async function verifyTrigger(page) {
+  await accediApp(page)
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(300)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1700)
+  }
+  const voci = async () =>
+    page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').replace(/\\u00a0/g, ' ').trim())`)
+  const minuscole = v => v.map(x => x.toLowerCase())
+  /** Ctrl+Spazio: popup senza digitare nulla (per vedere cosa propone "da fermo"). */
+  const apriPopupTrigger = async () => {
+    await page.press(' ', { code: 'Space', vk: 32, modifiers: 2 })
+    await sleep(1400)
+    return voci()
+  }
+  /** Classe dell'icona della voce con quel testo (keyword = blu, snippet = altra icona). */
+  const iconaDi = async testo =>
+    page.eval(`(() => {
+      const righe = [...document.querySelectorAll('.suggest-widget .monaco-list-row')];
+      const r = righe.find(x => ((x.querySelector('.label-name') || x).textContent || '').trim().toUpperCase() === ${JSON.stringify(testo.toUpperCase())});
+      if (!r) return null;
+      const ic = r.querySelector('.icon, .codicon, [class*="symbol-"]');
+      // il "kind" del suggerimento è nel nome della classe (codicon-symbol-keyword / -snippet…)
+      const codicon = r.querySelector('[class*="codicon-symbol-"]');
+      return JSON.stringify({ icona: ic ? ic.className : null, codicon: codicon ? codicon.className : null, html: r.innerHTML.slice(0, 120) });
+    })()`)
+
+  // 0) le PAROLE "ENABLE"/"DISABLE" devono uscire dall'intellisense (segnalazione utente), con
+  //    lo snippet completo della direttiva (nome + ON tabella)
+  await scrivi('DIS')
+  const vociDis = await voci()
+  console.log(`  dopo "DIS": ${JSON.stringify(vociDis.slice(0, 4))}`)
+  check('digitando "DIS" esce "DISABLE TRIGGER"', vociDis.some(v => v.toUpperCase() === 'DISABLE TRIGGER'), JSON.stringify(vociDis.slice(0, 3)))
+  check('digitando "DIS" esce anche "DISABLE TRIGGER ALL"', vociDis.some(v => v.toUpperCase() === 'DISABLE TRIGGER ALL'))
+  // richiesta utente: "deve essere come le altre tipo EXEC, una parola chiave, blue" → l'icona
+  // della voce deve essere quella delle PAROLE CHIAVE (come "TRIGGER" proposto dopo "DISABLE ")
+  const iconaTrigger = await iconaDi('DISABLE TRIGGER')
+  await scrivi('DISABLE ')
+  const iconaParola = await iconaDi('TRIGGER')
+  console.log(`  icone: DISABLE TRIGGER = ${iconaTrigger} · TRIGGER (parola chiave) = ${iconaParola}`)
+  const kindDi = testo => {
+    if (!testo) return null
+    try {
+      return JSON.parse(testo).codicon
+    } catch {
+      return null
+    }
+  }
+  check(
+    'la voce è una PAROLA CHIAVE (stessa icona blu di TRIGGER, non quella degli snippet)',
+    !!kindDi(iconaTrigger) && kindDi(iconaTrigger) === kindDi(iconaParola) && /keyword/i.test(kindDi(iconaTrigger)),
+    `${kindDi(iconaTrigger)} vs ${kindDi(iconaParola)}`,
+  )
+  await scrivi('ENA')
+  const vociEna = await voci()
+  console.log(`  dopo "ENA": ${JSON.stringify(vociEna.slice(0, 4))}`)
+  check('digitando "ENA" esce "ENABLE TRIGGER"', vociEna.some(v => v.toUpperCase() === 'ENABLE TRIGGER'), JSON.stringify(vociEna.slice(0, 3)))
+  // dopo la parola, "TRIGGER" deve essere proposto
+  await scrivi('DISABLE ')
+  const vociDopoDisable = await voci()
+  console.log(`  dopo "DISABLE ": ${JSON.stringify(vociDopoDisable.slice(0, 4))}`)
+  check('dopo "DISABLE " propone TRIGGER', minuscole(vociDopoDisable).includes('trigger'), JSON.stringify(vociDopoDisable.slice(0, 3)))
+  // accettando lo snippet si ottiene la direttiva completa, con i due segnaposto VUOTI: fermandosi
+  // lì l'intellisense propone i trigger veri e poi la tabella di quel trigger
+  await scrivi('DIS')
+  await page.press('Enter', { code: 'Enter', vk: 13 })
+  await sleep(900)
+  const rigaSnippet = await page.eval(`(() => {
+    const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' '));
+    return linee.find(l => l.toUpperCase().includes('DISABLE TRIGGER')) || '';
+  })()`)
+  console.log(`  snippet accettato: ${JSON.stringify(rigaSnippet)}`)
+  check(
+    'accettando lo snippet esce "DISABLE TRIGGER <trigger> ON <tabella>"',
+    /DISABLE TRIGGER .* ON /i.test(rigaSnippet),
+    rigaSnippet,
+  )
+  check(
+    'lo snippet NON lascia il testo fisso "[schema.]trigger" (che bloccherebbe il popup)',
+    !/\[schema\.\]/i.test(rigaSnippet),
+    rigaSnippet,
+  )
+  // e con il cursore nel segnaposto del nome l'intellisense propone i TRIGGER veri
+  const vociNelSegnaposto = await apriPopupTrigger()
+  console.log(`  popup dentro il segnaposto: ${JSON.stringify(vociNelSegnaposto.slice(0, 3))}`)
+  check(
+    'dentro il segnaposto del nome l intellisense propone i trigger',
+    vociNelSegnaposto.some(v => /^tr_/i.test(v)),
+    JSON.stringify(vociNelSegnaposto.slice(0, 3)),
+  )
+
+  // 1) elenco dei trigger (e ALL)
+  await scrivi('DISABLE TRIGGER ')
+  const vociTrigger = await voci()
+  console.log(`  dopo "DISABLE TRIGGER ": ${JSON.stringify(vociTrigger.slice(0, 4))}`)
+  check('dopo "DISABLE TRIGGER " propone i trigger', vociTrigger.some(v => v.toLowerCase().startsWith('tr_')))
+  // "ALL": dopo ALL serve comunque "ON <tabella>", quindi si verifica il pezzo successivo
+  await scrivi('DISABLE TRIGGER ALL ')
+  const vociAllNome = await voci()
+  console.log(`  dopo "DISABLE TRIGGER ALL ": ${JSON.stringify(vociAllNome.slice(0, 3))}`)
+  check('dopo "DISABLE TRIGGER ALL " propone ON', minuscole(vociAllNome).includes('on'), JSON.stringify(vociAllNome.slice(0, 3)))
+
+  // 2) dopo il NOME serve "ON <tabella>": è l'errore tipico
+  await scrivi(`DISABLE TRIGGER ${TRIGGER_NAME} `)
+  const vociDopoNome = await voci()
+  console.log(`  dopo "DISABLE TRIGGER ${TRIGGER_NAME} ": ${JSON.stringify(vociDopoNome.slice(0, 4))}`)
+  check(
+    'dopo il nome propone "ON <tabella>" (non ripropone i trigger)',
+    vociDopoNome.some(v => new RegExp(`^ON\\b.*${TRIGGER_TABLE}`, 'i').test(v)),
+    JSON.stringify(vociDopoNome.slice(0, 3)),
+  )
+
+  // 3) dopo "ON " la tabella di QUEL trigger
+  await scrivi(`DISABLE TRIGGER ${TRIGGER_NAME} ON `)
+  const vociOn = await voci()
+  console.log(`  dopo "... ${TRIGGER_NAME} ON ": ${JSON.stringify(vociOn.slice(0, 4))}`)
+  check(
+    'dopo "ON " propone per prima la tabella di quel trigger',
+    (vociOn[0] ?? '').toLowerCase().includes(TRIGGER_TABLE.toLowerCase()),
+    vociOn[0],
+  )
+  check('dopo "ON " propone anche DATABASE e ALL SERVER', minuscole(vociOn).includes('database') && minuscole(vociOn).includes('all server'))
+
+  // 3b) completando la tabella la riga diventa corretta
+  await scrivi(`DISABLE TRIGGER ${TRIGGER_NAME} ON `)
+  await page.press('Enter', { code: 'Enter', vk: 13 })
+  await sleep(800)
+  const riga = await page.eval(`(() => {
+    const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' '));
+    return linee.find(l => l.toUpperCase().includes('DISABLE TRIGGER')) || '';
+  })()`)
+  console.log(`  riga completata: ${JSON.stringify(riga)}`)
+  check(
+    'accettando si ottiene "DISABLE TRIGGER <trigger> ON <tabella>"',
+    new RegExp(`DISABLE TRIGGER ${TRIGGER_NAME} ON (\\[?dbo\\]?\\.)?\\[?${TRIGGER_TABLE}\\]?`, 'i').test(riga),
+    riga,
+  )
+
+  // 4) ALL ON → tutte le tabelle con trigger
+  await scrivi('ENABLE TRIGGER ALL ON ')
+  const vociAll = await voci()
+  console.log(`  dopo "ENABLE TRIGGER ALL ON ": ${JSON.stringify(vociAll.slice(0, 4))}`)
+  check('dopo "TRIGGER ALL ON " propone le tabelle con trigger', vociAll.length > 3, `${vociAll.length} voci`)
+
+  // 5) forma ALTER TABLE ... DISABLE TRIGGER
+  await scrivi(`ALTER TABLE dbo.${TRIGGER_TABLE} DISABLE TRIGGER `)
+  const vociAlter = await voci()
+  console.log(`  dopo "ALTER TABLE dbo.${TRIGGER_TABLE} DISABLE TRIGGER ": ${JSON.stringify(vociAlter.slice(0, 4))}`)
+  check(
+    'con ALTER TABLE propone i trigger di QUELLA tabella',
+    vociAlter.some(v => v.toLowerCase().includes(TRIGGER_NAME.toLowerCase())),
+    JSON.stringify(vociAlter.slice(0, 3)),
+  )
+
+  // 6) COLORI: ENABLE/DISABLE devono essere colorate come le altre parole chiave (blu), non nere
+  await scrivi('SELECT 1;\nDISABLE TRIGGER tr_X ON dbo.T;\nENABLE TRIGGER tr_X ON dbo.T;')
+  const colori = await page.eval(`(() => {
+    const coloreDi = parola => {
+      for (const l of document.querySelectorAll('.monaco-editor .view-lines .view-line')) {
+        for (const s of l.querySelectorAll('span[class*="mtk"]')) {
+          if ((s.textContent || '').trim().toUpperCase() === parola) return getComputedStyle(s).color;
+        }
+      }
+      return null;
+    };
+    return { select: coloreDi('SELECT'), disable: coloreDi('DISABLE'), enable: coloreDi('ENABLE'), trigger: coloreDi('TRIGGER') };
+  })()`)
+  console.log(`  colori: SELECT=${colori.select} DISABLE=${colori.disable} ENABLE=${colori.enable} TRIGGER=${colori.trigger}`)
+  check(
+    'DISABLE è colorata come le altre parole chiave (blu, come SELECT)',
+    !!colori.disable && colori.disable === colori.select,
+    `${colori.disable} vs SELECT ${colori.select}`,
+  )
+  check(
+    'ENABLE è colorata come le altre parole chiave (blu, come SELECT)',
+    !!colori.enable && colori.enable === colori.select,
+    `${colori.enable} vs SELECT ${colori.select}`,
+  )
+
+  await page.screenshot('intellisense-trigger')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-copia): il pulsante "Copia SQL" del pannello script sta a SINISTRA della
+ * barra del generatore e la stessa copia si può fare col TASTO DESTRO sullo script (richieste
+ * utente: "the copy button from the pannel of script that there is already, move on the left, and
+ * also in right click"). Si usa l'anteprima dati (F4) come per la MERGE.
+ */
+async function verifyCopia(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  // la copia negli appunti serve davvero: si dà il permesso al browser
+  try {
+    await page.send('Browser.grantPermissions', {
+      origin: APP_URL.replace(/\/$/, ''),
+      permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+    })
+  } catch (e) {
+    console.log(`  (permesso appunti non concesso: ${e.message})`)
+  }
+  await sleep(1200)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // si apre l'anteprima dati della tabella con chiave composita (come --verify-merge)
+  const rect = await editorRect(page)
+  await page.clickPoint(rect.x + 160, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(`SELECT * FROM dbo.${TABELLA_CHIAVE}`)
+  await sleep(400)
+  for (let i = 0; i < 5; i++) await page.press('ArrowLeft', { code: 'ArrowLeft', vk: 37 })
+  await sleep(300)
+  await page.press('F4', { code: 'F4', vk: 115 })
+  await page.waitFor(`document.body.textContent.includes('Anteprima dati —')`, 30000, 'anteprima dati')
+  await sleep(2000)
+
+  // tutte le righe selezionate: così lo script generato non è vuoto
+  const box = await page.eval(`(() => {
+    const h = [...document.querySelectorAll('h2')].find(x => (x.textContent || '').includes('Anteprima dati'));
+    const mod = h && h.closest('div.fixed');
+    const c = mod && mod.querySelector('input[title="Seleziona tutte le righe"]');
+    if (!c) return null;
+    c.scrollIntoView({ block: 'center' });
+    const r = c.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (!box) throw new Error('casella "Seleziona tutte le righe" non trovata nell anteprima')
+  await page.clickPoint(box.x, box.y)
+  await sleep(900)
+
+  /** Posizione e testo dei comandi della barra del generatore. */
+  const barra = await page.eval(`(() => {
+    const b = document.querySelector('[data-generatore="barra"]');
+    if (!b) return null;
+    const voci = [...b.querySelectorAll('button, label, input')].map(e => {
+      const r = e.getBoundingClientRect();
+      return { testo: (e.textContent || e.getAttribute('placeholder') || '').trim().slice(0, 24), left: Math.round(r.left) };
+    });
+    const copia = b.querySelector('[data-copia="pulsante"]');
+    return { voci, copiaLeft: copia ? Math.round(copia.getBoundingClientRect().left) : null };
+  })()`)
+  console.log(`  barra del generatore: ${JSON.stringify(barra?.voci.slice(0, 4))}`)
+  check('la barra del generatore si vede', !!barra)
+  check('il pulsante "Copia SQL" è il PRIMO comando a sinistra', barra?.voci?.[0]?.testo === 'Copia SQL', JSON.stringify(barra?.voci?.[0]))
+  check(
+    'nessun altro comando sta più a sinistra della copia',
+    (barra?.voci ?? []).every(v => v.left >= (barra?.copiaLeft ?? 0)),
+  )
+
+  // copia dal PULSANTE
+  await page.clickWhere(`document.querySelector('[data-copia="pulsante"]')`)
+  await sleep(900)
+  const dopoPulsante = await page.eval(`(document.querySelector('[data-copia="pulsante"]') || {}).textContent || ''`)
+  check('il pulsante copia davvero (diventa "Copiato!")', dopoPulsante.includes('Copiato!'), dopoPulsante.trim())
+
+  // copia col TASTO DESTRO sullo script
+  const script = await page.eval(`(() => {
+    const p = [...document.querySelectorAll('pre')].find(x => (x.textContent || '').includes('INSERT INTO'));
+    if (!p) return null;
+    const r = p.getBoundingClientRect();
+    return { x: r.left + 80, y: r.top + 20 };
+  })()`)
+  check('lo script generato è visibile', !!script)
+  if (script) await page.clickPoint(script.x, script.y, 'right')
+  await sleep(700)
+  const menu = await page.eval(`[...document.querySelectorAll('button')]
+    .map(b => (b.textContent || '').trim()).filter(t => t === 'Copia SQL' || t === 'Copiato!')`)
+  console.log(`  voci del menu col tasto destro: ${JSON.stringify(menu)}`)
+  check('col tasto destro compare "Copia SQL"', menu.length > 0)
+  await page.clickWhere(`[...document.querySelectorAll('button')].find(b => /^(Copia SQL|Copiato!)$/.test((b.textContent || '').trim()))`)
+  await sleep(900)
+  const dopoMenu = await page.eval(`(document.querySelector('[data-copia="pulsante"]') || {}).textContent || ''`)
+  check('la copia dal tasto destro funziona', dopoMenu.includes('Copiato!'), dopoMenu.trim())
+  const menuChiuso = await page.eval(
+    `![...document.querySelectorAll('button')].some(b => (b.textContent || '').trim() === 'Copia SQL')`,
+  )
+  check('dopo la copia il menu si chiude', menuChiuso)
+
+  await page.screenshot('copia-script-pannello')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-hover): la TOOLTIP di una stored procedure mostra il COMMENTO di testata e i
+ * PARAMETRI della firma (richiesta utente: "nella tooltip di una store mi puoi fare vedere commento
+ * e parametri?"). Si scrive una EXEC nel editor e si passa il mouse sul nome: si legge la tooltip
+ * vera dal DOM (provider asincrono incluso), non una funzione interna.
+ */
+async function verifyHover(page) {
+  await accediApp(page)
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  /**
+   * Tooltip VISIBILE: in pagina possono restare più elementi .monaco-hover (uno per editor) e
+   * quello vecchio resta nel DOM ma nascosto, quindi si prende il più grande con area > 0.
+   */
+  const HOVER_VISIBILE = `[...document.querySelectorAll('.monaco-hover')]
+    .map(h => ({ h, r: h.getBoundingClientRect() }))
+    .filter(x => x.r.width > 2 && x.r.height > 2)
+    .sort((a, b) => b.r.width * b.r.height - a.r.width * a.r.height)[0]?.h`
+
+  /** Testo della tooltip attualmente mostrata (null se non c'è). */
+  const leggiTooltip = () =>
+    page.eval(`(() => {
+      const h = ${HOVER_VISIBILE};
+      if (!h) return null;
+      return (h.innerText || '').replace(/\\u00a0/g, ' ').trim();
+    })()`)
+
+  /** Struttura HTML della tooltip: serve a provare che il markdown è RENDERIZZATO (non testo grezzo). */
+  const strutturaTooltip = () =>
+    page.eval(`(() => {
+      const h = ${HOVER_VISIBILE};
+      if (!h) return null;
+      return {
+        voci: h.querySelectorAll('li').length,
+        titoli: [...h.querySelectorAll('h1,h2,h3,h4')].map(e => (e.textContent || '').trim()),
+        grassetti: [...h.querySelectorAll('strong')].map(e => (e.textContent || '').trim()),
+        citazioni: h.querySelectorAll('blockquote').length,
+        codice: [...h.querySelectorAll('code')].map(e => (e.textContent || '').trim()),
+      };
+    })()`)
+
+  /** Testo della tooltip dopo aver portato il mouse su un pezzo di codice. */
+  const hoverSu = async testo => {
+    const punto = await page.eval(`(() => {
+      const cercato = ${JSON.stringify(testo)};
+      const spans = [...document.querySelectorAll('.monaco-editor .view-lines .view-line span')]
+        .filter(s => s.children.length === 0 && (s.textContent || '').includes(cercato));
+      if (!spans.length) return null;
+      const span = spans[0];
+      const i = (span.textContent || '').indexOf(cercato);
+      const range = document.createRange();
+      range.setStart(span.firstChild, i);
+      range.setEnd(span.firstChild, i + cercato.length);
+      const r = range.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2, riga: span.textContent };
+    })()`)
+    if (!punto) return { punto: null, testo: null, struttura: null }
+    // 1) il mouse ESCE dal editor: la tooltip precedente può coprire il token da guardare (è un
+    //    pannello "sticky": finché il mouse resta dentro l'editor non sparisce) e si aspetta che se ne vada
+    const fuori = await page.eval(`({ x: innerWidth - 24, y: 6 })`)
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(fuori.x), y: Math.round(fuori.y), button: 'none', buttons: 0 })
+    for (let i = 0; i < 20; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      if ((await leggiTooltip()) === null) break
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(150)
+    }
+    // 2) ora il mouse va sul token (la tooltip compare sul movimento, non sul riposo)
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(punto.x), y: Math.round(punto.y), button: 'none', buttons: 0 })
+    // la tooltip si aspetta finché non è QUELLA giusta: la precedente resta in pagina per un po'
+    let testoLetto = null
+    const scaduto = Date.now() + 15000
+    while (Date.now() < scaduto) {
+      // eslint-disable-next-line no-await-in-loop
+      testoLetto = await leggiTooltip()
+      if (testoLetto && testoLetto.includes(testo)) break
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(300)
+    }
+    return { punto, testo: testoLetto, struttura: await strutturaTooltip() }
+  }
+
+  // 1) si scrive nel editor la chiamata alla store vera (23 parametri, commento in testa)
+  const rect = await editorRect(page)
+  await page.clickPoint(rect.x + 200, rect.y + 30)
+  await sleep(300)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 }) // Ctrl+A
+  await sleep(200)
+  await page.typeText(
+    `SELECT UDC_UDC, UDC_TIPOUDC\nFROM dbo.DAT_UDC;\nEXEC dbo.${STORE_HOVER};\nSELECT dbo.${FUNZIONE_HOVER}(0,0,0,0,0,0,1,1,0,0);`,
+  )
+  await sleep(1200)
+
+  const tooltip = await hoverSu(STORE_HOVER)
+  console.log(`  tooltip della store:\n${(tooltip.testo || '(nessuna tooltip)').split('\n').map(r => `    | ${r}`).join('\n')}`)
+  check('la tooltip della store compare', tooltip.punto !== null && (tooltip.testo || '').length > 0)
+
+  const t = tooltip.testo || ''
+  check('dice che è una stored procedure', t.includes(STORE_HOVER) && /stored procedure/i.test(t), t.split('\n')[0])
+  check('mostra la sezione PARAMETRI', /Parametri \(\d+\)/.test(t), (t.match(/Parametri \(\d+\)/) || [])[0])
+  // ogni parametro è una riga "- @nome · tipo": il numero deve essere quello vero della firma
+  const righeParam = t.match(/^[-•*]?\s*@[A-Za-z_][A-Za-z0-9_]* · /gm) || []
+  check(
+    `elenca TUTTI i ${STORE_HOVER_PARAMS} parametri della firma`,
+    righeParam.length === STORE_HOVER_PARAMS,
+    `${righeParam.length} righe di parametro`,
+  )
+  check('i parametri sono scritti con la chiocciola', /\B@s_Piazzola\b/.test(t) && /\B@errore\b/.test(t))
+  check(
+    'il parametro OUTPUT mostra tipo esatto e OUTPUT',
+    /^[-•*]?\s*@errore · nvarchar\(255\) · \*\*?OUTPUT/m.test(t) || /@errore · nvarchar\(255\) · OUTPUT/.test(t),
+    (t.match(/@errore[^\n]*/) || [])[0],
+  )
+  check('mostra il COMMENTO di testata', /Commento/.test(t), (t.match(/Commento[^\n]*/) || [])[0])
+  check(
+    'il commento è quello vero della store',
+    t.includes('Routine per generazione missione'),
+    (t.split('\n').find(r => r.includes('Routine per generazione')) || '').trim(),
+  )
+
+  // il markdown deve essere RENDERIZZATO: voci di elenco, titoli, grassetto, citazione e codice
+  const st = tooltip.struttura || {}
+  console.log(`  struttura tooltip: ${JSON.stringify(st)}`)
+  check('i parametri sono un ELENCO (23 voci)', st.voci === STORE_HOVER_PARAMS, `${st.voci} voci`)
+  check(
+    'i titoli sono renderizzati (Parametri + Commento)',
+    (st.titoli || []).includes(`Parametri (${STORE_HOVER_PARAMS})`) && (st.titoli || []).includes('Commento'),
+    JSON.stringify(st.titoli),
+  )
+  check('OUTPUT è in GRASSETTO', (st.grassetti || []).includes('OUTPUT'), JSON.stringify(st.grassetti))
+  check('il commento è una CITAZIONE', (st.citazioni || 0) > 0, `${st.citazioni} citazioni`)
+  check(
+    'nomi e tipi sono in stile CODICE',
+    (st.codice || []).includes('@s_Piazzola') && (st.codice || []).includes('nvarchar(255)'),
+    JSON.stringify((st.codice || []).slice(0, 4)),
+  )
+  await page.screenshot('tooltip-store-commento-parametri')
+
+  // 2) regressione: la tooltip di una COLONNA non deve diventare quella della routine
+  const colonna = await hoverSu('UDC_UDC')
+  console.log(`  tooltip della colonna:\n${(colonna.testo || '(nessuna tooltip)').split('\n').slice(0, 6).map(r => `    | ${r}`).join('\n')}`)
+  const tc = colonna.testo || ''
+  check('la tooltip della colonna continua a funzionare', tc.includes('UDC_UDC') && /decimal/i.test(tc), tc.split('\n')[0])
+  check('la tooltip della colonna NON mostra i parametri di una store', !/Parametri \(\d+\)/.test(tc))
+
+  // 3) FUNZIONE: il sommario non ha i suoi parametri, quindi devono arrivare dalla definizione
+  const funzione = await hoverSu(FUNZIONE_HOVER)
+  const tf = funzione.testo || ''
+  // se la tooltip non compare, l'errore del provider (se c'è) si legge qui
+  if (!tf.includes(FUNZIONE_HOVER)) console.log(`  errori in console: ${JSON.stringify(page.consoleLogs('rror').slice(-4))}`)
+  console.log(`  tooltip della funzione:\n${tf.split('\n').slice(0, 8).map(r => `    | ${r}`).join('\n')}`)
+  const righeFun = tf.match(/^[-•*]?\s*@[A-Za-z_][A-Za-z0-9_]* · /gm) || []
+  check('la tooltip della funzione compare', funzione.punto !== null && tf.length > 0)
+  check('dice che è una funzione', tf.includes(FUNZIONE_HOVER) && /funzione/i.test(tf), tf.split('\n')[0])
+  check(
+    `i parametri della funzione arrivano dalla definizione (${FUNZIONE_HOVER_PARAMS})`,
+    righeFun.length === FUNZIONE_HOVER_PARAMS,
+    `${righeFun.length} righe di parametro`,
+  )
+  check('il valore di ritorno (riga senza nome) NON compare come parametro', !/·\s*bit\s*·\s*\*\*?OUTPUT/.test(tf))
+  check('anche la funzione mostra il COMMENTO', /Commento/.test(tf), (tf.match(/Commento[^\n]*/) || [])[0])
+  await page.screenshot('tooltip-funzione-parametri')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-report): il REPORT utilizzo tabelle si apre in una TAB (non in una finestra),
+ * l'ISTOGRAMMA delle 20 tabelle più pesanti sta SOTTO l'elenco e SEGUE il filtro per nome, e le
+ * tabelle selezionate generano lo script di svuotamento in una nuova tab (richieste utente:
+ * "il grafico, fallo che si filtra con la ricerca, e che sta sotto alla lista e la form si apre
+ * come le tab").
+ */
+async function verifyReport(page) {
+  await accediApp(page)
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // il pannello Oggetti può essere chiuso: nel caso lo si riapre
+  if (!(await page.eval(`!!document.querySelector('input[placeholder^="Cerca (spazio"]')`))) {
+    await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '+ Oggetti')`,
+    )
+    await sleep(1200)
+  }
+
+  // 1) si apre il report tabelle dal pannello DATABASE: deve diventare una TAB
+  const apri = await page.clickWhere(`document.querySelector('[data-report="apri"]')`)
+  check('il pulsante del report tabelle si trova', apri === true)
+  const inTab = await page.waitFor(`document.querySelector('[data-report="pannello"]')`, 60000, 'pannello del report')
+  check('il report si apre in una TAB (pannello nell area editor)', inTab === true)
+  const tabReport = await page.eval(`(() => {
+    const t = [...document.querySelectorAll('*')].filter(e => e.children.length === 0 && (e.textContent || '').trim() === 'Report tabelle');
+    return t.length > 0;
+  })()`)
+  check('la barra delle tab mostra "Report tabelle"', tabReport === true)
+  const senzaFinestraModale = await page.eval(`(() => {
+    // la vecchia finestra era un overlay a tutto schermo con lo sfondo nero
+    const p = document.querySelector('[data-report="pannello"]');
+    return !!p && !p.closest('div.fixed');
+  })()`)
+  check('non è più una finestra modale', senzaFinestraModale === true)
+  await page.waitFor(`document.querySelectorAll('[data-report="barra"]').length > 0`, 90000, 'istogramma caricato')
+  // il pannello può caricare i dati due volte (doppio effetto in sviluppo): si aspetta che
+  // l'istogramma sia STABILE (20 barre e nessun nodo di troppo) prima di misurarlo
+  await page.waitFor(
+    `(() => {
+       const c = document.querySelector('[data-report="istogramma"]');
+       if (!c || !c.lastElementChild) return false;
+       const barre = c.querySelectorAll('[data-report="barra"]').length;
+       const figli = c.lastElementChild.children.length;
+       return barre > 0 && barre === figli && barre <= 20 && document.querySelectorAll('[data-report="barra"]').length === barre;
+     })()`,
+    30000,
+    'istogramma stabile',
+  )
+  await sleep(1200)
+
+  // 2) ISTOGRAMMA SOPRA O SOTTO? Deve stare SOTTO l'elenco
+  const posizioni = await page.eval(`(() => {
+    const elenco = document.querySelector('[data-report="elenco"]');
+    const ist = document.querySelector('[data-report="istogramma"]');
+    if (!elenco || !ist) return null;
+    return { topElenco: Math.round(elenco.getBoundingClientRect().top), topIstogramma: Math.round(ist.getBoundingClientRect().top) };
+  })()`)
+  console.log(`  posizioni: elenco ${posizioni?.topElenco}, istogramma ${posizioni?.topIstogramma}`)
+  check("l'istogramma sta SOTTO l'elenco", (posizioni?.topIstogramma ?? 0) > (posizioni?.topElenco ?? 0), JSON.stringify(posizioni))
+
+  /** Misure delle barre dell'istogramma: nome, larghezza totale in % del massimo e tooltip. */
+  const misureBarre = () =>
+    page.eval(`(() => {
+      const barre = [...document.querySelectorAll('[data-report="barra"]')];
+      const misure = barre.map(b => {
+        const pezzi = [...b.querySelectorAll('span[style]')].map(s => parseFloat(s.style.width) || 0);
+        return {
+          nome: (b.querySelector('span') || {}).textContent || '',
+          totale: Math.round(pezzi.reduce((a, x) => a + x, 0) * 10) / 10,
+          titolo: b.getAttribute('title') || '',
+        };
+      });
+      return { quante: barre.length, misure };
+    })()`)
+  const istogramma = await misureBarre()
+
+  // 2b) UNA RIGA PER TABELLA (difetto segnalato: "le tabelle non sono univoche" — la stessa
+  //     tabella compariva due volte con somme PARZIALI, es. MAG_CELLE 11.194 + 22.388 righe)
+  const univoche = await page.eval(`(() => {
+    const p = document.querySelector('[data-report="pannello"]');
+    const righe = [...p.querySelectorAll('[data-report="riga"]')];
+    const nomi = righe.map(t => {
+      const td = t.querySelector('td[title]');
+      return td ? td.getAttribute('title') : '';
+    });
+    const totali = (p.querySelector('[data-report="totali"]') || {}).textContent || '';
+    const m = totali.match(/([\\d.]+)\\s*tabelle/);
+    const tabelle = m ? parseInt(m[1].replace(/\\./g, ''), 10) : 0;
+    return { righe: righe.length, nomiDistinti: new Set(nomi).size, tabelle, totali };
+  })()`)
+  console.log(`  righe del report: ${JSON.stringify(univoche)}`)
+  check(
+    'una riga per tabella, senza doppioni',
+    univoche.tabelle > 0 && univoche.righe === univoche.tabelle && univoche.nomiDistinti === univoche.righe,
+    JSON.stringify(univoche),
+  )
+  console.log(`  istogramma: ${istogramma.quante} barre, la prima ${JSON.stringify(istogramma.misure[0])}`)
+  check('mostra 20 tabelle', istogramma.quante === 20, `${istogramma.quante} barre`)
+  check('la prima barra è quella più pesante (100%)', istogramma.misure[0]?.totale >= 99.5, `prima = ${istogramma.misure[0]?.totale}%`)
+  check(
+    'le barre sono in ordine decrescente di spazio',
+    istogramma.misure.every((m, i) => i === 0 || m.totale <= istogramma.misure[i - 1].totale + 0.01),
+    JSON.stringify(istogramma.misure.map(m => m.totale).slice(0, 5)),
+  )
+  check(
+    'il tooltip dice righe, dati e indici',
+    /righe/.test(istogramma.misure[0]?.titolo ?? '') && /dati/.test(istogramma.misure[0]?.titolo ?? '') && /indici/.test(istogramma.misure[0]?.titolo ?? ''),
+    istogramma.misure[0]?.titolo,
+  )
+  await page.screenshot('report-tabelle-istogramma')
+
+  // 3) IL FILTRO DEVE FILTRARE ANCHE L'ISTOGRAMMA
+  const filtro = await page.eval(`(() => {
+    const i = document.querySelector('[data-report="filtro"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(i, 'DAT_');
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+    return i.value;
+  })()`)
+  await sleep(900)
+  const filtrato = await page.eval(`(() => {
+    const barre = [...document.querySelectorAll('[data-report="barra"]')].map(b => (b.querySelector('span') || {}).textContent || '');
+    const righe = document.querySelectorAll('[data-report="riga"]').length;
+    const campo = document.querySelector('[data-report="filtro"]');
+    return { barre, righe, quante: barre.length, filtro: campo ? campo.value : '(nessun campo)' };
+  })()`)
+  console.log(`  filtro "${filtro}" (campo="${filtrato.filtro}"): ${filtrato.righe} righe, istogramma ${JSON.stringify(filtrato.barre.slice(0, 4))}`)
+  check(
+    "l'istogramma mostra SOLO le tabelle del filtro",
+    filtrato.quante > 0 && filtrato.barre.every(n => n.toLowerCase().includes('dat_')),
+    JSON.stringify(filtrato.barre.slice(0, 3)),
+  )
+  check(
+    "anche l'elenco è filtrato",
+    filtrato.righe > 0 && filtrato.righe < 340,
+    `${filtrato.righe} righe`,
+  )
+  // si toglie il filtro: torna tutto
+  await page.eval(`(() => {
+    const i = document.querySelector('[data-report="filtro"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(i, '');
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`)
+  await sleep(800)
+
+  // 4) SELEZIONE cliccando due barre
+  const clicked = await page.eval(`(() => {
+    const barre = [...document.querySelectorAll('[data-report="barra"]')].slice(0, 2);
+    let n = 0;
+    for (const b of barre) {
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        b.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+      }
+      n++;
+    }
+    return n;
+  })()`)
+  await sleep(700)
+  const stato = await page.eval(`(() => {
+    const sel = document.querySelector('[data-report="selezionate"]');
+    const n = parseInt((sel && sel.textContent) || '0', 10) || 0;
+    const nomi = [...document.querySelectorAll('[data-report="barra"]')]
+      .filter(b => { const i = b.querySelector('input[type=checkbox]'); return i && i.checked; })
+      .map(b => (b.querySelector('span') || {}).textContent || '');
+    const bottone = [...document.querySelectorAll('button')]
+      .map(b => (b.textContent || '').trim()).find(t => t.startsWith('Svuota il contenuto')) || '';
+    return { n, nomi, bottone };
+  })()`)
+  const N = stato.n
+  console.log(`  cliccate ${clicked} barre → ${N} selezionate ${JSON.stringify(stato.nomi)} · "${stato.bottone}"`)
+  check('cliccando le barre le tabelle si selezionano', N >= 2 && stato.nomi.length === N, `${N} selezionate`)
+  check('il pulsante dice quante tabelle si svuotano', stato.bottone === `Svuota il contenuto (${N})`, stato.bottone)
+
+  // 5) SVUOTA: script generato in una NUOVA TAB
+  const premuto = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Svuota il contenuto'))`,
+  )
+  check('il pulsante "Svuota il contenuto" è attivo', premuto === true)
+  await sleep(1500)
+  const tab = await page.eval(`(() => {
+    const re = new RegExp('DELETE contenuto \\\\(' + ${N} + ' tabell');
+    return [...document.querySelectorAll('*')]
+      .some(e => e.children.length === 0 && re.test((e.textContent || '').trim()));
+  })()`)
+  check('si apre una nuova tab con lo script', tab === true)
+  const script = await page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+    .map(l => (l.textContent || '').replace(/\\u00a0/g, ' '))`)
+  const testo = script.join('\n')
+  console.log('  --- script generato ---')
+  for (const r of script) console.log(`  | ${r}`)
+  check('lo script dice quante tabelle sta svuotando', new RegExp(`Svuota il contenuto di ${N} tabell`).test(testo))
+  check(
+    'c\'è un DELETE FROM per ogni tabella selezionata',
+    (testo.match(/DELETE FROM \[/g) || []).length === N,
+    `${(testo.match(/DELETE FROM \[/g) || []).length} DELETE su ${N} selezionate`,
+  )
+  check('avvisa che i dati non si recuperano', /non si possono recuperare/.test(testo))
+  await page.screenshot('report-tabelle-delete')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-set): le DIRETTIVE SET si compilano con l'intellisense (richiesta utente:
+ * "aggiungi che possa anche compilare con l'intellisense queste direttive e anche quelle
+ * rimanenti — SET NOCOUNT ON / SET XACT_ABORT ON"). Si scrive in una tab e si legge il popup:
+ *  1) "SET " → TUTTE le opzioni del manuale, con NOCOUNT e XACT_ABORT per prime;
+ *  2) il caso segnalato: su una riga nuova SOTTO "SET NOCOUNT ON" il popup deve riaprirsi
+ *     (prima restava chiuso perché la direttiva precedente sembrava uno statement aperto);
+ *  3) "SET NO" → NOCOUNT filtrato;
+ *  4) "SET XACT_ABORT " → ON/OFF;
+ *  5) accettando il suggerimento si scrive la direttiva COMPLETA ("SET XACT_ABORT ON").
+ */
+async function verifySet(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1800)
+  }
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').replace(/\\u00a0/g, ' ').trim())`)
+  const righeEditor = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, ''))`)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+  const minuscole = v => v.map(x => x.toLowerCase())
+
+  // 1) "SET " → tutte le opzioni, con NOCOUNT e XACT_ABORT in testa
+  await scrivi('SET ')
+  const vociSet = await vociPopup()
+  console.log(`  dopo "SET ": ${vociSet.length} voci — ${JSON.stringify(vociSet.slice(0, 4))}`)
+  check('dopo "SET " il popup si apre', vociSet.length > 0)
+  check('propone SET NOCOUNT ON', vociSet.includes('SET NOCOUNT ON'))
+  check('propone SET XACT_ABORT ON', vociSet.includes('SET XACT_ABORT ON'))
+  check('propone SET ANSI_NULLS ON', vociSet.includes('SET ANSI_NULLS ON'))
+
+  // 1b) le ALTRE direttive del manuale: il popup disegna solo le righe visibili, quindi si
+  //     filtra scrivendo l'inizio del nome (come fa chi digita) e si controlla la voce attesa
+  for (const [inizio, attesa] of [
+    ['SET ANSI_D', 'SET ANSI_DEFAULTS ON'],
+    ['SET CONCAT', 'SET CONCAT_NULL_YIELDS_NULL ON'],
+    ['SET REM', 'SET REMOTE_PROC_TRANSACTIONS ON'],
+    ['SET FORCE', 'SET FORCEPLAN ON'],
+    ['SET SHOWPLAN_X', 'SET SHOWPLAN_XML ON'],
+    ['SET STATISTICS X', 'SET STATISTICS XML ON'],
+    ['SET TEXT', 'SET TEXTSIZE'],
+    ['SET OFFS', 'SET OFFSETS ON'],
+    ['SET CONTEXT', 'SET CONTEXT_INFO'],
+    ['SET TRANSACTION ISOLATION', 'SET TRANSACTION ISOLATION LEVEL'],
+    ['SET LOCK', 'SET LOCK_TIMEOUT'],
+    ['SET QUERY_GOV', 'SET QUERY_GOVERNOR_COST_LIMIT'],
+    ['SET IDENTITY_INSERT', 'SET IDENTITY_INSERT'],
+  ]) {
+    await scrivi(inizio)
+    const voci = await vociPopup()
+    check(`propone ${attesa}`, voci.includes(attesa), `scrivendo "${inizio}": ${JSON.stringify(voci.slice(0, 3))}`)
+  }
+
+  // 2) CASO SEGNALATO: la direttiva sotto un'altra direttiva SET
+  await scrivi('SET NOCOUNT ON\n  SET XACT_ABORT ON\n  SET ')
+  const vociDopo = await vociPopup()
+  console.log(`  dopo due direttive SET: ${vociDopo.length} voci — ${JSON.stringify(vociDopo.slice(0, 3))}`)
+  check('sotto "SET NOCOUNT ON" / "SET XACT_ABORT ON" il popup si riapre', vociDopo.length > 0)
+  check('e propone di nuovo tutte le opzioni', vociDopo.includes('SET NOCOUNT ON') && vociDopo.includes('SET XACT_ABORT ON'))
+
+  // 3) filtro: "SET NO" → NOCOUNT (e non le altre)
+  await scrivi('SET NO')
+  const vociNo = await vociPopup()
+  console.log(`  dopo "SET NO": ${JSON.stringify(vociNo.slice(0, 5))}`)
+  check('mentre si scrive "SET NO" propone SET NOCOUNT ON', vociNo.includes('SET NOCOUNT ON'), JSON.stringify(vociNo.slice(0, 3)))
+
+  // 4) "SET XACT_ABORT " → ON/OFF
+  await scrivi('SET XACT_ABORT ')
+  const vociValori = minuscole(await vociPopup())
+  console.log(`  dopo "SET XACT_ABORT ": ${JSON.stringify(vociValori.slice(0, 4))}`)
+  check('dopo "SET XACT_ABORT " propone ON', vociValori.includes('on'))
+  check('dopo "SET XACT_ABORT " propone OFF', vociValori.includes('off'))
+
+  // 5) accettando "ON" la direttiva è COMPLETA e compilabile
+  await page.press('Enter', { code: 'Enter', vk: 13 })
+  await sleep(900)
+  const riga = (await righeEditor()).map(r => r.trim()).filter(Boolean).pop() ?? ''
+  console.log(`  riga dopo la conferma: ${JSON.stringify(riga)}`)
+  check('accettando ON si ottiene "SET XACT_ABORT ON"', /^SET XACT_ABORT ON$/i.test(riga), riga)
+
+  // 6) accettando il NOME dell'opzione si ottiene già la direttiva completa
+  await scrivi('SET NOC')
+  await sleep(1600)
+  const vociNoc = await vociPopup()
+  await page.press('Enter', { code: 'Enter', vk: 13 })
+  await sleep(900)
+  const riga2 = (await righeEditor()).map(r => r.trim()).filter(Boolean).pop() ?? ''
+  console.log(`  dopo "SET NOC" → ${JSON.stringify(vociNoc.slice(0, 2))} → ${JSON.stringify(riga2)}`)
+  check('accettando l opzione si ottiene "SET NOCOUNT ON"', /^SET NOCOUNT ON$/i.test(riga2), riga2)
+
+  await page.screenshot('direttive-set-intellisense')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-create): lo script CREATE di una tabella deve essere IDENTICO a quello che
+ * scrive SSMS (richiesta utente: "questo è lo script corretto preso da ssms… fallo identico a
+ * SSMS"). Si passa dal menu contestuale del pannello Oggetti ("Script tabella" → "CREATE") e si
+ * confronta RIGA PER RIGA con quello che ci si aspetta dai metadati VERI di dbo.TABELLA_CREATE:
+ *
+ *   banner "Object:  Table [dbo].[x]" + SET ANSI_NULLS / SET QUOTED_IDENTIFIER + GO, senza righe vuote
+ *   CREATE TABLE [dbo].[x](        identificatori SEMPRE fra parentesi quadre
+ *       [col] [tipo](n) NOT NULL,  colonne indentate, NULL/NOT NULL espliciti
+ *    CONSTRAINT [PK_x] PRIMARY KEY NONCLUSTERED … colonne a capo con ASC
+ *   )WITH (…opzioni… FILLFACTOR = 90) ON [filegroup]   la coda sta ATTACCATA alla parentesi
+ *   ) ON [filegroup]               la tabella va sul filegroup di origine
+ *   ) ON [filegroup] TEXTIMAGE_ON [filegroup]   se la tabella ha colonne text/image/(max)
+ *   … [col] ASC / [col] DESC       l'ordine della chiave è quello del database di origine
+ *   ALTER TABLE … ADD  CONSTRAINT [DF_…]  DEFAULT (…) FOR [col]
+ *   ALTER TABLE …  WITH CHECK ADD  CONSTRAINT [CK_…] CHECK  (…)
+ *   ALTER TABLE … CHECK CONSTRAINT [CK_…]
+ *   EXEC sys.sp_addextendedproperty @name=N'…', @value=N'…' , @level0type=N'SCHEMA',@level0name=N'dbo', …
+ *   -- Trigger <nome> + corpo del trigger preso dal database
+ */
+async function verifyCreate(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Tabelle')`, 60000, 'schema caricato')
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // il pannello Oggetti può essere chiuso: nel caso lo si riapre dalla barra dei pannelli
+  const campo = `document.querySelector('input[placeholder^="Cerca (spazio"]')`
+  if (!(await page.eval(`!!${campo}`))) {
+    await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '+ Oggetti')`,
+    )
+    await sleep(1500)
+  }
+  if (!(await page.eval(`!!${campo}`))) {
+    throw new Error('pannello Oggetti non disponibile: app non caricata o schema non pronto')
+  }
+
+  // 1) si cerca la tabella nell'elenco Oggetti
+  /**
+   * Apre lo script CREATE di una tabella dal menu contestuale del pannello Oggetti
+   * ("Script tabella" → "CREATE") e aspetta che nella tab compaia la CREATE TABLE.
+   */
+  const apriCreate = async nome => {
+    await page.eval(`(() => {
+      const i = ${campo};
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(i, ${JSON.stringify(nome)});
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`)
+    const trovata = await page.waitFor(
+      `[...document.querySelectorAll('span')].some(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(nome)})`,
+      15000,
+      'risultato della ricerca in Oggetti',
+    )
+    await sleep(600)
+
+    // 2) tasto destro sul nome → menu contestuale (è React: basta l'evento che risale)
+    await page.eval(`(() => {
+      const s = [...document.querySelectorAll('span')]
+        .find(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(nome)});
+      if (s) s.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window }));
+    })()`)
+    const menu = await page.waitFor(`document.body.textContent.includes('Script tabella')`, 8000, 'menu contestuale')
+    await sleep(400)
+
+    // 3) "Script tabella" apre il SOTTOMENU al passaggio del mouse: si manda un mouseover vero
+    const voce = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Script tabella');
+      if (!b) return null;
+      b.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (voce) {
+      await page.send('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: Math.round(voce.x),
+        y: Math.round(voce.y),
+        buttons: 0,
+      })
+      await sleep(800)
+    }
+
+    // 4) "CREATE" nel sottomenu → lo script si apre in una tab
+    const creato = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'CREATE');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (creato) await page.clickPoint(creato.x, creato.y)
+    const aperto = await page.waitFor(
+      // Monaco rende gli spazi come spazio unificatore: si normalizza prima di cercare
+      `[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+         .some(l => (l.textContent || '').replace(/\\u00a0/g, ' ')
+           .includes('CREATE TABLE [dbo].[' + ${JSON.stringify(nome)} + ']'))`,
+      20000,
+      `script CREATE di ${nome} nella tab`,
+    )
+    await sleep(1500)
+    return { trovata, menu, voce: !!voce, creato: !!creato, aperto }
+  }
+
+  const prima = await apriCreate(TABELLA_CREATE)
+  check('la tabella compare nell elenco Oggetti', prima.trovata)
+  check('il tasto destro apre il menu dell oggetto', prima.menu)
+  check('il menu offre "Script tabella"', prima.voce)
+  check('il sottomenu offre "CREATE"', prima.creato)
+  check('lo script CREATE si apre in una tab', prima.aperto)
+
+  /** Righe disegnate da Monaco nell'editor attivo, dall'alto in basso. */
+  const leggiRighe = () =>
+    page.eval(`(() => {
+      const eds = [...document.querySelectorAll('.monaco-editor')].filter(e => {
+        const r = e.getBoundingClientRect();
+        return r.height > 0 && r.width > 0;
+      });
+      const ed = eds[eds.length - 1];
+      if (!ed) return [];
+      return [...ed.querySelectorAll('.view-lines .view-line')]
+        .map(l => ({ top: parseFloat(l.style.top) || 0, testo: (l.textContent || '').replace(/\\u00a0/g, ' ') }))
+        .sort((a, b) => a.top - b.top)
+        .map(l => ({ i: /^[ \\t]/.test(l.testo), t: l.testo.trim() }));
+    })()`)
+
+  // 5) si leggono le righe disegnate da Monaco (finestra alta apposta per --verify-create).
+  //    L'indentazione nel DOM è resa come spazio unificatore: si tiene solo "indentata sì/no".
+  const righe = await leggiRighe()
+
+  const atteso = [
+    { i: false, t: `USE [${DB_CREATE}]` },
+    { i: false, t: 'GO' },
+    { i: false, t: `/****** Object:  Table [dbo].[${TABELLA_CREATE}] ******/` },
+    { i: false, t: 'SET ANSI_NULLS ON' },
+    { i: false, t: 'GO' },
+    { i: false, t: 'SET QUOTED_IDENTIFIER ON' },
+    { i: false, t: 'GO' },
+    { i: false, t: `CREATE TABLE [dbo].[${TABELLA_CREATE}](` },
+    { i: true, t: '[CME_CLASSE_MERC] [nvarchar](20) NOT NULL,' },
+    { i: true, t: '[CME_DES] [nvarchar](50) NOT NULL,' },
+    { i: true, t: `CONSTRAINT [PK_${TABELLA_CREATE}] PRIMARY KEY NONCLUSTERED` },
+    { i: false, t: '(' },
+    { i: true, t: '[CME_CLASSE_MERC] ASC' },
+    { i: false, t: `)WITH (${OPZIONI_CREATE}) ON [SECONDARY],` },
+    { i: true, t: `CONSTRAINT [IX_${TABELLA_CREATE}_DES] UNIQUE NONCLUSTERED` },
+    { i: false, t: '(' },
+    { i: true, t: '[CME_DES] ASC' },
+    { i: false, t: `)WITH (${OPZIONI_CREATE}) ON [SECONDARY]` },
+    { i: false, t: ') ON [SECONDARY]' },
+    { i: false, t: 'GO' },
+    {
+      i: false,
+      t: `ALTER TABLE [dbo].[${TABELLA_CREATE}] ADD  CONSTRAINT [DF_DAT_CATEGORIE_MERC_CME_DES]  DEFAULT ('') FOR [CME_DES]`,
+    },
+    { i: false, t: 'GO' },
+    {
+      i: false,
+      t: `ALTER TABLE [dbo].[${TABELLA_CREATE}]  WITH CHECK ADD  CONSTRAINT [CK_${TABELLA_CREATE}_DES] CHECK  (([CME_DES]<>''))`,
+    },
+    { i: false, t: 'GO' },
+    { i: false, t: `ALTER TABLE [dbo].[${TABELLA_CREATE}] CHECK CONSTRAINT [CK_${TABELLA_CREATE}_DES]` },
+    { i: false, t: 'GO' },
+  ]
+
+  console.log('  --- script generato ---')
+  for (const r of righe) console.log(`  | ${r.i ? '\\t' : ''}${r.t}`)
+  console.log('  -----------------------')
+
+  const testa = righe.slice(0, atteso.length)
+  const diversa = testa.findIndex((r, k) => r.i !== atteso[k].i || r.t !== atteso[k].t)
+  check(
+    'lo script è identico a quello di SSMS (intestazione, colonne, chiavi, DEFAULT, CHECK)',
+    diversa === -1 && righe.length >= atteso.length,
+    diversa === -1
+      ? `righe confrontate: ${atteso.length}`
+      : `riga ${diversa + 1}: atteso ${JSON.stringify(atteso[diversa])} — trovato ${JSON.stringify(testa[diversa] ?? null)}`,
+  )
+  check(
+    'nessun punto e virgola: il CREATE TABLE di SSMS non lo mette',
+    !righe.some(r => r.t === ');'),
+    righe.filter(r => r.t === ');').length ? 'trovato ");"' : 'ok',
+  )
+
+  // 6) le PROPRIETÀ ESTESE, una riga per proprietà, come le scrive SSMS
+  const apici = s => `N'${s.replace(/'/g, "''")}'`
+  const prop = (nome, valore, col) =>
+    `EXEC sys.sp_addextendedproperty @name=${apici(nome)}, @value=${apici(valore)} , ` +
+    `@level0type=N'SCHEMA',@level0name=N'dbo', @level1type=N'TABLE',@level1name=${apici(TABELLA_CREATE)}` +
+    (col ? `, @level2type=N'COLUMN',@level2name=${apici(col)}` : '')
+  const propAttese = [
+    prop('MS_Description', 'Table of goods classes (E.g: mechanics, textiles, ...)'),
+    prop('Description', 'Codice classe merceologica', 'CME_CLASSE_MERC'),
+    prop('MS_Description', 'Goods class code', 'CME_CLASSE_MERC'),
+    prop('Description', 'Descrizione', 'CME_DES'),
+    prop('MS_Description', 'Description', 'CME_DES'),
+  ].sort()
+  const propTrovate = righe.filter(r => r.t.startsWith('EXEC sys.sp_addextendedproperty')).map(r => r.t).sort()
+  const propMancanti = propAttese.filter(p => !propTrovate.includes(p))
+  check(
+    'le proprietà estese sono scritte come SSMS (una riga, @level0name=N\'dbo\')',
+    propMancanti.length === 0 && propTrovate.length === propAttese.length,
+    propMancanti.length ? `mancanti: ${JSON.stringify(propMancanti[0])}` : `${propTrovate.length} proprietà`,
+  )
+
+  // 7) il trigger resta in coda, con il CORPO preso dal database di origine
+  const iTrigger = righe.findIndex(r => r.t === '-- Trigger tr_DAT_CLASSI_MERC')
+  check('il trigger è in coda allo script', iTrigger > 0, iTrigger > 0 ? `riga ${iTrigger + 1}` : 'non trovato')
+  const corpo = iTrigger > 0 ? righe.slice(iTrigger + 1).filter(r => r.t) : []
+  check(
+    'il corpo del trigger è quello del database (CREATE TRIGGER … AS …)',
+    corpo.length > 3 && /^CREATE TRIGGER/.test(corpo[0].t) && corpo.some(r => r.t === 'AS'),
+    corpo.length ? `prima riga: ${corpo[0].t.slice(0, 70)}…` : 'nessun corpo',
+  )
+  // 8) la CODA dello script: Ctrl+End porta in fondo, così si controlla anche la fine del trigger
+  const rectEdit = await editorRect(page)
+  await page.clickPoint(rectEdit.x + 200, rectEdit.y + 40)
+  await sleep(300)
+  await page.press('End', { code: 'End', vk: 35, modifiers: 2 })
+  await sleep(900)
+  const coda = await leggiRighe()
+  const codaPiena = coda.filter(r => r.t)
+  check(
+    'anche la CODA dello script è quella giusta (ultima riga = GO del trigger)',
+    codaPiena.length > 2 && codaPiena[codaPiena.length - 1].t === 'GO',
+    `coda: ${JSON.stringify(codaPiena.slice(-3).map(r => r.t))}`,
+  )
+
+  // 9) una tabella SENZA dati LOB non deve avere TEXTIMAGE_ON nella coda
+  check(
+    'la tabella senza colonne LOB non ha TEXTIMAGE_ON',
+    !righe.some(r => r.t.includes('TEXTIMAGE_ON')),
+    righe.filter(r => r.t.includes('TEXTIMAGE_ON')).length ? 'trovato TEXTIMAGE_ON' : 'ok',
+  )
+
+  // 10) SECONDA tabella, con colonne LOB: la coda deve portare TEXTIMAGE_ON [filegroup]
+  console.log(`\n  --- seconda tabella, con dati LOB: ${TABELLA_CREATE_LOB} ---`)
+  const lob = await apriCreate(TABELLA_CREATE_LOB)
+  check(`lo script di ${TABELLA_CREATE_LOB} si apre in una tab`, lob.aperto)
+  const righeLob = await leggiRighe()
+  const attesaLob = [
+    { i: true, t: '[ULX_TIPOLINGUA] [nvarchar](5) NOT NULL,' },
+    { i: true, t: '[ULX_XML] [varbinary](max) NOT NULL,' },
+    { i: true, t: `CONSTRAINT [PK_${TABELLA_CREATE_LOB}] PRIMARY KEY CLUSTERED` },
+    { i: false, t: `)WITH (${OPZIONI_CREATE}) ON [SECONDARY]` },
+    { i: false, t: ') ON [SECONDARY] TEXTIMAGE_ON [SECONDARY]' },
+  ]
+  const lobMancanti = attesaLob.filter(a => !righeLob.some(r => r.i === a.i && r.t === a.t))
+  console.log(`  --- script di ${TABELLA_CREATE_LOB} ---`)
+  for (const r of righeLob) console.log(`  | ${r.i ? '\\t' : ''}${r.t}`)
+  check(
+    'con le colonne LOB la coda è ") ON [filegroup] TEXTIMAGE_ON [filegroup]", come SSMS',
+    lobMancanti.length === 0,
+    lobMancanti.length ? `mancante: ${JSON.stringify(lobMancanti[0])}` : `${attesaLob.length} righe confrontate`,
+  )
+
+  // lo script ricostruito si salva accanto agli screenshot, per poterlo rileggere con calma
+  const fileSql = join(OUT_DIR, `script-create-${TABELLA_CREATE}.sql`)
+  mkdirSync(OUT_DIR, { recursive: true })
+  writeFileSync(
+    fileSql,
+    `-- Script CREATE generato dall'app per dbo.${TABELLA_CREATE} (letto dalla tab, indentazione resa con tab)\n` +
+      righe.map(r => `${r.i ? '\t' : ''}${r.t}`).join('\n') +
+      '\n',
+  )
+  writeFileSync(
+    join(OUT_DIR, `script-create-${TABELLA_CREATE}-coda.sql`),
+    `-- CODA dello script (Ctrl+End, finestra che non basta a mostrarlo tutto)\n` +
+      coda.map(r => `${r.i ? '\t' : ''}${r.t}`).join('\n') +
+      '\n',
+  )
+  writeFileSync(
+    join(OUT_DIR, `script-create-${TABELLA_CREATE_LOB}.sql`),
+    `-- Script CREATE generato dall'app per dbo.${TABELLA_CREATE_LOB} (tabella con dati LOB)\n` +
+      righeLob.map(r => `${r.i ? '\t' : ''}${r.t}`).join('\n') +
+      '\n',
+  )
+  console.log(`  salvato docs/screenshots/script-create-${TABELLA_CREATE}.sql`)
+  await page.screenshot('script-create-tabella')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-changes): la finestra "Modifiche agli oggetti" (richiesta utente: "una
+ * finestra dove vedo la lista delle cose modificate e quando, tipo una griglia con la store x il
+ * giorno ora"). Controlla che la griglia arrivi dai dati VERI del database: date con giorno e ora,
+ * ordinamento per colonna, filtri per nome, per tipo e per periodo.
+ */
+async function verifyChanges(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Report utilizzo tabelle')`, 40000, 'sidebar pronta')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  /** Righe della griglia: data (gg/mm/aaaa hh:mm), nome, tipo e "quando". */
+  const righe = () =>
+    page.eval(`[...document.querySelectorAll('[data-modifiche="riga"]')].map(tr => {
+      const celle = tr.querySelectorAll('td');
+      return {
+        data: (celle[0] ? celle[0].textContent : '').trim(),
+        nome: (celle[1] ? celle[1].textContent : '').trim(),
+        tipo: (celle[2] ? celle[2].textContent : '').trim(),
+        quando: (celle[5] ? celle[5].textContent : '').trim(),
+      };
+    })`)
+
+  const apri = await page.clickWhere(`document.querySelector('[data-modifiche="apri"]')`)
+  if (!apri) throw new Error('pulsante "Modifiche agli oggetti" non trovato nella sidebar')
+  await page.waitFor(`document.querySelector('[data-modifiche="finestra"]')`, 10000, 'finestra Modifiche')
+  await page.waitFor(`document.querySelectorAll('[data-modifiche="riga"]').length > 0`, 45000, 'righe della griglia')
+  await sleep(500)
+
+  const tutte = await righe()
+  console.log(`  riepilogo: ${JSON.stringify(await page.eval(`(document.querySelector('[data-modifiche="riepilogo"]') || {}).textContent`))}`)
+  console.log(`  prime righe: ${JSON.stringify(tutte.slice(0, 3))}`)
+  check('la griglia mostra gli oggetti del database', tutte.length > 10, `${tutte.length} righe`)
+
+  const formatoOk = tutte.slice(0, 20).every(r => /^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/.test(r.data))
+  check('ogni riga ha giorno E ora (gg/mm/aaaa hh:mm)', formatoOk, JSON.stringify(tutte[0]?.data))
+  check(
+    'c\'è la colonna "quando" in italiano (ora / N minuti fa / …)',
+    tutte.slice(0, 5).every(r => /ora$|fa$|^il \d{2}\/\d{2}\/\d{4}$/.test(r.quando)),
+    JSON.stringify(tutte.slice(0, 3).map(r => r.quando)),
+  )
+
+  // 1) ordinamento di partenza: dalla modifica più recente
+  const date = tutte.map(r => {
+    const [d, o] = r.data.split(' ')
+    const [gg, mm, aaaa] = d.split('/')
+    return `${aaaa}${mm}${gg}${o.replace(':', '')}`
+  })
+  const decrescente = date.every((v, i) => i === 0 || date[i - 1] >= v)
+  check('all\'apertura è ordinato dalla modifica più recente', decrescente, `${date[0]} → ${date[date.length - 1]}`)
+
+  // 2) ordinamento per nome (clic sull'intestazione)
+  await page.clickWhere(`document.querySelector('[data-modifiche="col-name"]')`)
+  await sleep(600)
+  const perNome = (await righe()).slice(0, 30).map(r => r.nome.toLowerCase())
+  const nomeCrescente = perNome.every((v, i) => i === 0 || perNome[i - 1].localeCompare(v) <= 0)
+  check('cliccando "Oggetto" la griglia si ordina per nome', nomeCrescente, `${perNome[0]} → ${perNome[perNome.length - 1]}`)
+
+  // 3) filtro per nome (si scrive nel campo col focus, come si farebbe a mano)
+  const prova = tutte[0].nome.split('.').pop().slice(0, 6)
+  await page.eval(`(() => {
+    const i = document.querySelector('[data-modifiche="filtro"]');
+    i.focus();
+    return true;
+  })()`)
+  await page.typeText(prova)
+  await sleep(800)
+  const scritto = await page.eval(`document.querySelector('[data-modifiche="filtro"]').value`)
+  const filtrate = await righe()
+  console.log(`  filtro "${scritto}": ${filtrate.length} righe`)
+  check(
+    'il filtro per nome restringe la griglia',
+    scritto.toLowerCase() === prova.toLowerCase() &&
+      filtrate.length > 0 &&
+      filtrate.length < tutte.length &&
+      filtrate.every(r => r.nome.toLowerCase().includes(prova.toLowerCase())),
+    `${filtrate.length} di ${tutte.length}`,
+  )
+
+  // 4) filtro per tipo: solo store
+  await page.eval(`(() => {
+    const i = document.querySelector('[data-modifiche="filtro"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(i, '');
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`)
+  await sleep(400)
+  await page.clickWhere(`document.querySelector('[data-modifiche="tipo-procedura"]')`)
+  await sleep(800)
+  const soleStore = await righe()
+  console.log(`  filtro "Store": ${soleStore.length} righe`)
+  check(
+    'il filtro per tipo mostra solo le store',
+    soleStore.length > 0 && soleStore.every(r => r.tipo === 'procedura'),
+    `${soleStore.length} store`,
+  )
+
+  // 5) filtro per periodo: "Ultime 24 ore" è una FINESTRA SCORREVOLE (adesso − 24h), quindi
+  //    comprende anche la sera di ieri: non si controlla il giorno, ma che nessuna riga esca
+  //    dalla finestra (il controllo "solo le date di oggi" falliva di sera/sera-Notte).
+  await page.eval(`(() => {
+    const s = document.querySelector('[data-modifiche="periodo"]');
+    s.value = '1';
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`)
+  await sleep(800)
+  const oggi = await righe()
+  const adesso = new Date()
+  const limite = adesso.getTime() - 24 * 3600 * 1000
+  const quando = s => {
+    const m = /^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2})$/.exec(s)
+    return m ? new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]), Number(m[4]), Number(m[5])).getTime() : NaN
+  }
+  const fuoriFinestra = oggi.filter(r => !(quando(r.data) >= limite - 60000))
+  console.log(`  ultime 24 ore: ${oggi.length} store — ${JSON.stringify(oggi.slice(0, 3).map(r => r.nome))}`)
+  check(
+    'il filtro "ultime 24 ore" tiene solo le modifiche dentro la finestra',
+    oggi.length > 0 && fuoriFinestra.length === 0,
+    fuoriFinestra.length ? `fuori finestra: ${JSON.stringify(fuoriFinestra.slice(0, 2).map(r => r.data))}` : `${oggi.length} righe dentro le 24 ore`,
+  )
+  await page.screenshot('modifiche-oggetti')
+
+  // 6) la finestra si chiude con Esc
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await sleep(500)
+  const chiusa = await page.eval(`!document.querySelector('[data-modifiche="finestra"]')`)
+  check('Esc chiude la finestra', chiusa === true)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-sidebar): nel pannello Oggetti la ricerca resta FISSA in alto e scorre solo
+ * l'elenco sotto (richiesta utente: "mi lasci la ricerca fissa in alto e non la far scorrere").
+ */
+async function verifySidebar(page) {
+  await accediApp(page, `document.body.textContent.includes('Tabelle')`)
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, dettaglio) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${dettaglio ? ` — ${dettaglio}` : ''}`)
+  }
+
+  // il pannello Oggetti può essere chiuso: nel caso lo si riapre dalla barra dei pannelli
+  const campo = `document.querySelector('input[placeholder^="Cerca (spazio"]')`
+  if (!(await page.eval(`!!${campo}`))) {
+    await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '+ Oggetti')`,
+    )
+    await sleep(900)
+  }
+
+  /**
+   * Geometria del pannello: il campo di ricerca deve stare in un blocco `shrink-0` FUORI
+   * dall'area che scorre, il corpo del pannello non deve scorrere e l'elenco sotto sì.
+   */
+  const misure = () =>
+    page.eval(`(() => {
+      const i = ${campo};
+      if (!i) return null;
+      const blocco = i.closest('div.shrink-0') || i.parentElement;
+      const corpo = blocco && blocco.parentElement;
+      const lista = corpo ? [...corpo.children].find(c => c !== blocco) : null;
+      const r = i.getBoundingClientRect();
+      return {
+        top: Math.round(r.top),
+        corpoFlex: corpo ? getComputedStyle(corpo).display : '',
+        corpoScorre: corpo ? getComputedStyle(corpo).overflowY : '',
+        listaScorre: lista ? getComputedStyle(lista).overflowY : '',
+        listaScrollTop: lista ? Math.round(lista.scrollTop) : -1,
+      };
+    })()`)
+
+  const prima = await misure()
+  console.log(`  ricerca Oggetti: ${JSON.stringify(prima)}`)
+  check('il campo di ricerca degli Oggetti si vede', !!prima)
+  check(
+    "il corpo del pannello non scorre (scorre solo l'elenco)",
+    prima?.corpoFlex === 'flex' && prima?.corpoScorre === 'hidden',
+    JSON.stringify(prima),
+  )
+  check(
+    "l'elenco sotto ha la sua barra di scorrimento",
+    prima?.listaScorre === 'auto',
+    JSON.stringify(prima),
+  )
+
+  // si scorre l'elenco: il campo di ricerca NON si deve muovere
+  const scrollato = await page.eval(`(() => {
+    const i = ${campo};
+    const blocco = i.closest('div.shrink-0') || i.parentElement;
+    const lista = [...blocco.parentElement.children].find(c => c !== blocco);
+    if (!lista || lista.scrollHeight <= lista.clientHeight) return -1;
+    lista.scrollTop = 300;
+    return Math.round(lista.scrollTop);
+  })()`)
+  await sleep(600)
+  const dopo = await misure()
+  console.log(`  dopo lo scroll (scrollTop ${scrollato}): top ricerca ${dopo?.top}`)
+  check("scorrendo l'elenco la ricerca resta ferma in alto", scrollato > 0 && dopo?.top === prima?.top)
+  await page.screenshot('ricerca-oggetti-fissa')
+
+  // e resta ferma anche con i risultati di ricerca aperti (elenco più lungo)
+  await page.clickWhere(campo)
+  await page.typeText('ws_')
+  await sleep(2500)
+  const conRisultati = await misure()
+  await page.eval(`(() => {
+    const i = ${campo};
+    const blocco = i.closest('div.shrink-0') || i.parentElement;
+    const lista = [...blocco.parentElement.children].find(c => c !== blocco);
+    if (lista) lista.scrollTop = 250;
+  })()`)
+  await sleep(600)
+  const conRisultatiDopo = await misure()
+  console.log(`  con i risultati: ${JSON.stringify(conRisultatiDopo)}`)
+  check(
+    'con i risultati di ricerca la ricerca resta ferma in alto',
+    conRisultatiDopo?.top === prima?.top && conRisultatiDopo?.listaScrollTop > 0,
+    `top=${conRisultatiDopo?.top} scrollTop=${conRisultatiDopo?.listaScrollTop}`,
+  )
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-search): la RICERCA GENERALE nel database (stile Redgate SQL Search) cerca un
+ * testo nei nomi/definizioni delle strutture e, se richiesto, nei DATI; i risultati stanno sopra e
+ * l'anteprima (script con il match evidenziato) sotto. Deve restare dentro il database attivo.
+ */
+async function verifySearch(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+  const testo = sel => page.eval(`(document.querySelector(${JSON.stringify(sel)})?.textContent || '').trim()`)
+
+  /** La ricerca vive in una TAB: aprendo un oggetto si cambia tab, quindi si torna qui
+   *  cliccando il TITOLO della tab (non il centro, che può cadere su un altro pulsante). */
+  const tornaAllaRicerca = async () => {
+    const ok = await page.clickWhere(
+      `(() => { const t = [...document.querySelectorAll('.sql-tab')].find(x => (x.textContent || '').includes('Ricerca')); return t ? t.querySelector('button') : null; })()`,
+    )
+    await sleep(900)
+    const attiva = await page.eval(`!!document.querySelector('[data-ricerca="pannello"]')`)
+    console.log(`  ritorno alla tab di ricerca: ${ok} · pannello visibile: ${attiva}`)
+    return ok && attiva
+  }
+
+  const dbAttivo = await page.eval(`document.querySelector('select')?.value || ''`)
+  const tabsPrimaDellaRicerca = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  const aperto = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('Ricerca testuale nel database'))`,
+  )
+  await sleep(900)
+  const pannello = await page.eval(`!!document.querySelector('[data-ricerca="meta"]')`)
+  const statoRicerca = await page.eval(`(() => {
+    const m = document.querySelector('[data-ricerca="meta"]');
+    const contenitore = m ? m.closest('[data-ricerca="pannello"]') : null;
+    const tabRicerca = [...document.querySelectorAll('.sql-tab')].find(t => (t.textContent || '').includes('Ricerca'));
+    return {
+      testo: contenitore ? (contenitore.textContent || '') : '',
+      inModale: !!(contenitore && contenitore.closest('.fixed')),
+      tabRicerca: tabRicerca ? (tabRicerca.textContent || '').trim() : null,
+      attiva: tabRicerca ? tabRicerca.className.includes('border-b-zinc-900') : false,
+    };
+  })()`)
+  console.log(
+    `  database attivo: ${dbAttivo} — pannello: ${pannello} — tab di ricerca: ${JSON.stringify(statoRicerca.tabRicerca)}`,
+  )
+  check('il pannello di ricerca si apre', aperto === true && pannello === true)
+  check('la ricerca si apre in una TAB e non in una finestra', statoRicerca.inModale === false && !!statoRicerca.tabRicerca)
+  check('la tab della ricerca è quella attiva', statoRicerca.attiva === true)
+  check(
+    'la tab di ricerca NON viene duplicata riaprendola',
+    (await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('Ricerca testuale nel database'))`,
+    )) === true &&
+      (await sleep(600), (await page.eval(`document.querySelectorAll('.sql-tab').length`)) === tabsPrimaDellaRicerca + 1),
+  )
+  check('il pannello è ristretto al database attivo', dbAttivo.length > 0 && statoRicerca.testo.includes(dbAttivo))
+
+  // cerca un nome di colonna che esiste davvero (usato dallo schema del database attivo)
+  await page.eval(`(() => {
+    const i = [...document.querySelectorAll('input')].find(x => (x.placeholder || '').includes('Testo da cercare'));
+    if (i) i.focus();
+    return !!i;
+  })()`)
+  await page.typeText('UDC_UDC')
+  await page.clickWhere(`document.querySelector('[data-ricerca="cerca"]')`)
+  await sleep(3500)
+
+  const righe = await page.eval(`document.querySelectorAll('[data-ricerca="riga"]').length`)
+  const meta = await testo('[data-ricerca="meta"]')
+  const evidenziati = await page.eval(`document.querySelectorAll('[data-ricerca="anteprima"] mark').length`)
+  const titoli = await page.eval(
+    `[...document.querySelectorAll('[data-ricerca="riga"]')].slice(0, 4).map(r => (r.textContent || '').trim().slice(0, 60))`,
+  )
+  console.log(`  risultati: ${righe} · riepilogo: "${meta}" · evidenziati nell anteprima: ${evidenziati}`)
+  console.log(`  primi risultati: ${JSON.stringify(titoli)}`)
+  check('la ricerca trova qualcosa nelle strutture', righe > 0)
+  check('il riepilogo dice risultati e tempo', /\d+ risultati? · \d+ ms/.test(meta))
+
+  // anteprima di uno SCRIPT: si sceglie un risultato su una stored procedure e si guarda lo
+  // script con i numeri di riga, il match evidenziato e la riga trovata in risalto
+  await page.clickWhere(
+    `[...document.querySelectorAll('[data-ricerca="riga"]')].find(r => (r.textContent || '').includes('Stored procedure'))`,
+  )
+  await sleep(2500)
+  const anteprima = await page.eval(`(() => {
+    const p = document.querySelector('[data-ricerca="anteprima"]');
+    if (!p) return null;
+    const righeScript = [...p.querySelectorAll('[data-riga]')];
+    return {
+      righeScript: righeScript.length,
+      evidenziati: p.querySelectorAll('mark').length,
+      rigaInRisalto: righeScript.some(r => (r.className || '').includes('bg-amber')),
+      modifica: !!p.querySelector('[data-ricerca="modifica"]'),
+      // "Apri definizione" è stato tolto: era lo stesso comando di "Modifica"
+      definizione: !!p.querySelector('[data-ricerca="definizione"]'),
+      diagramma: !!p.querySelector('[data-ricerca="diagramma"]'),
+      // SINTASSI A COLORI: il coloratore di Monaco produce span con classi mtk*
+      colorate: p.querySelectorAll('[data-sintassi="colorata"]').length,
+      token: p.querySelectorAll('[data-sintassi="colorata"] [class*="mtk"]').length,
+      colori: new Set([...p.querySelectorAll('[data-sintassi="colorata"] [class*="mtk"]')]
+        .map(s => getComputedStyle(s).color)).size,
+    };
+  })()`)
+  console.log(`  anteprima dello script: ${JSON.stringify(anteprima)}`)
+  check('l anteprima mostra lo script completo dell oggetto', (anteprima?.righeScript ?? 0) > 5)
+  check('il match è evidenziato nello script', (anteprima?.evidenziati ?? 0) > 0)
+  check('la riga trovata è messa in risalto', anteprima?.rigaInRisalto === true)
+  check(
+    'l anteprima ha la SINTASSI A COLORI (come una tab: parole chiave, stringhe, commenti)',
+    (anteprima?.token ?? 0) > 0 && (anteprima?.colori ?? 0) >= 3,
+    `${anteprima?.token} token colorati, ${anteprima?.colori} colori diversi`,
+  )
+  // SPAZIATURA: le righe dell'anteprima devono stare a ~20px, non a 40+ (i blocchi del
+  // coloratore, se non resi inline, allargavano la riga)
+  const passo = await page.eval(`(() => {
+    const righe = [...document.querySelectorAll('[data-ricerca="anteprima"] [data-riga]')].slice(0, 3);
+    if (righe.length < 2) return null;
+    const a = righe[0].getBoundingClientRect().top;
+    const b = righe[1].getBoundingClientRect().top;
+    return Math.round(b - a);
+  })()`)
+  console.log(`  passo fra le righe dell anteprima: ${passo}px`)
+  check('le righe dell anteprima NON hanno spaziatura enorme', passo !== null && passo > 0 && passo < 30, `${passo}px`)
+  check('dalla ricerca si può MODIFICARE (pulsante Modifica)', anteprima?.modifica === true)
+  check(
+    'NON c è più "Apri definizione" (era lo stesso comando di Modifica) e resta il diagramma chiamate',
+    anteprima?.definizione === false && anteprima?.diagramma === true,
+    `definizione=${anteprima?.definizione} diagramma=${anteprima?.diagramma}`,
+  )
+
+  // MODIFICA dall'anteprima: si apre CREATE OR ALTER in una tab FIGLIA di quella attiva
+  const tabsPrima = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  await page.clickWhere(`document.querySelector('[data-ricerca="modifica"]')`)
+  await sleep(2200)
+  const tabModifica = await page.eval(`(() => {
+    const t = [...document.querySelectorAll('.sql-tab')].pop();
+    return t ? {
+      titolo: ((t.querySelector('button') || t).textContent || '').trim(),
+      rientro: Math.round(parseFloat(getComputedStyle(t).marginLeft) || 0),
+      figlia: !!t.querySelector('svg.lucide-corner-down-right'),
+    } : null;
+  })()`)
+  const tabsDopo = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  console.log(`  dopo "Modifica": ${JSON.stringify(tabModifica)} (tab: ${tabsPrima} → ${tabsDopo})`)
+  check('"Modifica" apre una tab in più', tabsDopo === tabsPrima + 1)
+  check(
+    'la tab aperta porta il NOME dell oggetto (non "CREATE OR ALTER …")',
+    !/CREATE OR ALTER/i.test(tabModifica?.titolo ?? '') && /ws_/i.test(tabModifica?.titolo ?? ''),
+  )
+  check('la tab di modifica nasce FIGLIA (gerarchia)', tabModifica?.rientro === 12 && tabModifica?.figlia === true)
+
+  // TASTO DESTRO su un risultato: menu con "Modifica"
+  await tornaAllaRicerca()
+  const puntoRiga = await page.eval(`(() => {
+    const r = [...document.querySelectorAll('[data-ricerca="riga"]')].find(x => (x.textContent || '').includes('Stored procedure'));
+    if (!r) return null;
+    const b = r.getBoundingClientRect();
+    return { x: b.left + 40, y: b.top + b.height / 2 };
+  })()`)
+  if (puntoRiga) {
+    await page.clickPoint(puntoRiga.x, puntoRiga.y, 'right')
+    await sleep(600)
+  }
+  const menuMostrato = await page.eval(`!!document.querySelector('[data-ricerca="menu-modifica"]')`)
+  const tabsPrimaMenu = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  if (menuMostrato) {
+    await page.clickWhere(`document.querySelector('[data-ricerca="menu-modifica"]')`)
+    await sleep(2200)
+  }
+  const tabsDopoMenu = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  const titoloMenu = await page.eval(
+    `(() => { const t = [...document.querySelectorAll('.sql-tab')].pop(); return t ? ((t.querySelector('button') || t).textContent || '').trim() : ''; })()`,
+  )
+  console.log(`  tasto destro sul risultato: menu=${menuMostrato} → "${titoloMenu}" (tab: ${tabsPrimaMenu} → ${tabsDopoMenu})`)
+  check('il tasto destro su un risultato mostra "Modifica"', menuMostrato === true)
+  check(
+    '"Modifica" dal menu apre l oggetto in una tab col suo nome',
+    tabsDopoMenu === tabsPrimaMenu + 1 && !/CREATE OR ALTER/i.test(titoloMenu) && /ws_/i.test(titoloMenu),
+  )
+
+  // anche una FUNZIONE si modifica dalla ricerca
+  await tornaAllaRicerca()
+  const sceltaFunzione = await page.clickWhere(
+    `[...document.querySelectorAll('[data-ricerca="riga"]')].find(r => (r.textContent || '').includes('Funzione'))`,
+  )
+  await sleep(2500)
+  const tabsPrimaFn = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  const modificaFn = await page.eval(`!!document.querySelector('[data-ricerca="modifica"]')`)
+  let titoloFn = ''
+  if (modificaFn) {
+    await page.clickWhere(`document.querySelector('[data-ricerca="modifica"]')`)
+    await sleep(2500)
+    titoloFn = await page.eval(
+      `(() => { const t = [...document.querySelectorAll('.sql-tab')].pop(); return t ? ((t.querySelector('button') || t).textContent || '').trim() : ''; })()`,
+    )
+  }
+  const tabsDopoFn = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  console.log(`  funzione scelta: ${sceltaFunzione === true} · modifica: ${modificaFn} → "${titoloFn}" (tab: ${tabsPrimaFn} → ${tabsDopoFn})`)
+  check('una FUNZIONE trovata si può modificare (pulsante Modifica)', modificaFn === true)
+  check(
+    '"Modifica" su una funzione apre una tab col nome della funzione',
+    tabsDopoFn === tabsPrimaFn + 1 && !/CREATE OR ALTER/i.test(titoloFn) && /fn_/i.test(titoloFn),
+  )
+
+  // "anche nei dati": la ricerca scansiona le tabelle (limitatamente) e lo dichiara
+  await tornaAllaRicerca()
+  await page.clickWhere(`document.querySelector('[data-ricerca="dati"]')`)
+  await sleep(400)
+  await page.clickWhere(`document.querySelector('[data-ricerca="cerca"]')`)
+  let metaDati = ''
+  for (let i = 0; i < 15; i++) {
+    await sleep(2000)
+    metaDati = await testo('[data-ricerca="meta"]')
+    if (/tabelle scandite su \d+/.test(metaDati) && !metaDati.includes('0 tabelle scandite')) break
+  }
+  console.log(`  con "anche nei dati": "${metaDati}"`)
+  check('con "anche nei dati" la ricerca scandisce le tabelle del database', /tabelle scandite su \d+/.test(metaDati))
+
+  // 8) CRONOLOGIA: la ricerca ricorda le ultime 10 parole cercate e le ripesca
+  await page.eval(`(() => { const i = document.querySelector('[data-ricerca="testo"]'); if (i) { i.focus(); i.select(); } return !!i; })()`)
+  await page.typeText('MIS_MISSIONE')
+  await page.clickWhere(`document.querySelector('[data-ricerca="cerca"]')`)
+  await sleep(2800)
+  const apriCronologia = async () => {
+    await page.clickWhere(`document.querySelector('[data-ricerca="cronologia"]')`)
+    await sleep(500)
+    return await page.eval(
+      `[...document.querySelectorAll('[data-ricerca="voce-cronologia"]')].map(b => (b.textContent || '').trim())`,
+    )
+  }
+  const vociCronologia = await apriCronologia()
+  console.log(`  cronologia: ${JSON.stringify(vociCronologia.slice(0, 4))}`)
+  check(
+    'la ricerca ricorda le ultime parole cercate',
+    vociCronologia.includes('MIS_MISSIONE') && vociCronologia.includes('UDC_UDC'),
+  )
+  check('la ricerca più recente è la prima della cronologia', vociCronologia[0] === 'MIS_MISSIONE')
+  check('la cronologia non supera le 10 voci', vociCronologia.length <= 10)
+  // si chiude il menu e si ripesca l'ultima ricerca con la freccia su
+  await page.clickWhere(`document.querySelector('[data-ricerca="cronologia"]')`)
+  await sleep(300)
+  await page.eval(`document.querySelector('[data-ricerca="testo"]').focus()`)
+  await page.press('ArrowUp', { code: 'ArrowUp', vk: 38 })
+  await sleep(400)
+  const valoreInput = await page.eval(`document.querySelector('[data-ricerca="testo"]').value`)
+  console.log(`  freccia su nell input: ${JSON.stringify(valoreInput)}`)
+  check('freccia su: ripesca l ultima parola cercata', valoreInput === 'MIS_MISSIONE')
+
+  // NESSUN DOPPIONE: cercando il NOME di una store, l'oggetto non deve comparire due volte (una
+  // per il nome e una per la definizione, che comincia con la CREATE che contiene il nome).
+  // Segnalazione utente: "la ricerca per nome store procedure ritorna 2 elementi".
+  await page.eval(`document.querySelector('[data-ricerca="testo"]').focus()`)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(STORE_UNICA)
+  // "anche nei dati" va spento: i dati di altre tabelle che CITANO la store non c'entrano con il
+  // controllo "una sola riga per oggetto" (e la scansione dei dati può limitare i risultati)
+  await page.eval(`(() => {
+    const c = document.querySelector('[data-ricerca="dati"]');
+    if (c && c.checked) c.click();
+  })()`)
+  await sleep(400)
+  await page.clickWhere(`document.querySelector('[data-ricerca="cerca"]')`)
+  // si aspetta che la ricerca sia FINITA (niente "limite raggiunto") e che l'elenco sia stabile
+  await page.waitFor(
+    `(() => {
+       const m = document.querySelector('[data-ricerca="meta"]');
+       const t = m ? (m.textContent || '') : '';
+       return t.includes('risultat') && !t.includes('limite raggiunto');
+     })()`,
+    30000,
+    'ricerca conclusa',
+  )
+  await sleep(1200)
+  const perNome = await page.eval(`(() => {
+    const righe = [...document.querySelectorAll('[data-ricerca="riga"]')];
+    const oggetti = righe.map(r => r.getAttribute('data-ricerca-nome') || '');
+    // gli hit sui DATI sono RIGHE (lo stesso valore può stare in più righe): non sono "oggetti
+    // ripetuti", quindi restano fuori dal controllo dei doppioni
+    const soloOggetti = oggetti.filter(o => !o.startsWith('data|'));
+    const conteggi = {};
+    for (const o of soloOggetti) conteggi[o] = (conteggi[o] || 0) + 1;
+    const doppi = Object.entries(conteggi).filter(([, n]) => n > 1);
+    return {
+      righe: righe.length,
+      oggetti,
+      doppi,
+      campo: (document.querySelector('[data-ricerca="testo"]') || {}).value,
+      meta: ((document.querySelector('[data-ricerca="meta"]') || {}).textContent || '').trim(),
+    };
+  })()`)
+  const quanteStore = perNome.oggetti.filter(o => o.endsWith(`.${STORE_UNICA}`.toLowerCase())).length
+  await page.screenshot('ricerca-store-una-riga')
+  // le righe vecchie non devono restare nell'elenco (chiavi React duplicate → liste "sporche"):
+  // si fa una ricerca SENZA risultati e l'elenco deve svuotarsi
+  await page.eval(`document.querySelector('[data-ricerca="testo"]').focus()`)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText('zzz_inesistente_xyz')
+  await page.clickWhere(`document.querySelector('[data-ricerca="cerca"]')`)
+  await sleep(2500)
+  const dopoVuoto = await page.eval(`(() => {
+    const p = document.querySelector('[data-ricerca="pannello"]');
+    const cont = p.querySelector('[data-ricerca="risultati"]');
+    return {
+      righe: p.querySelectorAll('[data-ricerca="riga"]').length,
+      figli: cont.children.length,
+      meta: ((p.querySelector('[data-ricerca="meta"]') || {}).textContent || '').trim().slice(0, 40),
+    };
+  })()`)
+  console.log(`  ricerca senza risultati: ${JSON.stringify(dopoVuoto)}`)
+  const debugPannelli = await page.eval(`(() => {
+    const pannelli = [...document.querySelectorAll('[data-ricerca="pannello"]')];
+    return pannelli.map((p, i) => ({
+      i,
+      nascosto: !!p.closest('div.hidden'),
+      righe: p.querySelectorAll('[data-ricerca="riga"]').length,
+      neiRisultati: p.querySelectorAll('[data-ricerca="risultati"] [data-ricerca="riga"]').length,
+      contenitori: p.querySelectorAll('[data-ricerca="risultati"]').length,
+      meta: ((p.querySelector('[data-ricerca="meta"]') || {}).textContent || '').trim().slice(0, 60),
+      campo: ((p.querySelector('[data-ricerca="testo"]') || {}).value || ''),
+      prime: [...p.querySelectorAll('[data-ricerca="riga"]')].slice(0, 3)
+        .map(r => (r.textContent || '').trim().slice(0, 40)),
+      padre: (() => { const r = p.querySelector('[data-ricerca="riga"]'); return r && r.parentElement ? r.parentElement.className.slice(0, 60) : null; })(),
+    }));
+  })()`)
+  console.log(`  DEBUG pannelli: ${JSON.stringify(debugPannelli)}`)
+  console.log(
+    `  ricerca "${perNome.campo}": ${perNome.righe} righe (${perNome.meta}) — oggetti: ${JSON.stringify(perNome.oggetti.slice(0, 4))}`,
+  )
+  check(`la store "${STORE_UNICA}" compare UNA sola volta`, quanteStore === 1, `${quanteStore} righe`)
+  check(
+    'nessun oggetto ripetuto nei risultati (nome + definizione)',
+    perNome.doppi.length === 0,
+    JSON.stringify(perNome.doppi.slice(0, 3)),
+  )
+  // e una ricerca SENZA risultati deve svuotare l'elenco (prima le righe vecchie restavano: chiavi
+  // React duplicate fra colonne omonime di tabelle diverse)
+  check(
+    'una ricerca senza risultati svuota l elenco',
+    dopoVuoto.righe === 0 && dopoVuoto.meta.startsWith('0 risultati'),
+    JSON.stringify(dopoVuoto),
+  )
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-indent): andando a capo dopo uno statement, la nuova riga non deve
+ * partire da colonna 0 ma restare allineata all'indentazione della riga sopra (dentro la
+ * routine). È la segnalazione dell'utente sullo statement UPDATE … SET … WHERE.
+ */
+async function verifyIndent(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const righeEditor = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, ''))`)
+
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(
+    [
+      'CREATE PROCEDURE p',
+      'AS',
+      'BEGIN',
+      '  UPDATE DAT_UDC',
+      '    SET UDC_RETURN = 1',
+      '  WHERE UDC_UDC = @udc',
+      'END',
+    ].join('\n'),
+  )
+  await sleep(700)
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(300)
+  await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Formatta')`,
+  )
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+
+  const prima = await righeEditor()
+  console.log('  dopo la formattazione:')
+  prima.forEach(r => console.log(`    |${r}`))
+
+  // cursore in fondo alla riga della WHERE e Invio: la riga nuova deve rientrare come quella
+  const punto = await page.eval(`(() => {
+    const linea = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].find(l => (l.textContent || '').replace(/\\u00a0/g, ' ').includes('WHERE UDC_UDC'));
+    if (!linea) return null;
+    const spans = [...linea.querySelectorAll('span')];
+    const ultimo = spans[spans.length - 1];
+    if (!ultimo) return null;
+    const r = ultimo.getBoundingClientRect();
+    return { x: r.right - 1, y: r.top + r.height / 2 };
+  })()`)
+  if (!punto) throw new Error('riga "WHERE UDC_UDC" non trovata nell editor')
+  await page.clickPoint(punto.x, punto.y)
+  await sleep(400)
+  // Invio "vero" (keybinding di Monaco): è il percorso che usa l'utente con la tastiera
+  await page.press('Enter', { code: 'Enter', vk: 13, eventType: 'keyDown' })
+  await sleep(300)
+  await page.typeText('X_NUOVA')
+  await sleep(600)
+
+  const dopo = await righeEditor()
+  console.log('  dopo Invio + testo:')
+  dopo.forEach(r => console.log(`    |${r}`))
+  const rientro = t => (t.match(/^\s*/) ?? [''])[0].length
+  const rigaWhere = dopo.find(r => r.includes('WHERE UDC_UDC')) ?? ''
+  const rigaNuova = dopo.find(r => r.includes('X_NUOVA')) ?? ''
+  console.log(`  rientro WHERE: ${rientro(rigaWhere)} · rientro nuova riga: ${rientro(rigaNuova)}`)
+  check('la nuova riga NON parte da colonna 0', rientro(rigaNuova) > 0)
+  check('la nuova riga è allineata alla riga sopra (WHERE)', rientro(rigaNuova) === rientro(rigaWhere))
+
+  // 2) statement NUOVO scritto a colonna 0 dopo l UPDATE: dopo "Formatta" deve rientrare
+  //    come gli altri statement del blocco (non restare a sinistra)
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(
+    [
+      'CREATE PROCEDURE p',
+      'AS',
+      'BEGIN',
+      '  UPDATE DAT_UDC',
+      '    SET UDC_RETURN = 1',
+      '  WHERE UDC_UDC = @udc',
+      'SELECT 1',
+      'END',
+    ].join('\n'),
+  )
+  await sleep(700)
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(300)
+  await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Formatta')`,
+  )
+  await sleep(1500)
+  const dopoFormat = await righeEditor()
+  console.log('  statement nuovo dopo "Formatta":')
+  dopoFormat.forEach(r => console.log(`    |${r}`))
+  const rigaNuovoStmt = dopoFormat.find(r => r.includes('SELECT 1')) ?? ''
+  const rigaUpdate = dopoFormat.find(r => r.includes('UPDATE DAT_UDC')) ?? ''
+  console.log(`  rientro UPDATE: ${rientro(rigaUpdate)} · rientro nuovo statement: ${rientro(rigaNuovoStmt)}`)
+  check('lo statement nuovo non resta a colonna 0', rientro(rigaNuovoStmt) > 0)
+  check('lo statement nuovo rientra come lo statement sopra', rientro(rigaNuovoStmt) === rientro(rigaUpdate))
+
+  // 3) dopo BEGIN la riga nuova rientra di UN livello (regole di rientro della lingua sql)
+  const puntoBegin = await page.eval(`(() => {
+    const linea = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].find(l => (l.textContent || '').replace(/\\u00a0/g, ' ').trim().startsWith('BEGIN'));
+    if (!linea) return null;
+    const spans = [...linea.querySelectorAll('span')];
+    const ultimo = spans[spans.length - 1];
+    if (!ultimo) return null;
+    const r = ultimo.getBoundingClientRect();
+    return { x: r.right - 1, y: r.top + r.height / 2 };
+  })()`)
+  if (puntoBegin) {
+    await page.clickPoint(puntoBegin.x, puntoBegin.y)
+    await sleep(300)
+    await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
+    await sleep(300)
+    await page.typeText('X_BEGIN')
+    await sleep(500)
+  }
+  const dopoBegin = await righeEditor()
+  const rigaBegin = dopoBegin.find(r => r.trim().startsWith('BEGIN')) ?? ''
+  const rigaXBegin = dopoBegin.find(r => r.includes('X_BEGIN')) ?? ''
+  console.log(`  rientro BEGIN: ${rientro(rigaBegin)} · rientro dopo BEGIN: ${rientro(rigaXBegin)}`)
+  check('dopo BEGIN la riga nuova rientra di un livello', rientro(rigaXBegin) === rientro(rigaBegin) + 2)
+
+  // 4) le parentesi si chiudono ancora da sole (la configurazione della lingua è stata ridefinita)
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(300)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText('select ')
+  await page.press('(', { code: 'Digit9', vk: 57, modifiers: 8, text: '(' })
+  await sleep(600)
+  const righeParen = await righeEditor()
+  const rigaParen = righeParen.find(r => r.includes('select')) ?? ''
+  console.log(`  riga con la parentesi: |${rigaParen}`)
+  check('le parentesi si chiudono ancora da sole', /\(\s*\)/.test(rigaParen))
+
+  // 5) Ctrl+/ commenta ancora (la configurazione della lingua dichiara i commenti)
+  await page.clickPoint(rect.x + 120, rect.y + 18)
+  await sleep(300)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText('select 1')
+  await sleep(300)
+  await page.press('/', { code: 'Slash', vk: 191, modifiers: 2 })
+  await sleep(700)
+  const righeCommento = await righeEditor()
+  const rigaCommentata = righeCommento.find(r => r.includes('select 1')) ?? ''
+  console.log(`  dopo Ctrl+/: |${rigaCommentata}`)
+  check('Ctrl+/ commenta ancora la riga', rigaCommentata.trim().startsWith('--'))
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-drop): dopo "ALTER TABLE t DROP" si propongono COLUMN/CONSTRAINT, dopo
+ * "DROP COLUMN" le colonne della tabella e dopo "DROP CONSTRAINT" i suoi vincoli.
+ */
+async function verifyDrop(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1800)
+  }
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+
+  /** Righe del popup con anche il dettaglio (per leggere "vincoli collegati: …"). */
+  const righePopupConDettaglio = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => (r.textContent || '').replace(/\\u00a0/g, ' ').trim())`)
+
+  /** Righe VISIBILI dell'editor (Monaco usa spazi insecabili: si normalizzano). */
+  const righeEditor = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' ').replace(/\\s+$/, ''))`)
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+  const minuscole = v => v.map(x => x.toLowerCase())
+
+  // 1) "DROP C" → COLUMN e CONSTRAINT (parola chiave a metà)
+  await scrivi('ALTER TABLE dbo.DAT_UDC DROP C')
+  const vociChiavi = minuscole(await vociPopup())
+  console.log(`  dopo "DROP C": ${JSON.stringify(vociChiavi.slice(0, 6))}`)
+  check('dopo "DROP " propone COLUMN', vociChiavi.includes('column'))
+  check('dopo "DROP " propone CONSTRAINT', vociChiavi.includes('constraint'))
+
+  // 2) "DROP COLUMN U" → le colonne della tabella
+  await scrivi('ALTER TABLE dbo.DAT_UDC DROP COLUMN U')
+  const vociColonne = minuscole(await vociPopup())
+  console.log(`  dopo "DROP COLUMN U": ${JSON.stringify(vociColonne.slice(0, 6))}`)
+  check('dopo "DROP COLUMN " propone le colonne della tabella', vociColonne.some(v => v.startsWith('udc_')))
+  check('dopo "DROP COLUMN " NON ripropone le parole chiave', !vociColonne.includes('column'))
+
+  // 3) "DROP CONSTRAINT P" → i vincoli della tabella (la PK di DAT_UDC è PK_DAT_UDC)
+  await scrivi('ALTER TABLE dbo.DAT_UDC DROP CONSTRAINT P')
+  const vociVincoli = minuscole(await vociPopup())
+  console.log(`  dopo "DROP CONSTRAINT P": ${JSON.stringify(vociVincoli.slice(0, 6))}`)
+  check('dopo "DROP CONSTRAINT " propone i vincoli della tabella', vociVincoli.some(v => v.startsWith('pk_')))
+
+  // 4) nelle colonne compaiono i VINCOLI COLLEGATI (da togliere prima di eliminarla)
+  await scrivi('ALTER TABLE dbo.DAT_UDC DROP COLUMN U')
+  const righeConVincoli = await righePopupConDettaglio()
+  console.log(`  colonne con vincoli collegati: ${JSON.stringify(righeConVincoli.slice(0, 3))}`)
+  check(
+    'nelle colonne dice quali vincoli vanno tolti prima',
+    righeConVincoli.some(r => /vincoli collegati/i.test(r)),
+  )
+
+  // 5) SNIPPET "DROP COLUMN sicuro": controllo di esistenza + vincoli collegati + DROP COLUMN
+  //    (si trova scrivendo un pezzo del nome: il popup filtra per qualità del match)
+  await scrivi('ALTER TABLE dbo.DAT_UDC DROP COLUMN sic')
+  const vociSnippet = await righePopupConDettaglio()
+  console.log(`  popup con "DROP COLUMN sic": ${JSON.stringify(vociSnippet.slice(0, 3))}`)
+  const trovatoSnippet = vociSnippet.find(v => /DROP COLUMN sicuro/i.test(v))
+  console.log(`  snippet proposto: ${JSON.stringify(trovatoSnippet ?? null)}`)
+  check('propone lo snippet "DROP COLUMN sicuro"', !!trovatoSnippet)
+  if (trovatoSnippet) {
+    await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
+    await sleep(600)
+    await page.typeText('UDC_PROVA') // riempie il segnaposto: la colonna è una variabile
+    await sleep(800)
+    const inizio = await righeEditor()
+    console.log('  snippet inserito (inizio):')
+    inizio.slice(0, 12).forEach(r => console.log(`    |${r}`))
+    const testoInizio = inizio.join('\n')
+    check('lo snippet dichiara la colonna in una VARIABILE', /DECLARE @colonna SYSNAME = N'UDC_PROVA'/.test(testoInizio))
+    check('lo snippet controlla che la colonna esista', /IF EXISTS \(SELECT 1 FROM sys\.columns/.test(testoInizio))
+    check('lo snippet lavora sulla tabella dello statement', testoInizio.includes("OBJECT_ID(N'[dbo].[DAT_UDC]')"))
+    check('lo snippet toglie i vincoli prima della colonna', /DROP CONSTRAINT/.test(testoInizio))
+    check(
+      'sotto si usa la variabile, non il valore ripetuto',
+      (testoInizio.match(/@colonna/g) ?? []).length >= 2 &&
+        !/c\.name = N'UDC_PROVA'/.test(testoInizio) &&
+        !/definition LIKE N'%UDC_PROVA/.test(testoInizio),
+    )
+    check('lo statement originale è stato sostituito', !testoInizio.includes('ALTER TABLE dbo.DAT_UDC DROP COLUMN'))
+    // in fondo allo snippet: il DROP COLUMN dinamico e la PRINT quando la colonna non c'è
+    await page.press('End', { code: 'End', vk: 35, modifiers: 2 })
+    await sleep(600)
+    const fine = (await righeEditor()).join('\n')
+    console.log('  snippet inserito (fine):')
+    ;(await righeEditor()).slice(-8).forEach(r => console.log(`    |${r}`))
+    check('in fondo il DROP COLUMN usa QUOTENAME(@colonna)', /DROP COLUMN ' \+ QUOTENAME\(@colonna\)/.test(fine))
+    check('la parte finale è la PRINT della colonna mancante', /niente da fare/.test(fine))
+    check('la parte finale non ha più il blocco delle FK entranti', !/referenced_object_id|@puntano|altre tabelle puntano/.test(fine))
+  }
+
+  // 6) le query di CATALOGO dello snippet girano davvero sul database collegato: si eseguono
+  //    (solo SELECT) e si controlla che non arrivino errori di colonna non valida — la vecchia
+  //    join su sys.objects.parent_column_id dava "Msg 207: nome di colonna non valido"
+  const queryCatalogo = [
+    "SELECT dc.name FROM sys.default_constraints dc INNER JOIN sys.columns c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id WHERE dc.parent_object_id = OBJECT_ID(N'[dbo].[DAT_UDC]') AND c.name = N'UDC_UDC'",
+    "SELECT cc.name FROM sys.check_constraints cc WHERE cc.parent_object_id = OBJECT_ID(N'[dbo].[DAT_UDC]') AND cc.definition LIKE N'%UDC_UDC%'",
+    "SELECT kc.name FROM sys.key_constraints kc INNER JOIN sys.index_columns ic ON ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id WHERE kc.parent_object_id = OBJECT_ID(N'[dbo].[DAT_UDC]') AND ic.is_included_column = 0 AND COL_NAME(ic.object_id, ic.column_id) = N'UDC_UDC' GROUP BY kc.name HAVING COUNT(*) = 1",
+  ].join(';\n')
+  await scrivi(queryCatalogo)
+  await sleep(400)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(4500)
+  const pagina = await page.eval(`document.body.textContent || ''`)
+  const erroreColonna = /Msg 207|nome di colonna .* non .* valido|Invalid column name/i.test(pagina)
+  console.log(`  query di catalogo: errore di colonna = ${erroreColonna}`)
+  check('le query di catalogo dello snippet girano sul database', !erroreColonna)
+
+  // e la query delle PK/UNIQUE, da sola, restituisce davvero il vincolo.
+  // Prima un marcatore: serve a sapere che l'esecuzione e la lettura della griglia funzionano.
+  await scrivi("SELECT 'PROVA_EXEC_123' AS marcatore")
+  await sleep(400)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(3500)
+  const paginaMarker = await page.eval(`document.body.textContent || ''`)
+  console.log(`  marcatore eseguito e visibile: ${paginaMarker.includes('PROVA_EXEC_123')}`)
+  check('l esecuzione delle query e la lettura dei risultati funzionano', paginaMarker.includes('PROVA_EXEC_123'))
+
+  // 7) caso segnalato: una tabella reale scritta SENZA schema ("ALTER TABLE DAT_SPEDIZIONI …")
+  await scrivi('ALTER TABLE DAT_SPEDIZIONI DROP CONSTRAINT P')
+  const vincoliSped = minuscole(await vociPopup())
+  console.log(`  DAT_SPEDIZIONI · DROP CONSTRAINT P: ${JSON.stringify(vincoliSped.slice(0, 4))}`)
+  check('senza schema: propone i vincoli della tabella', vincoliSped.some(v => v.includes('pk_dat_spedizioni')))
+
+  await scrivi('ALTER TABLE DAT_SPEDIZIONI DROP COLUMN S')
+  const colonneSped = minuscole(await vociPopup())
+  console.log(`  DAT_SPEDIZIONI · DROP COLUMN S: ${JSON.stringify(colonneSped.slice(0, 4))}`)
+  check('senza schema: propone le colonne della tabella', colonneSped.some(v => v.startsWith('spe_')))
+
+  // 8) SENZA la parola TABLE (caso segnalato): stessi suggerimenti + correzione automatica
+  await scrivi('ALTER DAT_SPEDIZIONI DROP CONSTRAINT P')
+  const vociSenzaTable = await righePopupConDettaglio()
+  console.log(`  senza "TABLE" · DROP CONSTRAINT P: ${JSON.stringify(vociSenzaTable.slice(0, 3))}`)
+  check('senza TABLE propone lo stesso i vincoli della tabella', vociSenzaTable.some(v => /pk_dat_spedizioni/i.test(v)))
+  check('senza TABLE avvisa che lo aggiunge', vociSenzaTable.some(v => /manca TABLE/i.test(v)))
+  await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
+  await sleep(900)
+  const rigaSenzaTable =
+    (await righeEditor()).map(r => r.trim()).find(r => r.includes('DAT_SPEDIZIONI')) ?? ''
+  console.log(`  riga dopo la conferma: ${JSON.stringify(rigaSenzaTable)}`)
+  check(
+    'accettando il suggerimento lo statement diventa "ALTER TABLE …"',
+    /^ALTER TABLE DAT_SPEDIZIONI DROP CONSTRAINT \[?PK_DAT_SPEDIZIONI\]?$/i.test(rigaSenzaTable),
+  )
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-fragment): scrivendo "fefo" devono uscire le colonne che CONTENGONO quella
+ * parola ("RIG_REVFEFO_VNA"), sia con la FROM scritta sia senza (ripiego su tutte le colonne dello
+ * schema). Prima Monaco nascondeva i match a metà parola (matchOnWordStartOnly).
+ */
+async function verifyFragment(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 120, rect.y + 18)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1800)
+  }
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+
+  const esiti = []
+  const check = (nome, ok) => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}`)
+  }
+  const minuscole = v => v.map(x => x.toLowerCase())
+
+  // 1) caso segnalato: la colonna con la parola in MEZZO al nome. Il cursore resta in fondo al
+  //    testo digitato, quindi si scrive la parola per ultima (dopo la FROM) o da sola.
+  await scrivi('SELECT * FROM DAT_ORDINI_RIGHE WHERE fefo')
+  const conFrom = await vociPopup()
+  console.log(`  "… WHERE fefo": ${JSON.stringify(conFrom.slice(0, 6))}`)
+  check(
+    'scrivendo "fefo" compare RIG_REVFEFO_VNA (parola in mezzo al nome)',
+    minuscole(conFrom).includes('rig_revfefo_vna'),
+  )
+
+  // 2) senza FROM: si cerca fra le colonne di TUTTO lo schema (ripiego)
+  await scrivi('SELECT fefo')
+  const senzaFrom = await vociPopup()
+  console.log(`  "SELECT fefo": ${JSON.stringify(senzaFrom.slice(0, 6))}`)
+  check('senza FROM cerca comunque fra le colonne dello schema', minuscole(senzaFrom).includes('rig_revfefo_vna'))
+
+  // 2b) con lo SPAZIO dopo la parola (è lo stato in cui si digita la FROM)
+  await scrivi('SELECT fefo ')
+  const conSpazio = await vociPopup()
+  console.log(`  "SELECT fefo " (spazio finale): ${JSON.stringify(conSpazio.slice(0, 6))}`)
+  check('anche con lo spazio dopo la parola la colonna resta proposta', minuscole(conSpazio).includes('rig_revfefo_vna'))
+
+  // 2c) TESTO ESATTO dell'utente con il cursore dopo "fefo": si digita tutto e si torna
+  //     indietro con le frecce, poi si richiama il popup con Ctrl+Spazio
+  await scrivi('SELECT fefo FROM DAT_ORDINI_RIGHE')
+  for (let i = 0; i < ' FROM DAT_ORDINI_RIGHE'.length; i++) {
+    await page.press('ArrowLeft', { code: 'ArrowLeft', vk: 37 })
+  }
+  await sleep(200)
+  await page.press(' ', { code: 'Space', vk: 32, modifiers: 2 })
+  await sleep(1600)
+  const esatto = await vociPopup()
+  console.log(`  "SELECT fefo| FROM DAT_ORDINI_RIGHE" (cursore dopo fefo): ${JSON.stringify(esatto.slice(0, 6))}`)
+  check('con il cursore dopo "fefo" e la FROM scritta la colonna compare', minuscole(esatto).includes('rig_revfefo_vna'))
+
+  // 3) la voce del ripiego dice da quale tabella arriva (si guarda il popup dello spazio finale)
+  const dettaglio = await page.eval(`(() => {
+    const riga = [...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .find(r => /rig_revfefo_vna/i.test(r.textContent || ''));
+    return riga ? (riga.textContent || '').replace(/\\u00a0/g, ' ').trim() : '';
+  })()`)
+  console.log(`  voce completa: ${JSON.stringify(dettaglio)}`)
+  check('la colonna trovata dice di che tabella è', /colonna di dbo\.|ORDINI_RIGHE/i.test(dettaglio))
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
 async function verifyLabels(page) {
   await page.waitFor(`document.querySelector('input')`, 10000)
   await page.clickWhere(
@@ -1605,6 +5550,3010 @@ async function verifyScrollbars(page) {
 }
 
 /**
+ * VERIFICA (--verify-risultati-sequenza): eseguendo UNA query con PIÙ result set, l'opzione
+ * "Tutti in sequenza" (impostazione della tab corrente) deve mostrare tutti i set uno di
+ * seguito in UN SOLO scorrimento, con lo scroller che arriva fino in fondo; tornando a
+ * "Un set alla volta" si rivede la paginazione.
+ * Richiesta utente: "nei risultati di una query se ha tanti resultset permettimi anche di
+ * vederli uno di seguito all'altro, magari con una bella scrollbar che posso scorrere a fondo,
+ * metti una opzione per la tab corrente".
+ */
+async function verifyRisultatiSequenza(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  // tre result set ben distinti (nomi di colonna diversi, così si riconoscono)
+  const sql = [
+    'SELECT TOP 3 UDC_UDC, UDC_CORRIDOIO FROM dbo.DAT_UDC;',
+    'SELECT TOP 4 COR_CORRIDOIO, COR_AREA FROM dbo.MAG_CORRIDOI;',
+    'SELECT TOP 2 BCO_BAIA, BCO_USOBAIA FROM dbo.MAG_BAIE;',
+  ].join('\n')
+  await page.clickPoint(rect.x + 140, rect.y + 18)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await page.typeText(sql)
+  await sleep(500)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await page.waitFor(`document.body.textContent.includes('per pagina')`, 40000, 'risultati')
+  await sleep(1200)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const bottone = async testo =>
+    await page.eval(
+      `(() => { const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes(${JSON.stringify(testo)})); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`,
+    )
+  /** Stato della vista risultati: set elencati, righe per set e scorrimento del contenitore. */
+  const stato = async () =>
+    await page.eval(`(() => {
+      const cont = document.querySelector('[data-testid="risultati-in-sequenza"]');
+      const sezioni = cont ? [...cont.querySelectorAll('section')] : [];
+      return {
+        inSequenza: !!cont,
+        set: sezioni.length,
+        righePerSet: sezioni.map(s => s.querySelectorAll('tbody tr').length),
+        titoli: sezioni.map(s => (s.querySelector('div')?.textContent || '').trim().slice(0, 30)),
+        scrollHeight: cont ? cont.scrollHeight : 0,
+        clientHeight: cont ? cont.clientHeight : 0,
+        scrollTop: cont ? cont.scrollTop : 0,
+        testoPagina: document.body.textContent.includes('per pagina'),
+        setButton: [...document.querySelectorAll('button')].filter(b => /^Set \\d+ ·/.test((b.textContent || '').trim())).length,
+      };
+    })()`)
+
+  const prima = await stato()
+  console.log(`  vista normale: setButton=${prima.setButton} paginazione=${prima.testoPagina}`)
+  check('vista normale: i pulsanti dei 3 result set sono presenti', prima.setButton === 3)
+  check('vista normale: c\'è la paginazione ("per pagina")', prima.testoPagina === true)
+  check('vista normale: nessuna vista in sequenza', prima.inSequenza === false)
+
+  const btnSequenza = await bottone('Tutti in sequenza')
+  check('il pulsante "Tutti in sequenza" è presente', !!btnSequenza)
+  if (btnSequenza) {
+    await page.clickPoint(btnSequenza.x, btnSequenza.y)
+    await sleep(1200)
+  }
+  const dopo = await stato()
+  console.log(`  in sequenza: set=${dopo.set} righe=${JSON.stringify(dopo.righePerSet)}`)
+  console.log(`  titoli: ${JSON.stringify(dopo.titoli)}`)
+  console.log(`  scorrimento: scrollHeight=${dopo.scrollHeight} clientHeight=${dopo.clientHeight}`)
+  check('in sequenza: un solo contenitore che scorre', dopo.inSequenza === true)
+  check('in sequenza: ci sono TUTTI e 3 i result set', dopo.set === 3)
+  check(
+    'in sequenza: ogni set mostra TUTTE le righe (niente paginazione)',
+    JSON.stringify(dopo.righePerSet) === JSON.stringify([3, 4, 2]),
+    JSON.stringify(dopo.righePerSet),
+  )
+  check('in sequenza: i pulsanti dei set spariscono (vista unica)', dopo.setButton === 0)
+  check(
+    'in sequenza: il contenitore si può scorrere fino in fondo',
+    dopo.scrollHeight > dopo.clientHeight,
+    `${dopo.scrollHeight} > ${dopo.clientHeight}`,
+  )
+  await page.screenshot('risultati-in-sequenza')
+
+  // si scorre fino in fondo con la rotella e si verifica che l'ultimo set sia raggiungibile
+  const punto = await page.eval(`(() => {
+    const cont = document.querySelector('[data-testid="risultati-in-sequenza"]');
+    if (!cont) return null; const r = cont.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (punto) {
+    // rotella VERA (CDP mouseWheel), non uno scrollTop impostato da script: è il gesto dell'utente
+    for (let i = 0; i < 8; i++) {
+      await page.send('Input.dispatchMouseEvent', {
+        type: 'mouseWheel',
+        x: Math.round(punto.x),
+        y: Math.round(punto.y),
+        deltaX: 0,
+        deltaY: 500,
+      })
+      await sleep(120)
+    }
+    await sleep(700)
+  }
+  const fondo = await page.eval(`(() => {
+    const cont = document.querySelector('[data-testid="risultati-in-sequenza"]');
+    if (!cont) return null;
+    const r = cont.getBoundingClientRect();
+    const el = document.elementFromPoint(r.left + r.width / 2, r.top + 30);
+    return { scrollTop: cont.scrollTop, inFondo: cont.scrollTop + cont.clientHeight >= cont.scrollHeight - 4, sotto: (el ? el.textContent : '').slice(0, 40) };
+  })()`)
+  console.log(`  dopo lo scorrimento: scrollTop=${fondo?.scrollTop} inFondo=${fondo?.inFondo}`)
+  check('in sequenza: con la rotella si arriva in fondo ai risultati', fondo?.inFondo === true)
+  await page.screenshot('risultati-in-sequenza-fondo')
+
+  // "Torna su" riporta in cima
+  const btnSu = await bottone('Torna su')
+  if (btnSu) {
+    await page.clickPoint(btnSu.x, btnSu.y)
+    await sleep(900)
+  }
+  const su = await page.eval(
+    `(() => { const c = document.querySelector('[data-testid="risultati-in-sequenza"]'); return c ? c.scrollTop : -1; })()`,
+  )
+  console.log(`  dopo "Torna su": scrollTop=${su}`)
+  check('"Torna su" riporta all\'inizio dei risultati', su === 0)
+
+  // e si torna alla vista con un set alla volta
+  const btnSingolo = await bottone('Un set alla volta')
+  if (btnSingolo) {
+    await page.clickPoint(btnSingolo.x, btnSingolo.y)
+    await sleep(1000)
+  }
+  const ritorno = await stato()
+  console.log(`  ritorno: setButton=${ritorno.setButton} paginazione=${ritorno.testoPagina}`)
+  check(
+    'tornando indietro si rivede la vista con i set e la paginazione',
+    ritorno.inSequenza === false && ritorno.setButton === 3 && ritorno.testoPagina === true,
+  )
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-spazi): il tasto "Spazi e tab" della barra dell'editor deve far DISEGNARE
+ * i caratteri invisibili (spazio '·', tab '→') e spegnerli al secondo clic, ricordando la scelta.
+ * Richiesta utente: "mi aggiungi un tasto per vedere anche i caratteri speciali, come gli spazi
+ * e i tab?".
+ */
+async function verifySpazi(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await sleep(1800)
+  const rect = await editorRect(page)
+
+  /** Righe visibili dell'editor (Monaco usa spazi insecabili: si normalizzano). */
+  const righe = () =>
+    page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' '))`)
+  /**
+   * Marcatori disegnati da Monaco per gli spazi e i tab. Monaco 0.56 li rende come SVG
+   * nell'overlay delle righe: un <circle> per ogni SPAZIO e un <path> (freccia) per ogni TAB;
+   * con la resa "a caratteri" sarebbero <div class="mwh">. Si contano entrambe le forme.
+   */
+  const conta = async () =>
+    await page.eval(`(() => {
+      const ov = document.querySelector('.monaco-editor .view-overlays');
+      const punti = ov ? ov.querySelectorAll('svg circle').length : 0;
+      const frecce = ov ? ov.querySelectorAll('svg path').length : 0;
+      const div = ov ? ov.querySelectorAll('.mwh').length : 0;
+      return { totale: punti + frecce + div, punti: punti + div, frecce };
+    })()`)
+  /** Valore dell'opzione in Monaco (prova che il tasto arriva davvero all'editor). */
+  const opzione = async () =>
+    await page.eval(
+      `(async () => { const m = (await import('/src/monacoSetup.ts')).default; const ed = m.editor.getEditors()[0]; return ed ? String(ed.getOption(m.editor.EditorOption.renderWhitespace)) : 'nessun editor'; })()`,
+    )
+
+  // testo con spazi multipli in mezzo, spazi in coda e un TAB in testa alla seconda riga.
+  // Il TAB va messo con l'API (digitandolo Monaco lo converte in spazi): così si verifica
+  // anche il marcatore "→".
+  await page.eval(
+    `(async () => { const m = (await import('/src/monacoSetup.ts')).default; const ed = m.editor.getEditors()[0]; ed.setValue('SELECT    1   ' + String.fromCharCode(10) + String.fromCharCode(9) + 'SELECT 2'); ed.setPosition({ lineNumber: 1, column: 1 }); return true; })()`,
+  )
+  await sleep(900)
+  console.log('  testo nel modello:')
+  ;(await righe()).forEach(r => console.log(`    |${JSON.stringify(r)}`))
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const bottone = async () =>
+    await page.eval(
+      `(() => { const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Spazi e tab')); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`,
+    )
+
+  const btn = await bottone()
+  check('il tasto "Spazi e tab" è nella barra dell\'editor', !!btn)
+
+  const spento = await conta()
+  console.log(`  con il tasto SPENTO: marcatori=${spento.totale} punti=${spento.punti} frecce=${spento.frecce}`)
+  check('spento: nessun carattere invisibile disegnato', spento.totale === 0)
+  check('spento: in Monaco renderWhitespace = none', (await opzione()) === 'none')
+
+  if (btn) {
+    await page.clickPoint(btn.x, btn.y)
+    await sleep(1000)
+  }
+  const acceso = await conta()
+  console.log(`  con il tasto ACCESO: marcatori=${acceso.totale} punti=${acceso.punti} frecce=${acceso.frecce}`)
+  check('acceso: in Monaco renderWhitespace = all', (await opzione()) === 'all')
+  check('acceso: gli SPAZI sono disegnati come "·"', acceso.punti >= 6, `${acceso.punti} punti`)
+  check('acceso: il TAB è disegnato come "→"', acceso.frecce >= 1, `${acceso.frecce} frecce`)
+  await page.screenshot('editor-spazi-e-tab')
+
+  // la preferenza è salvata
+  const salvato = await page.eval(`localStorage.getItem('sqlIntelli.spazi.v1')`)
+  check('la scelta è ricordata (localStorage)', salvato === 'on', JSON.stringify(salvato))
+
+  // secondo clic: si spegne e i marcatori spariscono
+  const btn2 = await bottone()
+  if (btn2) {
+    await page.clickPoint(btn2.x, btn2.y)
+    await sleep(900)
+  }
+  const rispento = await conta()
+  console.log(`  dopo il secondo clic: marcatori=${rispento.totale} punti=${rispento.punti} frecce=${rispento.frecce}`)
+  check('secondo clic: i caratteri invisibili spariscono', rispento.totale === 0)
+  const salvato2 = await page.eval(`localStorage.getItem('sqlIntelli.spazi.v1')`)
+  check('la scelta spenta è ricordata', salvato2 === 'off', JSON.stringify(salvato2))
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-indici-vincoli): indici e vincoli devono comparire nella treeview e negli
+ * script di generazione/cancellazione.
+ * Richiesta utente: "devi mettermi nello script di generazione\cancellazione e treeview anche gli
+ * indici e constraint".
+ * Controlla nel browser vero:
+ *   - la tabella espansa mostra le sezioni "Indici" (indici veri) e "Vincoli" (PK, UNIQUE, FK, CHECK);
+ *   - clic su una riga di indice → tab con CREATE … INDEX … ON …;
+ *   - tasto destro su un indice → Script indice → DROP → DROP INDEX … ON …;
+ *   - tasto destro sul vincolo → Script vincolo → CREATE / DROP CONSTRAINT;
+ *   - lo script CREATE della tabella (menu contestuale della tabella) contiene anche gli indici.
+ */
+async function verifyIndiciVincoli(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1800)
+
+  // il pannello Oggetti può essere chiuso: nel caso lo si riapre dalla barra dei pannelli
+  const campo = `document.querySelector('input[placeholder^="Cerca (spazio"]')`
+  if (!(await page.eval(`!!${campo}`))) {
+    await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Oggetti')`,
+    )
+    await sleep(1200)
+  }
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  /**
+   * Apre il pannello Oggetti (se è chiuso) e SVUOTA la ricerca: con del testo nel campo si
+   * vedono i RISULTATI (righe piatte, senza chevron), non l'albero con indici e vincoli.
+   */
+  const preparaAlbero = async () => {
+    if (!(await page.eval(`!!${campo}`))) {
+      await page.clickWhere(
+        `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Oggetti')`,
+      )
+      await sleep(1300)
+    }
+    await page.eval(`(() => {
+      const i = ${campo};
+      if (!i) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(i, '');
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(700)
+  }
+
+  /** Clic sul bottone che ha uno <span> con questo testo ESATTO (sezioni e gruppi dell'albero). */
+  const clicSpan = async testo =>
+    await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b =>
+        [...b.querySelectorAll('span')].some(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(testo)}));
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`)
+
+  /** La riga della tabella esiste nell'albero (dentro il suo .group)? */
+  const rigaPresente = async nome =>
+    await page.eval(`(() => {
+      const s = [...document.querySelectorAll('span')]
+        .find(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(nome)});
+      return !!(s && s.closest('.group'));
+    })()`)
+
+  /** Il gruppo di prefisso è visibile e APERTO? (null = sezione Tabelle chiusa) */
+  const gruppoAperto = async label =>
+    await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b =>
+        [...b.querySelectorAll('span')].some(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(label)}));
+      if (!b) return null;
+      const padre = b.parentElement;
+      return !!padre && padre.children.length > 1;
+    })()`)
+
+  /** Apre sezione "Tabelle" e gruppo di prefisso finché la riga della tabella non c'è. */
+  const raggiungiRiga = async nome => {
+    if (await rigaPresente(nome)) return true
+    const gruppo = nome.includes('_') ? nome.split('_')[0] : 'Varie'
+    let aperto = await gruppoAperto(gruppo)
+    if (aperto === null) {
+      // la sezione "Tabelle" è chiusa: si apre (cliccare a caso la chiuderebbe)
+      await clicSpan('Tabelle')
+      await sleep(600)
+      aperto = await gruppoAperto(gruppo)
+    }
+    if (aperto === false) {
+      await clicSpan(gruppo)
+      await sleep(700)
+    }
+    return await rigaPresente(nome)
+  }
+
+  /** Espande la tabella (chevron "Mostra i campi") per vedere colonne, indici e vincoli. */
+  const espandi = async nome =>
+    await page.eval(`(() => {
+      const s = [...document.querySelectorAll('span')]
+        .find(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(nome)});
+      const gruppo = s && s.closest('.group');
+      if (!gruppo) return 'nessuna-riga';
+      const b = [...gruppo.querySelectorAll('button')]
+        .find(b => (b.getAttribute('title') || '').startsWith('Mostra i campi'));
+      if (!b) return 'gia-aperto';
+      b.click();
+      return 'aperto';
+    })()`)
+
+  /**
+   * Sezioni e righe mostrate sotto la tabella espansa. Il NOME dell'indice/vincolo si legge dal
+   * title (l'etichetta visibile attacca il nome alle colonne/badge: "IX_TX_ART" + "ART").
+   */
+  const contenuto = async nome =>
+    await page.eval(`(() => {
+      const s = [...document.querySelectorAll('span')]
+        .find(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(nome)});
+      const gruppo = s && s.closest('.group');
+      if (!gruppo) return null;
+      const testi = [...gruppo.querySelectorAll('div')].map(d => (d.textContent || '').trim());
+      const sezioni = ['Colonne', 'Indici', 'Vincoli', 'Trigger'].filter(x => testi.includes(x));
+      const bottoni = [...gruppo.querySelectorAll('button')].map(b => ({
+        titolo: b.getAttribute('title') || '',
+        primaRiga: (b.getAttribute('title') || '').split('\\n')[0],
+      }));
+      const indici = bottoni.filter(b => /INDEX /.test(b.titolo)).map(b => ({
+        nome: (/INDEX ([^\\s]+)/.exec(b.titolo) || [])[1] || b.primaRiga,
+        titolo: b.primaRiga,
+      }));
+      const vincoli = bottoni
+        .filter(b => /^(PRIMARY KEY|FOREIGN KEY|UNIQUE|CHECK) /.test(b.titolo))
+        .map(b => {
+          // il tipo può essere di DUE parole ("PRIMARY KEY", "FOREIGN KEY")
+          const m = /^(PRIMARY KEY|FOREIGN KEY|UNIQUE|CHECK)\\s+(.+)$/.exec(b.primaRiga);
+          return m ? { tipo: m[1], nome: m[2].trim() } : { tipo: 'VINCOLO', nome: b.primaRiga };
+        });
+      return { sezioni, indici, vincoli };
+    })()`)
+
+  /** Testo di TUTTI gli script aperti nelle tab (per verificare cosa è stato generato). */
+  const scriptAperti = async () =>
+    await page.eval(
+      `(async () => { const m = (await import('/src/monacoSetup.ts')).default; return m.editor.getModels().map(x => x.getValue()); })()`,
+    )
+
+  /** Tasto destro sulla riga di una tabella (o su una sua voce) e scelta di una voce del menu. */
+  const apriMenu = async etichettaRiga => {
+    await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')]
+        .find(b => (b.textContent || '').trim().startsWith(${JSON.stringify(etichettaRiga)}));
+      if (b) b.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window }));
+    })()`)
+    await sleep(600)
+  }
+  const scegliVoce = async testo => {
+    const punto = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === ${JSON.stringify(testo)});
+      if (!b) return null;
+      b.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (punto) {
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(punto.x), y: Math.round(punto.y), buttons: 0 })
+      await sleep(700)
+      await page.clickPoint(punto.x, punto.y)
+      await sleep(1200)
+    }
+    return !!punto
+  }
+  const chiudiMenu = async () => {
+    await page.press('Escape', { code: 'Escape', vk: 27 })
+    await sleep(300)
+  }
+
+  // ---------------------------------------------------------------- 1) treeview
+  await preparaAlbero()
+  const candidate = [
+    TABELLA_CREATE,
+    'RUN_MISSIONI',
+    'RUN_ESEGUI',
+    'DAT_UDC',
+    'MAG_CELLE',
+    'DAT_ORDINI_RIGHE',
+    'MAG_CORRIDOI',
+    'DAT_SCOMPART',
+    'TIPI_CAUSALI_MISSIONI',
+    'MAG_BAIE',
+  ]
+  let conIndici = null
+  let conVincoli = null
+  /** Tipi di vincolo visti nell'albero su TUTTE le tabelle esaminate (PK, FK, CHECK, UNIQUE). */
+  const tipiVisti = new Set()
+  for (const nome of candidate) {
+    if (!(await raggiungiRiga(nome))) {
+      console.log(`  (${nome}: riga non trovata nell'albero)`)
+      continue
+    }
+    await espandi(nome)
+    await sleep(700)
+    const c = await contenuto(nome)
+    if (!c) continue
+    for (const v of c.vincoli) tipiVisti.add(v.tipo)
+    console.log(`  ${nome}: sezioni=${JSON.stringify(c.sezioni)} indici=${JSON.stringify(c.indici.map(i => i.nome))} vincoli=${JSON.stringify(c.vincoli.map(v => `${v.tipo} ${v.nome}`))}`)
+    if (!conIndici && c.indici.length > 0) conIndici = { nome, ...c }
+    if (!conVincoli && c.vincoli.length > 0) conVincoli = { nome, ...c }
+    if (conIndici && conVincoli && ['PRIMARY KEY', 'FOREIGN KEY', 'CHECK'].every(t => tipiVisti.has(t))) break
+  }
+
+  check('la treeview mostra la sezione "Vincoli"', !!conVincoli, conVincoli ? `${conVincoli.nome}: ${conVincoli.vincoli.length} vincoli (${conVincoli.vincoli.slice(0, 3).map(v => `${v.tipo} ${v.nome}`).join(', ')}…)` : 'nessuna tabella con vincoli trovata')
+  check('la treeview mostra la sezione "Indici"', !!conIndici, conIndici ? `${conIndici.nome}: ${conIndici.indici.map(i => i.nome).join(', ')}` : 'nessuna tabella con indici trovata')
+  check(
+    'fra i vincoli ci sono CHIAVE PRIMARIA, CHIAVI ESTERNE e CHECK',
+    ['PRIMARY KEY', 'FOREIGN KEY', 'CHECK'].every(t => tipiVisti.has(t)),
+    [...tipiVisti].join(', '),
+  )
+
+  // ---------------------------------------------------------------- 2) script di un INDICE
+  if (conIndici) {
+    const indice = conIndici.indici[0].nome
+    const tabella = conIndici.nome
+    await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')]
+        .find(b => (b.textContent || '').trim().startsWith(${JSON.stringify(indice)}) && /INDEX /.test(b.getAttribute('title') || ''));
+      if (b) b.click();
+    })()`)
+    await sleep(1500)
+    const aperti = await scriptAperti()
+    check(
+      'clic su un indice → si apre lo script CREATE INDEX',
+      aperti.some(v => v.includes('CREATE') && v.includes('INDEX') && v.includes(`[${indice}]`) && v.includes(`[${tabella}]`)),
+      `indice ${indice}`,
+    )
+
+    await apriMenu(indice)
+    const menuIndice = await page.eval(`document.body.textContent.includes('Script indice')`)
+    check('tasto destro su un indice → menu "Script indice"', menuIndice === true)
+    await scegliVoce('Script indice')
+    await scegliVoce('DROP')
+    const aperti2 = await scriptAperti()
+    check(
+      'Script indice → DROP → si apre "DROP INDEX … ON …"',
+      aperti2.some(v => v.includes(`DROP INDEX ${indice} ON`) || v.includes(`DROP INDEX [${indice}] ON`)),
+    )
+    await page.screenshot('treeview-indici')
+  }
+
+  // ---------------------------------------------------------------- 3) script di un VINCOLO
+  if (conVincoli) {
+    const pk = (conVincoli.vincoli.find(v => v.tipo === 'PRIMARY KEY') ?? conVincoli.vincoli[0]).nome
+    await apriMenu(pk)
+    const menuVincolo = await page.eval(`document.body.textContent.includes('Script vincolo')`)
+    check('tasto destro su un vincolo → menu "Script vincolo"', menuVincolo === true)
+    await scegliVoce('Script vincolo')
+    await scegliVoce('DROP CONSTRAINT')
+    const aperti3 = await scriptAperti()
+    check(
+      'Script vincolo → DROP CONSTRAINT → si apre "ALTER TABLE … DROP CONSTRAINT …"',
+      aperti3.some(v => v.includes(`DROP CONSTRAINT ${pk}`) || v.includes(`DROP CONSTRAINT [${pk}]`)),
+      `vincolo ${pk}`,
+    )
+
+    // la chiave esterna (se c'è) si può ricreare da sola
+    const fk = conVincoli.vincoli.find(v => v.tipo === 'FOREIGN KEY')
+    if (fk) {
+      const nomeFk = fk.nome
+      await chiudiMenu()
+      await page.eval(`(() => {
+        const b = [...document.querySelectorAll('button')]
+          .find(b => (b.textContent || '').trim().startsWith(${JSON.stringify(nomeFk)}) && /^FOREIGN KEY/.test(b.getAttribute('title') || ''));
+        if (b) b.click();
+      })()`)
+      await sleep(1500)
+      const aperti4 = await scriptAperti()
+      check(
+        'clic su una chiave esterna → script ADD CONSTRAINT … FOREIGN KEY … REFERENCES',
+        aperti4.some(v => v.includes('FOREIGN KEY') && v.includes('REFERENCES') && v.includes(nomeFk)),
+        `fk ${nomeFk}`,
+      )
+    } else {
+      console.log('  (nessuna chiave esterna fra le prime tabelle esaminate: controllo saltato)')
+    }
+    await chiudiMenu()
+  }
+
+  // ---------------------------------------------------------------- 4) script CREATE della tabella
+  if (conIndici) {
+    const tabella = conIndici.nome
+    await raggiungiRiga(tabella)
+    await apriMenu(tabella)
+    await scegliVoce('Script tabella')
+    await scegliVoce('CREATE')
+    await sleep(1800)
+    const aperti5 = await scriptAperti()
+    const script = aperti5.find(v => v.includes(`CREATE TABLE [dbo].[${tabella}](`)) ?? ''
+    const indice = conIndici.indici[0].nome
+    check(
+      'lo script CREATE della tabella contiene anche gli INDICI',
+      script.includes('INDEX') && script.includes(`[${indice}]`),
+      `indice atteso: ${indice}`,
+    )
+    check(
+      'lo script CREATE della tabella contiene anche i VINCOLI (PK/CHECK/FK)',
+      script.includes('CONSTRAINT') && /PRIMARY KEY|CHECK|FOREIGN KEY/.test(script),
+    )
+  }
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-drago-join): i suggerimenti di JOIN dell'intellisense portano il drago
+ * dell'app (🐉) davanti all'etichetta, e la riga della lista è animata.
+ * Richiesta utente: "mettimi delle icone di drago, animate, per i suggerimenti dei join
+ * dell'intellisense".
+ * Controlla anche che il drago NON rompa il filtro: scrivendo il nome della tabella il
+ * suggerimento deve continuare a comparire.
+ */
+async function verifyDragoJoin(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1500)
+  const rect = await editorRect(page)
+
+  const scrivi = async sql => {
+    await page.clickPoint(rect.x + 140, rect.y + 18)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1700)
+  }
+  /** Voci del popup (etichetta visibile). */
+  const voci = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+  /** Attributi/classi della riga col drago (o della prima riga: serve a capire il DOM). */
+  const ispeziona = async () =>
+    await page.eval(`(() => {
+      const riga = [...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+        .find(r => (r.textContent || '').includes('🐉')) ||
+        document.querySelector('.suggest-widget .monaco-list-row');
+      if (!riga) return null;
+      const nome = riga.querySelector('.label-name');
+      const stile = window.getComputedStyle(nome || riga);
+      return {
+        ariaLabel: riga.getAttribute('aria-label'),
+        classi: riga.className,
+        testo: (riga.textContent || '').trim().slice(0, 120),
+        html: riga.outerHTML.slice(0, 700),
+        animazioneRiga: window.getComputedStyle(riga).animationName,
+        animazioneNome: stile.animationName,
+      };
+    })()`)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // in posizione JOIN compaiono i suggerimenti con la clausola ON
+  await scrivi('SELECT * FROM dbo.DAT_UDC INNER JOIN ')
+  const vociJoin = await voci()
+  console.log(`  suggerimenti in posizione JOIN: ${JSON.stringify(vociJoin.slice(0, 6))}`)
+  check(
+    'i suggerimenti di JOIN hanno il drago davanti',
+    vociJoin.some(v => v.startsWith('🐉')),
+    `${vociJoin.filter(v => v.startsWith('🐉')).length} su ${vociJoin.length}`,
+  )
+
+  const ispezione = await ispeziona()
+  if (ispezione) {
+    console.log(`  riga col drago: aria-label=${JSON.stringify(ispezione.ariaLabel)}`)
+    console.log(`    testo=${JSON.stringify(ispezione.testo)}`)
+    console.log(`    animazione riga=${ispezione.animazioneRiga} nome=${ispezione.animazioneNome}`)
+  }
+  check('la riga del drago esiste nel popup', !!ispezione)
+  check(
+    'la riga del drago è ANIMATA (fire che pulsa sul nome)',
+    ispezione?.animazioneRiga === 'dragon-join-row' && ispezione?.animazioneNome === 'dragon-join-name',
+    `riga=${ispezione?.animazioneRiga} nome=${ispezione?.animazioneNome}`,
+  )
+  await page.screenshot('intellisense-drago-join')
+
+  // il drago non deve rompere il filtro: scrivendo il nome della tabella la voce resta
+  await scrivi('SELECT * FROM dbo.DAT_UDC INNER JOIN RUN_MIS')
+  const vociFiltrate = await voci()
+  console.log(`  filtrando "RUN_MIS": ${JSON.stringify(vociFiltrate.slice(0, 5))}`)
+  check(
+    'il filtro funziona lo stesso (scrivendo il nome la voce compare)',
+    vociFiltrate.some(v => v.includes('RUN_MISSIONI')),
+  )
+
+  // e una tabella SENZA relazioni non ha il drago (non è un join)
+  await scrivi('SELECT * FROM dbo.DAT_UDC INNER JOIN ZZ_')
+  const vociVuote = await voci()
+  console.log(`  con "ZZ_": ${JSON.stringify(vociVuote.slice(0, 4))}`)
+  check(
+    'una tabella senza relazioni NON porta il drago (non è un join)',
+    vociVuote.every(v => !v.startsWith('🐉')),
+    JSON.stringify(vociVuote.slice(0, 3)),
+  )
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-oggetto-versione): aprendo in Modifica una store che era GIÀ aperta, e
+ * lavorando da una versione di partenza VECCHIA (la definizione sul database è cambiata dopo
+ * l'apertura) l'app deve dirlo in modo evidente.
+ * Richiesta utente: "se apro in edit una store\funzione mostrami se ce n'era una già aperta e se
+ * sto lavorando da una versione di partenza che è vecchia (metti una cosa ad impatto che lo mostri)".
+ *
+ * La prova usa una store di comodo (dbo.zz_ProvaVersione) creata e cancellata qui: nessun
+ * oggetto esistente viene toccato.
+ */
+async function verifyOggettoVersione(page) {
+  const NOME = 'zz_ProvaVersione'
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1800)
+  const rect = await editorRect(page)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Scrive nell'editor e preme F5 (la posizione dell'editor si RICALCOLA: la nota sopra
+   *  l'editor sposta la casella e un clic fuori dal testo farebbe ricaricare la pagina con F5). */
+  const esegui = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(400)
+    await page.press('F5', { code: 'F5', vk: 116 })
+    await sleep(2600)
+  }
+  const tabAperti = async () =>
+    await page.eval(`[...document.querySelectorAll('.sql-tab')].map(t => (t.textContent || '').trim())
+      .filter(t => t && !/^\\+/.test(t))`)
+  const clicTab = async titolo => {
+    const punto = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('.sql-tab button')].find(b => (b.textContent || '').trim() === ${JSON.stringify(titolo)});
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (punto) {
+      await page.clickPoint(punto.x, punto.y)
+      await sleep(900)
+    }
+    return !!punto
+  }
+  /** Apre l'oggetto in Modifica dal pannello Oggetti (ricerca + tasto destro + Modifica). */
+  const apriModifica = async () => {
+    const campo = `document.querySelector('input[placeholder^="Cerca (spazio"]')`
+    await page.eval(`(() => {
+      const i = ${campo};
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(i, ${JSON.stringify(NOME)});
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`)
+    await page.waitFor(
+      `[...document.querySelectorAll('span')].some(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(NOME)})`,
+      15000,
+      `risultato ${NOME} in Oggetti`,
+    )
+    await sleep(500)
+    await page.eval(`(() => {
+      const s = [...document.querySelectorAll('span')]
+        .find(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(NOME)});
+      if (s) s.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window }));
+    })()`)
+    await sleep(700)
+    const punto = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Modifica');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(2200)
+    return !!punto
+  }
+  const notaVisibile = async () =>
+    await page.eval(`(() => { const n = document.querySelector('[data-nota]'); return n ? (n.textContent || '').trim() : null; })()`)
+  const avvisoVersione = async () =>
+    await page.eval(`(() => { const n = document.querySelector('[data-versione="vecchia"]'); return n ? (n.textContent || '').trim().slice(0, 160) : null; })()`)
+  const badgeTab = async () => await page.eval(`document.querySelectorAll('[data-versione-tab]').length`)
+
+  try {
+    // 1) store di comodo
+    await esegui(`CREATE OR ALTER PROCEDURE dbo.${NOME} AS\nBEGIN\n  SELECT 1 AS A\nEND`)
+    // la store è nuova: il sommario del pannello va riletto (come il pulsante "Aggiorna schema")
+    await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Aggiorna schema'))`,
+    )
+    await sleep(3500)
+
+    // 2) prima apertura in Modifica
+    const primaApertura = await apriModifica()
+    const dopoPrima = await tabAperti()
+    console.log(`  tab dopo la prima apertura: ${JSON.stringify(dopoPrima)}`)
+    check('la store si apre in Modifica (tab con il suo nome)', primaApertura && dopoPrima.some(t => t.includes(NOME)))
+
+    // 3) SECONDA apertura: non deve duplicare la tab e deve dirlo
+    await apriModifica()
+    const dopoSeconda = await tabAperti()
+    const nota = await notaVisibile()
+    console.log(`  tab dopo la seconda apertura: ${JSON.stringify(dopoSeconda)}`)
+    console.log(`  nota: ${JSON.stringify(nota)}`)
+    check(
+      'riaprendo la stessa store NON si duplica la tab',
+      dopoSeconda.filter(t => t.includes(NOME)).length === 1,
+      `${dopoSeconda.filter(t => t.includes(NOME)).length} tab con ${NOME}`,
+    )
+    check('viene mostrato che era già aperta', !!nota && /era gia' aperta|era già aperta/i.test(nota), JSON.stringify(nota))
+
+    // 4) la definizione cambia sul database (da un'altra tab)
+    const nuova = await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Nuova')`,
+    )
+    await sleep(1000)
+    console.log(`  "Nuova" premuto: ${nuova}`)
+    await esegui(`CREATE OR ALTER PROCEDURE dbo.${NOME} AS\nBEGIN\n  SELECT 2 AS A\nEND`)
+    console.log(`  tab dopo la modifica da un'altra tab: ${JSON.stringify(await tabAperti())}`)
+
+    // 5) si torna sulla tab dell'oggetto: il controllo trova la versione cambiata
+    const tornato = await clicTab(NOME)
+    console.log(`  ritorno sulla tab ${NOME}: ${tornato}`)
+    await sleep(6500)
+    const avviso = await avvisoVersione()
+    console.log(`  avviso versione: ${JSON.stringify(avviso)}`)
+    check('sulla tab compare l\'avviso "versione vecchia"', !!avviso && /versione vecchia/i.test(avviso))
+    check('la definizione cambiata è citata nell\'avviso', !!avviso && avviso.includes(NOME))
+    check('la tab con la versione vecchia ha il badge ⚠', (await badgeTab()) >= 1, `${await badgeTab()} badge`)
+    await page.screenshot('versione-vecchia-oggetto')
+
+    // 6) "Ignora": l'avviso sparisce
+    const ignora = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('[data-versione="vecchia"] button')].find(b => (b.textContent || '').includes('Ignora'));
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (ignora) {
+      await page.clickPoint(ignora.x, ignora.y)
+      await sleep(800)
+    }
+    check('dopo "Ignora" l\'avviso sparisce', (await avvisoVersione()) === null)
+
+    // 7) "Ricarica dal database": l'oggetto cambia di nuovo e la tab si riallinea
+    await clicTab('Query 3')
+    await sleep(600)
+    await esegui(`CREATE OR ALTER PROCEDURE dbo.${NOME} AS\nBEGIN\n  SELECT 3 AS A\nEND`)
+    await clicTab(NOME)
+    await sleep(6500)
+    check('l\'avviso torna se l\'oggetto cambia ancora', !!(await avvisoVersione()))
+    const ricarica = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('[data-versione="vecchia"] button')].find(b => (b.textContent || '').includes('Ricarica dal database'));
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (ricarica) {
+      await page.clickPoint(ricarica.x, ricarica.y)
+      await sleep(2200)
+    }
+    const testoDopo = (await page.eval(`[...document.querySelectorAll('.monaco-editor .view-lines .view-line')]
+      .map(l => (l.textContent || '').replace(/\\u00a0/g, ' '))`)).join('\n')
+    console.log(`  editor dopo "Ricarica dal database": ${JSON.stringify(testoDopo.slice(0, 90))}`)
+    check('dopo "Ricarica dal database" l\'avviso sparisce', (await avvisoVersione()) === null)
+    check(
+      'dopo "Ricarica dal database" la tab ha la definizione NUOVA (SELECT 3)',
+      /SELECT\s+3/i.test(testoDopo),
+      JSON.stringify(testoDopo.slice(0, 60)),
+    )
+
+    // 8) ESEGUIRE da questa tab il CREATE OR ALTER non deve far comparire "versione vecchia":
+    //    la definizione sul database è quella che ho appena scritto io (segnalazione utente:
+    //    "dopo che la eseguo però una store mi dice Stai lavorando da una versione vecchia…").
+    await esegui(`CREATE OR ALTER PROCEDURE dbo.${NOME} AS\nBEGIN\n  SELECT 4 AS A\nEND`)
+    await sleep(3000)
+    const avvisoDopoEsegui = await avvisoVersione()
+    console.log(`  avviso dopo l'esecuzione da questa tab: ${JSON.stringify(avvisoDopoEsegui)}`)
+    check('eseguendo la store DA QUESTA TAB non compare "versione vecchia"', avvisoDopoEsegui === null)
+    check('nessun badge ⚠ sulla tab dopo l\'esecuzione', (await badgeTab()) === 0, `${await badgeTab()} badge`)
+  } finally {
+    // pulizia: la store di comodo non resta nel database
+    try {
+      const r = await editorRect(page)
+      await page.clickPoint(r.x + 220, r.y + 46)
+      await sleep(300)
+      await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+      await page.typeText(`DROP PROCEDURE dbo.${NOME}`)
+      await sleep(300)
+      await page.press('F5', { code: 'F5', vk: 116 })
+      await sleep(2000)
+      console.log(`  (pulizia: DROP PROCEDURE dbo.${NOME} eseguito)`)
+    } catch {
+      console.log(`  (ATTENZIONE: non sono riuscito a cancellare dbo.${NOME})`)
+    }
+  }
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-maiuscolo): Ctrl+U rende MAIUSCOLA la selezione (richiesta utente: "mi fai
+ * anche il comando ctrl+U per rendere maiuscolo la selezione?"). Si controlla nell'editor vero:
+ * - con TUTTO selezionato diventa tutto maiuscolo;
+ * - con una sola riga selezionata cambia SOLO quella;
+ * - senza selezione trasforma la parola sotto il cursore (comportamento nativo di Monaco);
+ * - Ctrl+Shift+L rende minuscolo (scorciatoia di SSMS).
+ */
+async function verifyMaiuscolo(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Testo del modello dell'editor attivo. */
+  const testo = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors().find(e => e.hasTextFocus()) ?? m.editor.getEditors()[0];
+      return ed ? ed.getValue() : ''; })()`)
+  /** Scrive il testo (sostituendo tutto) e lascia il cursore in fondo. */
+  const scrivi = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(700)
+  }
+  const premi = async (key, code, vk, modifiers = 0) => {
+    await page.press(key, { code, vk, modifiers })
+    await sleep(700)
+  }
+
+  const BASE = 'select uno, due from tre\ngo\nselect quattro from cinque'
+  await scrivi(BASE)
+
+  // 1) tutto selezionato (Ctrl+A) + Ctrl+U
+  await premi('a', 'KeyA', 65, 2)
+  await premi('u', 'KeyU', 85, 2)
+  const tutto = await testo()
+  console.log(`  dopo Ctrl+A + Ctrl+U:\n${tutto.split('\n').map(r => `    |${r}`).join('\n')}`)
+  check('Ctrl+U con tutto selezionato: diventa TUTTO maiuscolo', tutto === BASE.toUpperCase(), tutto.split('\n')[0])
+
+  // 2) SOLO la prima riga selezionata: cambia quella e nient'altro
+  await scrivi(BASE)
+  await premi('Home', 'Home', 36, 2) // Ctrl+Home: inizio del documento
+  await premi('End', 'End', 35, 8) // Shift+End: seleziona la prima riga
+  await premi('u', 'KeyU', 85, 2)
+  const unaRiga = await testo()
+  console.log(`  dopo Ctrl+U sulla sola prima riga:\n${unaRiga.split('\n').map(r => `    |${r}`).join('\n')}`)
+  const righe = unaRiga.split('\n')
+  check('Ctrl+U con una riga selezionata: cambia SOLO quella', righe[0] === 'SELECT UNO, DUE FROM TRE')
+  check(
+    'le altre righe restano come erano',
+    righe[1] === 'go' && righe[2] === 'select quattro from cinque',
+    JSON.stringify(righe.slice(1)),
+  )
+
+  // 3) senza selezione: la PAROLA sotto il cursore (qui dentro "cinque", in fondo al documento)
+  await scrivi(BASE)
+  await premi('End', 'End', 35, 2) // Ctrl+End: fine del documento
+  for (let i = 0; i < 4; i++) await page.press('ArrowLeft', { code: 'ArrowLeft', vk: 37 })
+  await sleep(400)
+  await premi('u', 'KeyU', 85, 2)
+  const parola = await testo()
+  console.log(`  senza selezione (cursore dentro "cinque"): ${JSON.stringify(parola.split('\n')[2])}`)
+  check(
+    'Ctrl+U senza selezione: rende maiuscola la PAROLA sotto il cursore',
+    /CINQUE/.test(parola) && /select quattro from/.test(parola),
+    parola.split('\n')[2],
+  )
+
+  // 4) Ctrl+Shift+L: minuscolo (da tutto maiuscolo si torna al testo di partenza)
+  await scrivi(BASE.toUpperCase())
+  await premi('a', 'KeyA', 65, 2)
+  await premi('l', 'KeyL', 76, 2 | 8)
+  const minuscolo = await testo()
+  console.log(`  dopo Ctrl+Shift+L:\n${minuscolo.split('\n').map(r => `    |${r}`).join('\n')}`)
+  check('Ctrl+Shift+L rende MINUSCOLA la selezione (torna al testo di partenza)', minuscolo === BASE)
+
+  await page.screenshot('editor-ctrl-u-maiuscolo')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-selezione-treeview): le voci dell'albero laterale sono SELEZIONABILI e la
+ * riga selezionata resta evidenziata. Richiesta utente: "rendi le voci della treeview
+ * selezionabili, adesso non si capisce cosa è selezionato".
+ * Controlla: clic su una riga → classe `nodo-attivo` + sfondo tinto; clic su un'altra → la
+ * prima si spegne; tasto destro → seleziona anche lui; colonne e viste/procedure si selezionano;
+ * la scelta è memorizzata (localStorage) e sopravvive al ridisegno dell'albero (ricerca).
+ */
+async function verifySelezioneTreeview(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Stato della selezione: riga attiva (data-nodo), sfondo, classe e valore salvato. */
+  const stato = async () =>
+    await page.eval(`(() => {
+      const sel = document.querySelectorAll('.nodo-attivo[data-nodo]');
+      const prima = sel[0] || null;
+      return {
+        quante: sel.length,
+        chiavi: [...sel].map(e => e.getAttribute('data-nodo')),
+        sfondo: prima ? window.getComputedStyle(prima).backgroundColor : null,
+        salvato: (() => { try { return localStorage.getItem('sql-intelli:nodoSel.v1') } catch { return null } })(),
+      };
+    })()`)
+  /** Clic (o tasto destro) sulla riga che contiene il testo indicato. */
+  const clicRiga = async (testo, tastoDestro = false) => {
+    const punto = await page.eval(`(() => {
+      const righe = [...document.querySelectorAll('[data-nodo]')];
+      const riga = righe.find(r => (r.textContent || '').trim().includes(${JSON.stringify(testo)}));
+      if (!riga) return null;
+      const r = riga.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4) return null;
+      return { x: r.left + 22, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) return false
+    if (tastoDestro) await page.clickPoint(punto.x, punto.y, 'right')
+    else await page.clickPoint(punto.x, punto.y)
+    await sleep(700)
+    return true
+  }
+  const chiudiMenu = async () => {
+    await page.press('Escape', { code: 'Escape', vk: 27 })
+    await sleep(400)
+  }
+  const cerca = async testo => {
+    await page.eval(`(() => {
+      const i = document.querySelector('input[placeholder^="Cerca (spazio"]');
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(i, ${JSON.stringify(testo)});
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`)
+    await sleep(1200)
+  }
+
+  // 1) una tabella dalla ricerca: selezione + evidenziazione
+  await cerca('DAT_')
+  const primo = await clicRiga('DAT_')
+  const s1 = await stato()
+  console.log(`  dopo il clic su una tabella: ${JSON.stringify(s1)}`)
+  check('clic su una riga → la riga è selezionata (data-nodo)', primo && s1.quante === 1 && !!s1.chiavi[0])
+  check('la riga selezionata ha lo SFONDO evidenziato', !!s1.sfondo && !/rgba\(0, 0, 0, 0\)|transparent/.test(s1.sfondo), s1.sfondo)
+  check('la scelta è memorizzata (resta dopo un ricaricamento)', s1.salvato === s1.chiavi[0], String(s1.salvato))
+  const primaChiave = s1.chiavi[0]
+
+  // 2) un'altra TABELLA: la precedente si spegne (una sola selezione, restando sul database)
+  const righe = await page.eval(`[...document.querySelectorAll('[data-nodo^="tabella:"]')]
+    .filter(r => { const b = r.getBoundingClientRect(); return b.width > 4 && b.height > 4; })
+    .map(r => (r.textContent || '').trim())`)
+  const altra = righe.find(t => t && !t.includes(primaChiave.split(':').pop()))
+  console.log(`  tabelle cliccabili: ${JSON.stringify(righe.slice(0, 5))}`)
+  const secondo = altra ? await clicRiga(altra) : false
+  const s2 = await stato()
+  console.log(`  dopo il clic su un'altra riga: ${JSON.stringify(s2)}`)
+  check(
+    'clic su un\'altra riga: resta UNA sola riga selezionata, ed è la nuova',
+    secondo && s2.quante === 1 && s2.chiavi[0] !== primaChiave,
+    `${s2.chiavi[0]} (prima ${primaChiave})`,
+  )
+
+  // 3) tasto destro su una riga: seleziona anche lui (poi si chiude il menu)
+  const rigaDx = await page.eval(`(() => {
+    const riga = [...document.querySelectorAll('[data-nodo^="tabella:"]')].find(r => {
+      const b = r.getBoundingClientRect();
+      return b.width > 4 && b.height > 4;
+    });
+    return riga ? { chiave: riga.getAttribute('data-nodo'), testo: (riga.textContent || '').trim() } : null;
+  })()`)
+  if (rigaDx) {
+    await clicRiga(rigaDx.testo, true)
+    const s3 = await stato()
+    console.log(`  dopo il tasto destro su "${rigaDx.testo}": ${JSON.stringify(s3.chiavi)}`)
+    check('il tasto destro seleziona la riga', s3.quante === 1 && s3.chiavi[0] === rigaDx.chiave, String(rigaDx.chiave))
+    await chiudiMenu()
+  }
+
+  // 4) una COLONNA (dentro una tabella espansa): si seleziona con la sua chiave.
+  // Qui si clicca in modo SINTETICO sull'elemento (non con le coordinate): la card di hover che
+  // si apre sopra l'albero coprirebbe la riga da cliccare. Il percorso "vero" del mouse è già
+  // verificato nei passi 1-3.
+  await cerca('')
+  await sleep(1000)
+  const clicSintetico = async condizione =>
+    await page.eval(`(() => {
+      const el = [...document.querySelectorAll('[data-nodo], button')].find(e => ${condizione});
+      if (!el) return false;
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      return true;
+    })()`)
+  // sezione Tabelle e un gruppo di schema aperti (si insiste finché non compaiono tabelle:
+  // il clic su una sezione/gruppo già aperto la chiude, quindi si riprova).
+  let righeTabella = 0
+  for (let giro = 0; giro < 6 && righeTabella === 0; giro++) {
+    const haSchemi = await page.eval(`[...document.querySelectorAll('[data-nodo^="schema:"]')].length`)
+    const cliccato = haSchemi
+      ? await page.eval(`(() => {
+          const gruppi = [...document.querySelectorAll('[data-nodo^="schema:"]')];
+          const g = gruppi[${giro} % Math.max(1, gruppi.length)];
+          if (!g) return false;
+          g.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+          return g.getAttribute('data-nodo');
+        })()`)
+      : await clicSintetico(`e.getAttribute && e.getAttribute('data-nodo') === 'sezione:Tabelle'`)
+    console.log(`  giro ${giro + 1}: cliccato ${JSON.stringify(cliccato)}`)
+    await sleep(900)
+    righeTabella = await page.eval(`[...document.querySelectorAll('[data-nodo^="tabella:"]')].length`)
+  }
+  console.log(`  righe di tabella nell'albero: ${righeTabella}`)
+  // si espande la prima tabella (il chevron è il primo bottone del contenitore della riga)
+  const espanso = await page.eval(`(() => {
+    const riga = [...document.querySelectorAll('[data-nodo^="tabella:"]')][0];
+    if (!riga) return false;
+    const contenitore = riga.closest('div.group') || riga.parentElement;
+    const chevron = contenitore ? contenitore.querySelector('button') : null;
+    if (!chevron) return false;
+    chevron.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    return true;
+  })()`)
+  await sleep(1000)
+  const clickColonna = await page.eval(`(() => {
+    const c = [...document.querySelectorAll('[data-nodo^="colonna:"]')][0];
+    if (!c) return null;
+    const chiave = c.getAttribute('data-nodo');
+    c.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    return chiave;
+  })()`)
+  await sleep(800)
+  const s4 = await stato()
+  const colonne = await page.eval(`[...document.querySelectorAll('[data-nodo^="colonna:"]')].length`)
+  console.log(`  colonne visibili: ${colonne}; colonna cliccata: ${JSON.stringify(clickColonna)}; stato: ${JSON.stringify(s4.chiavi)}`)
+  check(
+    'clic su una COLONNA: si seleziona la colonna (chiave colonna:…)',
+    !!clickColonna && s4.quante === 1 && s4.chiavi[0] === clickColonna && /^colonna:/.test(clickColonna),
+    String(clickColonna),
+  )
+
+  // per lo screenshot: la riga selezionata al centro e il puntatore lontano (la card di hover
+  // coprirebbe la riga da mostrare)
+  await page.eval(`(() => {
+    const el = document.querySelector('.nodo-attivo[data-nodo]');
+    if (el) el.scrollIntoView({ block: 'center' });
+  })()`)
+  await sleep(500)
+  await page.clickPoint(900, 760)
+  await sleep(700)
+  await page.screenshot('treeview-selezione')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-gruppi-albero): dentro il nodo di una tabella, Colonne / Indici / Chiavi
+ * esterne / Vincoli / Trigger sono SOTTOGRUPPI annidati, ognuno apribile per conto suo.
+ * Richiesta utente: "annida nella treeview delle tabelle le colonne in un nodo, indici in un altro
+ * e fk in un altro ecc…".
+ */
+async function verifyGruppiAlbero(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Clic sintetico sull'elemento che soddisfa la condizione (la card di hover coprirebbe la riga). */
+  const clic = async condizione =>
+    await page.eval(`(() => {
+      const el = [...document.querySelectorAll('[data-nodo], button')].find(e => ${condizione});
+      if (!el) return false;
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      return true;
+    })()`)
+  /** Chiavi delle voci visibili con un certo prefisso. */
+  const chiavi = async prefisso =>
+    await page.eval(`[...document.querySelectorAll('[data-nodo^=' + JSON.stringify(${JSON.stringify(prefisso)}) + ']')]
+      .map(e => e.getAttribute('data-nodo'))`)
+
+  // si apre l'albero fino a una tabella che ha indici/FK: RUN_MISSIONI (gruppo RUN)
+  for (let giro = 0; giro < 8; giro++) {
+    if ((await chiavi('tabella:')).length > 0) break
+    const haSchemi = (await chiavi('schema:')).length > 0
+    if (!haSchemi) {
+      await clic(`e.getAttribute && e.getAttribute('data-nodo') === 'sezione:Tabelle'`)
+    } else {
+      await page.eval(`(() => {
+        const gruppi = [...document.querySelectorAll('[data-nodo^="schema:"]')];
+        const g = gruppi.find(e => (e.getAttribute('data-nodo') || '').includes('run')) || gruppi[0];
+        if (g) g.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      })()`)
+    }
+    await sleep(900)
+  }
+  // si espande la tabella RUN_MISSIONI (o la prima disponibile)
+  const espanso = await page.eval(`(() => {
+    const righe = [...document.querySelectorAll('[data-nodo^="tabella:"]')];
+    const riga = righe.find(r => (r.getAttribute('data-nodo') || '').includes('RUN_MISSIONI')) || righe[0];
+    if (!riga) return null;
+    const contenitore = riga.closest('div.group') || riga.parentElement;
+    const chevron = contenitore ? contenitore.querySelector('button') : null;
+    if (!chevron) return null;
+    chevron.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    return riga.getAttribute('data-nodo');
+  })()`)
+  await sleep(1000)
+  console.log(`  tabella espansa: ${espanso}`)
+  const gruppi = await page.eval(`[...document.querySelectorAll('[data-nodo^="gruppo:"]')]
+    .map(e => ({ chiave: e.getAttribute('data-nodo'), testo: (e.textContent || '').trim() }))`)
+  console.log(`  nodi di gruppo: ${JSON.stringify(gruppi)}`)
+  const titoli = gruppi.map(g => g.testo.replace(/\s*\d+$/, '').trim().toLowerCase())
+  check(
+    'Colonne/Indici/Chiavi esterne/Vincoli sono NODI separati dentro la tabella',
+    titoli.includes('colonne') &&
+      (titoli.includes('indici') || titoli.includes('chiavi esterne') || titoli.includes('vincoli')),
+    JSON.stringify(titoli),
+  )
+  check(
+    'ogni nodo porta il conteggio delle voci',
+    gruppi.length > 0 && gruppi.every(g => /\d+$/.test(g.testo)),
+    JSON.stringify(gruppi.map(g => g.testo)),
+  )
+
+  // Colonne aperte di default; chiudendole spariscono le colonne
+  const colonneAperte = (await chiavi('colonna:')).length
+  check('il nodo Colonne è aperto all\'apertura della tabella', colonneAperte > 0, `${colonneAperte} colonne`)
+  const chiaveColonne = gruppi.find(g => /colonne/i.test(g.testo))?.chiave
+  if (chiaveColonne) {
+    await clic(`e.getAttribute && e.getAttribute('data-nodo') === ${JSON.stringify(chiaveColonne)}`)
+    await sleep(700)
+  }
+  check('chiudendo il nodo Colonne le colonne si nascondono', (await chiavi('colonna:')).length === 0)
+
+  // un nodo tra Indici / Chiavi esterne / Vincoli: si apre e mostra le sue voci
+  const chiaveAltro = gruppi.find(g => /indici|chiavi esterne|vincoli/i.test(g.testo))?.chiave
+  if (chiaveAltro) {
+    const prima = await page.eval(`document.querySelectorAll('[data-nodo^="indice:"], [data-nodo^="vincolo:"]').length`)
+    await clic(`e.getAttribute && e.getAttribute('data-nodo') === ${JSON.stringify(chiaveAltro)}`)
+    await sleep(800)
+    const dopo = await page.eval(`document.querySelectorAll('[data-nodo^="indice:"], [data-nodo^="vincolo:"]').length`)
+    console.log(`  voci di ${chiaveAltro}: prima ${prima}, dopo il clic ${dopo}`)
+    check('aprendo un altro nodo (indici/chiavi esterne/vincoli) compaiono le sue voci', dopo > prima, `${dopo} voci`)
+  }
+
+  // le FK, se ci sono, stanno nel loro nodo
+  const chiaveFk = gruppi.find(g => /chiavi esterne/i.test(g.testo))?.chiave
+  if (chiaveFk) {
+    /** Conteggio delle righe di vincolo che sono FK. */
+    const quanteFk = async () =>
+      await page.eval(`[...document.querySelectorAll('[data-nodo^="vincolo:"]')]
+        .filter(r => /FOREIGN KEY/i.test(r.getAttribute('title') || '')).length`)
+    // il nodo potrebbe essere già aperto dal passo precedente: si clicca solo se serve
+    if ((await quanteFk()) === 0) {
+      await clic(`e.getAttribute && e.getAttribute('data-nodo') === ${JSON.stringify(chiaveFk)}`)
+      await sleep(800)
+    }
+    const fk = await quanteFk()
+    console.log(`  FK visibili sotto il nodo "Chiavi esterne": ${fk}`)
+    check('sotto "Chiavi esterne" ci sono le FK', fk > 0, `${fk} FK`)
+  }
+
+  await page.eval(`(() => {
+    const el = document.querySelector('[data-nodo^="gruppo:"]');
+    if (el) el.scrollIntoView({ block: 'center' });
+  })()`)
+  await sleep(400)
+  await page.clickPoint(900, 760)
+  await sleep(500)
+  await page.screenshot('treeview-gruppi-annidati')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-f5-globale): F5 esegue la tab attiva anche quando il fuoco NON è nell'editor,
+ * senza ricaricare la pagina. Richiesta utente: "se non ho il focus sulla scheda mi ricarica tutta
+ * la pagina, c'è modo di prenderlo e non fare aggiornare la pagina, ma eseguire f5 sulla tab attiva
+ * del codice?".
+ *
+ * Come si distingue "ricaricata" da "eseguita": prima di premere F5 si pianta un segno su `window`
+ * (`__f5Probe`); se la pagina si ricarica il segno sparisce. L'esecuzione si riconosce dal pannello
+ * dei risultati (compare la griglia con la colonna del SELECT).
+ */
+async function verifyF5Globale(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const scrivi = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(700)
+  }
+  /** Fuoco dentro l'editor di codice? */
+  const fuocoNellEditor = async () =>
+    await page.eval(`(() => {
+      const a = document.activeElement;
+      return !!(a && a.closest && a.closest('.monaco-editor'));
+    })()`)
+  /** Testo del pannello dei risultati (griglia + messaggi). */
+  const testoRisultati = async () =>
+    await page.eval(`(() => {
+      const box = document.querySelector('[data-testid="risultati"]')
+        || [...document.querySelectorAll('div')].find(d => /Risultati/i.test((d.textContent || '').slice(0, 40)) && d.querySelector('table'));
+      return box ? (box.textContent || '').slice(0, 400) : '';
+    })()`)
+  /** Marca su window: se la pagina si ricarica sparisce. */
+  const piantaSegno = async () => await page.eval(`(window.__f5Probe = 'vivo-' + Date.now(), window.__f5Probe)`)
+  const segno = async () => await page.eval(`window.__f5Probe ?? null`)
+
+  // 1) una query che produce una griglia riconoscibile
+  await scrivi('SELECT 111 AS F5_PROVA')
+  check('prima della prova il fuoco è nell editor', await fuocoNellEditor())
+
+  // 2) si porta il fuoco FUORI dall'editor (nel campo di ricerca dell'albero) e si preme F5
+  const spostato = await page.eval(`(() => {
+    const i = document.querySelector('input[placeholder^="Cerca (spazio"]');
+    if (!i) return null;
+    i.focus();
+    const a = document.activeElement;
+    return { fuoco: !!a, descrizione: a ? (a.tagName + ':' + (a.getAttribute('placeholder') || a.className || '')).slice(0, 60) : '' };
+  })()`)
+  await sleep(600)
+  const fuocoDopo = await fuocoNellEditor()
+  console.log(`  spostamento del fuoco: ${JSON.stringify(spostato)}`)
+  const marca = await piantaSegno()
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(2600)
+  const segnoDopo = await segno()
+  const risultati = await testoRisultati()
+  console.log(`  fuoco nell'editor dopo il clic fuori: ${fuocoDopo}`)
+  console.log(`  segno prima=${JSON.stringify(marca)} dopo=${JSON.stringify(segnoDopo)}`)
+  console.log(`  risultati: ${JSON.stringify(risultati.slice(0, 120))}`)
+  check('il clic fuori dall\'editor toglie il fuoco all\'editor', fuocoDopo === false)
+  check('F5 senza fuoco nell\'editor NON ricarica la pagina (il segno resta)', segnoDopo === marca, String(segnoDopo))
+  check('F5 senza fuoco nell\'editor ESEGUE la tab attiva', /F5_PROVA|111/.test(risultati), risultati.slice(0, 60))
+  await page.screenshot('f5-globale')
+
+  // 3) con il fuoco nell'editor F5 continua a eseguire (una volta sola: lo gestisce Monaco)
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(400)
+  await scrivi('SELECT 222 AS F5_EDITOR')
+  const marca2 = await piantaSegno()
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(2600)
+  const risultati2 = await testoRisultati()
+  check('con il fuoco nell\'editor F5 esegue ancora', /F5_EDITOR|222/.test(risultati2), risultati2.slice(0, 60))
+  check('e non ricarica la pagina', (await segno()) === marca2)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-transazione): la SESSIONE SQL resta aperta fra un'esecuzione e l'altra, come in
+ * SSMS. Segnalazione utente: "se lancio una query che non chiude la transazione, e poi lancio un
+ * rollback nella seconda chiamata, cosa fa adesso?".
+ * Controlla:
+ * 1. `BEGIN TRAN; SELECT …` → la transazione RESTA aperta e compare la striscia "transazione aperta";
+ * 2. nella chiamata dopo `@@TRANCOUNT` è ancora 1;
+ * 3. `ROLLBACK` nella chiamata dopo FUNZIONA (prima dava "Msg 3903") e la striscia sparisce;
+ * 4. una tabella temporanea (#tmp) creata in un'esecuzione esiste anche nell'esecuzione dopo.
+ */
+async function verifyTransazione(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 40000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Esegue il testo nell'editor (F5) e aspetta. */
+  const esegui = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(500)
+    await page.press('F5', { code: 'F5', vk: 116 })
+    await sleep(2600)
+  }
+  /** Testo della striscia di avviso (nota) e dei messaggi. */
+  const nota = async () =>
+    await page.eval(`(() => { const n = document.querySelector('[data-nota]'); return n ? (n.textContent || '').trim() : null; })()`)
+  const messaggi = async () =>
+    await page.eval(`(() => {
+      const box = [...document.querySelectorAll('div')].find(d => /Messaggi \\/ PRINT/.test(d.textContent || '') && d.querySelectorAll('div').length < 400);
+      return box ? (box.textContent || '').slice(0, 600) : '';
+    })()`)
+  /** Apre la scheda "Messaggi / PRINT" dei risultati. */
+  const apriMessaggi = async () => {
+    const punto = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b => /Messaggi/.test(b.textContent || ''));
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(700)
+  }
+
+  // 1) transazione lasciata APERTA
+  await esegui('BEGIN TRAN; SELECT 1 AS A')
+  const notaAperta = await nota()
+  console.log(`  dopo BEGIN TRAN: nota=${JSON.stringify(notaAperta)}`)
+  check('la transazione resta aperta e viene SEGNALATA', !!notaAperta && /transazione aperta/i.test(notaAperta), String(notaAperta).slice(0, 80))
+  await page.screenshot('transazione-aperta')
+  await apriMessaggi()
+  const msgAperti = await messaggi()
+  check('il messaggio di avviso è anche nei Messaggi', /Transazione ancora aperta/i.test(msgAperti))
+
+  // 2) seconda esecuzione: la transazione è ancora lì
+  await esegui('SELECT @@TRANCOUNT AS trancount')
+  const nota2 = await nota()
+  check('nella esecuzione successiva la transazione è ancora aperta (come SSMS)', !!nota2 && /transazione aperta/i.test(nota2))
+
+  // 3) ROLLBACK in una chiamata successiva: FUNZIONA (prima: Msg 3903)
+  await esegui('ROLLBACK TRANSACTION')
+  await apriMessaggi()
+  const msgRollback = await messaggi()
+  console.log(`  messaggi dopo ROLLBACK: ${JSON.stringify(msgRollback.slice(0, 120))}`)
+  check('ROLLBACK in una chiamata successiva non dà errore', !/3903/.test(msgRollback) && !/non è associata un'istruzione BEGIN/i.test(msgRollback))
+  check('dopo il ROLLBACK la striscia sparisce', (await nota()) === null)
+
+  // 4) tabella temporanea fra due esecuzioni
+  await esegui('CREATE TABLE #tmpProva (a int); INSERT INTO #tmpProva VALUES (1),(2); SELECT COUNT(*) AS righe FROM #tmpProva')
+  await esegui('SELECT COUNT(*) AS righe_dopo FROM #tmpProva')
+  const risultati = await page.eval(`(() => {
+    const box = document.querySelector('[data-testid="risultati"]')
+      || [...document.querySelectorAll('div')].find(d => /Risultati/.test((d.textContent || '').slice(0, 40)) && d.querySelector('table'));
+    return box ? (box.textContent || '').replace(/\\s+/g, ' ').slice(0, 400) : '';
+  })()`)
+  console.log(`  risultati dopo #tmp: ${JSON.stringify(risultati.slice(0, 140))}`)
+  // la prova vera: la seconda esecuzione NON deve dare "Msg 208 oggetto non valido"
+  await apriMessaggi()
+  const msgTmp = await messaggi()
+  console.log(`  messaggi della seconda esecuzione: ${JSON.stringify(msgTmp.slice(0, 120))}`)
+  check(
+    'nessun errore "oggetto #tmpProva non valido" (la #tmp è ancora lì)',
+    !/208/.test(msgTmp) && !/non è valido/i.test(msgTmp),
+    msgTmp.slice(0, 60),
+  )
+  check(
+    'la seconda esecuzione ha letto la #tmp (colonna righe_dopo nei risultati)',
+    /righe_dopo/i.test(risultati),
+    risultati.slice(0, 60),
+  )
+  await page.screenshot('transazione-sessione')
+
+  // pulizia: nessuna transazione lasciata aperta
+  await esegui('IF OBJECT_ID(\'tempdb..#tmpProva\') IS NOT NULL DROP TABLE #tmpProva')
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * MISURA (--measure-schema): quanto ci mette l'app a mostrare lo schema, dal clic su "Connetti" a
+ * "Schema: N tabelle" in alto (tempo reale percepito, browser compreso), poi la stessa cosa dopo
+ * "Aggiorna schema" (che rilegge dal database bypassando la cache).
+ */
+async function measureSchema(page) {
+  await page.waitFor(`document.querySelector('input')`, 15000)
+  // le login salvate arrivano dal backend: aspettare che ci siano, altrimenti il clic cade a vuoto
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    `login salvata ${LOGIN_NAME}`,
+  )
+  const t0 = Date.now()
+  const cliccato = await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  if (!cliccato) console.log('  ATTENZIONE: login salvata non trovata')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 90000, 'schema caricato')
+  const primoCarico = Date.now() - t0
+  const etichetta = await page.eval(`(() => {
+    const m = (document.body.textContent || '').match(/Schema:\\s*\\d+\\s*tabelle/);
+    return m ? m[0] : '';
+  })()`)
+  console.log(`  primo caricamento dello schema: ${primoCarico} ms   (${etichetta})`)
+
+  // "Aggiorna schema": rilegge tutto dal database (niente cache)
+  const t1 = Date.now()
+  await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Aggiorna schema'))`,
+  )
+  await sleep(1200)
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 90000, 'schema ricaricato')
+  console.log(`  "Aggiorna schema" (dal database): ${Date.now() - t1} ms`)
+  await page.screenshot('schema-tempi')
+}
+
+/**
+ * VERIFICA (--verify-ghost): il GHOST TEXT (suggerimento in linea) compare nell'editor e Tab lo
+ * accetta. Richiesta utente: "che altro si può inventare per essere più veloci a scrivere delle
+ * query?" → scelta: "Ghost text: suggerimento inline con Tab".
+ * Controlla: dopo "… JOIN tabella" propone l'ON della chiave esterna, il testo è visibile in
+ * grigio, Tab lo inserisce; poi la colonna successiva nella select-list.
+ */
+async function verifyGhost(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Testo del fantasma a schermo: Monaco lo disegna come una serie di span ".ghost-text-decoration",
+   *  uno per token, quindi il testo completo è la loro concatenazione. */
+  const ghost = async () =>
+    await page.eval(`(() => {
+      const pezzi = [...document.querySelectorAll('.monaco-editor .ghost-text-decoration')];
+      const testo = pezzi.map(e => e.textContent || '').join('').trim();
+      if (testo) return testo;
+      const altro = [...document.querySelectorAll('.monaco-editor .ghost-text, .monaco-editor .inline-suggestion-text')];
+      return altro.length ? (altro.map(e => e.textContent || '').join('').trim() || null) : null;
+    })()`)
+  /** Testo del modello dell'editor attivo. */
+  const testo = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors().find(e => e.hasTextFocus()) ?? m.editor.getEditors()[0];
+      return ed ? ed.getValue() : ''; })()`)
+  const scrivi = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1400)
+  }
+
+  /** Porta il cursore subito dopo un frammento di testo (deterministico). */
+  const cursoreDopo = async frammento =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors().find(e => e.hasTextFocus()) ?? m.editor.getEditors()[0];
+      const model = ed.getModel();
+      if (!model) return false;
+      const i = model.getValue().indexOf(${JSON.stringify(frammento)});
+      if (i < 0) return false;
+      ed.setPosition(model.getPositionAt(i + ${JSON.stringify(frammento)}.length));
+      ed.focus();
+      return true; })()`)
+
+  // 1) JOIN senza ON → propone l'ON della FK (coppia reale del database:
+  //    DAT_ARTICOLI.ART_CLAMOV -> CLA_MOV.CLA_CLAMOV)
+  await scrivi('SELECT * FROM dbo.DAT_ARTICOLI INNER JOIN dbo.CLA_MOV')
+  await sleep(1500)
+  await page.screenshot('ghost-join')
+  const g1 = await ghost()
+  console.log(`  ghost sul JOIN: ${JSON.stringify(g1)}`)
+  check('dopo "… JOIN tabella" compare il fantasma con l\'ON della FK', !!g1 && /^ON/i.test(g1) && /ART_CLAMOV/i.test(g1) && /CLA_CLAMOV/i.test(g1), String(g1))
+  await page.screenshot('ghost-join')
+  // Tab accetta il suggerimento
+  await page.press('Tab', { code: 'Tab', vk: 9 })
+  await sleep(900)
+  const dopoTab = await testo()
+  console.log(`  testo dopo Tab: ${JSON.stringify(dopoTab)}`)
+  check(
+    'Tab inserisce l\'ON proposto (con le colonne della FK)',
+    /ON\s*\(/i.test(dopoTab) && /ART_CLAMOV/i.test(dopoTab) && /CLA_CLAMOV/i.test(dopoTab),
+    dopoTab.slice(-70),
+  )
+
+  // 2) select-list: dopo la virgola propone la colonna successiva
+  await scrivi('SELECT UDC_UDC, FROM dbo.DAT_UDC')
+  const posizionato = await cursoreDopo('SELECT UDC_UDC,')
+  await sleep(1400)
+  const g2 = await ghost()
+  console.log(`  ghost sulla select-list: ${JSON.stringify(g2)} (cursore dopo la virgola: ${posizionato})`)
+  check('dopo la virgola compare il fantasma con la colonna successiva', !!g2 && /^[A-Za-z_]\w*$/.test(g2), String(g2))
+  if (g2) {
+    await page.press('Tab', { code: 'Tab', vk: 9 })
+    await sleep(800)
+    const dopo = await testo()
+    console.log(`  testo dopo Tab: ${JSON.stringify(dopo.slice(0, 60))}`)
+    check('Tab inserisce la colonna proposta', dopo.includes(String(g2).trim()), dopo.slice(0, 60))
+  }
+
+  // 3) niente fantasma quando l'ON c'è già
+  await scrivi('SELECT * FROM dbo.RUN_MISSIONI INNER JOIN dbo.DAT_UDC ON (MIS_UDC = UDC_UDC)')
+  await sleep(1200)
+  check('con l\'ON già scritto non propone niente', (await ghost()) === null)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-virgola): premendo Invio dopo una virgola, la virgola va IN TESTA alla riga
+ * nuova, incolonnata sotto il primo campo (stile del progetto). Richiesta utente: "che altro si può
+ * fare per velocizzare la scrittura?" → "Enter e virgola intelligenti".
+ * Controlla anche l'interruttore nelle impostazioni e che un solo Ctrl+Z annulli tutto.
+ */
+async function verifyVirgola(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const testo = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors().find(e => e.hasTextFocus()) ?? m.editor.getEditors()[0];
+      return ed ? ed.getValue() : ''; })()`)
+  const scrivi = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(900)
+  }
+
+  // 1) "SELECT UDC_UDC," + Invio → la virgola va in testa alla riga nuova, incolonnata
+  await scrivi('SELECT UDC_UDC,')
+  await page.press('Enter', { code: 'Enter', vk: 13 })
+  await sleep(700)
+  const dopo = await testo()
+  const righe = dopo.split('\n')
+  console.log(`  dopo Invio: ${JSON.stringify(dopo)}`)
+  check('la virgola NON resta in coda alla riga precedente', !/,\s*$/.test(righe[0]), JSON.stringify(righe[0]))
+  check('la virgola va in testa alla riga nuova', (righe[1] ?? '').trim() === ',', JSON.stringify(righe[1]))
+  check(
+    'la virgola è incolonnata sotto il primo campo (7 spazi per SELECT)',
+    (righe[1] ?? '').indexOf(',') === 'SELECT '.length,
+    `${(righe[1] ?? '').indexOf(',')} spazi`,
+  )
+  await page.screenshot('virgola-a-capo')
+
+  // 2) una sola modifica → un solo Ctrl+Z riporta tutto com'era
+  await page.press('z', { code: 'KeyZ', vk: 90, modifiers: 2 })
+  await sleep(600)
+  const dopoUndo = await testo()
+  check('un solo Ctrl+Z annulla tutto', dopoUndo.trim() === 'SELECT UDC_UDC,', JSON.stringify(dopoUndo))
+
+  // 3) nessuna virgola in coda → Invio si comporta normalmente
+  await scrivi('SELECT AAA')
+  await page.press('Enter', { code: 'Enter', vk: 13 })
+  await sleep(600)
+  const dopoNormale = await testo()
+  check('senza virgola in coda Invio non aggiunge nulla', !/,/.test(dopoNormale), JSON.stringify(dopoNormale))
+
+  // 4) l'interruttore esiste nelle impostazioni di formattazione ed è acceso
+  const ingranaggio = await page.eval(`(() => {
+    const b = [...document.querySelectorAll('button')].find(b => (b.title || '').includes('Impostazioni di formattazione'));
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (ingranaggio) {
+    await page.clickPoint(ingranaggio.x, ingranaggio.y)
+    await sleep(900)
+  }
+  const casella = await page.eval(`(() => {
+    const c = document.querySelector('[data-format="virgola-a-capo"]');
+    return c ? { presente: true, acceso: c.checked } : null;
+  })()`)
+  console.log(`  interruttore: ${JSON.stringify(casella)}`)
+  check('nelle impostazioni c\'è l\'interruttore "Virgola a capo automatica", acceso', !!casella && casella.acceso === true)
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await sleep(400)
+  await page.screenshot('virgola-impostazione')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-anteprima): il pulsante (e Alt+P) "Anteprima" mostra, per un UPDATE/DELETE, le
+ * righe che verrebbero toccate — senza modificare niente. Richiesta utente: "fai anteprima delle
+ * modifiche".
+ * Controlla: compare la griglia con le colonne della tabella, la striscia dice che è un'anteprima,
+ * il TESTO nell'editor non cambia, la tabella non viene modificata (valore di riferimento identico
+ * prima e dopo) e su un SELECT il comando avvisa senza eseguire nulla.
+ */
+async function verifyAnteprima(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const testo = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors().find(e => e.hasTextFocus()) ?? m.editor.getEditors()[0];
+      return ed ? ed.getValue() : ''; })()`)
+  const scrivi = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(700)
+  }
+  const clicAnteprima = async () => {
+    const punto = await page.eval(`(() => {
+      const b = document.querySelector('[data-anteprima="modifiche"]');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) return false
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(2600)
+    return true
+  }
+  const risultati = async () =>
+    await page.eval(`(() => {
+      const box = document.querySelector('[data-testid="risultati"]')
+        || [...document.querySelectorAll('div')].find(d => /Risultati/.test((d.textContent || '').slice(0, 40)) && d.querySelector('table'));
+      return box ? (box.textContent || '').replace(/\\s+/g, ' ').slice(0, 500) : '';
+    })()`)
+  const nota = async () =>
+    await page.eval(`(() => { const n = document.querySelector('[data-nota]'); return n ? (n.textContent || '').trim() : null; })()`)
+  const valore = async sql => {
+    await scrivi(sql)
+    await page.press('F5', { code: 'F5', vk: 116 })
+    await sleep(2400)
+    return await risultati()
+  }
+
+  // 0) valore di riferimento PRIMA (tabella vera, sola lettura)
+  // impronta dei dati: un solo valore stabile (il tempo di esecuzione nella griglia cambia sempre)
+  const CONTA = "SELECT CONCAT(COUNT(*), '|', SUM(LEN(CEL_DES))) AS F FROM dbo.MAG_CELLE"
+  const conta = async () => {
+    await valore(CONTA)
+    const m = (await risultati()).match(/\d+\|\d+/)
+    return m ? m[0] : null
+  }
+  const prima = await conta()
+  check('lettura di riferimento riuscita', prima.length > 0, prima.slice(0, 60))
+
+  // 1) UPDATE con JOIN e WHERE → anteprima
+  // caso reale: il bersaglio è scritto con lo schema e la FROM usa un ALIAS (c) → le colonne
+  // devono essere qualificate con "c", non con "MAG_CELLE" (era il bug trovato da questa prova)
+  const sqlUpdate = 'UPDATE dbo.MAG_CELLE SET CEL_DES = CEL_DES FROM MAG_CELLE c WHERE c.CEL_CELLA >= 0'
+  await scrivi(sqlUpdate)
+  const testoPrima = await testo()
+  const premuto = await clicAnteprima()
+  await page.screenshot('anteprima-dopo-click')
+  const griglia = await risultati()
+  const messaggi = await page.eval(
+    `(() => { const d = [...document.querySelectorAll('div')].find(x => /Messaggi \\/ PRINT/.test(x.textContent || '')); return d ? (d.textContent || '').replace(/\\s+/g, ' ').slice(0, 400) : '' })()`,
+  )
+  console.log(`  messaggi: ${JSON.stringify(messaggi.slice(0, 220))}`)
+  const avviso = await nota()
+  console.log(`  anteprima premuta: ${premuto}`)
+  console.log(`  griglia: ${JSON.stringify(griglia.slice(0, 160))}`)
+  console.log(`  nota: ${JSON.stringify(avviso)}`)
+  check('il pulsante Anteprima esiste ed è stato premuto', premuto)
+  check('compare la griglia con le colonne della tabella', /CEL_CORRIDOIO|CEL_CELLA|CEL_DES/i.test(griglia))
+  check('la striscia dice che è un\'anteprima', !!avviso && /anteprima/i.test(avviso), String(avviso).slice(0, 80))
+  check('il testo dell\'editor NON è cambiato', (await testo()) === testoPrima)
+
+  // 2) la tabella non è stata modificata
+  const dopo = await conta()
+  check('nessun dato modificato (valore di riferimento invariato)', dopo === prima, `${prima.slice(-28)} → ${dopo.slice(-28)}`)
+
+  // 3) su una SELECT avvisa e non esegue niente
+  await scrivi('SELECT 1 AS X')
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(2200)
+  const primaSelect = await risultati()
+  await clicAnteprima()
+  const avvisoSelect = await nota()
+  console.log(`  nota su SELECT: ${JSON.stringify(avvisoSelect)}`)
+  check('su un SELECT avvisa che vale per UPDATE/DELETE', !!avvisoSelect && /UPDATE o un DELETE/i.test(avvisoSelect), String(avvisoSelect).slice(0, 70))
+  check('su un SELECT non esegue niente', (await risultati()) === primaSelect)
+  await page.screenshot('anteprima-modifiche')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-piano): il pulsante "Piano" (Alt+E) mostra il piano di esecuzione STIMATO —
+ * operatori e indici suggeriti — senza eseguire la query. Richiesta utente: "piano di esecuzione +
+ * indice suggerito".
+ */
+async function verifyPiano(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const testo = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors().find(e => e.hasTextFocus()) ?? m.editor.getEditors()[0];
+      return ed ? ed.getValue() : ''; })()`)
+  const scrivi = async sql => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(350)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(700)
+  }
+  const apriPiano = async () => {
+    const punto = await page.eval(`(() => {
+      const b = document.querySelector('[data-piano="apri"]');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) return false
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(3000)
+    return true
+  }
+  const pannello = async () =>
+    await page.eval(`(() => { const p = document.querySelector('[data-piano="pannello"]'); return p ? (p.textContent || '').replace(/\\s+/g, ' ').slice(0, 900) : null })()`)
+  const nodi = async () =>
+    await page.eval(`[...document.querySelectorAll('[data-piano-nodo]')].map(e => e.getAttribute('data-piano-nodo'))`)
+  const chiudi = async () => {
+    const punto = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('[data-piano="pannello"] button')].find(b => (b.textContent || '').trim() === 'Chiudi');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(700)
+  }
+
+  // 1) piano di una SELECT con JOIN
+  const sqlPiano =
+    "SELECT c.CEL_CORRIDOIO, c.CEL_CELLA, c.CEL_DES FROM dbo.MAG_CELLE c INNER JOIN dbo.MAG_BAIE b ON b.BCO_BAIA = c.CEL_CORRIDOIO WHERE c.CEL_DES LIKE '101%' ORDER BY c.CEL_CELLA"
+  await scrivi(sqlPiano)
+  const testoPrima = await testo()
+  const premuto = await apriPiano()
+  const testoPannello = await pannello()
+  const operatori = await nodi()
+  console.log(`  pannello: ${JSON.stringify((testoPannello ?? '').slice(0, 260))}`)
+  console.log(`  operatori: ${JSON.stringify(operatori)}`)
+  check('il pulsante Piano esiste e apre il pannello', premuto && !!testoPannello)
+  check(
+    'il pannello dice che il piano è STIMATO e che la query non è stata eseguita',
+    !!testoPannello && /stimato/i.test(testoPannello) && /NON è stata eseguita/i.test(testoPannello),
+  )
+  check(
+    'il piano mostra gli operatori (Sort / Nested Loops / Seek o Scan)',
+    operatori.includes('Sort') && operatori.some(o => /Nested Loops/i.test(o)) && operatori.some(o => /Index (Seek|Scan)/i.test(o)),
+    JSON.stringify(operatori),
+  )
+  check('mostra le tabelle coinvolte', !!testoPannello && /dbo\.MAG_CELLE/.test(testoPannello) && /dbo\.MAG_BAIE/.test(testoPannello))
+  check('la sezione degli indici suggeriti è presente', !!testoPannello && /Indici suggeriti/i.test(testoPannello))
+  check('la query NON è stata eseguita: testo dell\'editor invariato', (await testo()) === testoPrima)
+  await page.screenshot('piano-esecuzione')
+  await chiudi()
+  check('il pulsante Chiudi chiude il pannello', (await pannello()) === null)
+
+  // 2) SQL sbagliato → l'errore di SQL Server arriva nel pannello
+  await scrivi('SELECT * FROM dbo.TabellaCheNonEsiste')
+  await apriPiano()
+  const pannelloErrore = await pannello()
+  console.log(`  errore nel pannello: ${JSON.stringify((pannelloErrore ?? '').slice(0, 160))}`)
+  check(
+    'con SQL sbagliato mostra l\'errore di SQL Server',
+    !!pannelloErrore && /non è valido|non esiste|Msg 208/i.test(pannelloErrore),
+    (pannelloErrore ?? '').slice(0, 90),
+  )
+  await chiudi()
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * DIAGNOSTICA (--dump-guide): carica una SP da file nell editor e fotografa le righe verticali
+ * (guide di indentazione e guide dei blocchi BEGIN/END), con il conteggio delle decorazioni.
+ */
+async function dumpGuide(page, file) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+  const sql = readFileSync(file, 'utf8')
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(400)
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors(); const area = e => { const r = e.getDomNode().getBoundingClientRect(); return r.width * r.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    ed.setValue(${JSON.stringify('@@SQL@@')});
+    ed.setPosition({ lineNumber: 99, column: 1 });
+    ed.revealLineInCenter(99);
+    ed.focus();
+  })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+  await sleep(1500)
+  const guide = await page.eval(`(() => {
+    const deco = document.querySelectorAll('.sql-block-guide');
+    const ind = document.querySelectorAll('.indent-guide');
+    const perColonna = {};
+    for (const d of deco) {
+      const rect = d.getBoundingClientRect();
+      const key = Math.round(rect.left);
+      perColonna[key] = (perColonna[key] || 0) + 1;
+    }
+    return { decorazioni: deco.length, guideMonaco: ind.length, colonne: perColonna };
+  })()`)
+  console.log(`  guide dei blocchi: ${guide.decorazioni} · guide di indentazione Monaco: ${guide.guideMonaco}`)
+  console.log(`  colonne (px) delle guide dei blocchi: ${JSON.stringify(guide.colonne)}`)
+  await page.screenshot('guide-editor')
+}
+/**
+ * VERIFICA (--verify-ricerca-parole): due richieste utente.
+ * 1) ricerca LATERALE: le parole si possono dare in ordine invertito ("automatismi engine" trova
+ *    ws_L2_Engine_Automatismi);
+ * 2) ricerca (pannello Cerca): nell'anteprima dell'oggetto sono sottolineate TUTTE le righe in cui
+ *    compare il testo cercato, non solo la prima.
+ */
+async function verifyRicercaParole(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // ---- 1) RICERCA LATERALE con le parole INVERTITE
+  const scriviFiltro = async testo => {
+    const punto = await page.eval(`(() => {
+      const i = [...document.querySelectorAll('input')].find(i => (i.placeholder || '').startsWith('Cerca (spazio'));
+      if (!i) return null;
+      const r = i.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) return false
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(200)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await sleep(100)
+    await page.typeText(testo)
+    await sleep(1200)
+    return true
+  }
+  /** True se nella lista dei risultati laterali compare l'oggetto indicato. */
+  const inLista = async nome => await page.eval(`(document.body.textContent || '').includes(${JSON.stringify(nome)})`)
+
+  await scriviFiltro('automatismi engine')
+  const invertite = await inLista('ws_L2_Engine_Automatismi')
+  console.log(`  "automatismi engine" trova ws_L2_Engine_Automatismi: ${invertite}`)
+  check('la ricerca laterale trova con le parole INVERTITE', invertite === true)
+  await scriviFiltro('engine automatismi')
+  check('e anche nell ordine naturale', (await inLista('ws_L2_Engine_Automatismi')) === true)
+  await page.screenshot('ricerca-parole-invertite')
+
+  // ---- 2) SOTTOLINEATURA di TUTTE le righe con il match (pannello Cerca)
+  await scriviFiltro('')
+  const apriCerca = await page.eval(`(() => { const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Cerca'); if (!b) return null;
+    const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 } })()`)
+  if (apriCerca) await page.clickPoint(apriCerca.x, apriCerca.y)
+  await sleep(1500)
+  // nel pannello di ricerca c'è un campo: si cerca una parola che compare più volte in una SP
+  const campoRicerca = await page.eval(`(() => {
+    const i = [...document.querySelectorAll('[data-ricerca="pannello"] input')].find(i => /cerca|testo|definizion/i.test(i.placeholder || '') ) || [...document.querySelectorAll('[data-ricerca="pannello"] input')][0];
+    if (!i) return null;
+    const r = i.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (campoRicerca) {
+    await page.clickPoint(campoRicerca.x, campoRicerca.y)
+    await sleep(200)
+    await page.typeText('pGestore')
+    await page.press('Enter', { code: 'Enter', vk: 13 })
+    await sleep(4000)
+    // seleziona la SP che contiene @pGestore su PIÙ righe (è il caso da verificare)
+    await page.eval(`(() => {
+      const righe = [...document.querySelectorAll('[data-ricerca="riga"]')];
+      const r = righe.find(b => (b.textContent || '').includes('ws_L2_Engine_Automatismi')) ?? righe[0];
+      if (r) r.click();
+    })()`)
+    await sleep(2500)
+    const righeEvidenziate = await page.eval(`(() => {
+      const righe = [...document.querySelectorAll('[data-riga]')];
+      const conSfondo = righe.filter(r => /bg-amber-500/.test(r.className) || /bg-amber-500/.test(r.getAttribute('class') || ''));
+      const conMark = righe.filter(r => r.querySelector('mark')).length;
+      return { totali: righe.length, sfondo: conSfondo.length, conMark };
+    })()`)
+    console.log(`  anteprima: ${JSON.stringify(righeEvidenziate)}`)
+    check('nell anteprima sono sottolineate PIÙ righe (tutte quelle con il testo)', righeEvidenziate.sfondo >= 2, `${righeEvidenziate.sfondo} righe con sfondo`)
+    check('le occorrenze sono evidenziate anche nel testo (mark)', righeEvidenziate.conMark >= 2, `${righeEvidenziate.conMark} righe con mark`)
+    // BARRA DEI MATCH accanto all'anteprima: un segnalino per ogni riga trovata
+    const barra = await page.eval(`(() => {
+      const b = document.querySelector('[data-barra-match]');
+      if (!b) return null;
+      const segnalini = [...b.querySelectorAll('[data-match-riga]')];
+      return { presente: true, segnalini: segnalini.length, righe: segnalini.map(s => Number(s.dataset.matchRiga)).slice(0, 20) };
+    })()`)
+    console.log(`  barra dei match: ${JSON.stringify(barra)}`)
+    check("c'è la barra con i segnalini dei match", !!barra && barra.segnalini >= 2)
+    check(
+      'i segnalini sono uno per riga trovata',
+      !!barra && barra.segnalini === righeEvidenziate.sfondo,
+      `${barra?.segnalini} segnalini vs ${righeEvidenziate.sfondo} righe`,
+    )
+    // clic su un segnalino → l'anteprima scorre
+    const scorrimento = await page.eval(`(() => {
+      const pre = document.querySelector('[data-anteprima-righe]');
+      const segnalini = [...document.querySelectorAll('[data-barra-match] [data-match-riga]')];
+      const ultimo = segnalini[segnalini.length - 1];
+      if (!pre || !ultimo) return null;
+      const prima = pre.scrollTop;
+      ultimo.click();
+      return { prima, dopo: pre.scrollTop };
+    })()`)
+    console.log(`  clic sull'ultimo segnalino: ${JSON.stringify(scorrimento)}`)
+    check("cliccando un segnalino l'anteprima si sposta", !!scorrimento && scorrimento.dopo !== scorrimento.prima)
+    await page.screenshot('ricerca-righe-sottolineate')
+  } else {
+    check('campo di ricerca del pannello trovato', false)
+  }
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+/**
+ * VERIFICA (--verify-undo-redo): i pulsanti "Annulla" e "Ripeti" della tab annullano/ripetono le
+ * modifiche e sono abilitati solo quando c'è qualcosa da annullare/ripetere.
+ * Richiesta utente: "Aggiungi anche per ogni tab la possibilità di fare undo e redo con i pulsanti".
+ */
+async function verifyUndoRedo(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const testo = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors(); const area = e => { const r = e.getDomNode().getBoundingClientRect(); return r.width * r.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      return ed ? ed.getValue() : '' })()`)
+  const stato = async () =>
+    await page.eval(`(() => {
+      const u = document.querySelector('[data-undo]');
+      const r = document.querySelector('[data-redo]');
+      return { undo: u ? !u.disabled : null, redo: r ? !r.disabled : null };
+    })()`)
+  const clic = async sel => {
+    const punto = await page.eval(`(() => { const b = document.querySelector('${sel}'); if (!b) return null;
+      const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 } })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(600)
+  }
+
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await sleep(150)
+  await page.typeText('SELECT 1')
+  await sleep(900)
+  const conTesto = await testo()
+  const statoIniziale = await stato()
+  console.log(`  stato dopo la modifica: ${JSON.stringify(statoIniziale)}`)
+  check('i pulsanti Annulla e Ripeti esistono', statoIniziale.undo !== null && statoIniziale.redo !== null)
+  check('dopo una modifica "Annulla" è abilitato', statoIniziale.undo === true)
+
+  await clic('[data-undo]')
+  const dopoAnnulla = await testo()
+  const statoDopoAnnulla = await stato()
+  console.log(`  dopo Annulla: ${JSON.stringify(dopoAnnulla.slice(0, 40))} · stato ${JSON.stringify(statoDopoAnnulla)}`)
+  check('il pulsante Annulla toglie il testo appena scritto', dopoAnnulla !== conTesto)
+  check('dopo Annulla "Ripeti" si abilita', statoDopoAnnulla.redo === true)
+
+  await clic('[data-redo]')
+  const dopoRipeti = await testo()
+  console.log(`  dopo Ripeti: ${JSON.stringify(dopoRipeti.slice(0, 40))}`)
+  check('il pulsante Ripeti rimette il testo', dopoRipeti.includes('SELECT 1'))
+  check('dopo Ripeti si torna a poter annullare', (await stato()).undo === true)
+  // 2) PER OGNI TAB: scrivo in questa tab, apro una tab nuova, torno e provo ad annullare
+  const clicTab = async titolo => {
+    const punto = await page.eval(`(() => { const b = [...document.querySelectorAll('.sql-tab button')].find(b => (b.textContent || '').includes(${JSON.stringify(titolo)})); if (!b) return null;
+      const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 } })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(900)
+  }
+  const clicNuova = async () => {
+    const punto = await page.eval(`(() => { const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Nuova'); if (!b) return null;
+      const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 } })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(1000)
+  }
+  await clicNuova()
+  await clicTab('Query 1')
+  const statoRitorno = await stato()
+  console.log(`  tornando sulla tab: stato ${JSON.stringify(statoRitorno)} · testo ${JSON.stringify((await testo()).slice(0, 30))}`)
+  check('tornando sulla tab il testo è quello della tab', (await testo()).includes('SELECT 1'))
+  if (statoRitorno.undo) {
+    await clic('[data-undo]')
+    const testoDopoUndo = await testo()
+    console.log(`  Annulla dopo il ritorno: ${JSON.stringify(testoDopoUndo.slice(0, 30))}`)
+    check('lo storico della tab è ancora lì (Annulla funziona dopo il ritorno)', testoDopoUndo !== 'SELECT 1')
+  } else {
+    console.log('  (storico azzerato al cambio tab: Annulla disabilitato al ritorno)')
+  }
+  await page.screenshot('undo-redo')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-database-intellisense): i NOMI DEI DATABASE compaiono nell'intellisense.
+ * Richiesta utente: "permetti anche di fare con l'intellisense i nomi dei database, che adesso non
+ * vengono fuori". Controlla che dopo "USE " il popup elenchi i database veri del server.
+ */
+async function verifyDatabaseIntellisense(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1800)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await sleep(150)
+  await page.typeText('USE ')
+  await sleep(800)
+  // popup dei suggerimenti forzato (in una persona arriva da solo digitando)
+  await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors(); const area = e => { const r = e.getDomNode().getBoundingClientRect(); return r.width * r.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    ed.focus(); ed.trigger('verify', 'editor.action.triggerSuggest', {}); })()`)
+  await sleep(1200)
+  const popup = await page.eval(`(() => { const w = document.querySelector('.suggest-widget.visible'); return w ? (w.textContent || '').replace(/\\s+/g, ' ').slice(0, 400) : null })()`)
+  console.log(`  popup: ${JSON.stringify(popup)}`)
+  check('dopo "USE " il popup dei suggerimenti è aperto', !!popup)
+  check('il popup elenca i DATABASE del server (WSGSDMALTA)', !!popup && /WSGSDMALTA/i.test(popup))
+  check('il popup elenca anche gli ALTRI database (WSBASE)', !!popup && /WSBASE/i.test(popup))
+  await page.screenshot('intellisense-database')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+/**
+ * VERIFICA (--verify-copia-cella): una cella con tanto testo è troncata a video; con il tasto destro
+ * sulla cella si apre il menu con "Copia valore", "Copia riga" e "Vedi valore intero".
+ * Richiesta utente: "non riesco a copiarlo dalla griglia dei risultati, perché è tagliato. Mi dai un
+ * modo per copiarlo? qualcosa come tasto destro sulla cella e copia?".
+ */
+async function verifyCopiaCella(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+  // permesso per LEGGERE gli appunti: così si verifica che il valore copiato sia quello intero
+  try {
+    await page.send('Browser.grantPermissions', {
+      origin: 'http://localhost:5173',
+      permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+    })
+  } catch {
+    console.log('  (permesso appunti non concesso dal browser: verifico solo il feedback)')
+  }
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // query con un valore LUNGO (500 caratteri) e uno corto
+  const SQL = "SELECT REPLICATE(CAST('x' AS VARCHAR (MAX)), 500) AS LUNGO, 'corto' AS CORTO"
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(400)
+  // si SOSTITUISCE tutto il testo (il modello iniziale ha "BEGIN TRAN": eseguirlo lascerebbe una
+  // transazione aperta e la griglia non arriverebbe)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await sleep(200)
+  await page.typeText(SQL)
+  await sleep(800)
+  const dentro = await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors();
+    const area = e => { const r = e.getDomNode().getBoundingClientRect(); return r.width * r.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    return ed ? ed.getValue().slice(0, 80) : '(nessun editor)' })()`)
+  console.log(`  testo nell'editor: ${JSON.stringify(dentro)}`)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(3000)
+
+  /** Apre il menu col tasto destro sulla prima cella "LUNGO" e restituisce se è comparso. */
+  const apriMenu = async () => {
+    const punto = await page.eval(`(() => {
+      const td = [...document.querySelectorAll('td')].find(t => (t.textContent || '').startsWith('xxxx'));
+      if (!td) return null;
+      const r = td.getBoundingClientRect();
+      return { x: r.left + Math.min(40, r.width / 2), y: r.top + r.height / 2, lunghezza: (td.textContent || '').length, tagliata: td.scrollWidth > td.clientWidth + 2 };
+    })()`)
+    if (!punto) return null
+    await page.clickPoint(punto.x, punto.y, 'right')
+    await sleep(600)
+    return punto
+  }
+  const menu = async () => await page.eval(`(() => { const m = document.querySelector('[data-menu-cella]'); return m ? (m.textContent || '').replace(/\\s+/g, ' ').trim() : null })()`)
+  const chiudiMenu = async () => {
+    await page.press('Escape', { code: 'Escape', vk: 27 })
+    await sleep(200)
+    if (await menu()) {
+      await page.eval(`(() => { const m = document.querySelector('[data-menu-cella]'); if (m && m.parentElement) m.parentElement.querySelector('div')?.click(); })()`)
+      await sleep(200)
+    }
+  }
+
+  await page.screenshot('copia-cella-stato')
+  const diagnostica = await page.eval(`(() => {
+    const tds = [...document.querySelectorAll('td')];
+    return { celle: tds.length, primi: tds.slice(0, 4).map(t => (t.textContent || '').slice(0, 20)), corpo: (document.body.textContent || '').replace(/\\s+/g, ' ').slice(0, 200) };
+  })()`)
+  console.log(`  diagnostica: ${JSON.stringify(diagnostica)}`)
+  const cella = await apriMenu()
+  const testoMenu = await menu()
+  console.log(`  cella: ${JSON.stringify(cella)}`)
+  console.log(`  menu: ${JSON.stringify(testoMenu)}`)
+  check(
+    "la cella è TAGLIATA a video (il testo intero c'è nel DOM ma non si vede)",
+    !!cella && cella.tagliata,
+    `tagliata=${cella?.tagliata}, ${cella?.lunghezza} caratteri nel DOM`,
+  )
+  await page.screenshot('copia-cella-menu')
+  check('il tasto destro apre il menu della cella', !!testoMenu)
+  check('il menu propone "Copia valore"', !!testoMenu && /Copia valore/i.test(testoMenu))
+  check('il menu propone "Copia riga"', !!testoMenu && /Copia riga/i.test(testoMenu))
+  check('il menu propone "Vedi valore intero"', !!testoMenu && /Vedi valore intero/i.test(testoMenu))
+
+  // 1) VEDI VALORE INTERO: il testo completo è disponibile e selezionabile
+  await page.clickWhere(`document.querySelector('[data-copia="intero"]')`)
+  await sleep(700)
+  const nelModale = await page.eval(`(() => { const t = document.querySelector('[data-valore-testo]'); return t ? t.value.length : -1 })()`)
+  console.log(`  caratteri nella finestra "valore intero": ${nelModale}`)
+  check('"Vedi valore intero" mostra tutti i 500 caratteri', nelModale === 500, String(nelModale))
+  await page.screenshot('copia-cella-valore-intero')
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await sleep(300)
+  if (await page.eval(`!!document.querySelector('[data-valore-intero]')`)) {
+    await page.clickWhere(`[...document.querySelectorAll('[data-valore-intero] button')].find(b => (b.textContent || '').trim() === 'Chiudi')`)
+    await sleep(300)
+  }
+
+  // 2) COPIA VALORE: finisce negli appunti il valore INTERO
+  await apriMenu()
+  await page.clickWhere(`document.querySelector('[data-copia="valore"]')`)
+  await sleep(800)
+  const dopoCopia = await menu()
+  console.log(`  menu dopo la copia: ${JSON.stringify(dopoCopia)}`)
+  check('dopo la copia il menu mostra "Copiato"', !!dopoCopia && /Copiato/i.test(dopoCopia))
+  const appunti = await page.eval(`(async () => { try { return await navigator.clipboard.readText() } catch (e) { return 'ERRORE:' + e.message } })()`)
+  console.log(`  appunti: ${typeof appunti === 'string' ? `${appunti.length} caratteri` : appunti}`)
+  check(
+    'negli appunti c\'è il valore INTERO (500 x)',
+    typeof appunti === 'string' && appunti.length === 500 && /^x+$/.test(appunti),
+    typeof appunti === 'string' ? `${appunti.length} caratteri` : String(appunti),
+  )
+  await chiudiMenu()
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-treeview-comandi): dalla treeview i comandi offrono "Copia negli appunti" e
+ * "Apri in nuova tab" e NON scrivono più nella tab attiva.
+ * Richiesta utente: "ai comandi aggiungi due opzioni, o copia in clipboard o apri in nuova tab, ma mai
+ * che metti il testo nella tab attiva".
+ */
+async function verifyTreeviewComandi(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2000)
+  try {
+    await page.send('Browser.grantPermissions', {
+      origin: 'http://localhost:5173',
+      permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+    })
+  } catch {
+    /* senza permesso si verifica solo il resto */
+  }
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const testoEditor = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors(); const area = e => { const r = e.getDomNode().getBoundingClientRect(); return r.width * r.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      return ed ? ed.getValue() : '' })()`)
+  const tabs = async () => await page.eval(`[...document.querySelectorAll('.sql-tab')].length`)
+  const menuAperto = async () =>
+    await page.eval(`(() => {
+      const voci = [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim());
+      return voci.filter(t => t === 'Copia negli appunti' || t === 'Apri in nuova tab');
+    })()`)
+  const clicMenu = async etichetta => {
+    const punto = await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim().startsWith(${JSON.stringify(etichetta)}));
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(1200)
+    return !!punto
+  }
+
+  // filtro laterale per avere un oggetto a portata di clic
+  const campo = await page.eval(`(() => {
+    const i = [...document.querySelectorAll('input')].find(i => (i.placeholder || '').startsWith('Cerca (spazio'));
+    if (!i) return null;
+    const r = i.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  await page.clickPoint(campo.x, campo.y)
+  await sleep(200)
+  await page.typeText('DAT_ARTICOLI')
+  await sleep(1500)
+
+  const testoPrima = await testoEditor()
+  const tabsPrima = await tabs()
+
+  const puntoRiga = async () =>
+    await page.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('DAT_ARTICOLI'));
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+
+  // 1) clic SINISTRO su un risultato: NON deve scrivere nella tab attiva
+  const riga = await puntoRiga()
+  if (riga) {
+    await page.clickPoint(riga.x, riga.y)
+    await sleep(800)
+  }
+  check('clic sinistro: la tab attiva NON cambia', (await testoEditor()) === testoPrima)
+
+  // 2) tasto destro: il menu ha le due voci nuove
+  const riga2 = await puntoRiga()
+  if (riga2) {
+    await page.clickPoint(riga2.x, riga2.y, 'right')
+    await sleep(800)
+  }
+  const voci = await menuAperto()
+  console.log(`  voci nuove nel menu: ${JSON.stringify(voci)}`)
+  check('il menu ha "Copia negli appunti"', voci.includes('Copia negli appunti'))
+  check('il menu ha "Apri in nuova tab"', voci.includes('Apri in nuova tab'))
+  await page.screenshot('treeview-comandi')
+
+  // 3) Copia negli appunti
+  await clicMenu('Copia negli appunti')
+  const appunti = await page.eval(`(async () => { try { return await navigator.clipboard.readText() } catch (e) { return 'ERRORE:' + e.message } })()`)
+  console.log(`  appunti: ${JSON.stringify(appunti)}`)
+  check('"Copia negli appunti" mette il nome negli appunti', typeof appunti === 'string' && /DAT_ARTICOLI/i.test(appunti))
+  check('dopo la copia la tab attiva NON cambia', (await testoEditor()) === testoPrima)
+
+  // 4) Apri in nuova tab
+  if (riga2) {
+    await page.clickPoint(riga2.x, riga2.y, 'right')
+    await sleep(700)
+  }
+  await clicMenu('Apri in nuova tab')
+  const tabsDopo = await tabs()
+  const testoNuova = await testoEditor()
+  console.log(`  tab: ${tabsPrima} → ${tabsDopo} · testo nuova tab: ${JSON.stringify(testoNuova.slice(0, 40))}`)
+  check('"Apri in nuova tab" apre una tab in più', tabsDopo > tabsPrima, `${tabsPrima} → ${tabsDopo}`)
+  check('la nuova tab contiene il nome dell oggetto', /DAT_ARTICOLI/i.test(testoNuova))
+  check('la prima tab è rimasta intatta', testoPrima.length > 0)
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-formatta-assign): nell'editor vero, Ctrl+Shift+F su un "SELECT TOP 1 @x = …" con
+ * un commento su riga propria prima della FROM. Le clausole devono finire su righe proprie e il
+ * commento deve restare sulla sua (segnalazione utente).
+ */
+async function verifyFormattaAssign(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const SQL = [
+    'SELECT TOP 1',
+    '   @x_id         = X_ID',
+    '  ,@x_type       = X_TYPE',
+    '  ,@X_DST_BAY    = X_DST_BAY -- 999',
+    '  ,@X_QTY        = X_GIAC',
+    '--,@x_note=X_NOTE',
+    "FROM #TMP_ACTIONS INNER JOIN DAT_UDC ON UDC_UDC = X_UDC WHERE X_PROCESSED = 0 AND X_MSGKO = '' ORDER BY X_PALLETMANCANTI DESC, X_ART_FEFOFIFO_PRIO",
+  ].join('\n')
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(400)
+  await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+  await sleep(150)
+  await page.typeText(SQL)
+  await sleep(800)
+  await page.press('f', { code: 'KeyF', vk: 70, modifiers: 10 }) // Ctrl+Shift+F
+  await sleep(2500)
+  const dopo = await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors(); const area = e => { const r = e.getDomNode().getBoundingClientRect(); return r.width * r.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    return ed ? ed.getValue() : '' })()`)
+  const righe = dopo.split('\n')
+  righe.forEach((x, i) => console.log(`   ${String(i + 1).padStart(2)} ${x.replace(/ /g, '·')}`))
+  check('FROM su riga propria', righe.includes('FROM #TMP_ACTIONS'))
+  check('INNER JOIN su riga propria', righe.some(x => /^\s+INNER JOIN DAT_UDC/.test(x)))
+  check('WHERE su riga propria', righe.includes('WHERE X_PROCESSED = 0'))
+  check("AND su riga propria", righe.some(x => /^\s+AND X_MSGKO = ''$/.test(x)))
+  check('ORDER BY su riga propria', righe.some(x => /^ORDER BY X_PALLETMANCANTI DESC$/.test(x)))
+  check('la seconda voce della ORDER BY va a capo', righe.some(x => /^\s+,X_ART_FEFOFIFO_PRIO$/.test(x)))
+  check('il commento resta sulla sua riga', righe.includes('--,@x_note=X_NOTE'))
+  check(
+    "il commento NON è in coda all'assegnazione",
+    !righe.some(x => /@X_QTY\s+= X_GIAC\s+--,/.test(x)),
+  )
+  await page.screenshot('formatta-assign')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+/**
+ * VERIFICA (--verify-formatta-cte): nell'editor vero, Ctrl+Shift+F su una CTE dentro una procedura.
+ * Controlla ";WITH" attaccato, la virgola della ORDER BY allineata sotto il primo elemento e
+ * l'indentazione della CTE. Segnalazione utente: "questa query non la identa bene, nella parte della
+ * cte".
+ */
+async function verifyFormattaCte(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const TESTO = [
+    'CREATE OR ALTER PROCEDURE [dbo].[p]',
+    '(',
+    '        @user  NVARCHAR(50)',
+    ')',
+    'AS',
+    'SET NOCOUNT ON',
+    '; WITH tbl AS',
+    '(',
+    '  SELECT TOP 1 UDC_UDC X_UDC',
+    "     ,IIF (UDC_SSCC > '', UDC_SSCC, SCO_SSCC_SOURCE) X_SSCC --sorgente",
+    '     ,UDC_ARTICOLO X_SKU',
+    '  FROM DAT_UDC',
+    '    INNER JOIN DAT_SCOMPART ON SCO_UDC = UDC_UDC',
+    "  WHERE UDC_CAUSMISS = 'CCKIT'",
+    "        AND (UDC_USER_TASK = ''",
+    '          OR UDC_USER_TASK = @user)',
+    "  ORDER BY IIF (UDC_USER_TASK > '', 0, 1)",
+    '            ,MIS_DCREA',
+    ')',
+    'SELECT TOP 1 a.*',
+    'INTO #tmpMission',
+    'FROM tbl a',
+  ].join('\n')
+
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const ed = m.editor.getEditors()[0];
+    ed.setValue(${JSON.stringify(TESTO)});
+    ed.setPosition({ lineNumber: 99, column: 1 });
+    ed.revealLineInCenter(99);
+    ed.focus();
+  })()`)
+  await sleep(600)
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(300)
+  await page.press('f', { code: 'KeyF', vk: 70, modifiers: 10 }) // Ctrl+Shift+F
+  await sleep(2500)
+  const dopo = await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+    return m.editor.getEditors()[0].getValue(); })()`)
+  const righe = dopo.split('\n')
+  righe.forEach((x, i) => console.log(`   ${String(i + 1).padStart(2)} ${x.replace(/ /g, '·')}`))
+
+  check('";WITH" attaccato (niente spazio dopo il punto e virgola)', /^\s*;WITH tbl AS$/m.test(dopo))
+  const iOrdine = righe.findIndex(x => /^\s*ORDER BY IIF \(UDC_USER_TASK/.test(x))
+  check('la ORDER BY è nella CTE', iOrdine >= 0)
+  if (iOrdine >= 0) {
+    const colonna = righe[iOrdine].indexOf('IIF')
+    const cont = righe[iOrdine + 1] ?? ''
+    check(
+      'la virgola della ORDER BY è allineata sotto il primo elemento',
+      cont.indexOf(',') === colonna,
+      `comma=${cont.indexOf(',')} primo=${colonna}`,
+    )
+  }
+  check('la SELECT interna alla CTE è indentata di 4', /^ {4}SELECT TOP 1 UDC_UDC +X_UDC$/m.test(dopo))
+  // ALIAS IN COLONNA (segnalazione utente): i tre campi della CTE hanno l'alias alla stessa colonna
+  const colonneAlias = righe
+    .map(r => r.replace(/\s*--.*$/, '').trimEnd())
+    .filter(r => /^\s*,?(SELECT TOP 1 UDC_UDC|IIF \(UDC_SSCC > ''|UDC_ARTICOLO) /.test(r) || /X_(UDC|SSCC|SKU)$/.test(r))
+    .map(r => {
+      const conAs = /(?:^|\s)(AS\s+[A-Za-z_]\w*)$/.exec(r)
+      const nome = /(?:^|\s)([A-Za-z_]\w*)$/.exec(r)
+      return conAs ? r.length - conAs[1].length : nome ? r.length - nome[1].length : -1
+    })
+    .filter(c => c >= 0)
+  console.log(`  colonne degli alias: ${JSON.stringify(colonneAlias)}`)
+  check('gli alias dei campi della CTE sono in colonna', colonneAlias.length >= 3 && new Set(colonneAlias).size === 1, JSON.stringify(colonneAlias))
+  check('la parentesi della CTE è a 2 e il corpo dentro', /^ {2}\($/m.test(dopo))
+  await page.screenshot('formatta-cte')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-shift-selezione): Shift+Su / Shift+Giù devono SELEZIONARE il testo (regressione
+ * segnalata dall'utente). Controlla anche Shift+Fine e che la selezione non venga persa da nessuno dei
+ * gestori di tasti aggiunti (virgola a capo, multi cursore, Invio indentato).
+ */
+async function verifyShiftSelezione(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const TESTO = ['SELECT 1', 'SELECT 2', 'SELECT 3', 'SELECT 4'].join('\n')
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const ed = m.editor.getEditors()[0];
+    ed.setValue(${JSON.stringify(TESTO)});
+    ed.setPosition({ lineNumber: 99, column: 1 });
+    ed.revealLineInCenter(99);
+    ed.focus();
+  })()`)
+  await sleep(500)
+  const selezione = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors()[0];
+      const s = ed.getSelection();
+      return { testo: ed.getModel().getValueInRange(s), righe: s.endLineNumber - s.startLineNumber + 1,
+               da: { l: s.startLineNumber, c: s.startColumn }, a: { l: s.endLineNumber, c: s.endColumn } }; })()`)
+
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 8 }) // Shift+Giù
+  await sleep(500)
+  const s1 = await selezione()
+  console.log(`  Shift+Giù: ${JSON.stringify(s1)}`)
+  check('Shift+Giù seleziona la prima riga', s1.righe === 2 && s1.testo.startsWith('SELECT 1'), JSON.stringify(s1))
+
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 8 })
+  await sleep(500)
+  const s2 = await selezione()
+  console.log(`  Shift+Giù x2: ${JSON.stringify(s2)}`)
+  check('due Shift+Giù selezionano tre righe', s2.righe === 3, JSON.stringify(s2))
+
+  await page.press('ArrowUp', { code: 'ArrowUp', vk: 38, modifiers: 8 }) // Shift+Su
+  await sleep(500)
+  const s3 = await selezione()
+  console.log(`  Shift+Su: ${JSON.stringify(s3)}`)
+  check('Shift+Su riduce la selezione', s3.righe === 2, JSON.stringify(s3))
+
+  await page.press('End', { code: 'End', vk: 35, modifiers: 8 }) // Shift+Fine
+  await sleep(400)
+  const s4 = await selezione()
+  console.log(`  Shift+Fine: ${JSON.stringify(s4)}`)
+  check('Shift+Fine estende la selezione', s4.testo.length > 0, JSON.stringify(s4))
+
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 8 })
+  await sleep(400)
+  const s5 = await selezione()
+  console.log(`  Shift+Fine + Shift+Giù: ${JSON.stringify(s5)}`)
+  check('la selezione continua a funzionare dopo averla estesa', s5.righe >= 2, JSON.stringify(s5))
+  // 2) CONDIZIONE REALE: con il popup dei suggerimenti aperto, Shift+Giù deve comunque selezionare
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const ed = m.editor.getEditors()[0];
+    ed.setValue(${JSON.stringify(TESTO)});
+    ed.setPosition({ lineNumber: 1, column: 8 });
+    ed.focus();
+  })()`)
+  await sleep(400)
+  await page.typeText(' ')
+  await sleep(1200)
+  const popup = await page.eval(`!!document.querySelector('.suggest-widget.visible')`)
+  console.log(`  popup suggerimenti aperto: ${popup}`)
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 8 })
+  await sleep(600)
+  const s6 = await selezione()
+  console.log(`  Shift+Giù col popup aperto: ${JSON.stringify(s6)}`)
+  check('con il popup dei suggerimenti aperto Shift+Giù seleziona comunque', s6.righe >= 2, JSON.stringify(s6))
+
+  // 3) MODALITÀ A BLOCCHI accesa (Alt+C, persistita): Monaco trasforma Shift+Su/Giù in selezione a
+  //    COLONNA di larghezza zero → sembra che la selezione non funzioni. Deve selezionare testo.
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const ed = m.editor.getEditors()[0];
+    ed.setValue(${JSON.stringify(TESTO)});
+    ed.setPosition({ lineNumber: 1, column: 9 }); // FINE riga: qui "stream" e "blocco" differiscono
+    ed.focus();
+  })()`)
+  await page.press('c', { code: 'KeyC', vk: 67, modifiers: 1 }) // Alt+C: modalità a blocchi ACCESA
+  await sleep(800)
+  const blocchiOn = await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+    return m.editor.getEditors()[0].getOption(m.editor.EditorOption.columnSelection); })()`)
+  console.log(`  modalità a blocchi accesa: ${blocchiOn}`)
+  await page.press('ArrowDown', { code: 'ArrowDown', vk: 40, modifiers: 8 })
+  await sleep(600)
+  const sBlocchi = await selezione()
+  console.log(`  BLOCCHI ON + Shift+Giù: ${JSON.stringify(sBlocchi)}`)
+  check(
+    'con la modalità a blocchi accesa Shift+Giù seleziona il TESTO (non un blocco vuoto)',
+    sBlocchi.testo.trim().length > 0 && sBlocchi.righe >= 2,
+    JSON.stringify(sBlocchi),
+  )
+  await page.press('c', { code: 'KeyC', vk: 67, modifiers: 1 }) // Alt+C: modalità a blocchi SPENTA
+  await sleep(500)
+
+  await page.screenshot('shift-selezione')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-multicursore): con il multi cursore su più righe (una vuota in mezzo), digitando
+ * le righe corte vengono riempite di spazi per restare allineate — come fa SSMS.
+ * Richiesta utente: "se fai il multi cursore tra le 2 print comprese, dovresti aggiungere spazi nella
+ * riga vuota per restare allo stesso livello delle altre 2 righe che hanno il print… questo lo fa
+ * SSMS e non Monaco di default".
+ */
+async function verifyMulticursore(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const TESTO = ['SELECT 1', '', 'BEGIN', '  print', '', '  print', '', 'end'].join('\n')
+  const prepara = async posizioni => {
+    const r = await editorRect(page)
+    await page.clickPoint(r.x + 220, r.y + 46)
+    await sleep(300)
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors()[0];
+      ed.setValue(${JSON.stringify(TESTO)});
+      const pos = ${JSON.stringify(posizioni)};
+      if (pos.length === 0) ed.setSelection(new m.Selection(1, 1, 1, 1));
+      else ed.setSelections(pos.map(p => new m.Selection(p.l, p.c, p.l, p.c)));
+      ed.focus();
+    })()`)
+    await sleep(500)
+  }
+  const testo = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      return m.editor.getEditors()[0].getValue(); })()`)
+  /**
+   * Digitazione VERA: `Input.insertText` non passa dagli eventi di tasto (Monaco inserisce il testo
+   * ma nessun gestore keydown viene chiamato), mentre una persona digita esattamente così.
+   */
+  const digita = async frase => {
+    for (const ch of frase) await page.press(ch, { text: ch })
+  }
+  const cursori = async () =>
+    await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+      const ed = m.editor.getEditors()[0];
+      return ed.getSelections().map(s => ({ l: s.positionLineNumber, c: s.positionColumn })); })()`)
+
+  // 1) cursori a fine delle due print + sulla riga vuota in mezzo (come li crea il multi cursore)
+  await prepara([
+    { l: 4, c: 8 },
+    { l: 5, c: 1 },
+    { l: 6, c: 8 },
+  ])
+  await digita('  --x')
+  await sleep(900)
+  const dopo = await testo()
+  const righe = dopo.split('\n')
+  console.log(`  righe: ${JSON.stringify(righe)}`)
+  check('la riga con la prima print ha il testo digitato', righe[3] === '  print  --x', JSON.stringify(righe[3]))
+  check('la riga VUOTA è stata riempita di spazi e allineata', righe[4] === '         --x', JSON.stringify(righe[4]))
+  check('la riga con la seconda print ha il testo digitato', righe[5] === '  print  --x', JSON.stringify(righe[5]))
+  check('le altre righe non sono state toccate', righe[0] === 'SELECT 1' && righe[2] === 'BEGIN' && righe[7] === 'end')
+  const pos = await cursori()
+  check('i cursori sono allineati alla stessa colonna', pos.every(c => c.c === 13), JSON.stringify(pos))
+  await page.screenshot('multicursore-colonna')
+
+  // 2) un solo cursore: nessun riempimento (comportamento normale)
+  await prepara([{ l: 5, c: 1 }])
+  await digita('x')
+  await sleep(700)
+  const singolo = await testo()
+  check('con UN cursore non aggiunge spazi', singolo.split('\n')[4] === 'x', JSON.stringify(singolo.split('\n')[4]))
+
+  // 3) cursore in mezzo al testo di un'altra riga: non viene spostato in fondo
+  await prepara([
+    { l: 4, c: 4 },
+    { l: 5, c: 1 },
+  ])
+  await digita('Y')
+  await sleep(700)
+  const mezzo = await testo()
+  console.log(`  righe (mezzo): ${JSON.stringify(mezzo.split('\n').slice(3, 6))}`)
+  check('la riga col cursore in mezzo NON viene spostata in fondo', mezzo.split('\n')[3] === '  pYrint', JSON.stringify(mezzo.split('\n')[3]))
+  check('la riga vuota è comunque riempita fino alla colonna', mezzo.split('\n')[4] === '   Y', JSON.stringify(mezzo.split('\n')[4]))
+
+  // 5) INVIO con più cursori: la riga nuova deve mantenere il rientro (e la riga vuota diventare
+  //    indentata), come in SSMS.
+  await prepara([
+    { l: 4, c: 8 },
+    { l: 5, c: 1 },
+    { l: 6, c: 8 },
+  ])
+  await page.press('Enter', { code: 'Enter', vk: 13, text: '\r' })
+  await sleep(800)
+  const dopoInvio = (await testo()).split('\n')
+  console.log(`  INVIO → righe 3-9: ${JSON.stringify(dopoInvio.slice(2, 9))}`)
+  check('INVIO: la riga nuova sotto "print" mantiene il rientro', dopoInvio[4] === '  ', JSON.stringify(dopoInvio[4]))
+  check('INVIO: la riga vuota è diventata indentata', dopoInvio[6] === '  ', JSON.stringify(dopoInvio[6]))
+  await page.screenshot('multicursore-invio')
+
+  // 4) il flusso completo dell'utente: selezioni le righe 4-6 (le due print "comprese") e
+  //    Shift+Alt+I mette un cursore a fine di ogni riga; poi digiti e le righe si allineano.
+  await prepara([])
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const ed = m.editor.getEditors()[0];
+    ed.setSelection(new m.Selection(4, 1, 6, 8)); // fino a FINE riga 6
+    ed.focus();
+  })()`)
+  await sleep(300)
+  await page.press('I', { code: 'KeyI', vk: 73, modifiers: 9 }) // Shift+Alt+I
+  await sleep(600)
+  const dopoScorciatoia = await cursori()
+  console.log(`  cursori dopo Shift+Alt+I: ${JSON.stringify(dopoScorciatoia)}`)
+  await digita('Z')
+  await sleep(800)
+  const conTasto = (await testo()).split('\n')
+  console.log(`  righe (Shift+Alt+I): ${JSON.stringify(conTasto.slice(3, 6))}`)
+  check('Shift+Alt+I crea un cursore per ogni riga selezionata (3 righe)', dopoScorciatoia.length === 3, JSON.stringify(dopoScorciatoia))
+  check('digitando, la riga vuota si allinea alle altre due', conTasto[4] === '       Z', JSON.stringify(conTasto[4]))
+  check(
+    'le due print ricevono il carattere in fondo',
+    conTasto[3] === '  printZ' && conTasto[5] === '  printZ',
+    JSON.stringify([conTasto[3], conTasto[5]]),
+  )
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * DIAGNOSTICA (--dump-generator): esegue una query, attiva "Genera SQL" e stampa la struttura
  * della tabella del generatore (intestazioni e prima riga), per capire com'è disposta.
  */
@@ -1804,6 +8753,131 @@ async function main() {
       return
     }
 
+    if (VERIFY_RISULTATI_SEQUENZA) {
+      await verifyRisultatiSequenza(page)
+      return
+    }
+
+    if (VERIFY_SPAZI) {
+      await verifySpazi(page)
+      return
+    }
+
+    if (VERIFY_INDICI_VINCOLI) {
+      await verifyIndiciVincoli(page)
+      return
+    }
+
+    if (VERIFY_DRAGO_JOIN) {
+      await verifyDragoJoin(page)
+      return
+    }
+
+    if (VERIFY_OGGETTO_VERSIONE) {
+      await verifyOggettoVersione(page)
+      return
+    }
+
+    if (VERIFY_MAIUSCOLO) {
+      await verifyMaiuscolo(page)
+      return
+    }
+
+    if (VERIFY_TRANSAZIONE) {
+      await verifyTransazione(page)
+      return
+    }
+
+    if (VERIFY_SELEZIONE_TREEVIEW) {
+      await verifySelezioneTreeview(page)
+      return
+    }
+
+    if (VERIFY_GRUPPI_ALBERO) {
+      await verifyGruppiAlbero(page)
+      return
+    }
+
+    if (VERIFY_F5_GLOBALE) {
+      await verifyF5Globale(page)
+      return
+    }
+
+    if (MEASURE_SCHEMA) {
+      await measureSchema(page)
+      return
+    }
+
+    if (VERIFY_GHOST) {
+      await verifyGhost(page)
+      return
+    }
+
+    if (VERIFY_VIRGOLA) {
+      await verifyVirgola(page)
+      return
+    }
+
+    if (VERIFY_ANTEPRIMA) {
+      await verifyAnteprima(page)
+      return
+    }
+
+    if (VERIFY_PIANO) {
+      await verifyPiano(page)
+      return
+    }
+
+    if (VERIFY_MULTICURSORE) {
+      await verifyMulticursore(page)
+      return
+    }
+
+    if (VERIFY_TREEVIEW_COMANDI) {
+      await verifyTreeviewComandi(page)
+      return
+    }
+
+    if (VERIFY_FORMATTA_ASSIGN) {
+      await verifyFormattaAssign(page)
+      return
+    }
+
+    if (VERIFY_FORMATTA_CTE) {
+      await verifyFormattaCte(page)
+      return
+    }
+
+    if (DUMP_GUIDE) {
+      await dumpGuide(page, DUMP_GUIDE)
+      return
+    }
+
+    if (VERIFY_RICERCA_PAROLE) {
+      await verifyRicercaParole(page)
+      return
+    }
+
+    if (VERIFY_UNDO_REDO) {
+      await verifyUndoRedo(page)
+      return
+    }
+
+    if (VERIFY_DATABASE_INTELLISENSE) {
+      await verifyDatabaseIntellisense(page)
+      return
+    }
+
+    if (VERIFY_COPIA_CELLA) {
+      await verifyCopiaCella(page)
+      return
+    }
+
+    if (VERIFY_SHIFT_SELEZIONE) {
+      await verifyShiftSelezione(page)
+      return
+    }
+
     if (VERIFY_LABELS) {
       await verifyLabels(page)
       return
@@ -1821,6 +8895,101 @@ async function main() {
 
     if (VERIFY_SCROLLBARS) {
       await verifyScrollbars(page)
+      return
+    }
+
+    if (VERIFY_TABTREE) {
+      await verifyTabTree(page)
+      return
+    }
+
+    if (VERIFY_SEARCH) {
+      await verifySearch(page)
+      return
+    }
+
+    if (VERIFY_INDENT) {
+      await verifyIndent(page)
+      return
+    }
+
+    if (VERIFY_DROP) {
+      await verifyDrop(page)
+      return
+    }
+
+    if (VERIFY_FRAGMENT) {
+      await verifyFragment(page)
+      return
+    }
+
+    if (VERIFY_SIDEBAR) {
+      await verifySidebar(page)
+      return
+    }
+
+    if (VERIFY_CHANGES) {
+      await verifyChanges(page)
+      return
+    }
+
+    if (VERIFY_MERGE) {
+      await verifyMerge(page)
+      return
+    }
+
+    if (VERIFY_PARAMS) {
+      await verifyParams(page)
+      return
+    }
+
+    if (VERIFY_MULTIRIGA) {
+      await verifyMultiriga(page)
+      return
+    }
+
+    if (VERIFY_TEMA) {
+      await verifyTema(page)
+      return
+    }
+
+    if (VERIFY_CREATE) {
+      await verifyCreate(page)
+      return
+    }
+
+    if (VERIFY_SET) {
+      await verifySet(page)
+      return
+    }
+
+    if (VERIFY_COPIA) {
+      await verifyCopia(page)
+      return
+    }
+
+    if (VERIFY_TRIGGER) {
+      await verifyTrigger(page)
+      return
+    }
+
+    if (VERIFY_INIZIO) {
+      await verifyInizio(page)
+      return
+    }
+
+    if (VERIFY_CURSORI_CORTI) {
+      await verifyCursoriCorti(page)
+      return
+    }
+
+    if (VERIFY_REPORT) {
+      await verifyReport(page)
+      return
+    }
+
+    if (VERIFY_HOVER) {
+      await verifyHover(page)
       return
     }
 

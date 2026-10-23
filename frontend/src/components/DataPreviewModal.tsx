@@ -147,6 +147,11 @@ export default function DataPreviewModal({ target, connectionId, summary, theme 
   const set = result?.resultSets?.[0]
   // colonne identity della tabella (dallo schema) → chiave di MERGE/DELETE
   const identityColumns = (tableMeta?.columns ?? []).filter(c => c.isIdentity).map(c => c.name)
+  // colonne della PRIMARY KEY (anche composita): sono le chiavi della MERGE (condizione ON) e
+  // non devono mai finire nell'UPDATE SET
+  const pkColumns = (tableMeta?.indexes ?? [])
+    .filter(i => i.isPrimaryKey)
+    .flatMap(i => i.columns ?? [])
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6" onClick={onClose}>
@@ -232,6 +237,10 @@ export default function DataPreviewModal({ target, connectionId, summary, theme 
               rows={(set?.rows ?? []) as CellValue[][]}
               initialTarget={`${target.schema}.${target.table}`}
               identityColumns={identityColumns}
+              keyColumns={pkColumns}
+              /* la chiave si rilegge dallo schema sulla tabella SCRITTA NEL GENERATORE: la primary
+                 key può essere COMPOSITA (più colonne nella condizione ON della MERGE) */
+              summary={summary}
             />
           )}
         </div>

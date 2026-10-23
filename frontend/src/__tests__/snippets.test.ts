@@ -21,6 +21,28 @@ describe('buildStatementSnippets: template statement (stile Visual Studio)', () 
     expect(buildStatementSnippets('mer').some(s => s.label === 'MERGE INTO')).toBe(true)
   })
 
+  // Segnalazione utente: "la parola enable o disable non viene fuori dall'intellisense".
+  it('digitando "dis"/"ena" propone le direttive sui TRIGGER (con nome e ON tabella)', () => {
+    const dis = buildStatementSnippets('dis')
+    expect(dis.some(s => s.label === 'DISABLE TRIGGER')).toBe(true)
+    expect(dis.some(s => s.label === 'DISABLE TRIGGER ALL')).toBe(true)
+    // segnaposto VUOTI: fermandosi lì l'intellisense propone i trigger veri e la loro tabella
+    expect(dis.find(s => s.label === 'DISABLE TRIGGER')!.insertText).toBe('DISABLE TRIGGER ${1} ON ${2};\n')
+    const ena = buildStatementSnippets('ena')
+    expect(ena.some(s => s.label === 'ENABLE TRIGGER')).toBe(true)
+    expect(ena.find(s => s.label === 'ENABLE TRIGGER ALL')!.insertText).toBe('ENABLE TRIGGER ALL ON ${1};\n')
+  })
+
+  // Richiesta utente: "deve essere come le altre tipo EXEC, una parola chiave, blue" — queste
+  // voci si presentano come KEYWORD (icona blu), non con l'icona "snippet".
+  it('le direttive sui trigger sono marcate come parola chiave', () => {
+    for (const s of buildStatementSnippets('dis')) expect(s.keyword).toBe(true)
+    for (const s of buildStatementSnippets('ena')) expect(s.keyword).toBe(true)
+    // gli altri snippet restano snippet
+    expect(buildStatementSnippets('sel').every(s => !s.keyword)).toBe(true)
+    expect(buildStatementSnippets('mer').every(s => !s.keyword)).toBe(true)
+  })
+
   it('con meno di 2 caratteri non propone nulla', () => {
     expect(buildStatementSnippets('i')).toEqual([])
     expect(buildStatementSnippets('')).toEqual([])

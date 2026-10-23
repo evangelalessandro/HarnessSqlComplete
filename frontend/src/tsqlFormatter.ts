@@ -15,6 +15,8 @@ type Token =
   | { type: 'punct'; text: string; blank?: number }
 
 /** Tokenizza il testo SQL rispettando stringhe, commenti e operatori. */
+import { allineaAliasSelectList } from './aliasAlign'
+
 export function tokenizeSqlText(text: string): Token[] {
   const tokens: Token[] = []
   let i = 0
@@ -142,7 +144,7 @@ const KEYWORDS = new Set([
   'GROUP', 'BY', 'HAVING', 'ORDER', 'UNION', 'ALL', 'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET',
   'DELETE', 'MERGE', 'USING', 'WHEN', 'MATCHED', 'NOT', 'THEN', 'AS', 'AND', 'OR', 'IN', 'IS',
   'LIKE', 'BETWEEN', 'EXISTS', 'TOP', 'DISTINCT', 'CASE', 'ELSE', 'END', 'BEGIN', 'DECLARE',
-  'EXEC', 'EXECUTE', 'PRINT', 'RETURN', 'IF', 'WHILE', 'ELSE', 'GO', 'WITH', 'TRUNCATE',
+  'EXEC', 'EXECUTE', 'PRINT', 'RETURN', 'RETURNS', 'IF', 'WHILE', 'ELSE', 'GO', 'WITH', 'TRUNCATE',
   'OUTPUT', 'OPTION', 'RECOMPILE', 'NOCOUNT', 'TRANSACTION', 'COMMIT', 'ROLLBACK', 'SAVE',
   'PROCEDURE', 'FUNCTION', 'TRIGGER', 'CREATE', 'ALTER', 'DROP', 'GOTO', 'RAISERROR', 'THROW',
   'TRY', 'CATCH', 'OPEN', 'CLOSE', 'FETCH', 'DEALLOCATE', 'BREAK', 'CONTINUE', 'WAITFOR',
@@ -221,6 +223,8 @@ export function isRoutineText(sql: string): boolean {
 // quadre vanno copiati alla lettera. Senza questa distinzione il testo dentro le stringhe
 // veniva riscritto ('by p. rate' → 'by p.rate', 'a  b' → 'a b'): il confronto con i dati
 // del database cambiava pur essendo "solo" una formattazione.
+// NB: lo spazio PRIMA della parentesi ("IIF (x)", "ltrim (x)") e quello dopo un meno unario
+// ("- 1") NON si toccano: su richiesta dell'utente restano come sono scritti.
 const cleanInlineCode = (text: string) =>
   text
     // operatori composti già separati da uno spazio ("+ ="): si riuniscono. Serve anche a
@@ -229,6 +233,9 @@ const cleanInlineCode = (text: string) =>
     .replace(/\s*\.\s*/g, '.')
     .replace(/\s*,/g, ',')
     .replace(/\s+;/g, ';')
+    // ";WITH" va attaccato (convenzione T-SQL): prima diventava "; WITH", uno spazio di troppo
+    // che nella parte CTE si nota subito.
+    .replace(/;\s+(?=WITH\b)/gi, ';')
     .replace(/\(\s+/g, '(')
     .replace(/\s+\)/g, ')')
     // niente spazio tra tipo e parentesi: NVARCHAR(max), DECIMAL(18,2)
@@ -376,6 +383,13 @@ function needsStatementLayout(sql: string): boolean {
  * Formatta una query semplice secondo il profilo (motore query: clausole su righe proprie).
  */
 export function formatSqlWithProfile(sql: string, profile: FormatProfile): string {
+  return allineaAliasSelectList(formatSqlConProfilo(sql, profile))
+}
+
+function formatSqlConProfilo(sql: string, profile: FormatProfile): string {
+  // La formattazione interviene SEMPRE (richiesta utente: "la formattazione non fa più nulla").
+  // La vecchia regola "testo già impaginato → lascialo identico" è stata tolta: due store scritte
+  // nello stesso stile venivano trattate in modo diverso, e l'utente non capiva perché.
   if (isRoutineText(sql)) return formatRoutineWithProfile(sql, profile)
   // statement "a blocchi" senza parole procedurali (es. selezione di un CTE o di una
   // SELECT TOP n @a=…): il motore delle routine ha il layout CTE/assegnazioni/condizioni
@@ -418,9 +432,16 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
     if (insertLayout) {
       const rows = [...insertLayout.rows]
       if (insertLayout.rest.length > 0) {
-        // resto dello statement (es. lo SELECT di "INSERT … (campi) SELECT …"): formattato
-        // con le stesse regole, su righe proprie
-        rows.push(...formatSqlWithProfile(insertLayout.rest.map(up).join(' '), profile).trimEnd().split('\n'))
+        // resto dello statement (lo SELECT di "INSERT … (campi) SELECT …"): la select-list sono
+        // i VALORI dell'insert, quindi UN valore per riga come per i campi (stesse regole
+        // dentro e fuori le store).
+        const primo = insertLayout.rest.find(t => t.type !== 'comment')
+        const selectRows =
+          primo?.type === 'word' && primo.text.toUpperCase() === 'SELECT'
+            ? detailedSelectRows(insertLayout.rest, up, profile.tabSize || 2, '', profile.setIndent, profile, true)
+            : null
+        if (selectRows) rows.push(...selectRows)
+        else rows.push(...formatSqlWithProfile(insertLayout.rest.map(up).join(' '), profile).trimEnd().split('\n'))
       }
       return rows.join('\n').trimEnd() + '\n'
     }
@@ -566,22 +587,31 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
     }
 
     if (clause) {
-      const isJoinModifier = ['INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS'].includes(clause)
+      const isJoinModifier = ['INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'OUTER'].includes(clause)
       const isJoinWord = clause === 'JOIN' || isJoinModifier
       // SELECT ... INTO #tmp su riga propria (INSERT/MERGE INTO restano attaccati)
       const isSelectStmt = /^\s*SELECT\b/i.test(lines.length > 0 ? lines[0].text : current.join(' '))
       if (isJoinModifier && profile.breakBeforeJoin) {
-        const next = tokens[i + 1]
-        const joinToken =
-          next && next.type === 'word' && (next.text.toUpperCase() === 'JOIN' || next.text.toUpperCase() === 'APPLY')
-            ? next
-            : null
-        if (joinToken) {
+        // La CATENA INTERA del join resta sulla stessa riga: "LEFT OUTER JOIN", "CROSS APPLY".
+        // Prima "LEFT OUTER" finiva su una riga e "JOIN …" su quella dopo.
+        const catena: Token[] = [t]
+        let k = i + 1
+        while (
+          k < tokens.length &&
+          tokens[k].type === 'word' &&
+          (['OUTER', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS'].includes(tokens[k].text.toUpperCase()) ||
+            ['JOIN', 'APPLY'].includes(tokens[k].text.toUpperCase()))
+        ) {
+          catena.push(tokens[k])
+          k++
+        }
+        const ultimo = catena[catena.length - 1]
+        if (catena.length > 1 && ['JOIN', 'APPLY'].includes(ultimo.text.toUpperCase())) {
           flush()
           currentIndent = profile.joinIndent
-          current = [`${up(t)} ${up(joinToken)}`]
+          current = [catena.map(up).join(' ')]
           activeClause = 'JOIN'
-          i++
+          i = k - 1
           continue
         }
       }
@@ -655,14 +685,16 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
     // select-list impilata: la virgola va IN TESTA alla riga successiva (così la query
     // resta valida e la formattazione è idempotente: prima la virgola veniva persa e
     // riformattando le colonne si univano — "SELECT a b", query rotta).
+    // La rottura avviene a OGNI virgola di primo livello, anche quando il campo corrente è
+    // un solo token (es. "UDC_USER_TASK" senza alias): con "current.length > 1" il campo
+    // senza alias restava appaiato al successivo (",UDC_USER_TASK, MIS_CAUSMISS X_CAUSMISS").
     if (
       profile.stackSelectColumns &&
       current.length > 0 &&
       (current[0].toUpperCase() === 'SELECT' || current[0].startsWith(',')) &&
       t.type === 'punct' &&
       t.text === ',' &&
-      depth === 0 &&
-      current.length > 1
+      depth === 0
     ) {
       flush()
       currentIndent = profile.selectColumnIndent
@@ -725,6 +757,10 @@ export function formatSqlWithProfile(sql: string, profile: FormatProfile): strin
  * EXEC con parametri allineati, DECLARE con virgola iniziale, label a margine.
  */
 export function formatRoutineWithProfile(sql: string, profile: FormatProfile): string {
+  return allineaAliasSelectList(formatRoutineConProfilo(sql, profile))
+}
+
+function formatRoutineConProfilo(sql: string, profile: FormatProfile): string {
   const tokens = tokenizeSqlText(sql)
   if (tokens.length === 0) return sql
 
@@ -775,12 +811,17 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     'ELSE', 'COMMIT', 'ROLLBACK', 'TRUNCATE', 'GO',
   ])
   let sigOpen = -1
+  // true quando i parametri sono dichiarati SENZA parentesi
+  // ("CREATE PROCEDURE p @a int, @b nvarchar(10) AS"): la prima '(' del testo è quella
+  // di un TIPO, non l'elenco parametri, e prenderla per la firma spezzava lo statement.
+  let firmaSenzaParen = false
   for (let k = 0; k < tokens.length; k++) {
     if (tokens[k].type === 'word' && /^(CREATE|ALTER)$/i.test(tokens[k].text)) {
       for (let m = k + 1; m < tokens.length; m++) {
         const t = tokens[m]
         if (t.type === 'comment' || t.type === 'string') continue
         if (t.type === 'punct' && t.text === '(') {
+          if (firmaSenzaParen) continue // parentesi di un tipo (es. nvarchar(10))
           sigOpen = m
           break
         }
@@ -792,6 +833,8 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
             break
           }
           if (SIG_STOP.has(u)) break // è già iniziato il corpo: nessuna firma da separare
+          // un parametro (@nome) prima di qualsiasi '(' → firma senza parentesi
+          if (t.text.startsWith('@')) firmaSenzaParen = true
         }
       }
       break
@@ -852,7 +895,9 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     const header: string[] = []
     while (k < headerTokens.length) {
       const t = headerTokens[k]
-      if (t.type === 'punct' && t.text === '(') break
+      // solo la parentesi dell'elenco parametri chiude l'intestazione: in una firma senza
+      // parentesi le '(' del testo sono quelle dei tipi (es. "@pB nvarchar(10) = 'x'")
+      if (sigOpen !== -1 && t.type === 'punct' && t.text === '(') break
       if (t.type === 'comment') {
         // commento inline nell'intestazione: lo si accoda alla riga (senza perdere testo)
         header.push(t.text)
@@ -865,7 +910,7 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     pushLine(header.join(' '), 0)
 
     // parentesi aperta su riga propria
-    if (k < headerTokens.length && headerTokens[k].type === 'punct' && headerTokens[k].text === '(') {
+    if (sigOpen !== -1 && k < headerTokens.length && headerTokens[k].type === 'punct' && headerTokens[k].text === '(') {
       pushLine('(', 0)
       k++
       // parametri: una riga per parametro con virgola iniziale e TIPO INCOLONNATO
@@ -935,6 +980,12 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       })
       // parentesi chiusa su riga propria
       pushLine(')', 0)
+
+      // clausola fra ")" e "AS": nelle funzioni è "RETURNS INT" (scalari) oppure
+      // "RETURNS @t TABLE (...)" (table-valued). Senza questa riga la clausola spariva:
+      // il ciclo dei parametri si fermava alla ")" e il testo riprendeva da AS.
+      const codaFirma = headerTokens.slice(k + 1)
+      if (codaFirma.length > 0) pushLine(codaFirma.map(up).join(' '), 0)
     }
     // AS su riga propria
     pushLine('AS', 0)
@@ -1025,9 +1076,26 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
   }
   for (let k = startIdx; k < body.length; k++) {
     const t = body[k]
-    // commento su riga propria (già indentato): segmento a sé, così resta sulla sua riga
-    // invece di essere aggregato allo statement precedente o scartato da BEGIN/END/IF
+    // commento su riga propria (già indentato).
+    // Di norma è un segmento a sé, così resta sulla sua riga. ECCEZIONE: se lo statement è una
+    // SELECT ancora "aperta" (non è ancora arrivata a FROM/WHERE/…), il commento RESTA dentro lo
+    // statement: prima spezzava la query in due e la parte FROM/WHERE/ORDER BY finiva tutta su una
+    // riga (segnalazione utente: commento "--,@x_note=X_NOTE" fra le assegnazioni e la FROM).
+    const statementAperto =
+      seg.length > 0 &&
+      seg[0]?.type === 'word' &&
+      seg[0].text.toUpperCase() === 'SELECT' &&
+      !seg.some(
+        (tk, iTk) =>
+          iTk > 0 &&
+          tk.type === 'word' &&
+          ['FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING', 'UNION', 'VALUES', 'OPTION'].includes(tk.text.toUpperCase()),
+      )
     if (t.type === 'comment' && t.ownLine && segDepth === 0 && caseDepth === 0) {
+      if (statementAperto) {
+        seg.push(t)
+        continue
+      }
       if (seg.length > 0) segments.push(seg)
       segments.push([t])
       seg = []
@@ -1086,8 +1154,13 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
   // iniziali del documento non vengono riprodotte
   let emittedAny = headerTokens.length > 0
 
-  for (const segment of segments) {
+  for (let si = 0; si < segments.length; si++) {
+    const segment = segments[si]
     if (segment.length === 0) continue
+    // True se lo statement PRECEDENTE è un INSERT: la SELECT che segue sono i VALORI
+    // dell'insert (il segmentatore la stacca dall'INSERT), quindi va impaginata un valore per riga.
+    const dopoInsert =
+      si > 0 && segments[si - 1].some(t => t.type === 'word' && t.text.toUpperCase() === 'INSERT')
     // righe vuote tra le istruzioni: preservate così come sono nell'originale.
     // Dentro un'istruzione (token interni allo stesso segmento) vengono invece tolte.
     const blanks = segment[0].blank ?? 0
@@ -1153,6 +1226,10 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
     if (firstUpper === 'END') {
       // chiude un blocco BEGIN (o il CASE inline è già gestito dentro lo statement)
       indent = Math.max(0, indent - 1)
+      // gli IF chiusi DENTRO questo blocco non possono più ricevere il loro ELSE: si tolgono
+      // dallo stack, altrimenti l'ELSE esterno si allinea a un IF interno e finisce spostato
+      // di due spazi rispetto al suo END (segnalazione utente su "END / ELSE / BEGIN")
+      while (ifStack.length > 0 && ifStack[ifStack.length - 1] > indent) ifStack.pop()
       pendingIndent = null
       flushLine()
       const extra = segment.slice(1).map(up).join(' ')
@@ -1194,8 +1271,9 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
         if (t.type === 'word' && t.text.toUpperCase() === 'BEGIN' && par === 0 && j > 0) break
         cond.push(t)
       }
-      // commento "--" in mezzo alla condizione: chiude la riga, il codice prosegue sotto
-      rowsNoDashEat(cond, up).forEach((r, idx) => pushLine(r, idx === 0 ? indent : indent + 1))
+      // commento "--" in mezzo alla condizione: chiude la riga, il codice prosegue sotto.
+      // Le condizioni lunghe vengono spezzate (AND/OR a capo, sotto-query impaginate).
+      condRows(cond, up, profile.tabSize || 2, indent, profile).forEach(pushRawLine)
       const after = segment.slice(j)
       if (after.length > 0 && after[0].type === 'word' && after[0].text.toUpperCase() === 'BEGIN') {
         if (isBeginTransaction(after)) {
@@ -1376,12 +1454,31 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
           flushLine()
           insertLayout.rows.forEach(pushRawLine)
           if (insertLayout.rest.length > 0) {
-            rowsNoDashEat(insertLayout.rest, up).forEach(r => pushLine(r, lineIndent))
+            // INSERT … SELECT: la lista dei VALORI è la select-list della SELECT, quindi si
+            // impagina come quella dei campi (un valore per riga, allineati sotto il primo).
+            // Prima il resto restava su una riga sola, anche con venti valori.
+            const primo = insertLayout.rest.find(t => t.type !== 'comment')
+            const selectRows =
+              primo?.type === 'word' && primo.text.toUpperCase() === 'SELECT'
+                ? detailedSelectRows(insertLayout.rest, up, unit, basePad, profile.setIndent, profile, true)
+                : null
+            if (selectRows) selectRows.forEach(pushRawLine)
+            else {
+              rowsNoDashEat(insertLayout.rest, up).forEach(r => pushLine(r, lineIndent))
+            }
           }
           continue
         }
       }
-      const detailedRows = detailedSelectRows(segment, up, unit, basePad, profile.setIndent, profile)
+      const detailedRows = detailedSelectRows(
+        segment,
+        up,
+        unit,
+        basePad,
+        profile.setIndent,
+        profile,
+        dopoInsert && firstUpper === 'SELECT',
+      )
       if (detailedRows) {
         flushLine()
         for (const row of detailedRows) pushRawLine(row)
@@ -1389,12 +1486,40 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
       }
       const caseParts = splitHeadCase(segment)
       const caseLines = caseParts ? splitCaseLines(caseParts.casePart, up) : splitCaseLines(segment, up)
+      /**
+       * Testata con ASSEGNAZIONE ("SELECT @e = CASE …"): la coda sono altre assegnazioni, che
+       * hanno il loro allineamento — non si impila come una select-list.
+       */
+      const testaAssegnazione = (() => {
+        if (!caseParts) return false
+        let d = 0
+        let vistoAt = false
+        for (const t of caseParts.head) {
+          if (t.type === 'word' && t.text.startsWith('@')) vistoAt = true
+          if (t.type !== 'punct') continue
+          if (t.text === '(') d++
+          else if (t.text === ')') d = Math.max(0, d - 1)
+          else if (t.text === ',' && d === 0) return false
+          else if (t.text === '=' && d === 0 && vistoAt) return true
+        }
+        return false
+      })()
       if (caseLines.length > 1 || (caseParts && caseParts.tail.length > 0)) {
         // SELECT con CASE nella testata: testa, blocco CASE, poi coda con le clausole
         // (FROM/JOIN/WHERE) su righe proprie — la coda non resta attaccata a "END"
         if (caseParts) {
-          rowsNoDashEat(caseParts.head, up).forEach(r => pushLine(r, lineIndent))
-          splitCaseLines(caseParts.casePart, up).forEach(cl => pushLine(cl.text, lineIndent + cl.delta))
+          // la virgola che separa l'ultimo campo della testata dal CASE va IN TESTA alla riga
+          // del CASE (stile del resto del formattatore), non lasciata in coda alla testata
+          const righeTesta = rowsNoDashEat(caseParts.head, up)
+          let virgolaCaso = false
+          if (righeTesta.length > 0 && righeTesta[righeTesta.length - 1].trimEnd().endsWith(',')) {
+            righeTesta[righeTesta.length - 1] = righeTesta[righeTesta.length - 1].trimEnd().replace(/,$/, '')
+            virgolaCaso = true
+          }
+          righeTesta.forEach(r => pushLine(r, lineIndent))
+          splitCaseLines(caseParts.casePart, up).forEach((cl, idx) =>
+            pushLine(idx === 0 && virgolaCaso ? `,${cl.text.trimStart()}` : cl.text, lineIndent + cl.delta),
+          )
           const groups = splitClauseGroups(caseParts.tail)
           groups.forEach((g, gi) => {
             const kw = g[0]?.type === 'word' ? g[0].text.toUpperCase() : ''
@@ -1407,9 +1532,22 @@ export function formatRoutineWithProfile(sql: string, profile: FormatProfile): s
               // primo gruppo = resto della select-list (indentato), FROM a margine,
               // JOIN/altre clausole un livello più in dentro; virgola in testa attaccata
               const ind = gi === 0 || isJoin ? lineIndent + 1 : lineIndent
-              rowsNoDashEat(g, up)
-                .map(r => r.replace(/^,\s+/, ','))
-                .forEach(r => pushLine(r, ind))
+              if (gi === 0 && !isJoin && profile.stackSelectColumns && !testaAssegnazione) {
+                // Resto della select-list DOPO il CASE: si impila come la lista dei valori
+                // (un elemento per riga). Prima restava tutta su una riga sola: con un CASE in
+                // testa, i quaranta campi che seguono finivano in una riga da mille caratteri.
+                // Gli elementi si allineano alla colonna del CASE (non al rientro della lista),
+                // e "INTO #t" resta a MARGINE come nel resto del formattatore.
+                const pad = ' '.repeat(ind * unit)
+                stackSelectList(g, up, '', profile, true).forEach(r => {
+                  const testo = r.trimStart()
+                  pushRawLine(`${/^INTO\b/i.test(testo) ? basePad : pad}${testo}`)
+                })
+              } else {
+                rowsNoDashEat(g, up)
+                  .map(r => r.replace(/^,\s+/, ','))
+                  .forEach(r => pushLine(r, ind))
+              }
             }
           })
         } else {
@@ -1529,13 +1667,60 @@ function detailedSelectRows(
   basePad: string,
   setIndent: number = unit,
   profile?: FormatProfile,
+  /** True quando questa SELECT sono i VALORI di un "INSERT … SELECT": un valore per riga. */
+  unoPerRiga = false,
 ): string[] | null {
   const groups = splitStatementClauses(segment, up)
   const head = groups[0].tokens
-  if (head.some(t => t.type === 'word' && t.text.toUpperCase() === 'CASE')) return null
-  // commenti "--" nella testata: niente layout a colonna (il codice dopo il commento
-  // non deve finire commentato); si ripiega sul percorso CASE/clausole
-  if (head.some(t => t.type === 'comment' && t.text.startsWith('--'))) return null
+  // Un CASE nella testata: il percorso "impilato" lo sa espandere (CASE/WHEN/THEN/ELSE/END dentro
+  // l'elemento della lista), quindi si torna null SOLO quando la lista non è impilabile
+  // (nessuna virgola di primo livello, oppure INTO che richiede il percorso dedicato).
+  let listaConCase = false
+  if (head.some(t => t.type === 'word' && t.text.toUpperCase() === 'CASE')) {
+    // Un'assegnazione in testata ("SELECT @x = CASE …") ha il suo percorso dedicato: qui no.
+    // (il tokenizer non tiene la '@' nel testo, quindi si guarda la forma: un "=" di primo
+    //  livello prima della prima virgola)
+    let primoComma = -1
+    let primoUguale = -1
+    let dd = 0
+    for (let i = 0; i < head.length; i++) {
+      const t = head[i]
+      if (t.type !== 'punct') continue
+      if (t.text === '(') dd++
+      else if (t.text === ')') dd = Math.max(0, dd - 1)
+      else if (t.text === ',' && dd === 0) {
+        primoComma = i
+        break
+      } else if (t.text === '=' && dd === 0 && primoUguale === -1) primoUguale = i
+    }
+    const assegnazione = primoUguale >= 0 && (primoComma === -1 || primoUguale < primoComma)
+    const impilabile =
+      !!profile?.stackSelectColumns &&
+      !assegnazione &&
+      !head.some((t, i) => t.type === 'word' && t.text.toUpperCase() === 'INTO' && i > 0) &&
+      (() => {
+        let d = 0
+        for (const t of head) {
+          if (t.type === 'punct') {
+            if (t.text === '(') d++
+            else if (t.text === ')') d = Math.max(0, d - 1)
+            else if (t.text === ',' && d === 0) return true
+          }
+        }
+        return false
+      })()
+    if (!impilabile) return null
+    listaConCase = true
+  }
+  // commenti "--" nella testata SENZA l'impilamento a colonna: niente layout a colonna (il
+  // codice dopo il commento non deve finire commentato); si ripiega sul percorso CASE/clausole.
+  // Con stackSelectColumns attivo l'impilamento sa gestire i commenti (chiudono la riga e il
+  // campo successivo riparte sotto, virgola in testa), quindi il commento NON è più un motivo
+  // per rinunciare all'impaginazione: segnalazione utente su una SELECT con "--sorgente" in
+  // mezzo ai campi, che restava tutta storta (niente colonne, niente INTO a capo, WHERE su una riga).
+  if (!profile?.stackSelectColumns && head.some(t => t.type === 'comment' && t.text.startsWith('--'))) {
+    return null
+  }
 
   const out: string[] = []
   const varStart = head.findIndex(t => t.type === 'word' && t.text.startsWith('@'))
@@ -1574,7 +1759,34 @@ function detailedSelectRows(
   const listaAssegnazioni = assignItems.length >= 2 && assignItems.every(isAssign)
   // Senza clausole (nessun FROM/JOIN) c'è comunque qualcosa da impaginare se la testata è
   // una lista di assegnazioni "@var = …": "SELECT @a = …, @b = …" va a capo come le altre liste
-  if (groups.length < 2 && !listaAssegnazioni) return null
+  if (groups.length < 2 && !listaAssegnazioni) {
+    // Testata con CASE e lista impilabile, ma clausole non riconosciute (succede alla select-list
+    // di un "INSERT … SELECT" staccata dal segmentatore, che arriva senza la parola SELECT e con
+    // il FROM dentro la testata): si impila comunque la lista e si accoda il resto (FROM/WHERE…).
+    if (!listaConCase) return null
+    let d = 0
+    let taglio = head.length
+    for (let i = 0; i < head.length; i++) {
+      const t = head[i]
+      if (t.type === 'punct') {
+        if (t.text === '(') d++
+        else if (t.text === ')') d = Math.max(0, d - 1)
+        continue
+      }
+      if (
+        d === 0 &&
+        t.type === 'word' &&
+        ['FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING', 'OPTION', 'UNION'].includes(t.text.toUpperCase())
+      ) {
+        taglio = i
+        break
+      }
+    }
+    const righe = stackSelectList(head.slice(0, taglio), up, basePad, profile ?? ({} as FormatProfile), unoPerRiga)
+    const coda = [...head.slice(taglio), ...segment.slice(head.length)]
+    if (coda.length > 0) righe.push(...rowsNoDashEat(coda, up).map(r => `${basePad}${cleanInline(r)}`))
+    return righe
+  }
 
   if (varStart > 0) {
     const items = assignItems
@@ -1583,14 +1795,26 @@ function detailedSelectRows(
       const maxVar = Math.max(...items.map(it => it[0].text.length))
       items.forEach((it, idx) => {
         const name = it[0].text
-        const tail = cleanInline(it.slice(1).map(up).join(' '))
+        // Un commento su RIGA PROPRIA dentro la lista (es. "--,@x_note=X_NOTE" fra le assegnazioni)
+        // resta sulla sua riga: prima finiva in coda all'assegnazione precedente.
+        const commentiPropri = it.filter(t => t.type === 'comment' && t.ownLine)
+        const senzaCommenti = it.filter(t => !(t.type === 'comment' && t.ownLine))
+        const tail = cleanInline(senzaCommenti.slice(1).map(up).join(' '))
         const gap = maxVar - name.length + 1
         if (idx === 0) out.push(`${basePad}   ${name}${' '.repeat(gap)}${tail}`)
         else out.push(`${basePad}  ,${name}${' '.repeat(gap)}${tail}`)
+        for (const c of commentiPropri) out.push(`${basePad}${up(c)}`)
       })
     } else {
-      const r = rowsNoDashEat(head, up)[0]
-      if (r) out.push(`${basePad}${cleanInline(r)}`)
+      // NON è una lista di assegnazioni: la testata è una select-list che contiene una
+      // VARIABILE (caso tipico "INSERT … SELECT @udc, 'SYSTEM', 0"): si impila come tutte le
+      // altre select-list. Prima restava su una riga sola (venti valori di fila).
+      if (profile?.stackSelectColumns) {
+        out.push(...stackSelectList(head, up, basePad, profile, unoPerRiga))
+      } else {
+        const r = rowsNoDashEat(head, up)[0]
+        if (r) out.push(`${basePad}${cleanInline(r)}`)
+      }
     }
   } else {
     // SELECT "normale" (nessuna assegnazione @var = …): con l'opzione attiva la select-list
@@ -1598,7 +1822,7 @@ function detailedSelectRows(
     // Serve soprattutto DENTRO procedure e blocchi, dove prima la lista restava tutta su
     // una riga mentre da sola veniva impilata: due risultati diversi per lo stesso testo.
     if (profile?.stackSelectColumns) {
-      out.push(...stackSelectList(head, up, basePad, profile))
+      out.push(...stackSelectList(head, up, basePad, profile, unoPerRiga))
     } else {
       const r = rowsNoDashEat(head, up)[0]
       if (r) out.push(`${basePad}${cleanInline(r)}`)
@@ -1652,26 +1876,89 @@ function stackSelectList(
   up: (t: Token) => string,
   basePad: string,
   profile: FormatProfile,
+  /** True per la select-list dei VALORI di un "INSERT … SELECT": UN elemento per riga
+   *  (come per i campi/valori di un INSERT), invece del raggruppamento normale. */
+  unoPerRiga = false,
 ): string[] {
   const indent = profile.selectColumnIndent
-  // "SELECT … INTO #t": l'INTO va su riga propria. L'INTO di un "INSERT INTO …" invece
-  // appartiene alla testata dell'INSERT e non si spezza.
-  const isSelectHead = head[0]?.type === 'word' && head[0].text.toUpperCase() === 'SELECT'
+  /**
+   * "SELECT … INTO #t": l'INTO va SEMPRE su riga propria (segnalazione utente: con un CASE nella
+   * select-list l'INTO restava attaccato a "END AS X…"). Si spezza in ogni select-list; l'unica
+   * eccezione è la testata di un INSERT/MERGE/UPDATE/DELETE, dove "INSERT INTO …" è la testata
+   * dello statement e non una clausola della select-list.
+   * Prima ci si basava su "la testata inizia con SELECT": la coda DOPO un CASE inizia con la
+   * virgola (", altro_campo INTO #t"), quindi lì l'INTO non veniva mai spezzato.
+   */
+  const primoUtile = head.find(t => t.type !== 'comment')
+  const testataDiInsert =
+    primoUtile?.type === 'word' && ['INSERT', 'MERGE', 'UPDATE', 'DELETE'].includes(primoUtile.text.toUpperCase())
   const out: string[] = []
+  /**
+   * Info di ogni riga emessa (stessa posizione di `out`): serve all'ALLINEAMENTO DEGLI ALIAS
+   * in una passata finale, quando si conosce la larghezza massima delle espressioni.
+   * `null` per le righe che non sono un campo con alias (commenti, INTO, CASE multiriga…).
+   */
+  const items: (RigaItem | null)[] = []
   let depth = 0
   let cur: string[] = []
+  /** Stessi token di `cur`: servono per espandere un CASE dentro l'elemento. */
+  let curTokens: Token[] = []
   /** True dopo un a-capo della lista: la virgola si attacca al campo successivo (",campo"). */
   let commaPending = false
+  /** True se la virgola in testa all'elemento corrente è stata AGGIUNTA da noi (non era nel testo). */
+  let commaAggiunta = false
   /** False per le righe di clausola (INTO): restano allineate alla SELECT, non rientrano. */
   let indentLine = true
   const push = () => {
     if (cur.length === 0) return
-    const testo = cleanInline(cur.join(' '))
-    if (!testo) return
     // la prima riga resta allineata alla clausola, le successive rientrano di `indent`
     const rientro = out.length === 0 || !indentLine ? '' : ' '.repeat(indent)
+    // CASE dentro l'elemento: si espande (CASE / WHEN / THEN / ELSE / END) invece di lasciarlo
+    // tutto su una riga — segnalazione utente: "c'è un case when in una select che non è indentata"
+    if (curTokens.some(t => t.type === 'word' && t.text.toUpperCase() === 'CASE')) {
+      const unit = profile.tabSize || 2
+      // la virgola in testa aggiunta da noi sta solo in `cur`, non nei token
+      let virgola = commaAggiunta
+      let tokensCaso = curTokens
+      // virgola iniziale dell'elemento (arrivata dalla riga precedente): si attacca alla prima
+      // riga del CASE invece di finire su una riga da sola
+      if (tokensCaso[0]?.type === 'punct' && tokensCaso[0].text === ',') {
+        virgola = true
+        tokensCaso = tokensCaso.slice(1)
+      }
+      for (const riga of splitCaseLines(tokensCaso, up)) {
+        const testo = cleanInline(riga.text)
+        if (!testo) continue
+        const extra = riga.delta > 1 ? ' '.repeat((riga.delta - 1) * unit) : ''
+        out.push(`${basePad}${rientro}${virgola ? ',' : ''}${extra}${testo}`)
+        // un CASE occupa più righe: resta fuori dall'allineamento degli alias
+        items.push(null)
+        virgola = false
+      }
+      cur = []
+      curTokens = []
+      commaAggiunta = false
+      indentLine = true
+      return
+    }
+    const testo = cleanInline(cur.join(' '))
+    if (!testo) return
+    const virgola = cur[0].startsWith(',') ? ',' : ''
+    const split = splitAliasItem(curTokens, up)
     out.push(`${basePad}${rientro}${testo}`)
+    items.push(
+      split
+        ? {
+            prefisso: `${basePad}${rientro}`,
+            expr: `${virgola}${split.expr}`,
+            alias: split.alias,
+            commento: split.commento,
+          }
+        : null,
+    )
     cur = []
+    curTokens = []
+    commaAggiunta = false
     indentLine = true
   }
   for (const t of head) {
@@ -1683,9 +1970,20 @@ function stackSelectList(
     // "inghiottito" dal commento). La virgola resta in testa al campo seguente.
     if (t.type === 'comment' && t.text.startsWith('--')) {
       const testo = up(t)
-      if (cur.length === 0 && out.length > 0) out[out.length - 1] += ` ${testo}`
-      else {
+      // MAI attaccare un commento a una riga che è GIÀ un commento: il secondo commento
+      // finirebbe dentro il primo e il codice (o i commenti) dopo di lui risulterebbero
+      // commentati. Caso reale: una select-list con più righe di SQL commentato
+      // ("--when exists(…)" seguito da "--and …", "--left join …", "--then …").
+      const ultimaRiga = out.length > 0 ? out[out.length - 1] : ''
+      const ultimaECommento = ultimaRiga.trimStart().startsWith('--')
+      if (cur.length === 0 && out.length > 0 && !ultimaECommento && !t.ownLine) {
+        out[out.length - 1] += ` ${testo}`
+        // il commento in coda fa parte della riga: l'allineamento non deve perderlo
+        const info = items[items.length - 1]
+        if (info) info.commento = info.commento ? `${info.commento} ${testo}` : testo
+      } else {
         cur.push(testo)
+        curTokens.push(t)
         push()
       }
       continue
@@ -1696,25 +1994,120 @@ function stackSelectList(
       t.type === 'word' &&
       t.text.toUpperCase() === 'INTO' &&
       cur.length > 0 &&
-      isSelectHead &&
+      !testataDiInsert &&
       profile.breakBeforeInto
     ) {
       push()
       cur = [up(t)]
+      curTokens = [t]
       commaPending = false
+      commaAggiunta = false
       indentLine = false
       continue
     }
-    if (t.type === 'punct' && t.text === ',' && depth === 0 && cur.length > 1) {
+    if (
+      t.type === 'punct' &&
+      t.text === ',' &&
+      depth === 0 &&
+      (unoPerRiga || cur.length > 0) &&
+      // la virgola da sola (arrivata dalla riga precedente) non fa riga a sé: resta in testa
+      cur.join('') !== ','
+    ) {
       push()
       commaPending = true
       continue
     }
+    // virgola a inizio riga (dopo un commento "--" della select-list): si attacca al campo
+    // successivo SENZA spazio (",campo"), come fa il motore delle query. Prima diventava un
+    // elemento a sé e il campo usciva con uno spazio di troppo (", UDC_UDC").
+    if (t.type === 'punct' && t.text === ',' && depth === 0 && cur.length === 0) {
+      commaPending = true
+      continue
+    }
     cur.push((commaPending ? ',' : '') + up(t))
+    if (commaPending) commaAggiunta = true
+    curTokens.push(t)
     commaPending = false
   }
   push()
+
+  // ALLINEAMENTO DEGLI ALIAS (richiesta utente: "i campi nella select non si allineano così come
+  // gli alias"): in una lista con più campi "espressione [AS] alias", tutti gli alias partono
+  // dalla stessa colonna. Con un solo campo con alias non cambia nulla.
+  const conAlias = items.filter((i): i is RigaItem => !!i?.alias)
+  if (conAlias.length > 1) {
+    const colonna = Math.max(...conAlias.map(i => i.prefisso.length + i.expr.length)) + 1
+    items.forEach((info, idx) => {
+      if (!info?.alias) return
+      const finOra = info.prefisso.length + info.expr.length
+      const spazi = ' '.repeat(Math.max(1, colonna - finOra))
+      out[idx] = `${info.prefisso}${info.expr}${spazi}${info.alias}${info.commento ? ` ${info.commento}` : ''}`
+    })
+  }
   return out
+}
+
+/** Riga di una select-list scomposta per l'allineamento degli alias. */
+interface RigaItem {
+  /** Indentazione della riga (basePad + rientro dell'elemento). */
+  prefisso: string
+  /** Espressione del campo (compresa la virgola in testa agli elementi impilati). */
+  expr: string
+  /** Alias, con l'eventuale AS ("X_SCO" oppure "AS X_SSCC_DEST"). */
+  alias: string
+  /** Commento "--" in coda al campo (resta dopo l'alias). */
+  commento: string
+}
+
+/** Token (di un elemento della select-list) che NON possono precedere un alias. */
+const PRIMA_DI_ALIAS_NO = new Set(['.', '(', ',', '+', '-', '*', '/', '%', '=', '<', '>', '|', '&', '^', '~'])
+
+/**
+ * Scompone un elemento della select-list in "espressione [AS] alias [-- commento]".
+ * Restituisce null quando non c'è un alias: un solo token ("UDC_UDC"), un campo qualificato
+ * ("t.col"), un "*" ("a.*"), un'assegnazione ("@x = 1") o una stringa non si toccano.
+ */
+export function splitAliasItem(
+  tokens: Token[],
+  up: (t: Token) => string,
+): { expr: string; alias: string; commento: string } | null {
+  // la virgola in testa (elemento impilato) non fa parte dell'espressione
+  let toks = tokens.slice()
+  while (toks.length > 0 && toks[0].type === 'punct' && toks[0].text === ',') toks = toks.slice(1)
+  // commenti in coda: restano DOPO l'alias
+  const commenti: Token[] = []
+  while (toks.length > 0 && toks[toks.length - 1].type === 'comment') commenti.unshift(toks.pop()!)
+  if (toks.length < 2) return null
+  const testo = (ts: Token[]) => cleanInline(ts.map(up).join(' '))
+  const commento = commenti.length > 0 ? testo(commenti) : ''
+  const n = toks.length
+  const last = toks[n - 1]
+  const prev = toks[n - 2]
+  /** L'espressione deve contenere qualcosa che NON sia una parola chiave (non "SELECT x"). */
+  const exprPiena = (ts: Token[]) =>
+    ts.some(t => t.type !== 'word' || !KEYWORDS.has(t.text.toUpperCase()))
+  // "… AS alias"
+  if (
+    n >= 3 &&
+    prev.type === 'word' &&
+    prev.text.toUpperCase() === 'AS' &&
+    last.type === 'word' &&
+    !last.text.startsWith('@') &&
+    exprPiena(toks.slice(0, n - 2))
+  ) {
+    return { expr: testo(toks.slice(0, n - 2)), alias: `AS ${testo([last])}`, commento }
+  }
+  // "espressione alias": l'alias è l'ultimo identificatore, non preceduto da punto/operatore
+  const aliasOk =
+    last.type === 'word' &&
+    /^[A-Za-z_#]/.test(last.text) &&
+    !last.text.startsWith('@') &&
+    !KEYWORDS.has(last.text.toUpperCase())
+  const prevOk = !(prev.type === 'punct' && PRIMA_DI_ALIAS_NO.has(prev.text))
+  if (aliasOk && prevOk && exprPiena(toks.slice(0, n - 1))) {
+    return { expr: testo(toks.slice(0, n - 1)), alias: testo([last]), commento }
+  }
+  return null
 }
 
 /** Layout di un INSERT: le righe da stampare e i token che restano dopo (es. lo SELECT di
@@ -1744,8 +2137,11 @@ function insertRows(
   let start = 0
   while (segment[start]?.type === 'comment') start++
   if (!(segment[start]?.type === 'word' && segment[start].text.toUpperCase() === 'INSERT')) return null
-  // un commento "--" chiuderebbe la riga a metà lista: si lascia fare al percorso normale
-  if (segment.some(t => t.type === 'comment' && t.text.startsWith('--'))) return null
+  // Un commento "--" DENTRO un elemento chiuderebbe la riga a metà lista: non si abbandona più
+  // l'impaginazione (prima bastava un "--ORD_FIX" fra le colonne per lasciare tutta la lista e i
+  // valori su una riga sola lunghissima), il commento va su una riga propria e il campo riparte
+  // sotto. Qui resta il divieto solo dove non c'è spazio per metterlo in sicurezza.
+  const commentoRiga = (tokens: Token[]) => tokens.some(t => t.type === 'comment' && t.text.startsWith('--'))
 
   /** "(" di primo livello a partire da `from` (-1 se non c'è). */
   const openParenAfter = (from: number): number => {
@@ -1835,15 +2231,37 @@ function insertRows(
   const targetEnd = colsOpen === -1 ? valuesAt === -1 ? segment.length : valuesAt : colsOpen
   const targetText = inline(segment.slice(0, targetEnd))
 
-  /** Righe di un elemento della lista (espande il CASE su più righe se c'è). */
+  /** Righe di un elemento della lista (commenti in testa, CASE espanso su più righe). */
   const itemRows = (item: Token[], indice: number, apreRiga: string, pad: string): string[] => {
     const testa = indice === 0 ? apreRiga : `${pad},`
-    const cases = splitCaseLines(item, up)
-    if (cases.length === 1) return [`${testa}${inline(item)}`]
-    // item con CASE: le righe del CASE rientrano dalla colonna di allineamento
-    return cases.map((cl, i) =>
-      i === 0 ? `${testa}${cleanInline(cl.text)}` : `${pad}${' '.repeat(cl.delta * unit)}${cleanInline(cl.text)}`,
-    )
+    // commenti "--" in TESTA all'elemento: righe proprie, il campo riparte sotto
+    const commenti: Token[] = []
+    let k = 0
+    while (k < item.length && item[k].type === 'comment') {
+      commenti.push(item[k])
+      k++
+    }
+    const corpo = item.slice(k)
+    const righeCommenti = commenti.map(c => `${pad}${cleanInline(up(c))}`)
+    if (corpo.length === 0) return righeCommenti
+    const cases = splitCaseLines(corpo, up)
+    const righeCorpo =
+      cases.length === 1
+        ? [`${testa}${inline(corpo)}`]
+        : cases.map((cl, i) =>
+            i === 0 ? `${testa}${cleanInline(cl.text)}` : `${pad}${' '.repeat(cl.delta * unit)}${cleanInline(cl.text)}`,
+          )
+    return [...righeCommenti, ...righeCorpo]
+  }
+
+  /** La ")" di chiusura va sull'ultima riga di CODICE (mai dopo un commento: finirebbe dentro). */
+  const chiudiLista = (righe: string[]) => {
+    for (let i = righe.length - 1; i >= 0; i--) {
+      if (!righe[i].trimStart().startsWith('--')) {
+        righe[i] += ')'
+        return
+      }
+    }
   }
 
   const rows: string[] = []
@@ -1852,7 +2270,7 @@ function insertRows(
     const apreRiga = `${basePad}${targetText} (`
     const pad = ' '.repeat(apreRiga.length)
     columns.forEach((col, idx) => rows.push(...itemRows(col, idx, apreRiga, pad)))
-    rows[rows.length - 1] += ')'
+    chiudiLista(rows)
   } else if (columns.length === 1) {
     rows.push(`${basePad}${targetText} (${inline(columns[0])})`)
   } else {
@@ -1885,6 +2303,9 @@ function insertRows(
       return null
     }
     if (tuples.length === 0) return null
+    // nei VALUES un commento "--" dentro la tupla non ha una riga propria dove stare: qui si
+    // lascia fare al percorso normale (che non impagina, ma non rompe il codice)
+    if (tuples.some(commentoRiga)) return null
     // resta solo la ";" finale (altro codice non previsto → percorso normale)
     const coda = segment.slice(p)
     for (const t of coda) {
@@ -1904,9 +2325,17 @@ function insertRows(
       const values = splitItems(tuples[0])
       if (values.length > 1) valoriDaImpilare = true
       values.forEach((val, idx) => rows.push(...itemRows(val, idx, apreRiga, pad)))
-      rows[rows.length - 1] += ')'
+      chiudiLista(rows)
     }
-    rows[rows.length - 1] += inline(coda)
+    const codaTesto = inline(coda)
+    if (codaTesto) {
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if (!rows[i].trimStart().startsWith('--')) {
+          rows[i] += codaTesto
+          break
+        }
+      }
+    }
   } else if (afterColumns !== -1) {
     rest = segment.slice(afterColumns)
   }
@@ -2204,9 +2633,70 @@ function setClauseRows(basePad: string, tokens: Token[], up: (t: Token) => strin
   let open = 0
   let cur: Token[] = []
   let firstItem = true
+  /**
+   * ALLINEAMENTO DEI "=" IN COLONNA (segnalazione utente: "non formatta bene in colonna quello che
+   * è dopo ="). In un SET con più assegnazioni tutti i "=" finiscono nella stessa colonna:
+   *
+   *     SET X_CORRIDOIO = UDC_CORRIDOIO
+   *         ,X_CELLA    = UDC_CELLA
+   *         ,X_UDC_DEST = ESE_UDC_DEST
+   *
+   * Il conto tiene conto del PREFISSO della riga: "SET " (4 caratteri) sulla prima, "," (1) sulle
+   * altre — per questo il primo campo non ha lo stesso riempimento degli altri ma i "=" combaciano.
+   * Si guardano SOLO le assegnazioni di primo livello (dentro le parentesi un "=" può essere una
+   * condizione o un DEFAULT) e solo gli item che hanno davvero un "=".
+   */
+  const posUguale = (tok: Token[]): number => {
+    let prof = 0
+    for (let i = 0; i < tok.length; i++) {
+      const t = tok[i]
+      if (t.type !== 'punct') continue
+      if (t.text === '(') prof++
+      else if (t.text === ')') prof = Math.max(0, prof - 1)
+      else if (t.text === '=' && prof === 0) return i
+    }
+    return -1
+  }
+  /** Item del SET spezzati sulle virgole di primo livello (solo per misurare l'allineamento). */
+  const itemSet = (() => {
+    const res: Token[][] = []
+    let prof = 0
+    let acc: Token[] = []
+    for (const t of body) {
+      if (t.type === 'punct') {
+        if (t.text === '(') prof++
+        else if (t.text === ')') prof = Math.max(0, prof - 1)
+        if (t.text === ',' && prof === 0) {
+          res.push(acc)
+          acc = []
+          continue
+        }
+      }
+      acc.push(t)
+    }
+    res.push(acc)
+    return res
+  })()
+  /** Larghezza (prefisso incluso) a cui allineare il "=" — 0 se non c'è nessuna assegnazione.
+   *  Il prefisso è "SET " (4) sulla prima riga e "    ," (4 spazi + virgola, 5) sulle altre. */
+  const prefissoItem = (prima: boolean) => (prima ? 'SET '.length : 'SET '.length + 1)
+  const larghezzaEq = itemSet.reduce((max, it, i) => {
+    const eq = posUguale(it)
+    if (eq <= 0) return max
+    const lhs = cleanInline(it.slice(0, eq).map(up).join(' ')).length
+    return Math.max(max, prefissoItem(i === 0) + lhs)
+  }, 0)
+  /** Testo dell'item con il lato sinistro del "=" allargato fino alla colonna comune. */
+  const incolonna = (tok: Token[], prima: boolean): string => {
+    const eq = posUguale(tok)
+    if (eq <= 0 || larghezzaEq === 0) return cleanInline(tok.map(up).join(' '))
+    const lhs = cleanInline(tok.slice(0, eq).map(up).join(' '))
+    const rhs = cleanInline(tok.slice(eq + 1).map(up).join(' '))
+    return `${lhs.padEnd(Math.max(0, larghezzaEq - prefissoItem(prima)))} = ${rhs}`
+  }
   const flushItem = () => {
     if (cur.length === 0) return
-    const text = cleanInline(cur.map(up).join(' '))
+    const text = incolonna(cur, firstItem)
     if (firstItem) {
       out.push(`${basePad}${' '.repeat(setIndent)}SET ${text}`)
       firstItem = false
@@ -2245,6 +2735,14 @@ function conditionRows(basePad: string, tokens: Token[], up: (t: Token) => strin
   let buf: Token[] = []
   let open = 0
   let first = true
+  /**
+   * Profondità delle parentesi ALL'INIZIO del segmento da stampare: l'indentazione di una riga
+   * dipende da quanto è annidata la condizione in quel punto, non dalle parentesi che la riga
+   * stessa apre/chiude. Prima si contava la profondità al momento del taglio, così l'ultima
+   * riga di un gruppo chiuso rientrava ALL'INDIETRO ("AND RIG_NESE = 0)))" più a sinistra della
+   * riga che aveva aperto la parentesi).
+   */
+  let openInizio = 0
   const flush = (colPad: string) => {
     if (buf.length === 0) return
     const hasCase = buf.some(t => t.type === 'word' && t.text.toUpperCase() === 'CASE')
@@ -2260,9 +2758,10 @@ function conditionRows(basePad: string, tokens: Token[], up: (t: Token) => strin
   for (const t of tokens) {
     const upper = t.type === 'word' ? t.text.toUpperCase() : ''
     if ((upper === 'AND' || upper === 'OR') && buf.length > 0) {
-      flush(first ? basePad : `${basePad}${' '.repeat(unit * (3 + open))}`)
+      flush(first ? basePad : `${basePad}${' '.repeat(unit * (3 + openInizio))}`)
       first = false
       buf.push(t)
+      openInizio = open
       continue
     }
     buf.push(t)
@@ -2271,7 +2770,7 @@ function conditionRows(basePad: string, tokens: Token[], up: (t: Token) => strin
       else if (t.text === ')') open = Math.max(0, open - 1)
     }
   }
-  flush(first ? basePad : `${basePad}${' '.repeat(unit * (3 + open))}`)
+  flush(first ? basePad : `${basePad}${' '.repeat(unit * (3 + openInizio))}`)
   return out
 }
 
@@ -2291,7 +2790,10 @@ function listRows(basePad: string, tokens: Token[], up: (t: Token) => string, kw
       out.push(`${basePad}${text.toLowerCase().startsWith(kw.trim().toLowerCase()) ? text : `${kw.trim()} ${text}`}`)
       firstCode = false
     } else {
-      out.push(`${basePad}${' '.repeat(kw.length)} ,${text}`)
+      // continuazione: la virgola cade ESATTAMENTE sotto il primo elemento della lista
+      // ("ORDER BY " è lungo kw.length → kw.length spazi, senza spazio aggiuntivo prima della
+      // virgola: prima ce n'era uno di troppo e la lista risultava sfalsata di una colonna).
+      out.push(`${basePad}${' '.repeat(kw.length)},${text}`)
     }
     cur = []
     lastWasComma = false
@@ -2372,12 +2874,157 @@ function rowsNoDashEat(tokens: Token[], up: (t: Token) => string): string[] {
   return rows.map(r => r.replace(/\s+/g, ' ').trim()).filter(Boolean)
 }
 
+/**
+ * Oltre questa larghezza la condizione di un IF/WHILE viene spezzata alle congiunzioni
+ * AND/OR; sotto, la condizione corta resta su una riga (come prima).
+ */
+const CONDIZIONE_MAX_RIGA = 100
+
+/**
+ * Righe di una condizione IF/WHILE. Come nella WHERE, le congiunzioni AND/OR di primo
+ * livello vanno a capo; una sotto-query fra parentesi ("EXISTS (SELECT …)", "IN (SELECT …)")
+ * viene impaginata come uno statement a clausole invece di restare tutta su una riga.
+ * Segnalazione utente: la condizione di "WHILE EXISTS (SELECT … FROM … WHERE … AND …)"
+ * non veniva formattata (restava una riga lunghissima).
+ * Le righe escono già complete della loro indentazione, pronte per pushRawLine.
+ */
+function condRows(
+  tokens: Token[],
+  up: (t: Token) => string,
+  unit: number,
+  baseIndent: number,
+  profile: FormatProfile,
+): string[] {
+  const pad = (n: number) => ' '.repeat(Math.max(0, n) * unit)
+  /** ")" che chiude la "(" all'indice `open` (-1 se non c'è). */
+  const closeParenOf = (open: number): number => {
+    let depth = 0
+    for (let k = open; k < tokens.length; k++) {
+      const t = tokens[k]
+      if (t.type !== 'punct') continue
+      if (t.text === '(') depth++
+      else if (t.text === ')') {
+        depth--
+        if (depth === 0) return k
+      }
+    }
+    return -1
+  }
+  /** True se la condizione contiene una sotto-query: "EXISTS (SELECT …)", "IN (SELECT …)". */
+  const haSottoQuery = (() => {
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i]
+      if (t.type !== 'punct' || t.text !== '(') continue
+      const close = closeParenOf(i)
+      if (close <= i) continue
+      const primo = tokens.slice(i + 1, close).find(x => x.type !== 'comment')
+      if (primo?.type === 'word' && ['SELECT', 'WITH'].includes(primo.text.toUpperCase())) return true
+    }
+    return false
+  })()
+  // un commento "--" in mezzo alla condizione non si può schiacciare su una riga sola
+  // (commenterebbe il resto); un blocco "/* … */" su più righe non si deve comprimere
+  const haCommento = tokens.some(
+    t => t.type === 'comment' && (t.text.startsWith('--') || t.text.includes('\n')),
+  )
+  const piatto = cleanInline(tokens.map(up).join(' ')).trim()
+  // condizione corta e senza sotto-query: resta su una riga (comportamento storico)
+  if (!haSottoQuery && !haCommento && baseIndent * unit + piatto.length <= CONDIZIONE_MAX_RIGA) {
+    return piatto ? [pad(baseIndent) + piatto] : []
+  }
+
+  const rows: string[] = []
+  let cur: Token[] = []
+  let curInd = baseIndent
+  const flush = () => {
+    if (cur.length === 0) return
+    // commento a blocco su più righe: conservato così com'è (la pulizia lo schiaccerebbe)
+    if (cur.length === 1 && cur[0].type === 'comment' && cur[0].text.includes('\n')) {
+      rows.push(pad(curInd) + cur[0].text.replace(/\s+$/, ''))
+      cur = []
+      return
+    }
+    const testo = cleanInline(cur.map(up).join(' ')).trim()
+    if (testo) rows.push(pad(curInd) + testo)
+    cur = []
+  }
+
+  let depth = 0
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]
+    if (t.type === 'comment') {
+      // storico: il "--" su riga propria resta una riga a sé, quello in coda chiude la riga
+      if (t.ownLine || cur.length === 0) {
+        flush()
+        rows.push(pad(curInd) + cleanInline(up(t)).trim())
+      } else {
+        cur.push(t)
+        if (t.text.startsWith('--')) flush()
+      }
+      continue
+    }
+    // sotto-query fra parentesi: impaginata come uno statement a clausole
+    if (t.type === 'punct' && t.text === '(') {
+      const close = closeParenOf(i)
+      if (close > i) {
+        const inner = tokens.slice(i + 1, close)
+        const primo = inner.find(x => x.type !== 'comment')
+        if (primo?.type === 'word' && ['SELECT', 'WITH'].includes(primo.text.toUpperCase())) {
+          cur.push(t)
+          flush()
+          const detailed = detailedSelectRows(
+            inner,
+            up,
+            unit,
+            pad(baseIndent + 1),
+            profile.setIndent,
+            profile,
+          )
+          const body =
+            detailed ??
+            splitStatementClauses(inner, up).flatMap(g =>
+              rowsNoDashEat(g.tokens, up).map(r => pad(baseIndent + 1) + r),
+            )
+          rows.push(...body)
+          rows.push(pad(baseIndent) + ')')
+          curInd = baseIndent + 1
+          i = close
+          continue
+        }
+      }
+      depth++
+      cur.push(t)
+      continue
+    }
+    if (t.type === 'punct' && t.text === ')') {
+      depth = Math.max(0, depth - 1)
+      cur.push(t)
+      continue
+    }
+    // AND/OR di primo livello: a capo, come nella WHERE
+    const upper = t.type === 'word' ? t.text.toUpperCase() : ''
+    if (
+      depth === 0 &&
+      cur.length > 0 &&
+      (upper === 'AND' ? profile.breakBeforeAnd : upper === 'OR' ? profile.breakBeforeOr : false)
+    ) {
+      flush()
+      curInd = baseIndent + 1
+      cur.push(t)
+      continue
+    }
+    cur.push(t)
+  }
+  flush()
+  return rows
+}
+
 // Clausole che iniziano una riga propria dentro SELECT/INSERT…SELECT/UPDATE/DELETE
 const CLAUSE_STARTERS = new Set([
   'FROM', 'WHERE', 'GROUP', 'HAVING', 'ORDER', 'UNION', 'OUTPUT', 'APPLY', 'JOIN',
   'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS',
 ])
-const JOIN_MODIFIERS = new Set(['INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS'])
+const JOIN_MODIFIERS = new Set(['INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'OUTER'])
 
 /** Riga relativa di un layout CTE (ind relativo all'indent dello statement). */
 interface CteRow {

@@ -21,6 +21,8 @@ import {
   detectVariableContext,
   extractDeclaredVariables,
   extractRoutineParameters,
+  setOptionInsertText,
+  setOptionLabel,
   systemVariablePrefixLen,
   variablePrefixLen,
 } from '../tsqlSnippets'
@@ -52,14 +54,29 @@ describe('tsqlSnippets: DECLARE @var → tipi di dato', () => {
 })
 
 describe('tsqlSnippets: SET <opzione> → ON/OFF e opzioni', () => {
+  /** Contesto "opzioni" con il testo già digitato dopo SET (maiuscolo, senza spazi ai bordi). */
+  const opzioni = (prefisso = '') => ({ kind: 'options', prefisso, sostituisci: prefisso.length })
+
   it('dopo "SET " (vuoto) → nomi delle opzioni', () => {
-    expect(detectSetContext('set ')).toEqual({ kind: 'options' })
-    expect(detectSetContext('\n    set ')).toEqual({ kind: 'options' })
+    expect(detectSetContext('set ')).toEqual(opzioni())
+    expect(detectSetContext('\n    set ')).toEqual(opzioni())
+  })
+
+  it('mentre si scrive l opzione ("SET NO", "SET STATISTICS I") → opzioni filtrate', () => {
+    expect(detectSetContext('SET NO')).toEqual(opzioni('NO'))
+    expect(detectSetContext('SET NOCOUNT')).toEqual(opzioni('NOCOUNT'))
+    expect(detectSetContext('SET STATISTICS I')).toEqual(opzioni('STATISTICS I'))
+    expect(detectSetContext('SET transaction isolation l')).toEqual(opzioni('TRANSACTION ISOLATION L'))
+    // "SET STATISTICS " (spazio, ma opzione di due parole non finita) → continuano le opzioni
+    expect(detectSetContext('SET STATISTICS ')).toEqual(opzioni('STATISTICS'))
   })
 
   it('dopo "SET NOCOUNT " → valori (ON/OFF)', () => {
     expect(detectSetContext('set nocount ')).toEqual({ kind: 'values', option: 'NOCOUNT' })
     expect(detectSetContext('set xact_abort ')).toEqual({ kind: 'values', option: 'XACT_ABORT' })
+    // opzioni di due parole: i valori arrivano quando il nome è completo
+    expect(detectSetContext('SET STATISTICS IO ')).toEqual({ kind: 'values', option: 'STATISTICS IO' })
+    expect(detectSetContext('SET TRANSACTION ISOLATION LEVEL ')).toEqual({ kind: 'values', option: 'TRANSACTION ISOLATION LEVEL' })
   })
 
   it('SET dentro UPDATE non è un\'opzione', () => {
@@ -70,8 +87,20 @@ describe('tsqlSnippets: SET <opzione> → ON/OFF e opzioni', () => {
     expect(detectSetContext('UPDATE dbo.T\nSET ')).toBeNull()
     expect(detectSetContext('UPDATE dbo.T\nSET a = ')).toBeNull()
     // il SET opzione a inizio riga (dopo GO / AS) resta un'opzione
-    expect(detectSetContext('GO\nSET ')).toEqual({ kind: 'options' })
+    expect(detectSetContext('GO\nSET ')).toEqual(opzioni())
     expect(detectSetContext('AS\nSET NOCOUNT ')).toEqual({ kind: 'values', option: 'NOCOUNT' })
+  })
+
+  it('dopo una direttiva SET già scritta il SET successivo è di nuovo un opzione', () => {
+    // caso segnalato: "SET NOCOUNT ON" e sotto "  SET XACT_ABORT ON"
+    expect(detectSetContext('AS\n  SET NOCOUNT ON\n  SET ')).toEqual(opzioni())
+    expect(detectSetContext('AS\n  SET NOCOUNT ON\n  SET XACT_ABORT ')).toEqual({ kind: 'values', option: 'XACT_ABORT' })
+    expect(detectSetContext('SET ANSI_NULLS, QUOTED_IDENTIFIER ON\nSET ')).toEqual(opzioni())
+    expect(detectSetContext('SET STATISTICS IO ON\nSET FORCEPLAN ')).toEqual({ kind: 'values', option: 'FORCEPLAN' })
+    // l'indentazione non conta
+    expect(detectSetContext('    SET NOCOUNT ON\n    SET ')).toEqual(opzioni())
+    // un'assegnazione di variabile non è una direttiva: si resta prudenti (UPDATE ... SET)
+    expect(detectSetContext('SET @x = 1\nSET ')).toBeNull()
   })
 
   it('opzioni principali presenti con ON/OFF', () => {
@@ -79,6 +108,40 @@ describe('tsqlSnippets: SET <opzione> → ON/OFF e opzioni', () => {
       const opt = TSQL_SET_OPTIONS.find(o => o.name === n)
       expect(opt).toBeDefined()
       expect(opt!.values).toEqual(['ON', 'OFF'])
+    }
+  })
+
+  it('ci sono TUTTE le istruzioni SET del manuale Microsoft', () => {
+    const nomi = TSQL_SET_OPTIONS.map(o => o.name)
+    // elenco da "SET Statements (Transact-SQL)": date/time, locking, misc, query, ISO, statistics, transactions
+    for (const n of [
+      'DATEFIRST', 'DATEFORMAT',
+      'DEADLOCK_PRIORITY', 'LOCK_TIMEOUT',
+      'CONCAT_NULL_YIELDS_NULL', 'CURSOR_CLOSE_ON_COMMIT', 'FIPS_FLAGGER', 'IDENTITY_INSERT', 'LANGUAGE', 'OFFSETS', 'QUOTED_IDENTIFIER',
+      'ARITHABORT', 'ARITHIGNORE', 'FMTONLY', 'NOCOUNT', 'NOEXEC', 'NUMERIC_ROUNDABORT', 'PARSEONLY', 'QUERY_GOVERNOR_COST_LIMIT', 'ROWCOUNT', 'TEXTSIZE',
+      'ANSI_DEFAULTS', 'ANSI_NULL_DFLT_OFF', 'ANSI_NULL_DFLT_ON', 'ANSI_NULLS', 'ANSI_PADDING', 'ANSI_WARNINGS',
+      'FORCEPLAN', 'SHOWPLAN_ALL', 'SHOWPLAN_TEXT', 'SHOWPLAN_XML', 'STATISTICS IO', 'STATISTICS XML', 'STATISTICS PROFILE', 'STATISTICS TIME',
+      'IMPLICIT_TRANSACTIONS', 'REMOTE_PROC_TRANSACTIONS', 'TRANSACTION ISOLATION LEVEL', 'XACT_ABORT',
+    ]) {
+      expect(nomi, `manca SET ${n}`).toContain(n)
+    }
+  })
+
+  it('accettando un opzione la direttiva si completa da sola (SET NOCOUNT ON)', () => {
+    const nocount = TSQL_SET_OPTIONS.find(o => o.name === 'NOCOUNT')!
+    expect(setOptionInsertText(nocount)).toBe('NOCOUNT ON')
+    expect(setOptionLabel(nocount)).toBe('SET NOCOUNT ON')
+    const xact = TSQL_SET_OPTIONS.find(o => o.name === 'XACT_ABORT')!
+    expect(setOptionLabel(xact)).toBe('SET XACT_ABORT ON')
+    // le opzioni che vogliono un valore non se lo inventano: si propongono i valori
+    const df = TSQL_SET_OPTIONS.find(o => o.name === 'DATEFORMAT')!
+    expect(setOptionInsertText(df)).toBe('DATEFORMAT')
+    expect(setOptionLabel(df)).toBe('SET DATEFORMAT')
+    const iso = TSQL_SET_OPTIONS.find(o => o.name === 'TRANSACTION ISOLATION LEVEL')!
+    expect(setOptionInsertText(iso)).toBe('TRANSACTION ISOLATION LEVEL')
+    // il valore predefinito è uno di quelli proposti
+    for (const o of TSQL_SET_OPTIONS) {
+      if (o.predefinito) expect(o.values).toContain(o.predefinito)
     }
   })
 

@@ -40,18 +40,20 @@ export function Toggle({
   onChange,
   label,
   title,
+  ...rest
 }: {
   checked: boolean
   onChange: (v: boolean) => void
   label?: string
   title?: string
-}) {
+} & Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onChange'>) {
   return (
     <button
       type="button"
       title={title}
       onClick={() => onChange(!checked)}
       className="flex items-center gap-2 text-sm text-zinc-300 transition-colors hover:text-zinc-100"
+      {...rest}
     >
       <span
         className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${

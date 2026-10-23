@@ -2,15 +2,80 @@ import { describe, expect, it } from 'vitest'
 import {
   buildTabClosePlan,
   countClosableTabs,
+  graphTabIndex,
   insertTabAfterActive,
   insertTabAt,
   newTabIndex,
   newTabIndexFor,
+  reportTabIndex,
+  risultatiVisibiliPer,
+  searchTabIndex,
 } from '../tabOps'
 import type { EditorTab } from '../types'
 import appSource from '../App.tsx?raw'
 
 const tab = (id: string, pinned = false): EditorTab => ({ id, title: id, sql: '', pinned })
+
+describe('tab di RICERCA (la ricerca si apre in una tab, non in una finestra)', () => {
+  it('searchTabIndex trova la tab di ricerca e -1 se non c\'è', () => {
+    const tabs = [tab('A'), { ...tab('R'), kind: 'search' as const }, tab('B')]
+    expect(searchTabIndex(tabs)).toBe(1)
+    expect(searchTabIndex([tab('A'), tab('B')])).toBe(-1)
+    expect(searchTabIndex([])).toBe(-1)
+  })
+
+  it('una tab di query (kind assente) non viene scambiata per la ricerca', () => {
+    expect(searchTabIndex([{ ...tab('A'), kind: 'query' }, tab('B')])).toBe(-1)
+  })
+
+  it('reportTabIndex trova la tab del report tabelle (che non va duplicata)', () => {
+    const tabs = [tab('A'), { ...tab('R'), kind: 'report' as const }, { ...tab('S'), kind: 'search' as const }]
+    expect(reportTabIndex(tabs)).toBe(1)
+    expect(reportTabIndex([tab('A'), tab('B')])).toBe(-1)
+    expect(reportTabIndex([])).toBe(-1)
+  })
+
+  it('App: il report tabelle vive in una tab, non in una finestra modale', () => {
+    // richiesta utente: "la form si apre come le tab"
+    expect(appSource).toContain('activeTabIsReport')
+    expect(appSource).toContain('<TableReportPanel')
+    expect(appSource).toContain('reportTabIndex(editorTabs) >= 0')
+    // niente più finestra modale del report
+    expect(appSource).not.toContain('TableReportModal')
+  })
+
+  it('App: la ricerca vive in una tab e non in una finestra modale', () => {
+    // il pannello è renderizzato dentro l'area dell'editor quando la tab attiva è la ricerca
+    expect(appSource).toContain('activeTabIsSearch')
+    expect(appSource).toContain('<SearchPanel')
+    // niente più finestra modale della ricerca
+    expect(appSource).not.toContain('SearchModal')
+    expect(appSource).not.toContain('setSearchOpen')
+  })
+
+  it('graphTabIndex trova la tab del diagramma della STESSA routine', () => {
+    const diagramma = (schema: string, name: string, kind: 'procedure' | 'function'): EditorTab => ({
+      ...tab(`g-${name}`),
+      kind: 'graph',
+      routine: { schema, name, kind },
+    })
+    const tabs = [tab('A'), diagramma('dbo', 'ws_Prova', 'procedure'), diagramma('dbo', 'fn_Prova', 'function')]
+    expect(graphTabIndex(tabs, { schema: 'dbo', name: 'ws_Prova', kind: 'procedure' })).toBe(1)
+    // maiuscole/minuscole non contano
+    expect(graphTabIndex(tabs, { schema: 'DBO', name: 'WS_PROVA', kind: 'procedure' })).toBe(1)
+    // funzione diversa e schema diverso: tab distinte
+    expect(graphTabIndex(tabs, { schema: 'dbo', name: 'ws_Prova', kind: 'function' })).toBe(-1)
+    expect(graphTabIndex(tabs, { schema: 'AD', name: 'ws_Prova', kind: 'procedure' })).toBe(-1)
+    expect(graphTabIndex([tab('A')], { schema: 'dbo', name: 'ws_Prova', kind: 'procedure' })).toBe(-1)
+  })
+
+  it('App: anche il diagramma vive in una tab (non più una finestra)', () => {
+    expect(appSource).toContain('<CallGraphPanel')
+    expect(appSource).toContain("kind: 'graph'")
+    expect(appSource).not.toContain('CallGraphModal')
+    expect(appSource).not.toContain('callGraphTarget')
+  })
+})
 
 describe('TAB: chiusure multiple in stile SSMS (tasto destro)', () => {
   const tabs = [
@@ -164,11 +229,40 @@ describe('TAB: dove aprire una tab nuova (le tre posizioni)', () => {
   it('l app usa la preferenza salvata e il pulsante "a sinistra" forza la prima posizione', () => {
     expect(appSource).toContain('insertTabAt(prev, tab, activeEditorTab, dove)')
     expect(appSource).toMatch(/const dove = position \?\? newTabPositionRef\.current/)
-    // UN solo pulsante nella barra: apre a destra (dopo quella attiva)
-    expect(appSource).toMatch(/e\.shiftKey \? 'start' : 'afterActive'/)
-    expect(appSource).toContain('Nuova query (a destra, dopo quella attiva)')
+    // UN solo pulsante nella barra: apre TUTTO A DESTRA (in fondo), non accanto a quella attiva
+    expect(appSource).toMatch(/e\.shiftKey \? 'start' : 'end'/)
+    expect(appSource).toContain('Nuova query in fondo')
     // il secondo pulsante "a sinistra" è stato tolto e non deve tornare
     expect(appSource).not.toContain('PRIMA tab (a sinistra)')
     expect(appSource).not.toContain('Nuove tab a sinistra')
+  })
+})
+
+// Il pannello dei risultati è legato alla TAB (richiesta utente: "se nascondo il pannello dei
+// risultati è collegato alla tab alla cui lo faccio") e non esiste nelle tab di ricerca/diagramma.
+describe('risultatiVisibiliPer: pannello risultati legato alla tab', () => {
+  const query: EditorTab = { id: 'q', title: 'Query 1', sql: '' }
+  it('visibile di default, nascosto solo dove è stato chiuso', () => {
+    expect(risultatiVisibiliPer(query, false)).toBe(true)
+    expect(risultatiVisibiliPer({ ...query, resultsVisible: true }, false)).toBe(true)
+    expect(risultatiVisibiliPer({ ...query, resultsVisible: false }, false)).toBe(false)
+  })
+
+  it('niente pannello nelle tab di ricerca e di diagramma', () => {
+    expect(risultatiVisibiliPer({ ...query, kind: 'search' }, true)).toBe(false)
+    expect(risultatiVisibiliPer({ ...query, kind: 'graph' }, true)).toBe(false)
+    // e nemmeno se una di quelle tab avesse la preferenza "visibile"
+    expect(risultatiVisibiliPer({ ...query, kind: 'search', resultsVisible: true }, true)).toBe(false)
+  })
+
+  it('senza tab attiva il pannello non si mostra', () => {
+    expect(risultatiVisibiliPer(undefined, false)).toBe(false)
+  })
+
+  it('la scelta è salvata nella tab e Ctrl+R non tocca le altre', () => {
+    expect(appSource).toContain('resultsVisible: visibile')
+    expect(appSource).toMatch(/prev\.map\(t => \(t\.id === activeEditorTab \? \{ \.\.\.t, resultsVisible/)
+    // la visibilità non è più uno stato globale dell'app
+    expect(appSource).not.toContain('const [resultsVisible, setResultsVisible]')
   })
 })

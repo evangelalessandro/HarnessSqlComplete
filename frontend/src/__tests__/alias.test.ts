@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest'
 import * as monaco from 'monaco-editor'
 import { buildQualifiedColumnSuggestions, qualifierBeforeDot } from '../helpers'
 import { provideSqlCompletions } from '../sqlCompletions'
-import { extractCteTables, extractLocalTables } from '../localTables'
+import { extractCteTables, extractDerivedTables, extractLocalTables } from '../localTables'
 import type { DatabaseSummary } from '../types'
 import { demoStoreLikeSummary } from './schema'
 import kittingReturn from './fixtures/routine_ws_CIDEDO_HUSOBUME_KIPEVUBEGUSEV_St1_GIVOSEB.sql?raw'
@@ -108,6 +108,115 @@ select * from #tmpMission where #tmpMission.`
 
   it('qualificatore sconosciuto → nessun campo', () => {
     expect(campi('select * from dbo.DAT_UDC pippo where zzz.', base)).toEqual([])
+  })
+})
+
+describe('alias di una tabella DERIVATA "(select …) t" (caso segnalato)', () => {
+  // Segnalato dall'utente: in una store con
+  //   inner join (select dbo.fn_Custom_getBaiaVnaIngresso() X_BAIA) t on 1 = 1
+  //   … GM_PIAZZOLA = t.x_baia
+  // scrivendo "t." non compariva X_BAIA (la sottoquery con alias non era risolta).
+  const SQL = `select distinct
+   top 1
+    UDC_UDC         X_UDC
+   ,SCO_SSCC_SOURCE X_SSCC
+   ,GM_MODULO       X_MODULO
+ from dbo.DAT_UDC
+   inner join (select dbo.fn_Prova() X_BAIA) t on 1 = 1
+   inner join dbo.GESTORI_MODULI on GM_PIAZZOLA = t.x_baia
+ where UDC_UDC = @pOutNewLu`
+
+  /** Come fa il provider: CTE, temporanee e tabelle derivate entrano nel sommario. */
+  function conDerivate(stmt: string): DatabaseSummary {
+    const note = base.tables
+    return {
+      ...base,
+      tables: [
+        ...extractCteTables(stmt, note),
+        ...base.tables,
+        ...extractLocalTables(stmt, note),
+        ...extractDerivedTables(stmt, [...note, ...extractLocalTables(stmt, note)]),
+      ],
+    }
+  }
+
+  it('"t." propone la colonna della sottoquery (caso utente, in una ON)', () => {
+    const offset = SQL.indexOf('t.x_baia') + 't.'.length
+    const res = suggest(SQL, offset, conDerivate(SQL))
+    const nomi = res!.suggestions.map(s => String(s.label))
+    expect(nomi).toEqual(['X_BAIA'])
+  })
+
+  it('"t." funziona anche nella select-list e con alias in maiuscolo o fra parentesi', () => {
+    for (const stmt of [
+      'select t. from (select UDC_UDC X_BAIA from dbo.DAT_UDC) t',
+      'select t. from (select UDC_UDC AS X_BAIA from dbo.DAT_UDC) as T',
+      'select t. from (select UDC_UDC X_BAIA from dbo.DAT_UDC) [t]',
+      'select t. from dbo.DAT_UDC d cross apply (select dbo.fn_Prova() X_BAIA) t',
+    ]) {
+      const res = suggest(stmt, stmt.indexOf('t.') + 2, conDerivate(stmt))
+      expect(res!.suggestions.map(s => String(s.label)), stmt).toEqual(['X_BAIA'])
+    }
+  })
+
+  it('dentro una routine (forma della store segnalata): "… on GM_PIAZZOLA = t.x_baia"', () => {
+    const sql = `CREATE OR ALTER procedure dbo.sp_Prova
+(
+   @pRIG_RIGA int
+)
+as
+  select distinct top 1
+     UDC_UDC X_UDC
+    ,GM_MODULO X_MODULO
+  from dbo.DAT_UDC
+    inner join (select dbo.fn_Prova() X_BAIA) t on 1 = 1
+    inner join dbo.GESTORI_MODULI on GM_PIAZZOLA = t.x_baia
+  where UDC_UDC = @pRIG_RIGA`
+    const res = suggest(sql, sql.indexOf('t.x_baia') + 2, conDerivate(sql))
+    expect(res!.suggestions.map(s => String(s.label))).toEqual(['X_BAIA'])
+  })
+
+  it('"select * from …" dentro la derivata: le colonne arrivano dalla tabella dello schema', () => {
+    // nome QUALIFICATO ("dbo.DAT_UDC"): il token dopo FROM è "dbo", non la tabella
+    const stmt = 'select t. from (select * from dbo.DAT_UDC) t'
+    const attese = base.tables.find(t => t.name === 'DAT_UDC')!.columns!.map(c => c.name)
+    const derivate = extractDerivedTables(stmt, base.tables)
+    expect(derivate.map(t => t.name)).toEqual(['t'])
+    expect(derivate[0].columns!.map(c => c.name)).toEqual(attese)
+    // e il provider, in una select-list, propone QUELLE colonne (non l'elenco generico)
+    expect(suggest(stmt, stmt.indexOf('t.') + 2, conDerivate(stmt))!.suggestions.map(s => String(s.label))).toEqual(
+      attese,
+    )
+  })
+
+  it('CTE con "select * from <schema>.<tabella>": le colonne si risolvono lo stesso', () => {
+    const stmt = 'with c as (select * from dbo.DAT_UDC) select * from c where c.'
+    expect(campi(stmt)).toEqual(base.tables.find(t => t.name === 'DAT_UDC')!.columns!.map(c => c.name))
+  })
+
+  it('"select * from …" dentro la derivata: anche da una TEMPORANEA del testo', () => {
+    const stmt = `select UDC_UDC, UDC_CORRIDOIO into #tmpB from dbo.DAT_UDC
+select t. from (select * from #tmpB) t`
+    const nomi = suggest(stmt, stmt.indexOf('t.') + 2, conDerivate(stmt))!.suggestions.map(s => String(s.label))
+    expect(nomi).toEqual(['UDC_UDC', 'UDC_CORRIDOIO'])
+  })
+
+  it('una parentesi su un join non crea una finta tabella', () => {
+    // "(a join b on …) x" non ha una select-list: nessuna tabella derivata.
+    // Il qualificatore "x." resta sconosciuto e il popup mostra l'elenco generico
+    // (per progetto non resta mai vuoto), ma NON le colonne di a/b.
+    const stmt = 'select x. from (dbo.DAT_UDC a inner join dbo.GESTORI_MODULI b on 1 = 1) x'
+    expect(extractDerivedTables(stmt)).toEqual([])
+    expect(extractDerivedTables(stmt, base.tables)).toEqual([])
+  })
+
+  it('una derivata senza alias non crea nulla', () => {
+    expect(extractDerivedTables('select * from (select UDC_UDC from dbo.DAT_UDC)')).toEqual([])
+  })
+
+  it('"where (a = 1) and b" non viene scambiata per una derivata', () => {
+    const stmt = 'select * from dbo.DAT_UDC where (UDC_UDC = 1) and UDC_CORRIDOIO = 2'
+    expect(extractDerivedTables(stmt)).toEqual([])
   })
 })
 

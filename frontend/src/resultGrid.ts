@@ -8,11 +8,14 @@
  * restano fisse mentre si scorre in orizzontale, quindi devono coprire ciò che passa sotto.
  * La differenza fra i tre toni deve RESTARE VISIBILE: con due soli toni molto vicini
  * (zinc-950 e zinc-900 al 50%) le fasce non si distinguevano.
+ *
+ * I COLORI stanno in index.css (`.sql-zebra-*`) e non qui: così seguono il TEMA chiaro/scuro.
+ * Prima erano valori espliciti (`bg-[#17171b]`) e cambiando tema le righe restavano scure.
  */
-export const ZEBRA_CLASSES = ['bg-[#0b0b0e]', 'bg-[#17171b]', 'bg-[#23232a]'] as const
+export const ZEBRA_CLASSES = ['sql-zebra-0', 'sql-zebra-1', 'sql-zebra-2'] as const
 
-/** Sfondo della riga selezionata (opaco, come le fasce alternate). */
-export const SELECTED_ROW_CLASS = 'bg-sky-950'
+/** Sfondo della riga selezionata (opaco, come le fasce alternate e come loro legato al tema). */
+export const SELECTED_ROW_CLASS = 'sql-row-selected'
 
 /** Sfondo della riga: la selezione ha la precedenza, altrimenti fascia alternata a 3. */
 export function rowBackgroundClass(rowIndex: number, selected: boolean): string {

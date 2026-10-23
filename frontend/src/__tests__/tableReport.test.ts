@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { compareTableReport, sortTableReport } from '../helpers'
+import {
+  compareTableReport,
+  filtraTabelleReport,
+  scriptDeleteTablesContent,
+  sortTableReport,
+  topTablesBySize,
+} from '../helpers'
 import type { TableReportRow } from '../types'
 
 function mkRow(name: string, partial: Partial<TableReportRow> = {}): TableReportRow {
@@ -51,5 +57,90 @@ describe('Report tabelle: ordinamento per colonna selezionata', () => {
 
   it('compare numerici: differenza diretta', () => {
     expect(compareTableReport(mkRow('A', { reads: 5 }), mkRow('B', { reads: 9 }), 'reads')).toBe(-4)
+  })
+})
+
+// ISTOGRAMMA: le 20 tabelle più pesanti (richiesta utente: "anche un istogramma con quelle 20 più
+// pesanti") e SVUOTAMENTO del contenuto delle tabelle selezionate, in una nuova tab.
+describe('Report tabelle: istogramma delle più pesanti', () => {
+  it('ordina per spazio RISERVATO, dalla più grande, e taglia a 20', () => {
+    const rows = Array.from({ length: 25 }, (_, i) =>
+      mkRow(`T${String(i).padStart(2, '0')}`, { reservedKb: (i + 1) * 100, dataKb: (i + 1) * 10 }),
+    )
+    const top = topTablesBySize(rows)
+    expect(top).toHaveLength(20)
+    expect(top[0].name).toBe('T24')
+    expect(top[19].name).toBe('T05')
+    for (let i = 1; i < top.length; i++) expect(top[i - 1].reservedKb).toBeGreaterThanOrEqual(top[i].reservedKb)
+  })
+
+  it('lascia fuori le tabelle vuote e usa il nome come spareggio', () => {
+    const rows = [
+      mkRow('Vuota'),
+      mkRow('Pari_B', { reservedKb: 500 }),
+      mkRow('Pari_A', { reservedKb: 500 }),
+      mkRow('Grande', { reservedKb: 900 }),
+    ]
+    expect(topTablesBySize(rows).map(r => r.name)).toEqual(['Grande', 'Pari_A', 'Pari_B'])
+  })
+
+  it('il numero di barre si può chiedere diverso da 20', () => {
+    const rows = [mkRow('A', { reservedKb: 3 }), mkRow('B', { reservedKb: 2 })]
+    expect(topTablesBySize(rows, 1).map(r => r.name)).toEqual(['A'])
+    expect(topTablesBySize(rows, 0)).toEqual([])
+  })
+
+  // Richiesta utente: "il grafico, fallo che si filtra con la ricerca" — l'istogramma usa le
+  // stesse righe filtrate dell'elenco (filtro per nome, anche "schema.nome").
+  it('il filtro per nome alimenta sia l elenco sia l istogramma', () => {
+    const rows = [
+      mkRow('DAT_UDC', { reservedKb: 900 }),
+      mkRow('MAG_CELLE', { reservedKb: 500 }),
+      mkRow('DAT_UDC_CEL', { reservedKb: 300 }),
+      { ...mkRow('ALTRO', { reservedKb: 100 }), schema: 'staging' },
+    ]
+    const filtrate = filtraTabelleReport(rows, 'dat_udc')
+    expect(filtrate.map(r => r.name)).toEqual(['DAT_UDC', 'DAT_UDC_CEL'])
+    expect(topTablesBySize(filtrate).map(r => r.name)).toEqual(['DAT_UDC', 'DAT_UDC_CEL'])
+    // si può filtrare anche con lo schema
+    expect(filtraTabelleReport(rows, 'staging.altro').map(r => r.name)).toEqual(['ALTRO'])
+  })
+
+  it('filtro vuoto (o solo spazi) = tutte le tabelle', () => {
+    const rows = [mkRow('A', { reservedKb: 1 }), mkRow('B', { reservedKb: 2 })]
+    expect(filtraTabelleReport(rows, '')).toHaveLength(2)
+    expect(filtraTabelleReport(rows, '   ')).toHaveLength(2)
+    expect(filtraTabelleReport(rows, 'zzz')).toEqual([])
+  })
+})
+
+describe('Report tabelle: script DELETE del contenuto delle selezionate', () => {
+  const scelte = [
+    { schema: 'dbo', name: 'STA_STORICO', rowCount: 1234567, dataKb: 2 * 1024 * 1024, reservedKb: 3 * 1024 * 1024 },
+    { schema: 'dbo', name: 'DAT_UDC', rowCount: 42, dataKb: 512, reservedKb: 1024 },
+    { schema: 'usr', name: 'T', rowCount: 0 },
+  ]
+
+  it('un DELETE FROM per ogni tabella, fra parentesi quadre e chiuso da ;', () => {
+    const sql = scriptDeleteTablesContent(scelte)
+    expect(sql).toContain('DELETE FROM [dbo].[STA_STORICO];')
+    expect(sql).toContain('DELETE FROM [dbo].[DAT_UDC];')
+    expect(sql).toContain('DELETE FROM [usr].[T];')
+    expect(sql.match(/DELETE FROM/g)).toHaveLength(3)
+  })
+
+  it('dice cosa si sta cancellando (righe e spazio) e avvisa che è irreversibile', () => {
+    const sql = scriptDeleteTablesContent(scelte)
+    expect(sql).toContain('Svuota il contenuto di 3 tabelle')
+    expect(sql).toContain('1.234.567 righe') // separatori italiani
+    expect(sql).toContain('2.0 GB di dati')
+    expect(sql).toContain('3.0 GB su disco')
+    expect(sql).toContain('non si possono recuperare')
+    expect(sql).toContain('chiavi esterne entranti')
+  })
+
+  it('con una sola tabella il testo è al singolare e senza selezione non genera nulla', () => {
+    expect(scriptDeleteTablesContent([scelte[0]])).toContain('Svuota il contenuto di 1 tabella:')
+    expect(scriptDeleteTablesContent([])).toBe('')
   })
 })

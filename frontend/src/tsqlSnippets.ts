@@ -1,6 +1,8 @@
 // Snippet e suggerimenti contestuali T-SQL (manuale Microsoft, SQL 2019 e superiore):
 // tipi di dato per DECLARE, opzioni SET con i valori possibili, snippet per ALTER TABLE.
 
+import { stripSqlNoise } from './sqlGen'
+
 export interface TypeSuggestion {
   name: string
   detail: string
@@ -49,39 +51,79 @@ export interface SetOptionSuggestion {
   name: string
   detail: string
   values: string[]
+  /**
+   * Valore con cui la direttiva si scrive normalmente (es. NOCOUNT → ON): accettando il
+   * suggerimento l'opzione si completa da sola ("SET NOCOUNT ON") invece di lasciare la riga a
+   * metà. Manca dove il valore va scelto di volta in volta (DATEFORMAT, LOCK_TIMEOUT,
+   * TRANSACTION ISOLATION LEVEL…): in quel caso si propongono i valori dopo lo spazio.
+   */
+  predefinito?: string
 }
 
-/** Opzioni SET (statement SET a inizio statement) con i valori possibili. */
+/**
+ * Opzioni SET (elenco completo delle istruzioni SET di SQL Server, dal manuale Microsoft:
+ * "SET Statements (Transact-SQL)"), con i valori possibili e il valore con cui la direttiva si
+ * scrive di solito. Le prime due sono quelle che aprono quasi tutte le stored procedure.
+ */
 export const TSQL_SET_OPTIONS: SetOptionSuggestion[] = [
-  { name: 'NOCOUNT', detail: 'evita il messaggio "righe interessate"', values: ['ON', 'OFF'] },
-  { name: 'XACT_ABORT', detail: 'rollback automatico su errore runtime', values: ['ON', 'OFF'] },
-  { name: 'ANSI_NULLS', detail: 'confronti con NULL secondo lo standard', values: ['ON', 'OFF'] },
-  { name: 'QUOTED_IDENTIFIER', detail: 'identificatori tra doppi apici', values: ['ON', 'OFF'] },
-  { name: 'ANSI_PADDING', detail: 'spaziatura dei valori', values: ['ON', 'OFF'] },
-  { name: 'ANSI_WARNINGS', detail: 'avvisi standard (divisione per zero…)', values: ['ON', 'OFF'] },
-  { name: 'ANSI_NULL_DFLT_ON', detail: 'colonne NULL per default', values: ['ON', 'OFF'] },
-  { name: 'ANSI_NULL_DFLT_OFF', detail: 'colonne NOT NULL per default', values: ['ON', 'OFF'] },
-  { name: 'ARITHABORT', detail: 'termina la query su errore aritmetico', values: ['ON', 'OFF'] },
-  { name: 'ARITHIGNORE', detail: 'ignora gli errori aritmetici', values: ['ON', 'OFF'] },
-  { name: 'CONCAT_NULL_YIELDS_NULL', detail: 'concatenazione con NULL → NULL', values: ['ON', 'OFF'] },
-  { name: 'CURSOR_CLOSE_ON_COMMIT', detail: 'chiude i cursori al COMMIT', values: ['ON', 'OFF'] },
-  { name: 'IMPLICIT_TRANSACTIONS', detail: 'transazioni implicite', values: ['ON', 'OFF'] },
-  { name: 'NUMERIC_ROUNDABORT', detail: 'errore su arrotondamento', values: ['ON', 'OFF'] },
-  { name: 'NOEXEC', detail: 'compila ma non esegue', values: ['ON', 'OFF'] },
-  { name: 'PARSEONLY', detail: 'solo controllo sintassi', values: ['ON', 'OFF'] },
-  { name: 'FMTONLY', detail: 'solo metadati', values: ['ON', 'OFF'] },
-  { name: 'STATISTICS IO', detail: 'attività I/O', values: ['ON', 'OFF'] },
-  { name: 'STATISTICS TIME', detail: 'tempi di esecuzione', values: ['ON', 'OFF'] },
-  { name: 'STATISTICS PROFILE', detail: 'profilo di esecuzione', values: ['ON', 'OFF'] },
-  { name: 'IDENTITY_INSERT', detail: 'inserimento esplicito di valori identity', values: ['ON', 'OFF'] },
+  { name: 'NOCOUNT', detail: 'evita il messaggio "righe interessate"', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'XACT_ABORT', detail: 'rollback automatico su errore runtime', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ANSI_NULLS', detail: 'confronti con NULL secondo lo standard', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'QUOTED_IDENTIFIER', detail: 'identificatori tra doppi apici', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ANSI_PADDING', detail: 'spaziatura dei valori', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ANSI_WARNINGS', detail: 'avvisi standard (divisione per zero…)', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ANSI_NULL_DFLT_ON', detail: 'colonne NULL per default', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ANSI_NULL_DFLT_OFF', detail: 'colonne NOT NULL per default', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ANSI_DEFAULTS', detail: 'attiva in blocco le opzioni ISO (ANSI_NULLS, ANSI_PADDING…)', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ARITHABORT', detail: 'termina la query su errore aritmetico', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'ARITHIGNORE', detail: 'ignora gli errori aritmetici', values: ['ON', 'OFF'], predefinito: 'OFF' },
+  { name: 'CONCAT_NULL_YIELDS_NULL', detail: 'concatenazione con NULL → NULL', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'CURSOR_CLOSE_ON_COMMIT', detail: 'chiude i cursori al COMMIT', values: ['ON', 'OFF'], predefinito: 'OFF' },
+  { name: 'IMPLICIT_TRANSACTIONS', detail: 'transazioni implicite', values: ['ON', 'OFF'], predefinito: 'OFF' },
+  { name: 'NUMERIC_ROUNDABORT', detail: 'errore su arrotondamento', values: ['ON', 'OFF'], predefinito: 'OFF' },
+  { name: 'REMOTE_PROC_TRANSACTIONS', detail: 'transazione distribuita per le procedure remote', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'NOEXEC', detail: 'compila ma non esegue', values: ['ON', 'OFF'], predefinito: 'OFF' },
+  { name: 'PARSEONLY', detail: 'solo controllo sintassi', values: ['ON', 'OFF'], predefinito: 'OFF' },
+  { name: 'FMTONLY', detail: 'solo metadati (deprecata)', values: ['ON', 'OFF'], predefinito: 'OFF' },
+  { name: 'FORCEPLAN', detail: 'rispetta l\'ordine dei JOIN nella FROM', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'SHOWPLAN_ALL', detail: 'piano di esecuzione stimato, in formato testo', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'SHOWPLAN_TEXT', detail: 'piano di esecuzione stimato, in testo semplice', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'SHOWPLAN_XML', detail: 'piano di esecuzione stimato, in XML', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'OFFSETS', detail: 'offset delle colonne nei comandi DB-Library (deprecata)', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'FIPS_FLAGGER', detail: 'controllo di conformità FIPS (deprecata)', values: ['OFF', 'ENTRY', 'INTERMEDIATE', 'FULL'], predefinito: 'OFF' },
+  { name: 'STATISTICS IO', detail: 'attività I/O', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'STATISTICS TIME', detail: 'tempi di esecuzione', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'STATISTICS PROFILE', detail: 'profilo di esecuzione', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'STATISTICS XML', detail: 'piano di esecuzione reale, in XML', values: ['ON', 'OFF'], predefinito: 'ON' },
+  { name: 'IDENTITY_INSERT', detail: 'inserimento esplicito di valori identity (serve la tabella: SET IDENTITY_INSERT dbo.T ON)', values: ['ON', 'OFF'] },
   { name: 'LOCK_TIMEOUT', detail: 'millisecondi di attesa sui lock (-1 = infinito)', values: ['-1', '0', '5000'] },
   { name: 'ROWCOUNT', detail: 'numero massimo di righe processate', values: ['0', '100', '1000'] },
+  { name: 'TEXTSIZE', detail: 'dimensione massima dei dati text/ntext/image restituiti', values: ['0', '4096', '64512', '2147483647'] },
+  { name: 'QUERY_GOVERNOR_COST_LIMIT', detail: 'costo massimo stimato di una query', values: ['0', '100', '1000'] },
   { name: 'DATEFORMAT', detail: 'ordine giorno/mese/anno', values: ['dmy', 'mdy', 'ymd', 'dym', 'myd', 'ydm'] },
   { name: 'DATEFIRST', detail: 'primo giorno della settimana', values: ['1', '7'] },
   { name: 'LANGUAGE', detail: 'lingua delle sessioni', values: ["'Italian'", "'English'", "'German'", "'French'", "'Spanish'"] },
   { name: 'DEADLOCK_PRIORITY', detail: 'priorità nei deadlock', values: ['LOW', 'NORMAL', 'HIGH'] },
+  { name: 'CONTEXT_INFO', detail: 'valore binario di sessione (fino a 128 byte)', values: ['0x0'] },
   { name: 'TRANSACTION ISOLATION LEVEL', detail: 'livello di isolamento', values: ['READ COMMITTED', 'READ UNCOMMITTED', 'REPEATABLE READ', 'SNAPSHOT', 'SERIALIZABLE'] },
 ]
+
+/**
+ * Direttiva completa da inserire accettando il suggerimento di un'opzione SET:
+ * "NOCOUNT ON" (il "SET" davanti è già scritto nel documento), oppure solo il nome quando il
+ * valore va scelto ("DATEFORMAT", "TRANSACTION ISOLATION LEVEL").
+ */
+export function setOptionInsertText(opt: SetOptionSuggestion): string {
+  return opt.predefinito ? `${opt.name} ${opt.predefinito}` : opt.name
+}
+
+/** Etichetta del suggerimento: la direttiva intera, come la si legge nel documento. */
+export function setOptionLabel(opt: SetOptionSuggestion): string {
+  return `SET ${setOptionInsertText(opt)}`
+}
+
+/** Nomi delle opzioni SET in forma di regex ("STATISTICS IO" → "STATISTICS\s+IO"). */
+const SET_OPTION_NAMES = TSQL_SET_OPTIONS.map(o => o.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')).join('|')
 
 export interface AlterTableSnippet {
   label: string
@@ -115,13 +157,24 @@ export function detectDeclareTypeContext(textBefore: string): boolean {
   return /^@[A-Za-z_][\w]*(\s+AS)?(\s+[A-Za-z_][\w]*)?$/i.test(tail)
 }
 
-export type SetContext = { kind: 'options' } | { kind: 'values'; option: string }
+export type SetContext =
+  /**
+   * Dopo "SET " (anche con l'opzione scritta a metà: "SET NO", "SET STATISTICS I") si propongono
+   * le opzioni. `prefisso` è il testo già digitato (maiuscolo, senza spazi ai bordi) e
+   * `sostituisci` quanti caratteri sostituire accettando il suggerimento: così anche le opzioni di
+   * due parole ("STATISTICS IO") si completano senza duplicare quello che c'è già.
+   */
+  | { kind: 'options'; prefisso: string; sostituisci: number }
+  /** Dopo "SET <opzione> " (spazio finale) si propongono i VALORI dell'opzione. */
+  | { kind: 'values'; option: string }
 
 /**
- * Contesto SET a inizio statement: dopo "SET " → nomi opzioni; dopo "SET <opzione> " → valori (ON/OFF…).
+ * Contesto SET a inizio statement: dopo "SET " → opzioni; dopo "SET <opzione> " → valori (ON/OFF…).
  * Il SET è "a inizio statement" anche quando è su una riga NUOVA solo se la riga precedente
- * chiude uno statement (vuota, ';', GO/BEGIN/END/AS/ELSE…): NON se continua un UPDATE
- * ("UPDATE dbo.T\nSET " deve proporre le colonne della tabella, non le opzioni SET).
+ * chiude uno statement (vuota, ';', GO/BEGIN/END/AS/ELSE…, oppure una direttiva SET già scritta:
+ * due SET di fila, "SET NOCOUNT ON" e sotto "SET XACT_ABORT ON", sono due statement distinti):
+ * NON se continua un UPDATE ("UPDATE dbo.T\nSET " deve proporre le colonne della tabella, non le
+ * opzioni SET).
  */
 export function detectSetContext(textBefore: string): SetContext | null {
   const lastNl = textBefore.lastIndexOf('\n')
@@ -132,22 +185,205 @@ export function detectSetContext(textBefore: string): SetContext | null {
     const closesStatement =
       prevLine === '' ||
       /;$/.test(prevLine) ||
-      /^(?:GO|BEGIN|END|ELSE|AS|THEN|DO|TRY|CATCH)\b/i.test(prevLine)
+      /^\s*(?:GO|BEGIN|END|ELSE|AS|THEN|DO|TRY|CATCH)\b/i.test(prevLine) ||
+      // direttiva SET già scritta ("SET NOCOUNT ON", "SET ANSI_NULLS, QUOTED_IDENTIFIER ON")
+      new RegExp(`^SET\\s+(?:${SET_OPTION_NAMES})\\b`, 'i').test(prevLine.trimStart())
     if (!closesStatement) {
       // la riga precedente continua lo statement: il SET non è un'opzione
       eff = before + ' ' + textBefore.slice(lastNl + 1)
     }
   }
   const boundary = '(?:^|;|\\bGO\\b|\\n)[ \\t]*'
-  if (new RegExp(boundary + 'SET\\s*$', 'i').test(eff)) return { kind: 'options' }
-  const m = new RegExp(boundary + 'SET\\s+([A-Za-z_@][\\w]*)\\s*$', 'i').exec(eff)
-  if (m) return { kind: 'values', option: m[1].toUpperCase() }
-  return null
+  const m = new RegExp(boundary + 'SET\\b([ \\t]*)([^\\n;]*)$', 'i').exec(eff)
+  if (!m) return null
+  const resto = m[2]
+  const senzaSpaziFinali = resto.replace(/[ \t]+$/, '')
+  const testo = senzaSpaziFinali.trim().toUpperCase()
+  // un'opzione SET è una sequenza di lettere (anche su più parole): qualunque altra cosa
+  // ("SET @x = 1", "SET NOCOUNT = 1") non è una direttiva e la lasciano gestire agli altri
+  // suggerimenti (es. le variabili dopo "SET @")
+  if (testo !== '' && !/^[A-Z_][A-Z0-9_ ]*$/.test(testo)) return null
+  // "SET NOCOUNT " (spazio dopo un'opzione completa) → si propongono i valori
+  if (testo !== '' && resto.length > senzaSpaziFinali.length && TSQL_SET_OPTIONS.some(o => o.name.toUpperCase() === testo)) {
+    return { kind: 'values', option: testo }
+  }
+  return { kind: 'options', prefisso: testo, sostituisci: testo.length }
 }
 
 /** True subito dopo "ALTER TABLE <tabella> " (per proporre gli snippet). */
 export function detectAlterTableContext(textBefore: string): boolean {
   return /(?:^|;|\bGO\b|\n)[ \t]*ALTER\s+TABLE\s+(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?\s*$/i.test(textBefore)
+}
+
+/** Nome di tabella qualificato: "T", "dbo.T", "[dbo].[T]". */
+const NOME_TABELLA = '(?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*(?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*))?'
+/** Nome (anche parziale) già digitato dopo COLUMN / CONSTRAINT. */
+const NOME_PARZIALE = '(?:\\[[^\\]]*|[A-Za-z_][A-Za-z0-9_]*)'
+
+export type AlterTableDropContext =
+  /** Subito dopo "… DROP " (o con la parola chiave a metà): si propongono COLUMN e CONSTRAINT. */
+  | { kind: 'keywords'; senzaTable?: boolean; tableAt?: number }
+  /** Dopo "… DROP COLUMN " (o a metà del nome): si propongono le colonne della tabella. */
+  | { kind: 'column'; schema: string; table: string; senzaTable?: boolean; tableAt?: number }
+  /** Dopo "… DROP CONSTRAINT ": si propongono i vincoli della tabella (CHECK, FK, PK, UNIQUE…). */
+  | { kind: 'constraint'; schema: string; table: string; senzaTable?: boolean; tableAt?: number }
+
+/** Divide "dbo.T" / "[dbo].[T]" in schema e tabella (schema '' se non indicato). */
+export function splitQualifiedName(nome: string): { schema: string; table: string } {
+  const parti = nome.split('.').map(p => p.trim().replace(/^\[|\]$/g, ''))
+  return parti.length > 1 ? { schema: parti[0], table: parti[1] } : { schema: '', table: parti[0] }
+}
+
+/** "[dbo].[DAT_UDC]": nome qualificato con parentesi quadre, come serve a OBJECT_ID. */
+export function quotedQualifiedName(nome: string): string {
+  const { schema, table } = splitQualifiedName(nome)
+  const t = `[${table.replace(/\]/g, ']]')}]`
+  return schema ? `[${schema.replace(/\]/g, ']]')}].${t}` : t
+}
+
+/** Caratteri che in uno snippet Monaco vanno protetti (altrimenti diventano segnaposto). */
+function escapeSnippet(text: string): string {
+  return text.replace(/\\/g, '\\\\').replace(/\$/g, '\\$').replace(/\}/g, '\\}')
+}
+
+/**
+ * SNIPPET "DROP COLUMN sicuro" (richiesta utente): elimina la colonna dopo aver tolto i vincoli
+ * collegati (DEFAULT/CHECK sulla colonna, CHECK che la citano, chiavi esterne uscenti, PK/UNIQUE
+ * fatte sulla sola colonna) e controlla che la colonna esista ancora.
+ * Il nome della tabella è già quello dello statement; la colonna è dichiarata in UNA variabile
+ * (@colonna, il segnaposto si scrive una volta sola) e usata sotto da tutte le query.
+ */
+export function dropColumnSnippet(tabella: string): string {
+  const t = quotedQualifiedName(tabella)
+  // La colonna si scrive con un token che sopravvive all'escaping: il segnaposto Monaco
+  // ${1:colonna} si mette DOPO, altrimenti verrebbe protetto come testo normale.
+  const col = '__COLONNA__'
+  const sql = `/* DROP COLUMN sicuro: prima i vincoli collegati, controllando che la colonna esista */
+DECLARE @colonna SYSNAME = N'${col}'; /* nome senza parentesi quadre: le aggiunge QUOTENAME */
+
+IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'${t}') AND name = @colonna)
+BEGIN
+  DECLARE @drop NVARCHAR(MAX) = N'';
+
+  /* DEFAULT legati alla singola colonna (sys.default_constraints: ha parent_column_id) */
+  SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(dc.name) + N';' + CHAR(10)
+  FROM sys.default_constraints dc
+    INNER JOIN sys.columns c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id
+  WHERE dc.parent_object_id = OBJECT_ID(N'${t}') AND c.name = @colonna;
+
+  /* CHECK che citano la colonna: a livello colonna O di tabella (il filtro e' sulla
+     definizione: sys.objects NON ha parent_column_id, si usano le viste dei vincoli) */
+  SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(cc.name) + N';' + CHAR(10)
+  FROM sys.check_constraints cc
+  WHERE cc.parent_object_id = OBJECT_ID(N'${t}') AND cc.definition LIKE N'%' + @colonna + N'%';
+
+  /* chiavi esterne USCENTI che usano la colonna */
+  SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(fk.name) + N';' + CHAR(10)
+  FROM sys.foreign_key_columns fkc
+    INNER JOIN sys.foreign_keys fk ON fk.object_id = fkc.constraint_object_id
+  WHERE fkc.parent_object_id = OBJECT_ID(N'${t}') AND COL_NAME(fkc.parent_object_id, fkc.parent_column_id) = @colonna;
+
+  /* PK / UNIQUE fatte sulla SOLA colonna */
+  SELECT @drop = @drop + N'ALTER TABLE ${t} DROP CONSTRAINT ' + QUOTENAME(kc.name) + N';' + CHAR(10)
+  FROM sys.key_constraints kc
+    INNER JOIN sys.index_columns ic ON ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id
+  WHERE kc.parent_object_id = OBJECT_ID(N'${t}') AND ic.is_included_column = 0
+    AND COL_NAME(ic.object_id, ic.column_id) = @colonna
+  GROUP BY kc.name
+  HAVING COUNT(*) = 1;
+
+  /* la colonna: DROP COLUMN non accetta variabili, quindi entra nello script dinamico */
+  SET @drop = @drop + N'ALTER TABLE ${t} DROP COLUMN ' + QUOTENAME(@colonna) + N';' + CHAR(10);
+
+  IF @drop <> N''
+    EXEC sp_executesql @drop;
+END
+ELSE
+  PRINT N'Colonna ' + @colonna + N' non presente in ${t}: niente da fare.';`
+  // prima si protegge il testo, poi si mette il segnaposto (così resta un segnaposto vero,
+  // ripetuto: scrivendo la colonna una volta si riempie in tutte le righe)
+  return escapeSnippet(sql).split(col).join('${1:colonna}')
+}
+
+/** Tipo di vincolo collegato a una colonna (per i suggerimenti). */
+export interface VincoloCollegato {
+  name: string
+  kind: string
+}
+
+/**
+ * Vincoli che "toccano" una colonna, letti dallo schema già caricato: CHECK che la citano nella
+ * condizione, chiavi esterne (uscenti e di altre tabelle che puntano qui) e PK/UNIQUE che la
+ * contengono. Serve a dire all'utente cosa dovrà togliere prima di eliminarla.
+ */
+export function vincoliCollegati(
+  summary: { checkConstraints?: { schema: string; tableName: string; name: string; definition: string }[] | null; foreignKeys: { name: string; schema: string; table: string; column: string; refSchema: string; refTable: string; refColumn: string }[] },
+  schema: string,
+  table: string,
+  column: string,
+  indexes: { name: string; isPrimaryKey: boolean; isUnique: boolean; columns: string[] | null }[] | null | undefined,
+): VincoloCollegato[] {
+  const eq = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
+  const out: VincoloCollegato[] = []
+  const colonna = column.toLowerCase()
+  for (const cc of summary.checkConstraints ?? []) {
+    if (!eq(cc.tableName, table)) continue
+    if (schema && !eq(cc.schema, schema)) continue
+    // confronto "grezzo" ma efficace: la condizione cita il nome della colonna
+    if (!cc.definition.toLowerCase().includes(colonna)) continue
+    out.push({ name: cc.name, kind: 'CHECK' })
+  }
+  for (const fk of summary.foreignKeys) {
+    if (eq(fk.table, table) && eq(fk.column, column) && (!schema || eq(fk.schema, schema))) {
+      out.push({ name: fk.name, kind: `FOREIGN KEY → ${fk.refSchema}.${fk.refTable}.${fk.refColumn}` })
+    } else if (eq(fk.refTable, table) && eq(fk.refColumn, column)) {
+      out.push({ name: fk.name, kind: `FOREIGN KEY da ${fk.schema}.${fk.table}.${fk.column} (altra tabella)` })
+    }
+  }
+  for (const ix of indexes ?? []) {
+    if (!ix.isPrimaryKey && !ix.isUnique) continue
+    if (!(ix.columns ?? []).some(c => eq(c, column))) continue
+    out.push({ name: ix.name, kind: ix.isPrimaryKey ? 'PRIMARY KEY' : 'UNIQUE' })
+  }
+  return out
+}
+
+/**
+ * Contesto di un "ALTER TABLE <tabella> DROP …":
+ * - "DROP " (anche "DROP COL") → COLUMN / CONSTRAINT;
+ * - "DROP COLUMN [nome…]" → colonne della tabella;
+ * - "DROP CONSTRAINT [nome…]" → vincoli della tabella.
+ * La parola TABLE può mancare ("ALTER DAT_SPEDIZIONI DROP CONSTRAINT", come capita di scrivere):
+ * in quel caso il contesto viene riconosciuto lo stesso e `senzaTable`/`tableAt` dicono al
+ * chiamante dove inserirla per correggere lo statement.
+ */
+export function detectAlterTableDropContext(textBefore: string): AlterTableDropContext | null {
+  // "ALTER TABLE" oppure "ALTER" + nome (ma non ALTER PROCEDURE/VIEW/INDEX/...)
+  const testa = `ALTER\\s+(?:TABLE\\s+)?(?!(?:PROCEDURE|PROC|VIEW|FUNCTION|TRIGGER|INDEX|SCHEMA|DATABASE|SERVER|ASSEMBLY|ROLE|USER|LOGIN|PARTITION|COLUMN)\\b)`
+  const varianti: { kind: AlterTableDropContext['kind']; re: RegExp }[] = [
+    { kind: 'column', re: new RegExp(`${testa}(${NOME_TABELLA})\\s+DROP\\s+COLUMN(?:\\s+${NOME_PARZIALE})?\\s*$`, 'i') },
+    { kind: 'constraint', re: new RegExp(`${testa}(${NOME_TABELLA})\\s+DROP\\s+CONSTRAINT(?:\\s+${NOME_PARZIALE})?\\s*$`, 'i') },
+    { kind: 'keywords', re: new RegExp(`${testa}(${NOME_TABELLA})\\s+DROP\\s*$`, 'i') },
+  ]
+  const conNome = (kind: AlterTableDropContext['kind'], m: RegExpExecArray): AlterTableDropContext => {
+    const senzaTable = !/^ALTER\s+TABLE\b/i.test(m[0])
+    const tableAt = m.index + m[0].indexOf(m[1])
+    const nome = splitQualifiedName(m[1])
+    if (kind === 'column') return { kind: 'column', ...nome, senzaTable, tableAt }
+    if (kind === 'constraint') return { kind: 'constraint', ...nome, senzaTable, tableAt }
+    return { kind: 'keywords', senzaTable, tableAt }
+  }
+  for (const v of varianti) {
+    const m = v.re.exec(textBefore)
+    if (m) return conNome(v.kind, m)
+  }
+  // parola chiave a metà ("DROP COL", "DROP CONS"): solo COLUMN/CONSTRAINT
+  const parz = new RegExp(`${testa}(${NOME_TABELLA})\\s+DROP\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*$`, 'i').exec(textBefore)
+  if (parz) {
+    const u = parz[2].toUpperCase()
+    if ('COLUMN'.startsWith(u) || 'CONSTRAINT'.startsWith(u)) return conNome('keywords', parz)
+  }
+  return null
 }
 
 export interface SystemVariableSuggestion {
@@ -229,8 +465,84 @@ export function detectObjectNameContext(textBefore: string): ObjectKind | null {
   if (m1) return map(m1[1].toUpperCase())
   const m2 = /(?:^|;|\bGO\b|\n)[ \t]*ALTER\s+(PROCEDURE|PROC|FUNCTION|TRIGGER|VIEW)\s*$/i.exec(t)
   if (m2) return map(m2[1].toUpperCase())
+  // ENABLE/DISABLE TRIGGER → i trigger da abilitare/disabilitare (con il loro "ON tabella")
+  const m3 = /(?:^|;|\bGO\b|\n)[ \t]*(?:ENABLE|DISABLE)\s+TRIGGER\s*$/i.exec(t)
+  if (m3) return 'trigger'
   if (/(?:^|;|\bGO\b|\n)[ \t]*USE\s*$/i.test(t)) return 'database'
   return null
+}
+
+// ---------- ENABLE/DISABLE TRIGGER (nome del trigger e "ON tabella") ----------
+
+/**
+ * Dopo "DISABLE TRIGGER " / "ENABLE TRIGGER " (anche con più nomi separati da virgola) → true:
+ * l'elenco dei trigger lo propone il ramo degli oggetti. Dopo il nome serve "ON".
+ */
+export function detectEnableDisableTriggerName(textBefore: string): boolean {
+  const t = textBefore.trimEnd()
+  return /(?:^|;|\bGO\b|\n)[ \t]*(?:ENABLE|DISABLE)\s+TRIGGER\s+[^\n;]*$/i.test(t)
+}
+
+/**
+ * Dopo "ENABLE/DISABLE TRIGGER nome ON " → si propongono le tabelle su cui il trigger è definito
+ * (più ALL, DATABASE e ALL SERVER, che la sintassi accetta al posto dell'oggetto).
+ */
+export function detectEnableDisableTriggerOn(textBefore: string): boolean {
+  const t = textBefore.trimEnd()
+  return /(?:^|;|\bGO\b|\n)[ \t]*(?:ENABLE|DISABLE)\s+TRIGGER\b[^\n;]*\bON\s*$/i.test(t)
+}
+
+/**
+ * Nomi di trigger già digitati dopo "ENABLE/DISABLE TRIGGER " (anche più nomi separati da virgola):
+ * serve a sapere su QUALE tabella va completata la direttiva. null se non siamo in quel punto.
+ * Dopo "ON" restituisce comunque i nomi scritti prima di ON (le tabelle vengono dopo).
+ */
+export function nomiTriggerDigitati(textBefore: string): string[] | null {
+  const m = /(?:^|;|\bGO\b|\n)[ \t]*(?:ENABLE|DISABLE)\s+TRIGGER\s+([^\n;]*)$/i.exec(textBefore.trimEnd())
+  if (!m) return null
+  // si tiene solo la parte PRIMA di ON: dopo ON ci sono le tabelle
+  const prima = m[1].split(/\bON\b/i)[0].trim()
+  if (prima === '') return null
+  return prima
+    .split(',')
+    .map(s => s.trim().replace(/^\[|\]$/g, ''))
+    .filter(Boolean)
+}
+
+/**
+ * Tabella su cui è definito un trigger, dal nome scritto dall'utente (anche "schema.nome" o
+ * "[schema].[nome]"). Vuoto se il trigger non si trova: in quel caso non si sa dove va il "ON".
+ */
+export function tabellaDelTrigger(
+  triggers: { schema: string; name: string; tableName: string }[],
+  nome: string,
+): string {
+  const pulito = nome.trim()
+  const parti = pulito.split('.').map(p => p.trim().replace(/^\[|\]$/g, ''))
+  const tab = parti[parti.length - 1]
+  const schema = parti.length > 1 ? parti[parti.length - 2] : ''
+  const t = triggers.find(
+    x =>
+      x.name.toLowerCase() === tab.toLowerCase() &&
+      (!schema || x.schema.toLowerCase() === schema.toLowerCase()),
+  )
+  return t?.tableName ?? ''
+}
+
+/**
+ * "ALTER TABLE <tabella> ENABLE|DISABLE TRIGGER " → la tabella di cui proporre i trigger
+ * (forma ALTER TABLE, diversa da "DISABLE TRIGGER nome ON tabella").
+ */
+export function detectAlterTableTrigger(textBefore: string): { schema: string; table: string } | null {
+  const m =
+    /(?:^|;|\bGO\b|\n)[ \t]*ALTER\s+TABLE\s+((?:\[[^\]]+\]|[A-Za-z_][\w]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][\w]*))?)\s+(?:ENABLE|DISABLE)\s+TRIGGER\s*$/i.exec(
+      textBefore.trimEnd(),
+    )
+  if (!m) return null
+  const parti = m[1].split('.').map(p => p.trim().replace(/^\[|\]$/g, ''))
+  return parti.length > 1
+    ? { schema: parti[0], table: parti[1] }
+    : { schema: '', table: parti[0] }
 }
 
 // ---------- CREATE TABLE (colonna → tipo) ----------
@@ -435,25 +747,65 @@ export function variablePrefixLen(textBefore: string): number {
 // ---------- Parametri della routine aperta in modifica ----------
 
 /**
+ * Firma della routine: la parte fra il nome e la chiusura della firma.
+ * - forma con parentesi ("CREATE PROC p ( @a int, @b int )"): si prende il contenuto della prima
+ *   coppia di parentesi (le parentesi dei tipi, es. decimal(11, 3), sono annidate e vengono contate);
+ * - forma senza parentesi ("CREATE PROC p @a int, @b int AS"): si arriva fino all'`AS` di chiusura,
+ *   saltando gli `AS` che dichiarano il tipo di un parametro ("@p AS int").
+ * Commenti e stringhe sono già stati neutralizzati: un "as" in un commento non deve chiudere la
+ * firma (prima faceva perdere tutti i parametri successivi).
+ */
+function firmaDellaRoutine(code: string, da: number): string {
+  let i = da
+  while (i < code.length && /\s/.test(code[i])) i += 1
+  if (code[i] === '(') {
+    let livello = 0
+    for (let j = i; j < code.length; j++) {
+      if (code[j] === '(') livello += 1
+      else if (code[j] === ')') {
+        livello -= 1
+        if (livello === 0) return code.slice(i + 1, j)
+      }
+    }
+    return code.slice(i + 1)
+  }
+  let livello = 0
+  for (let j = i; j < code.length; j++) {
+    const ch = code[j]
+    if (ch === '(') livello += 1
+    else if (ch === ')') livello = Math.max(0, livello - 1)
+    else if (livello === 0 && (ch === 'A' || ch === 'a') && /^AS\b/i.test(code.slice(j, j + 3))) {
+      const parolaPrima = /([A-Za-z0-9_@]+)\s*$/.exec(code.slice(0, j))?.[1] ?? ''
+      if (parolaPrima.startsWith('@')) continue // "@p AS int": è il tipo, non la fine della firma
+      return code.slice(i, j)
+    }
+  }
+  return code.slice(i)
+}
+
+/**
  * Parametri della stored procedure/funzione che contiene il cursore: quando si
  * modifica una routine ("CREATE OR ALTER PROCEDURE …") l'intellisense deve
  * proporre anche i PARAMETRI (@… della firma), non solo le variabili DECLARATE
  * dentro il corpo. Restituisce quelli dell'ULTIMO header (CREATE/ALTER …
  * PROC/FUNCTION) presente nel testo prima del cursore; per un trigger → vuoto.
+ * Commenti e stringhe vengono neutralizzati prima dell'analisi: dentro un commento
+ * o un valore di default può comparire la parola "as", che non deve chiudere la firma.
  */
 export function extractRoutineParameters(text: string): DeclaredVariable[] {
+  const code = stripSqlNoise(text)
   const headerRe =
-    /(?:^|;|\bGO\b|(?:\r?\n)\s*)(?:ALTER|CREATE)\s+(?:OR\s+ALTER\s+)?(?:PROC(?:EDURE)?|PROCEDURE|FUNCTION|FUN)\s+(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?([\s\S]*?)\bAS\b/gi
+    /(?:^|;|\bGO\b|(?:\r?\n)\s*)(?:ALTER|CREATE)\s+(?:OR\s+ALTER\s+)?(?:PROC(?:EDURE)?|PROCEDURE|FUNCTION|FUN)\s+(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?/gi
   let last: RegExpExecArray | null = null
   let m: RegExpExecArray | null
-  while ((m = headerRe.exec(text)) !== null) last = m
+  while ((m = headerRe.exec(code)) !== null) last = m
   if (!last) return []
 
   const out: DeclaredVariable[] = []
-  const signature = last[1]
-  // nome@(eventuale AS) tipo(con lunghezza opzionale tipo "nvarchar(50)")
+  const signature = firmaDellaRoutine(code, last.index + last[0].length)
+  // nome@(eventuale AS) tipo(con lunghezza opzionale "nvarchar(50)", max compreso: "nvarchar(max)")
   const paramRe =
-    /@([A-Za-z_][A-Za-z0-9_]*)\s+(?:(?:AS\s+)?)((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\(\s*\d+(?:\s*,\s*\d+)?\s*\))?)/gi
+    /@([A-Za-z_][A-Za-z0-9_]*)\s+(?:(?:AS\s+)?)((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\(\s*(?:\d+(?:\s*,\s*\d+)?|max)\s*\))?)/gi
   let p: RegExpExecArray | null
   while ((p = paramRe.exec(signature)) !== null) {
     out.push({ name: `@${p[1]}`, dataType: p[2].replace(/\[|\]/g, '') })

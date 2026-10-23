@@ -71,50 +71,39 @@ body {
   background-clip: padding-box;
 }
 
-/* Evidenziazione del campo corrispondente negli INSERT (colonna <-> valore) */
-.monaco-editor .sql-pair-highlight {
+/* GRIGLIA RISULTATI: fasce alternate delle righe e riga selezionata.
+   Stanno qui (non come classi Tailwind con colori espliciti) perché devono seguire il TEMA:
+   in chiaro le fasce diventano bianco/grigio chiaro e la selezione azzurro tenue. */
+.sql-zebra-0 {
+  background-color: #0b0b0e;
+}
+.sql-zebra-1 {
+  background-color: #17171b;
+}
+.sql-zebra-2 {
+  background-color: #23232a;
+}
+.sql-row-selected {
+  background-color: #082f49; /* sky-950 */
+}
+.theme-light .sql-zebra-0 {
+  background-color: #ffffff;
+}
+.theme-light .sql-zebra-1 {
+  background-color: #f4f4f5;
+}
+.theme-light .sql-zebra-2 {
+  background-color: #e4e4e7;
+}
+.theme-light .sql-row-selected {
+  background-color: #e0f2fe; /* sky-100 */
+}
+
+/* Evidenziazione del campo corrispondente negli INSERT (colonna <-> valore) */.monaco-editor .sql-pair-highlight {
   background-color: rgba(245, 158, 11, 0.2);
   box-shadow: inset 0 -2px 0 rgba(245, 158, 11, 0.8);
   border-radius: 2px;
 }
-
-/* Righe verticali di indentazione tra BEGIN/END e CASE/END (stile Visual Studio).
-   beforeContentClassName disegna un elemento prima del contenuto della riga:
-   il bordo sinistro crea la linea verticale continua. NIENTE margin-right: un margine
-   sposterebbe tutto il contenuto successivo a destra (e con più guide sulla stessa
-   colonna l'effetto si cumula: la linea interna risultava doppia e disallineata). */
-.monaco-editor .sql-block-guide {
-  border-left: 1.5px solid rgba(56, 189, 248, 0.35);
-}
-.monaco-editor .sql-guide-depth-1 { border-left-color: rgba(52, 211, 153, 0.35); }
-.monaco-editor .sql-guide-depth-2 { border-left-color: rgba(167, 139, 250, 0.35); }
-.monaco-editor .sql-guide-depth-3 { border-left-color: rgba(251, 113, 133, 0.35); }
-.monaco-editor .sql-guide-depth-4 { border-left-color: rgba(45, 212, 191, 0.35); }
-
-/* Sulle righe vuote o più corte della colonna della guida, Monaco non disegna il box
-   nella posizione richiesta: lo si disegna all'inizio/fine della riga e lo si sposta
-   con un margine in unità "ch" (= larghezza di un carattere nei font monospazio),
-   così la linea verticale resta continua e allineata alla colonna del blocco. */
-.monaco-editor .sql-guide-offset-1 { margin-left: 1ch; }
-.monaco-editor .sql-guide-offset-2 { margin-left: 2ch; }
-.monaco-editor .sql-guide-offset-3 { margin-left: 3ch; }
-.monaco-editor .sql-guide-offset-4 { margin-left: 4ch; }
-.monaco-editor .sql-guide-offset-5 { margin-left: 5ch; }
-.monaco-editor .sql-guide-offset-6 { margin-left: 6ch; }
-.monaco-editor .sql-guide-offset-7 { margin-left: 7ch; }
-.monaco-editor .sql-guide-offset-8 { margin-left: 8ch; }
-.monaco-editor .sql-guide-offset-9 { margin-left: 9ch; }
-.monaco-editor .sql-guide-offset-10 { margin-left: 10ch; }
-.monaco-editor .sql-guide-offset-11 { margin-left: 11ch; }
-.monaco-editor .sql-guide-offset-12 { margin-left: 12ch; }
-.monaco-editor .sql-guide-offset-13 { margin-left: 13ch; }
-.monaco-editor .sql-guide-offset-14 { margin-left: 14ch; }
-.monaco-editor .sql-guide-offset-15 { margin-left: 15ch; }
-.monaco-editor .sql-guide-offset-16 { margin-left: 16ch; }
-.monaco-editor .sql-guide-offset-17 { margin-left: 17ch; }
-.monaco-editor .sql-guide-offset-18 { margin-left: 18ch; }
-.monaco-editor .sql-guide-offset-19 { margin-left: 19ch; }
-.monaco-editor .sql-guide-offset-20 { margin-left: 20ch; }
 
 /* Evidenziazione leggera delle keyword di blocco (BEGIN/END/CASE) */
 .monaco-editor .sql-block-keyword {
@@ -176,3 +165,60 @@ body {
   50% { transform: scale(1.12); }
 }
 .dragon-big { animation: dragon-big 1.1s ease-in-out infinite; }
+
+/* ---------- DRAGO NEI SUGGERIMENTI DI JOIN (vedi src/dragon.ts) ----------
+   Le voci dell'intellisense che inseriscono la clausola ON hanno 🐉 davanti all'etichetta.
+   Un'emoji dentro un'etichetta non si può animare da sola, quindi si anima la RIGA della lista:
+   un alone "di fuoco" che pulsa a sinistra e il nome che ondeggia appena. La riga si riconosce
+   dall'aria-label (Monaco la costruisce dall'etichetta: "🐉 TABELLA, Struct"). */
+@keyframes dragon-join-row {
+  0%, 100% { box-shadow: inset 2px 0 0 0 rgba(251, 146, 60, 0.35); }
+  50% { box-shadow: inset 3px 0 0 0 rgba(251, 113, 133, 0.95); }
+}
+@keyframes dragon-join-name {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-1px); }
+}
+.suggest-widget .monaco-list-row[aria-label*='🐉'] {
+  animation: dragon-join-row 2.2s ease-in-out infinite;
+}
+.suggest-widget .monaco-list-row[aria-label*='🐉'] .label-name {
+  display: inline-block;
+  animation: dragon-join-name 2.2s ease-in-out infinite;
+}
+/* chi ha chiesto meno animazioni nel sistema resta fermo (il drago si vede lo stesso) */
+@media (prefers-reduced-motion: reduce) {
+  .suggest-widget .monaco-list-row[aria-label*='🐉'],
+  .suggest-widget .monaco-list-row[aria-label*='🐉'] .label-name {
+    animation: none;
+  }
+}
+
+/* ---------- VOCE SELEZIONATA NELL'ALBERO LATERALE (vedi src/treeSelection.ts) ----------
+   Richiesta utente: "rendi le voci della treeview selezionabili, adesso non si capisce cosa è
+   selezionato". La riga cliccata (o col tasto destro) resta evidenziata con una barra azzurra a
+   sinistra e lo sfondo tinto, così si capisce sempre dov'è il fuoco. */
+.nodo-attivo {
+  /* stile SourceTree: riga PIENA blu con testo bianco (non una tinta leggera) */
+  background-color: #0c4a6e !important; /* sky-900 */
+  box-shadow: inset 2px 0 0 0 #38bdf8;
+  color: #f8fafc !important;
+}
+.nodo-attivo:hover {
+  background-color: #075985 !important; /* sky-800 */
+}
+/* il testo e le etichette interne restano leggibili sul blu (icone comprese) */
+.nodo-attivo span,
+.nodo-attivo svg {
+  color: #f1f5f9 !important;
+}
+/* i contatori sulle righe selezionate: pastiglia chiara invece del grigio scuro (stile SourceTree) */
+.nodo-attivo span.bg-zinc-800 {
+  background-color: rgba(248, 250, 252, 0.22) !important;
+  color: #f8fafc !important;
+}
+/* quando la riga selezionata ha il fuoco da tastiera, un contorno in più (leggibilità) */
+.nodo-attivo:focus-visible {
+  outline: 1px solid rgba(125, 211, 252, 0.9);
+  outline-offset: -1px;
+}

@@ -48,8 +48,15 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   quella attiva**, non in fondo.
 - **Icona/emoji per tab** (⭐ 🐞 ⚠️ …) più titolo e descrizione libera, dal tasto destro sulla tab.
 - **Tante tab? Tasto destro e "»"**: chiusura in blocco stile SSMS (tutte le altre, a destra, a sinistra,
-  tutte le non appuntate — le appuntate sono protette). Le tab vanno a capo su una seconda riga e, se non
-  bastano, compare il pulsante "»" con l'elenco completo.
+  tutte le non appuntate — le appuntate sono protette). Le tab riempiono la riga e poi vanno a capo; se non
+  bastano le righe disponibili compare il pulsante "»" con l'elenco completo.
+- **Tab figlie**: un oggetto aperto da un link o da "Modifica" nasce **figlio** della tab attiva e va a capo
+  su una riga **sotto la madre** (rientrato, con la freccia come marcatore), fino a 5 livelli. Trascinando
+  una tab fuori dal gruppo la si stacca e torna principale; chiudendo una madre con figlie l'app chiede se
+  chiudere anche loro.
+- **Pannello dei risultati per tab**: `Ctrl+R` nasconde/mostra i risultati **della tab attiva** (la scelta è
+  legata alla tab: nascondendolo in una non sparisce nelle altre). Nelle tab di ricerca e nei diagrammi il
+  pannello dei risultati non c'è.
 - **Esecuzione**: F5 / Ctrl+Invio esegue lo statement corrente (o solo la selezione, come SSMS); più batch
   separati da `GO`, cattura dei `PRINT`, più result set.
 - **File .sql**: trascina i file nell'app o usa "Apri file"; **Salva** (Ctrl+S) sovrascrive l'originale,
@@ -80,6 +87,14 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   condizione propone le altre coppie dello stesso vincolo.
 - **EXEC**: dopo `EXEC proc` suggerisce i parametri (tipo, IN/OUTPUT, default noti, tab-stop) ed esclude
   quelli già scritti; dal menu contestuale genera l'`EXEC` con i valori di default reali.
+- **Parametri della routine in modifica**: mentre modifichi una store o una funzione, scrivendo `@` il popup
+  propone i **parametri della firma** insieme alle variabili dichiarate (`DECLARE`); letti anche con lo stile
+  `@param as tipo`, con i parametri fra parentesi su più righe, i valori di default e i commenti in mezzo.
+- **Scrivere su più righe**: più cursori (`Ctrl+Alt+Giù/Su`, `Alt+clic`, `Ctrl+D`) — quello che scrivi va su
+  tutti i cursori e incollando più righe il testo si distribuisce — oppure **selezione a blocchi** stile SSMS
+  (`Alt+C` o l'interruttore "Scrittura su più righe"): si trascina un rettangolo e si scrive su tutte le righe
+  selezionate. La preferenza è salvata. `Ctrl+Alt+Giù` aggiunge **solo** il cursore (non copia la riga): per
+  copiare la riga sotto resta `Shift+Alt+Giù`.
 - **INSERT**: dentro `INSERT INTO tab (` suggerisce le colonne (con "tutte le colonne"); dentro `VALUES`
   propone i valori di default per la colonna corrente, **evidenziando la coppia colonna↔valore**.
 - **Campo corrispondente**: con il cursore su un campo si illumina quello abbinato — colonna ↔ valore negli
@@ -95,8 +110,11 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   le colonne si ricavano dalla select-list (anche con `TOP n *`, alias di funzione e alias per posizione tipo
   `SCO_GIAC + SCO_VER X_GIAC`) e, con `*`, dalla sorgente: tabella dello schema, altra temporanea o **CTE**
   definita nel testo.
-- **Alias delle tabelle** e **label di GOTO**: dopo `GOTO ` vengono proposte tutte le label del
-  documento (anche quelle definite più sotto, ignorando quelle nel codice commentato).
+- **Alias delle tabelle, delle derivate e delle funzioni tabellari**: dopo `alias.` arrivano i campi della
+  sorgente — tabella, tabella derivata `(select …) t`, CTE, temporanea e **funzione tabellare**
+  (`FROM dbo.fn_x() a` → i campi che la funzione restituisce, letti da `sys.columns`). Dopo `GOTO ` vengono
+  proposte tutte le label del documento (anche quelle definite più sotto, ignorando quelle nel codice
+  commentato).
 - **Errori in stile SSMS**: numero/livello/stato, procedura e riga; doppio clic sul messaggio →
   il cursore va sulla riga che ha fallito (per gli errori dentro una procedura la riga viene
   riportata sulla definizione aperta nella tab), e i pulsanti aprono gli oggetti citati.
@@ -117,9 +135,23 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   proprietà estese.
 - **Tasto destro stile SSMS**: per le tabelle "Seleziona le prime 1000 righe" e gli script per ogni
   operazione (CREATE, DROP, SELECT, INSERT, UPDATE, DELETE, MERGE); per procedure/funzioni/viste/trigger
-  "Modifica" (CREATE OR ALTER), "Apri definizione", "Script" ed **EXEC con parametri**.
+  "Modifica" (CREATE OR ALTER), "Script" (CREATE / CREATE OR ALTER / DROP / EXECUTE) e
+  "Diagramma chiamate".
 - **Ricerca** su tabelle, viste, procedure, funzioni e trigger (gli spazi valgono come `%`).
+- **Ricerca generale** (pulsante "Cerca" in alto, stile Redgate SQL Search): un testo qualunque cercato
+  nei **nomi** e nelle **definizioni** delle strutture (tabelle, viste, routine, vincoli, colonne
+  calcolate) e — con "anche nei dati" — nei **valori** delle colonne di testo. Risultati sopra e
+  **anteprima sotto** (script con il match evidenziato e la riga trovata, colonne della tabella, riga di
+  dati trovata). Da un risultato su procedura/funzione/vista/trigger si può **modificare** l'oggetto
+  (pulsante "Modifica", doppio clic o tasto destro → menu: CREATE OR ALTER in una tab, figlia di quella
+  attiva; c'è anche "Diagramma chiamate"). Resta dentro il **database attivo** e la
+  scansione dei dati è limitata (tabelle, tempo, righe per tabella) per non appesantire il database.
 - **Report utilizzo tabelle**: spazio riservato/usato, righe, indici, accessi.
+- **Modifiche agli oggetti**: la finestra con la griglia di store, funzioni, viste, tabelle e trigger e
+  **quando** sono stati modificati (giorno e ora dell'ultima modifica, più la creazione e il "quanto fa" in
+  italiano). Ordinabile per colonna, con filtri per nome, tipo e periodo (24 ore / 7 / 30 giorni); doppio
+  clic su una riga per aprire l'oggetto e modificarlo. Le date sono quelle di SQL Server (`sys.objects`):
+  per oggetto c'è l'ultima modifica, non lo storico.
 
 ### Diagramma delle chiamate
 
@@ -143,6 +175,9 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
   seguono l'ordine originale.
 - **Generatore SQL dai risultati**: seleziona righe e colonne e genera `INSERT`, `UPDATE`, `MERGE`,
   `DELETE` o `INSERT INTO #tmp` (la tabella target è proposta dal SQL eseguito ed è modificabile).
+  Nella `MERGE` la chiave è la **primary key** della tabella (anche composita) e i **campi chiave non
+  finiscono mai nell'`UPDATE SET`**: restano solo nella condizione `ON` (e nell'`INSERT`); se la chiave
+  copre tutte le colonne la clausola `WHEN MATCHED THEN UPDATE` non viene scritta.
 - **Tab Stampa** con la versione pronta per la stampa di risultati e messaggi.
 
 ### Gamification del lavoro
@@ -192,6 +227,13 @@ cd backend/SqlIntelliBackend && dotnet run
 
 # 2. frontend → http://localhost:5173  (Vite inoltra /api al backend)
 cd frontend && npm install && npm run dev
+```
+
+Su Windows c'è anche uno script che avvia (o ferma) entrambi in due finestre:
+
+```powershell
+.\scripts\start-app.ps1          # avvia backend + app e apre il browser
+.\scripts\start-app.ps1 -Stop    # ferma i due server
 ```
 
 **Chiave DeepSeek (opzionale)** per l'autocompletamento IA, in
@@ -249,7 +291,9 @@ I fixture dei database reali si rigenerano con gli script in `frontend/scripts/`
 | `GET` | `/api/metadata/{connectionId}/objects/{schema}/{name}/definition` | Definizione (testo) di proc/funzione/vista/trigger |
 | `GET` | `/api/metadata/{connectionId}/routine-call-graph` | Legami fra routine (chi chiama chi), per il diagramma |
 | `GET` | `/api/metadata/{connectionId}/search?q=` | Ricerca oggetti per nome |
+| `GET` | `/api/metadata/{connectionId}/text-search?q=&data=` | Ricerca testuale generale (nomi, definizioni e, con `data=true`, valori nelle colonne di testo) |
 | `GET` | `/api/metadata/{connectionId}/report/tables` | Report utilizzo tabelle (spazio, righe, indici, accessi) |
+| `GET` | `/api/metadata/{connectionId}/changes` | Modifiche agli oggetti: creazione e ultima modifica (giorno e ora) di store, funzioni, viste, tabelle, trigger |
 | `POST` | `/api/query/{connectionId}/execute` | Esegue SQL (multi-batch `GO`, `PRINT`, più result set) |
 | `GET` | `/api/autocomplete/{connectionId}/status` | Stato della configurazione DeepSeek |
 | `POST` | `/api/autocomplete/{connectionId}` | Suggerimento inline (SQL parziale + schema) |
@@ -315,7 +359,11 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
   close with X. A new tab opens **right after the active one**.
 - **Per-tab icon/emoji** (⭐ 🐞 ⚠️ …) plus a free-text title and description, from the tab context menu.
 - **Many tabs? Right-click and "»"**: SSMS-style bulk close (all others, to the right, to the left, all
-  unpinned — pinned tabs are protected). Tabs wrap onto a second row and then collapse into a "»" menu.
+  unpinned — pinned tabs are protected). Tabs fill the row and then wrap; when the available rows are not
+  enough a "»" menu lists every open tab.
+- **Child tabs**: an object opened from a link or from "Edit" is created as a **child** of the active tab
+  and wraps onto a row **below its parent** (indented, arrow marker), up to 5 levels deep. Dragging a tab
+  out of the group detaches it back to top level; closing a parent with children asks whether to close them too.
 - **Run**: F5 / Ctrl+Enter runs the current statement, or just the selection, like SSMS; multiple `GO`
   batches, `PRINT` capture and multiple result sets.
 - **.sql files**: drag files into the app or use "Open file"; **Save** (Ctrl+S) overwrites the original,
@@ -354,6 +402,11 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
 - **`*` expansion**: the "— all fields (N) —" entry replaces the star with the full column list (unique
   fields unqualified, shared fields qualified).
 - **Statement snippets**: `ins`/`sel`/`upd`/`del`/`mer` at statement start open a template with tab stops.
+- **Multi-line writing**: multiple cursors (`Ctrl+Alt+Down/Up`, `Alt+click`, `Ctrl+D`) — what you type goes to
+  every cursor and pasting several lines spreads them across cursors — or SSMS-style **block selection**
+  (`Alt+C` or the "Scrittura su più righe" switch): drag a rectangle and type on every selected line. The
+  preference is persisted. `Ctrl+Alt+Down` only adds a cursor (it never copies the line); `Shift+Alt+Down`
+  remains "copy line down".
 - **Smart brackets**: identifiers are inserted without `[brackets]` when they are not needed.
 - **Temp tables and table variables** defined in the document are in scope (`CREATE TABLE #t`,
   `DECLARE @t TABLE`, `SELECT ... INTO #t`, `INSERT INTO #t`). For `SELECT … INTO #t` the columns come from
@@ -381,6 +434,14 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
   (CREATE, DROP, SELECT, INSERT, UPDATE, DELETE, MERGE); procedures/functions/views/triggers get
   "Modify" (CREATE OR ALTER), "Open definition", "Script" and **EXEC with parameters**.
 - **Search** across tables, views, procedures, functions and triggers (spaces act as `%`).
+- **Full-text search** ("Cerca" button in the header, Redgate SQL Search style): any text searched in
+  object **names** and **definitions** (tables, views, routines, constraints, computed columns) and — with
+  "anche nei dati" — in the **values** of text columns. Results on top and a **preview below** (script with
+  the match highlighted and the matching line, table columns, matching data row). From a
+  procedure/function/view/trigger result you can **edit** the object ("Modifica" button, double click or
+  right-click menu: CREATE OR ALTER in a tab, child of the active one; there is also
+  "Diagramma chiamate"). It stays inside the **active database**, and the data scan is bounded (tables,
+  time, rows per table) to keep the database responsive.
 - **Table usage report**: reserved/used space, rows, indexes, reads and writes.
 
 ### Call graph
@@ -405,6 +466,9 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
   keep the original column order.
 - **SQL generator from results**: select rows and columns and generate `INSERT`, `UPDATE`, `MERGE`,
   `DELETE` or `INSERT INTO #tmp` (the target table is inferred from the executed SQL and is editable).
+  In a `MERGE` the key is the table's **primary key** (composite included) and **key columns never appear
+  in the `UPDATE SET`**: they stay in the `ON` condition (and in the `INSERT`); when the key covers every
+  column the `WHEN MATCHED THEN UPDATE` clause is omitted.
 - **Print tab** with a print-ready rendering of results and messages.
 
 ### Work gamification
@@ -450,6 +514,13 @@ cd backend/SqlIntelliBackend && dotnet run
 
 # 2. frontend → http://localhost:5173  (Vite proxies /api to the backend)
 cd frontend && npm install && npm run dev
+```
+
+On Windows there is also a script that starts (or stops) both in two windows:
+
+```powershell
+.\scripts\start-app.ps1          # starts backend + app and opens the browser
+.\scripts\start-app.ps1 -Stop    # stops both servers
 ```
 
 **Optional DeepSeek key** for AI completion, in `backend/SqlIntelliBackend/appsettings.json`:
@@ -502,6 +573,7 @@ Fixture files built from real databases are regenerated with the scripts in `fro
 | `GET` | `/api/metadata/{connectionId}/objects/{schema}/{name}/definition` | Definition text of a procedure/function/view/trigger |
 | `GET` | `/api/metadata/{connectionId}/routine-call-graph` | Routine-to-routine links (who calls whom) for the diagram |
 | `GET` | `/api/metadata/{connectionId}/search?q=` | Search objects by name |
+| `GET` | `/api/metadata/{connectionId}/text-search?q=&data=` | Full-text search (names, definitions and, with `data=true`, values in text columns) |
 | `GET` | `/api/metadata/{connectionId}/report/tables` | Table usage report (space, rows, indexes, reads/writes) |
 | `POST` | `/api/query/{connectionId}/execute` | Execute SQL (multiple `GO` batches, `PRINT`, multiple result sets) |
 | `GET` | `/api/autocomplete/{connectionId}/status` | DeepSeek configuration status |

@@ -4,15 +4,15 @@
 // e si controlla che i casi limite mostrino i messaggi giusti invece di una pagina vuota.
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import CallGraphModal from '../components/CallGraphModal'
+import CallGraphPanel from '../components/CallGraphPanel'
 import type { RoutineCallGraph } from '../types'
 import { realCallEdges } from './fixtures/routineCallGraph'
 
 const realGraph: RoutineCallGraph = { edges: realCallEdges, truncated: false }
 
-function render(props: Partial<Parameters<typeof CallGraphModal>[0]> = {}) {
+function render(props: Partial<Parameters<typeof CallGraphPanel>[0]> = {}) {
   return renderToStaticMarkup(
-    <CallGraphModal
+    <CallGraphPanel
       target={{ schema: 'dbo', name: 'fn_IADOVODASISID', kind: 'function' }}
       graph={realGraph}
       loading={false}

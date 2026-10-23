@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import { Download, FileUp, RotateCcw, X } from 'lucide-react'
 import type { FormatProfileNode } from '../formatProfile'
 import {
+  etichettaMotore,
+  MOTORI_FORMATTAZIONE,
+  normalizzaOpzioniSqlFluff,
+  OPZIONI_SQLFLUFF_DEFAULT,
+  OPZIONI_SQLFLUFF_UI,
+} from '../formatEngine'
+import type { MotoreFormattazione, OpzioniSqlFluff } from '../formatEngine'
+import {
   buildFormatProfile,
   flattenFormatOptions,
   loadFormatProfileXml,
@@ -59,7 +67,24 @@ function downloadFile(name: string, content: string) {
   URL.revokeObjectURL(url)
 }
 
-export default function FormatProfilePanel({ onClose }: { onClose: () => void }) {
+export default function FormatProfilePanel({
+  onClose,
+  motore = 'nostro',
+  onMotoreChange,
+  opzioni,
+  onOpzioniChange,
+  virgolaACapo = true,
+  onVirgolaACapoChange,
+}: {
+  onClose: () => void
+  motore?: MotoreFormattazione
+  onMotoreChange?: (m: MotoreFormattazione) => void
+  opzioni?: OpzioniSqlFluff
+  onOpzioniChange?: (o: OpzioniSqlFluff) => void
+  /** Invio dopo la virgola → virgola in testa alla riga nuova (richiesta utente). */
+  virgolaACapo?: boolean
+  onVirgolaACapoChange?: (attiva: boolean) => void
+}) {
   const [xml, setXml] = useState<string>(() => loadFormatProfileXml())
   const [nodes, setNodes] = useState<FormatProfileNode[]>(() => parseFormatProfileXml(loadFormatProfileXml()))
   const [message, setMessage] = useState<string | null>(null)
@@ -125,6 +150,90 @@ export default function FormatProfilePanel({ onClose }: { onClose: () => void })
           </button>
         </div>
 
+        <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 bg-zinc-900/60 px-4 py-2.5">
+          <label className="text-xs font-medium text-zinc-300" htmlFor="motore-formattazione">Motore</label>
+          <select
+            id="motore-formattazione"
+            data-format="motore"
+            value={motore}
+            onChange={e => onMotoreChange?.(e.target.value as MotoreFormattazione)}
+            className="rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100 focus:border-sky-500 focus:outline-none"
+          >
+            {MOTORI_FORMATTAZIONE.map(m => (
+              <option key={m} value={m}>{etichettaMotore(m)}</option>
+            ))}
+          </select>
+          <span className="text-[11px] text-zinc-500">
+            {motore === 'nostro'
+              ? 'Come finora: profilo e regole dell\u2019app (un testo già impaginato resta identico).'
+              : 'SQLFluff gira sul backend (serve Python con sqlfluff installato).'}
+          </span>
+        </div>
+        {/* SCRITTURA: Invio dopo la virgola → la virgola va in testa alla riga nuova */}
+        <div className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900/40 px-4 py-2">
+          <input
+            id="virgola-a-capo"
+            data-format="virgola-a-capo"
+            type="checkbox"
+            checked={virgolaACapo}
+            onChange={e => onVirgolaACapoChange?.(e.target.checked)}
+            className="h-3.5 w-3.5 accent-sky-500"
+          />
+          <label htmlFor="virgola-a-capo" className="text-xs text-zinc-300">
+            Virgola a capo automatica
+          </label>
+          <span className="text-[11px] text-zinc-500">
+            Invio dopo la virgola: la virgola va in testa alla riga nuova, incolonnata sotto il primo campo
+          </span>
+        </div>
+        {motore === 'sqlfluff' && (
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 border-b border-zinc-800 bg-zinc-900/40 px-4 py-3" data-format="opzioni-sqlfluff">
+            {OPZIONI_SQLFLUFF_UI.map(o => {
+              const valore = opzioni ? opzioni[o.key] : OPZIONI_SQLFLUFF_DEFAULT[o.key]
+              return (
+                <label key={o.key} className="flex items-center justify-between gap-2 text-[11px] text-zinc-400">
+                  <span>{o.label}</span>
+                  {o.tipo === 'numero' ? (
+                    <input
+                      type="number"
+                      min={o.min}
+                      max={o.max}
+                      value={String(valore)}
+                      onChange={e => {
+                        const n = Number(e.target.value)
+                        if (!Number.isFinite(n)) return
+                        onOpzioniChange?.(normalizzaOpzioniSqlFluff({ ...opzioni, [o.key]: n }))
+                      }}
+                      className="w-20 rounded border border-zinc-700 bg-zinc-950 px-2 py-0.5 text-right text-zinc-100 focus:border-sky-500 focus:outline-none"
+                      data-format={o.key}
+                    />
+                  ) : o.tipo === 'bool' ? (
+                    <select
+                      value={String(valore)}
+                      onChange={e => onOpzioniChange?.(normalizzaOpzioniSqlFluff({ ...opzioni, [o.key]: e.target.value === 'true' }))}
+                      className="rounded border border-zinc-700 bg-zinc-950 px-2 py-0.5 text-zinc-100 focus:border-sky-500 focus:outline-none"
+                      data-format={o.key}
+                    >
+                      <option value="false">no</option>
+                      <option value="true">sì</option>
+                    </select>
+                  ) : (
+                    <select
+                      value={String(valore)}
+                      onChange={e => onOpzioniChange?.(normalizzaOpzioniSqlFluff({ ...opzioni, [o.key]: e.target.value }))}
+                      className="rounded border border-zinc-700 bg-zinc-950 px-2 py-0.5 text-zinc-100 focus:border-sky-500 focus:outline-none"
+                      data-format={o.key}
+                    >
+                      {(o.scelte ?? []).map(s => (
+                        <option key={s.valore} value={s.valore}>{s.label}</option>
+                      ))}
+                    </select>
+                  )}
+                </label>
+              )
+            })}
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-4 py-2">
           <Button variant="secondary" onClick={() => fileRef.current?.click()} title="Importa un file formatprofile.xml">
             <FileUp className="h-4 w-4" /> Importa

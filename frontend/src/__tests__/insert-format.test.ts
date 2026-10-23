@@ -53,11 +53,15 @@ describe('INSERT: campi e valori uno per riga', () => {
     expect(firmaToken(out)).toEqual(firmaToken(sql))
   })
 
-  it('INSERT … SELECT: lista dei campi a capo, SELECT impilata (dentro e fuori)', () => {
+  it('INSERT … SELECT: campi e VALORI uno per riga (dentro e fuori)', () => {
     const sql = 'insert into t (a, b, c) select x, y, z from dbo.U where x > 0'
     const fuori = formatSqlWithProfile(sql, profile)
     const dentro = formatRoutineWithProfile(inStore(sql), profile)
-    expect(fuori).toBe('INSERT INTO t (a\n               ,b\n               ,c)\nSELECT x\n   ,y, z\nFROM dbo.U\nWHERE x > 0\n')
+    // i VALORI di un INSERT … SELECT sono i valori dell'insert: uno per riga e allineati sotto
+    // il primo, come i campi (segnalazione utente: prima restavano tutti su una riga)
+    expect(fuori).toBe(
+      'INSERT INTO t (a\n               ,b\n               ,c)\nSELECT x\n   ,y\n   ,z\nFROM dbo.U\nWHERE x > 0\n',
+    )
     // dentro la store compaiono le stesse righe (con l'indentazione del blocco)
     for (const riga of fuori.trimEnd().split('\n')) expect(dentro).toContain(riga.trim())
   })
@@ -71,7 +75,8 @@ describe('INSERT: campi e valori uno per riga', () => {
 })
 
 describe('store reale: dbo.ws_L2_HAVO_IEDUGI_AESIPE', () => {
-  const formattata = formatRoutineWithProfile(avvisi, profile)
+  // il fixture ha fine riga CRLF: il formattatore normalizza a LF, quindi si confronta a parita' di fine riga
+  const formattata = formatRoutineWithProfile(avvisi, profile).replace(/\r\n/g, '\n')
 
   it('l INSERT con 17 campi è impaginato uno per riga', () => {
     const righe = formattata.split('\n')

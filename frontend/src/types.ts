@@ -53,6 +53,11 @@ export interface ColumnInfo {
   maxLength: number | null
   description: string | null
   extendedProperties: ExtendedProperty[] | null
+  /** DEFAULT della colonna: testo (es. ((0))) e nome del vincolo, per lo script CREATE. */
+  defaultDefinition?: string | null
+  defaultName?: string | null
+  /** Espressione di una colonna calcolata. */
+  computedDefinition?: string | null
 }
 
 /** Metriche di utilizzo reale di una tabella nel database (per ranking dei suggerimenti). */
@@ -79,6 +84,29 @@ export interface IndexInfo {
   isPrimaryKey: boolean
   isUnique: boolean
   columns: string[] | null
+  /** Opzioni dell'indice, per lo script CREATE (WITH (… FILLFACTOR = 90 …) ON [filegroup]). */
+  fillFactor?: number
+  isPadded?: boolean
+  ignoreDupKey?: boolean
+  allowRowLocks?: boolean
+  allowPageLocks?: boolean
+  optimizeForSequentialKey?: boolean
+  statisticsNoRecompute?: boolean
+  /** True se l'indice e' CLUSTERED (nello script: PRIMARY KEY CLUSTERED/NONCLUSTERED). */
+  isClustered?: boolean
+  fileGroup?: string | null
+  /** Colonne chiave DISCENDENTI: nello script vanno scritte [col] DESC invece di ASC. */
+  descendingColumns?: string[] | null
+  /**
+   * True se l'indice E' un vincolo UNIQUE (sys.indexes.is_unique_constraint): nello script di
+   * cancellazione diventa "ALTER TABLE … DROP CONSTRAINT", perché su un vincolo SQL Server non
+   * accetta "DROP INDEX".
+   */
+  isUniqueConstraint?: boolean
+  /** Colonne INCLUDE (colonne di copertura): nello script CREATE INDEX vanno in "INCLUDE (…)". */
+  includedColumns?: string[] | null
+  /** Filtro di un indice filtrato (sys.indexes.filter_definition): nello script va dopo WHERE. */
+  filterDefinition?: string | null
 }
 
 export interface TableInfo {
@@ -90,6 +118,11 @@ export interface TableInfo {
   usage: TableUsage | null
   extendedProperties: ExtendedProperty[] | null
   indexes?: IndexInfo[] | null
+  /**
+   * FILEGROUP dei dati LOB della tabella: SSMS lo scrive in coda alla CREATE
+   * (") ON [SECONDARY] TEXTIMAGE_ON [SECONDARY]"). Assente se la tabella non ha dati LOB.
+   */
+  lobFileGroup?: string | null
 }
 
 export interface ViewInfo {
@@ -114,6 +147,8 @@ export interface ProcedureInfo {
 }
 
 export interface TriggerInfo {
+  /** Corpo del trigger (CREATE TRIGGER ...): presente nel sommario per lo script CREATE. */
+  definition?: string | null
   schema: string
   tableName: string
   name: string
@@ -133,6 +168,11 @@ export interface FunctionInfo {
   schema: string
   name: string
   type: string
+  /**
+   * Colonne RESTITUITE dalle funzioni tabellari (`IF` inline, `TF` multi-istruzione): servono
+   * per proporre i campi di "FROM dbo.fn_x() a" quando si scrive "a.".
+   */
+  columns?: ColumnInfo[] | null
 }
 
 export interface DatabaseInfo {
@@ -185,6 +225,45 @@ export interface SearchResult {
   objectType: string
 }
 
+/** Riga trovata nei DATI (una riga per tabella): colonne e valori già troncati dal backend. */
+export interface TextSearchRow {
+  columns: string[]
+  values: string[]
+}
+
+/**
+ * Un risultato della RICERCA TESTUALE GENERALE (stile Redgate SQL Search): può venire dal
+ * NOME di un oggetto, dalla sua DEFINIZIONE oppure dai DATI di una tabella.
+ */
+export interface TextSearchHit {
+  kind: 'table' | 'view' | 'procedure' | 'function' | 'trigger' | 'column' | 'constraint' | 'computed' | 'data'
+  schema: string
+  /** Nome dell'oggetto; per le colonne il nome della colonna, per i dati il nome della tabella. */
+  name: string
+  /** Descrizione breve mostrata accanto al nome (es. "Stored procedure", "colonna di dbo.MAG_BAIE"). */
+  detail: string
+  matchIn: 'definition' | 'name' | 'column' | 'data'
+  /** Riga (1-based) del match nella definizione, se disponibile. */
+  line: number | null
+  /** Riga/estratto che contiene il match. */
+  snippet: string | null
+  /** Solo per kind "data": la riga trovata. */
+  row: TextSearchRow | null
+}
+
+export interface TextSearchResult {
+  hits: TextSearchHit[]
+  /** True se la ricerca è stata tagliata (troppi risultati o troppe tabelle da scansionare). */
+  truncated: boolean
+  /** Tabelle effettivamente scandite per la ricerca nei dati. */
+  scannedTables: number
+  /** Tabelle candidate (con colonne testuali) nel database. */
+  totalTables: number
+  elapsedMs: number
+  /** Messaggio del backend (es. testo troppo corto) quando non ci sono risultati. */
+  message?: string | null
+}
+
 export interface ColumnResult {
   name: string
   dataType: string
@@ -228,6 +307,17 @@ export interface QueryResult {
   error: string | null
   /** Messaggi/errori con numero, livello, procedura e riga (elenco dettagliato). */
   errors?: QueryMessage[] | null
+  /**
+   * Transazioni ancora aperte nella sessione SQL dopo l'esecuzione (0 = nessuna). La sessione
+   * resta aperta fra un'esecuzione e l'altra: se è > 0 le modifiche non sono ancora salvate.
+   */
+  trancount?: number
+}
+
+/** Piano di esecuzione STIMATO: XML di showplan (uno per statement) come lo manda SQL Server. */
+export interface PlanResult {
+  plans: string[]
+  error?: string | null
 }
 
 export interface SuggestionItem {
@@ -267,17 +357,61 @@ export interface TableReportRow {
   lastWrite: string | null
 }
 
+/**
+ * Riga della finestra "Modifiche": un oggetto del database con giorno e ora di creazione e di
+ * ultima modifica (ISO 8601 UTC, come le registra SQL Server). `typeCode` è il codice di
+ * `sys.objects.type` ('P', 'V', 'FN', 'IF', 'TF', 'TR', 'U').
+ */
+/**
+ * OGGETTO APERTO IN MODIFICA: la "fotografia" della definizione letta dal database quando la tab
+ * è stata aperta. Se la definizione sul database cambia, `stale` diventa true e l'app avvisa che
+ * si sta lavorando da una versione vecchia (vedi objectVersion.ts).
+ */
+export interface ObjectRef {
+  schema: string
+  name: string
+  kind: 'procedure' | 'function' | 'view' | 'trigger'
+  /** Come è stato aperto: 'alter' (CREATE OR ALTER, "Modifica") oppure 'open' (definizione CREATE). */
+  modo: 'alter' | 'open'
+  /** Impronta (FNV-1a) del TESTO messo nella tab all'apertura: la versione di partenza. */
+  baseHash: string
+  /** Quando è stata aperta (ms): mostrato nel messaggio di avviso. */
+  openedAt: number
+  /** True quando sul database c'è una definizione DIVERSA da quella di partenza. */
+  stale?: boolean
+}
+
+export interface ObjectChangeRow {  schema: string
+  name: string
+  typeCode: string
+  typeDesc: string
+  createdAt: string | null
+  modifiedAt: string | null
+}
+
 /** Tab dell'editor (query o definizione oggetto). */
 export interface EditorTab {
   id: string
   title: string
   sql: string
+  /**
+   * Oggetto del DATABASE aperto in questa tab (Modifica di una store/funzione/vista/trigger).
+   * Serve a due cose: capire se l'oggetto era già aperto in un'altra tab, e sapere se la
+   * "versione di partenza" (la definizione letta all'apertura) è nel frattempo cambiata sul
+   * database — così non si sovrascrive una versione nuova con una vecchia.
+   */
+  objectRef?: ObjectRef
   /** Descrizione libera della tab (nota dell'utente). */
   description?: string
   /** Icona/simbolo/emoji della tab scelto dall'utente (mostrato nella barra). */
   icon?: string
   /** Tab appuntata: resta in testa e non è chiudibile. */
   pinned?: boolean
+  /**
+   * Pannello dei risultati visibile per QUESTA tab (Ctrl+R lo nasconde/mostra solo qui):
+   * la scelta è legata alla tab, non all'applicazione. Assente = visibile.
+   */
+  resultsVisible?: boolean
   /** Database associato alla tab (per il colore). */
   database?: string
   /** Tab nata da un file (nome = file). */
@@ -288,4 +422,18 @@ export interface EditorTab {
   titleCustom?: boolean
   /** Handle del file aperto col picker: permette di sovrascrivere l'originale. */
   fileHandle?: FileSystemFileHandle | null
+  /**
+   * Tab padre quando questa tab è nata da un LINK (tasto destro su tabella/store/funzione,
+   * link nei messaggi d'errore): forma la gerarchia nella barra delle tab.
+   * Assente = tab principale ("in prima linea").
+   */
+  parentId?: string
+  /**
+   * Tipo di tab: `query` (editor SQL, il caso normale), `search` (il pannello di RICERCA
+   * GENERALE nel database) oppure `graph` (il DIAGRAMMA delle chiamate di una routine).
+   * Ricerca e diagrammi vivono in tab come gli altri strumenti, non in finestre.
+   */
+  kind?: 'query' | 'search' | 'graph' | 'report'
+  /** Routine mostrata nella tab `graph`. */
+  routine?: { schema: string; name: string; kind: 'procedure' | 'function' }
 }

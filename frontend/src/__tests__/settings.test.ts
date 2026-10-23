@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import { normalizzaOpzioniSqlFluff } from '../formatEngine'
 import { loadSettings, saveSettings } from '../settings'
 
 const store = new Map<string, string>()
@@ -15,7 +16,7 @@ beforeEach(() => {
   }
 })
 
-const DEFAULT = { fontSize: 13, theme: 'vs-dark', newTabPosition: 'afterActive' } as const
+const DEFAULT = { fontSize: 13, theme: 'vs-dark', newTabPosition: 'end', formatter: 'nostro', sqlFluff: normalizzaOpzioniSqlFluff(undefined), virgolaACapo: true } as const
 
 describe('settings: font e tema', () => {
   it('default senza dati salvati', () => {
@@ -23,8 +24,8 @@ describe('settings: font e tema', () => {
   })
 
   it('roundtrip save/load', () => {
-    saveSettings({ fontSize: 18, theme: 'vs', newTabPosition: 'start' })
-    expect(loadSettings()).toEqual({ fontSize: 18, theme: 'vs', newTabPosition: 'start' })
+    saveSettings({ fontSize: 18, theme: 'vs', newTabPosition: 'start', formatter: 'sqlfluff', sqlFluff: normalizzaOpzioniSqlFluff(undefined), virgolaACapo: false })
+    expect(loadSettings()).toEqual({ fontSize: 18, theme: 'vs', newTabPosition: 'start', formatter: 'sqlfluff', sqlFluff: normalizzaOpzioniSqlFluff(undefined), virgolaACapo: false })
   })
 
   it('valori fuori range o non validi → default', () => {
@@ -41,8 +42,8 @@ describe('settings: font e tema', () => {
 })
 
 describe('settings: dove aprire le nuove tab', () => {
-  it('di default si apre dopo la tab attiva', () => {
-    expect(loadSettings().newTabPosition).toBe('afterActive')
+  it('di default si apre in fondo (tutto a destra)', () => {
+    expect(loadSettings().newTabPosition).toBe('end')
   })
 
   it('le tre posizioni si salvano e si rileggono', () => {
@@ -54,14 +55,14 @@ describe('settings: dove aprire le nuove tab', () => {
 
   it('un valore inventato non rompe nulla: si torna al default', () => {
     store.set('sqlIntelli.settings.v1', JSON.stringify({ ...DEFAULT, newTabPosition: 'a caso' }))
-    expect(loadSettings().newTabPosition).toBe('afterActive')
+    expect(loadSettings().newTabPosition).toBe('end')
     store.set('sqlIntelli.settings.v1', JSON.stringify({ ...DEFAULT, newTabPosition: 42 }))
-    expect(loadSettings().newTabPosition).toBe('afterActive')
+    expect(loadSettings().newTabPosition).toBe('end')
   })
 
   it('le impostazioni salvate PRIMA di questa funzione restano valide', () => {
     // utenti che avevano solo font e tema: la nuova proprietà prende il default
     store.set('sqlIntelli.settings.v1', JSON.stringify({ fontSize: 16, theme: 'vs' }))
-    expect(loadSettings()).toEqual({ fontSize: 16, theme: 'vs', newTabPosition: 'afterActive' })
+    expect(loadSettings()).toEqual({ fontSize: 16, theme: 'vs', newTabPosition: 'end', formatter: 'nostro', sqlFluff: normalizzaOpzioniSqlFluff(undefined), virgolaACapo: true })
   })
 })

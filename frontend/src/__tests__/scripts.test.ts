@@ -13,7 +13,7 @@ import {
 } from '../helpers'
 import { mkCol, mkProc, mkTbl } from './schema'
 
-describe('scriptCreateTable: genera CREATE TABLE dai metadati', () => {
+describe('scriptCreateTable: genera CREATE TABLE dai metadati (stile SSMS)', () => {
   it('include colonne, tipi, IDENTITY e NOT NULL', () => {
     const t = mkTbl('dbo', 'Ordini', [
       mkCol('id', 'int', { isIdentity: true }),
@@ -21,11 +21,13 @@ describe('scriptCreateTable: genera CREATE TABLE dai metadati', () => {
       mkCol('importo', 'decimal'),
     ])
     const sql = scriptCreateTable(t)
-    expect(sql).toContain('CREATE TABLE Ordini')
-    expect(sql).toContain('id int IDENTITY(1,1) NOT NULL')
-    expect(sql).toContain('nome nvarchar(50)')
-    expect(sql).toContain('importo decimal NOT NULL')
-    expect(sql.trim().endsWith(';')).toBe(true)
+    expect(sql).toContain('CREATE TABLE [dbo].[Ordini](')
+    expect(sql).toContain('[id] [int] IDENTITY(1,1) NOT NULL')
+    expect(sql).toContain('[nome] [nvarchar](50) NULL')
+    expect(sql).toContain('[importo] [decimal] NOT NULL')
+    // come SSMS: nessun ";" e la chiusura su riga propria seguita dal batch GO
+    expect(sql).toContain('\n)\nGO')
+    expect(sql).not.toContain(');')
   })
 
   it('usa nvarchar(max) per maxLength -1 e la lunghezza corretta per varchar', () => {
@@ -34,17 +36,17 @@ describe('scriptCreateTable: genera CREATE TABLE dai metadati', () => {
       mkCol('v', 'varchar', { maxLength: 200 }),
     ])
     const sql = scriptCreateTable(t)
-    expect(sql).toContain('big nvarchar(max)')
-    expect(sql).toContain('v varchar(200)')
+    expect(sql).toContain('[big] [nvarchar](max)')
+    expect(sql).toContain('[v] [varchar](200)')
   })
 
   it('qualifica con lo schema quando non è dbo', () => {
     const t = mkTbl('usr', 'T', [mkCol('a', 'int')])
-    expect(scriptCreateTable(t)).toContain('CREATE TABLE usr.T')
+    expect(scriptCreateTable(t)).toContain('CREATE TABLE [usr].[T](')
   })
 
   it('gestisce tabella senza colonne', () => {
-    expect(scriptCreateTable(mkTbl('dbo', 'Vuota', []))).toBe('CREATE TABLE Vuota (\n\n);\n')
+    expect(scriptCreateTable(mkTbl('dbo', 'Vuota', []))).toContain('CREATE TABLE [dbo].[Vuota](')
   })
 })
 
@@ -71,6 +73,27 @@ describe('scriptMergeTable: genera MERGE upsert', () => {
     const t = mkTbl('dbo', 'T', [mkCol('a'), mkCol('b')])
     const sql = scriptMergeTable(t)
     expect(sql).toContain('ON tgt.a = src.a')
+  })
+
+  // Richiesta utente: "quando fai la merge, non mettere mai nell'update anche i campi chiave
+  // della tabella" → vale anche per la primary key composita, non solo per l'identity.
+  it('la primary key composita fuori dal SET: chiave interamente nella condizione ON', () => {
+    const t = mkTbl('dbo', 'Righe', [mkCol('anno'), mkCol('numero'), mkCol('importo')])
+    t.indexes = [{ name: 'PK_Righe', isPrimaryKey: true, isUnique: true, columns: ['anno', 'numero'] }]
+    const sql = scriptMergeTable(t)
+    expect(sql).toContain('ON tgt.anno = src.anno AND\n    tgt.numero = src.numero')
+    expect(sql).not.toMatch(/UPDATE SET\n\s+anno = src\.anno/)
+    expect(sql).not.toMatch(/UPDATE SET\n\s+numero = src\.numero/)
+    expect(sql).toContain('importo = src.importo')
+  })
+
+  it('se la chiave copre tutte le colonne non scrive la clausola UPDATE', () => {
+    const t = mkTbl('dbo', 'Coppie', [mkCol('a'), mkCol('b')])
+    t.indexes = [{ name: 'PK_Coppie', isPrimaryKey: true, isUnique: true, columns: ['a', 'b'] }]
+    const sql = scriptMergeTable(t)
+    expect(sql).not.toContain('WHEN MATCHED THEN UPDATE')
+    expect(sql).toContain('-- chiave = tutte le colonne: nulla da aggiornare, si inserisce soltanto')
+    expect(sql).toContain('WHEN NOT MATCHED THEN INSERT (a, b)')
   })
 })
 
@@ -175,15 +198,21 @@ describe('searchMatches: gli spazi valgono come %', () => {
     expect(searchMatches('udc', 'RUN_MISSIONI')).toBe(false)
   })
 
-  it('più parole = token in ordine con wildcard tra loro', () => {
-    // "dat udc" → %dat%udc% : DAT_UDC corrisponde, UDC_DAT no
+  it('più parole = tutte presenti, in QUALSIASI ordine (richiesta utente)', () => {
+    // "dat udc" trova DAT_UDC e anche UDC_DAT: le parole non devono essere in sequenza
     expect(searchMatches('dat udc', 'DAT_UDC')).toBe(true)
-    expect(searchMatches('dat udc', 'UDC_DAT')).toBe(false)
+    expect(searchMatches('dat udc', 'UDC_DAT')).toBe(true)
+    // il caso segnalato: "automatismi engine" deve trovare ws_L2_Engine_Automatismi
+    expect(searchMatches('automatismi engine', 'ws_L2_Engine_Automatismi')).toBe(true)
+    expect(searchMatches('engine automatismi', 'ws_L2_Engine_Automatismi')).toBe(true)
+    // una parola che non c'è continua a escludere il risultato
+    expect(searchMatches('dat zzz', 'DAT_UDC')).toBe(false)
   })
 
   it('case-insensitive e match su schema o nome', () => {
     expect(searchMatches('run mis', 'RUN_MISSIONI')).toBe(true)
-    expect(searchMatches('mis run', 'RUN_MISSIONI')).toBe(false)
+    expect(searchMatches('mis run', 'RUN_MISSIONI')).toBe(true)
+    expect(searchMatches('RUN missioni', 'RUN_MISSIONI')).toBe(true)
   })
 
   it('spazi multipli equivalgono a uno', () => {

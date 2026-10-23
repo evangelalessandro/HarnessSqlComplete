@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace SqlIntelliBackend.Models;
 
 // ---------- Connessioni / Login ----------
@@ -63,10 +65,46 @@ public record ColumnInfo(
     bool IsComputed,
     int? MaxLength,
     string? Description,
-    List<ExtendedProperty>? ExtendedProperties = null);
+    List<ExtendedProperty>? ExtendedProperties = null,
+    /// <summary>Testo del DEFAULT della colonna (es. "((0))") e nome del vincolo.</summary>
+    string? DefaultDefinition = null,
+    string? DefaultName = null,
+    /// <summary>Espressione di una colonna calcolata (per lo script CREATE).</summary>
+    string? ComputedDefinition = null);
 
 /// <summary>Indice di una tabella (nome, PK/UNIQUE e colonne chiave in ordine).</summary>
-public record IndexInfo(string Name, bool IsPrimaryKey, bool IsUnique, List<string>? Columns = null);
+/// <summary>
+/// Indice di una tabella. Le OPZIONI (fill factor, PAD_INDEX, ALLOW_*, IGNORE_DUP_KEY,
+/// STATISTICS_NORECOMPUTE, OPTIMIZE_FOR_SEQUENTIAL_KEY) e il FILEGROUP servono allo script CREATE:
+///   CONSTRAINT PK_x PRIMARY KEY (…) WITH (PAD_INDEX = OFF, …, FILLFACTOR = 90, …) ON [SECONDARY]
+/// </summary>
+public record IndexInfo(
+    string Name,
+    bool IsPrimaryKey,
+    bool IsUnique,
+    List<string>? Columns = null,
+    int FillFactor = 0,
+    bool IsPadded = false,
+    bool IgnoreDupKey = false,
+    bool AllowRowLocks = true,
+    bool AllowPageLocks = true,
+    bool OptimizeForSequentialKey = false,
+    bool StatisticsNoRecompute = false,
+    /// <summary>True se l'indice è CLUSTERED (nello script: PRIMARY KEY CLUSTERED / NONCLUSTERED).</summary>
+    bool IsClustered = false,
+    string? FileGroup = null,
+    /// <summary>Colonne chiave in ordine DISCENDENTE (nello script: [col] DESC invece di ASC).</summary>
+    List<string>? DescendingColumns = null,
+    /// <summary>
+    /// True se l'indice E' un vincolo UNIQUE (sys.indexes.is_unique_constraint): nello script di
+    /// cancellazione diventa "ALTER TABLE … DROP CONSTRAINT" (su un vincolo SQL Server non accetta
+    /// DROP INDEX), e nella CREATE TABLE resta come CONSTRAINT.
+    /// </summary>
+    bool IsUniqueConstraint = false,
+    /// <summary>Colonne INCLUDE (copertura): nello script CREATE INDEX vanno in "INCLUDE (…)".</summary>
+    List<string>? IncludedColumns = null,
+    /// <summary>Filtro di un indice filtrato (sys.indexes.filter_definition): nello script dopo WHERE.</summary>
+    string? FilterDefinition = null);
 
 public record TableInfo(
     string Schema,
@@ -76,7 +114,13 @@ public record TableInfo(
     List<ColumnInfo>? Columns = null,
     TableUsage? Usage = null,
     List<ExtendedProperty>? ExtendedProperties = null,
-    List<IndexInfo>? Indexes = null);
+    List<IndexInfo>? Indexes = null,
+    /// <summary>
+    /// FILEGROUP dei dati LOB (TEXTIMAGE_ON [filegroup]) quando la tabella ha colonne
+    /// text/ntext/image o (n)varchar(max): è quello che scrive SSMS nello script CREATE.
+    /// Null quando la tabella non ha dati LOB (sys.tables.lob_data_space_id = 0).
+    /// </summary>
+    string? LobFileGroup = null);
 
 public record ViewInfo(string Schema, string Name, DateTime? CreateDate);
 
@@ -88,7 +132,8 @@ public record ProcedureInfo(
     DateTime? CreateDate,
     List<ProcParamInfo>? Parameters = null);
 
-public record TriggerInfo(string Schema, string TableName, string Name);
+/// <summary>Trigger della tabella. Definition e' il corpo (CREATE TRIGGER ...) per lo script CREATE.</summary>
+public record TriggerInfo(string Schema, string TableName, string Name, string? Definition = null);
 
 /// <summary>Vincolo CHECK di una tabella: nome, tabella di appartenenza e testo della condizione.</summary>
 public record CheckConstraintInfo(
@@ -98,9 +143,49 @@ public record CheckConstraintInfo(
     string Definition,
     bool IsDisabled);
 
-public record FunctionInfo(string Schema, string Name, string Type);
+public record FunctionInfo(string Schema, string Name, string Type, List<ColumnInfo>? Columns = null);
 
 public record SearchResult(string Schema, string Name, string ObjectType);
+
+/// <summary>Riga di dati trovata dalla ricerca testuale: intestazioni e valori (già troncati) delle colonne.</summary>
+public record SearchHitRow(List<string> Columns, List<string> Values);
+
+/// <summary>
+/// Singolo risultato della ricerca testuale generale nel database: una STRUTTURA (match nel nome
+/// o nella definizione) oppure un DATO (valore trovato in una colonna testuale).
+/// </summary>
+/// <param name="Kind">table | view | procedure | function | trigger | column | constraint | computed | data.</param>
+/// <param name="Schema">Schema dell'oggetto (per le colonne: schema della tabella/vista).</param>
+/// <param name="Name">Nome dell'oggetto; per le colonne il nome della COLONNA, per i dati il nome della TABELLA.</param>
+/// <param name="Detail">Descrizione breve mostrata accanto al nome (es. "Stored procedure", "colonna di dbo.MAG_BAIE").</param>
+/// <param name="MatchIn">definition | name | column | data.</param>
+/// <param name="Line">Riga 1-based del match nella definizione, altrimenti null.</param>
+/// <param name="Snippet">Riga (o estratto breve) che contiene il match, per l'anteprima.</param>
+/// <param name="Row">Solo per kind="data": colonne e valori della riga trovata, altrimenti null.</param>
+public record SearchHit(
+    string Kind,
+    string Schema,
+    string Name,
+    string Detail,
+    string MatchIn,
+    // Line/Snippet/Row sono SEMPRE serializzati, anche null: il contratto li prevede espliciti
+    // e la configurazione globale del JSON li ometterebbe (DefaultIgnoreCondition = WhenWritingNull).
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] int? Line,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] string? Snippet,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] SearchHitRow? Row);
+
+/// <summary>Esito della ricerca testuale generale: hit, troncamento e contatori della scansione dei dati.</summary>
+/// <param name="Truncated">true se i risultati (strutture o dati) sono stati tagliati dai limiti.</param>
+/// <param name="ScannedTables">Tabelle/viste effettivamente scansionate per i dati (0 se data=false).</param>
+/// <param name="TotalTables">Tabelle/viste candidate alla scansione dei dati (0 se data=false).</param>
+/// <param name="Message">Messaggio facoltativo (es. testo di ricerca troppo corto).</param>
+public record TextSearchResponse(
+    List<SearchHit> Hits,
+    bool Truncated,
+    int ScannedTables,
+    int TotalTables,
+    long ElapsedMs,
+    string? Message = null);
 
 /// <summary>Definizione (testo) di un oggetto: stored procedure, funzione, vista, trigger.</summary>
 public record ObjectDefinitionResponse(string Definition);
@@ -174,7 +259,25 @@ public record QueryResult(
     long ElapsedMs,
     string? Error,
     /// <summary>Messaggi con numero/livello/procedura/riga (SSMS), per l'elenco dettagliato.</summary>
-    List<QueryMessage>? Errors = null);
+    List<QueryMessage>? Errors = null,
+    /// <summary>
+    /// Transazioni ancora APERTE nella sessione dopo l'esecuzione (0 = nessuna). La sessione SQL
+    /// resta aperta fra una richiesta e l'altra: se è &gt; 0 le modifiche NON sono salvate finché
+    /// non si esegue COMMIT o ROLLBACK.
+    /// </summary>
+    int Trancount = 0);
+
+// ---------- Piano di esecuzione ----------
+
+/// <summary>
+/// Piano di esecuzione STIMATO di uno o più batch (SET SHOWPLAN_XML ON: la query NON viene eseguita).
+/// Si restituisce l'XML grezzo di SQL Server: l'analisi (operatori, indici mancanti, script) la fa il
+/// client, dove è testabile e dove serve per la UI.
+/// </summary>
+public record PlanResult(
+    List<string> Plans,
+    /// <summary>Errore del server (es. sintassi) oppure null.</summary>
+    string? Error = null);
 
 // ---------- Autocompletamento IA ----------
 
@@ -204,3 +307,18 @@ public record TableReportRow(
     long Writes,
     string? LastRead,
     string? LastWrite);
+
+// ---------- Modifiche agli oggetti (finestra "Modifiche") ----------
+
+/// <summary>
+/// Un oggetto del database con le date registrate da SQL Server: creazione e ULTIMA modifica
+/// (ISO 8601 UTC). SQL Server tiene solo l'ultima modifica per oggetto, quindi è una fotografia
+/// dello stato attuale, non uno storico delle singole modifiche.
+/// </summary>
+public record ObjectChangeRow(
+    string Schema,
+    string Name,
+    string TypeCode,
+    string TypeDesc,
+    string? CreatedAt,
+    string? ModifiedAt);

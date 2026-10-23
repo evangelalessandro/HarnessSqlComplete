@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildColumnContextSuggestions } from '../helpers'
-import { extractCteTables, extractLocalTables, parseColumnDefs, selectListInfo } from '../localTables'
+import { extractCteTables, extractDerivedTables, extractLocalTables, parseColumnDefs, selectListInfo } from '../localTables'
 import type { DatabaseSummary } from '../types'
 import { demoStoreLikeSummary } from './schema'
 import kittingReturn from './fixtures/routine_ws_CIDEDO_HUSOBUME_KIPEVUBEGUSEV_St1_GIVOSEB.sql?raw'
@@ -51,6 +51,40 @@ CREATE TABLE #vera (d int)`
       ['a', 'int'],
       ['b', 'nvarchar(10)'],
     ])
+  })
+
+  // Nelle store di questo database la lista delle colonne comincia sulla riga DOPO il nome:
+  // "create table #t\n  (" — la ricerca della parentesi si fermava al primo a capo e la
+  // temporanea restava senza colonne (segnalazione utente: "alla riga 69 quando faccio
+  // l'update non vedo i campi della tabella #tbl_CC_Kitting_St1").
+  it('parentesi della lista su una riga SUCCESSIVA (stile delle store reali)', () => {
+    const sql = `  create table #tbl_CC_Kitting_St1
+  (
+              X_UDC nvarchar(50),
+              X_CELL_DEST nvarchar(50),
+              X_COR_DEST nvarchar(50),
+  )`
+    const tables = extractLocalTables(sql)
+    expect(tables.map(t => t.name)).toEqual(['#tbl_CC_Kitting_St1'])
+    expect(tables[0].columns!.map(c => c.name)).toEqual(['X_UDC', 'X_CELL_DEST', 'X_COR_DEST'])
+    expect(tables[0].columns!.map(c => c.dataType)).toEqual(['nvarchar(50)', 'nvarchar(50)', 'nvarchar(50)'])
+  })
+
+  it('parentesi a capo anche con commento in mezzo e per DECLARE @t TABLE / INSERT INTO #t', () => {
+    const declare = `declare @t TABLE /* colonne */
+      ( A int, B int )`
+    expect(extractLocalTables(declare)[0].columns!.map(c => c.name)).toEqual(['A', 'B'])
+
+    const insert = `create table #t (A int, B int)
+insert into #t
+  (A, B) values (1, 2)`
+    expect(extractLocalTables(insert)[0].columns!.map(c => c.name)).toEqual(['A', 'B'])
+  })
+
+  it('senza lista di colonne non si prende una parentesi di un altro statement', () => {
+    const sql = `create table #t
+select * from (select 1 x) y`
+    expect(extractLocalTables(sql)).toEqual([])
   })
 })
 
@@ -157,14 +191,34 @@ describe('store reale: #tmpMission nell intellisense', () => {
     const t = Date.now()
     const trovate = extractLocalTables(kittingReturn)
     const cte = extractCteTables(kittingReturn)
+    const derivate = extractDerivedTables(kittingReturn)
     expect(trovate.length).toBeGreaterThan(0)
     expect(cte.map(x => x.name.toLowerCase())).toContain('tbl')
+    // anche le tabelle derivate (chiamate a ogni lettera dal provider) restano veloci
+    expect(Array.isArray(derivate)).toBe(true)
     // limite largo: senza la correzione si superavano i 30 secondi (test in timeout)
     expect(Date.now() - t).toBeLessThan(3000)
   })
 
   it('riconosce le temporanee della store', () => {
-    expect(locali.map(t => t.name)).toEqual(['#tmpMission', '#tmpNewDest'])
+    // la terza arriva dall'"insert into #tbl_ReturnKitting_St1" con la lista dei campi
+    // sulla riga SUCCESSIVA (prima non veniva letta: la ricerca della "(" si fermava al a capo)
+    expect(locali.map(t => t.name)).toEqual(['#tmpMission', '#tmpNewDest', '#tbl_ReturnKitting_St1'])
+  })
+
+  it('legge anche i campi di un INSERT con la "(" sulla riga successiva', () => {
+    const returnKitting = locali.find(t => t.name === '#tbl_ReturnKitting_St1')!
+    expect(returnKitting.columns!.map(c => c.name)).toEqual([
+      'X_SCO',
+      'X_SSCC',
+      'X_SKU',
+      'X_SKU_DESC',
+      'X_GIAC',
+      'X_CORRIDOIO',
+      'X_CELLA',
+      'UDC_USER_TASK',
+      'X_UDC',
+    ])
   })
 
   it('#tmpMission ha le colonne della CTE oltre a quelle esplicite (niente tipi al posto dei nomi)', () => {

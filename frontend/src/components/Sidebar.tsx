@@ -2,33 +2,34 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { DragEvent, MouseEvent, ReactNode } from 'react'
 import {
-  BadgeCheck,
   Braces,
   Boxes,
   ChevronDown,
   ChevronRight,
+  ClipboardCopy,
   Database as DbIcon,
   Eye,
   FileCode2,
-  Flame,
-  FolderOpen,
+  FilePlus2,
   GitMerge,
-  KeyRound,
+  History,
   Play,
   Plus,
   Rows3,
   Search,
   Share2,
   SquarePen,
-  Table2,
   Trash2,
   X,
-  Zap,
 } from 'lucide-react'
+import TypeIcon from './TypeIcon'
+import { copiaTesto } from '../clipboard'
 import type {
   CheckConstraintInfo,
   ColumnInfo,
   DatabaseSummary,
+  ForeignKeyInfo,
+  IndexInfo,
   ProcedureInfo,
   TableInfo,
   TriggerInfo,
@@ -38,12 +39,18 @@ import {
   dbColorPalette,
   dbTabColor,
   groupTablesByPrefix,
+  indiceVincolo,
   qualified,
+  scriptAddConstraint,
+  scriptCreateIndex,
   scriptCreateTable,
   scriptDeleteTable,
+  scriptDropConstraint,
+  scriptDropIndex,
   scriptDropObject,
   scriptCheckConstraint,
   scriptExecProcedure,
+  scriptForeignKey,
   scriptInsertTable,
   scriptMergeTable,
   scriptSelectTable,
@@ -60,7 +67,8 @@ import { DEFAULT_PANEL_STATE, dockSideFromDrop, normalizePanelState, resolveRigh
 import type { PanelSize, PanelState } from '../panelLayout'
 import { ColumnHoverCard, TableHoverCard } from './HoverCards'
 import type { HoverRect, HoverTarget } from './HoverCards'
-import TableReportModal from './TableReportModal'
+import ChangesModal from './ChangesModal'
+import { CLASSE_NODO_ATTIVO, chiaveNodo } from '../treeSelection'
 
 interface Props {
   summary: DatabaseSummary | null
@@ -68,11 +76,19 @@ interface Props {
   activeDatabase: string
   /** Id della connessione attiva (per backup/ripristino del database). */
   connectionId?: string
-  onInsertText: (text: string) => void
+  /** Apre una NUOVA tab con il testo indicato (mai la tab attiva). */
+  onNuovaTab?: (titolo: string, testo: string) => void
+  /** @deprecated non si inserisce più nella tab attiva (richiesta utente) */
+  onInsertText?: (text: string) => void
   /** Apre la preview (SELECT TOP 100 *) in una nuova tab dell'editor. */
   onPreviewInEditor?: (sql: string) => void
   /** Apre uno script generato (CREATE/MERGE) in una nuova tab con titolo. */
-  onOpenScript?: (title: string, sql: string) => void
+  onOpenScript?: (title: string, sql: string, asChild?: boolean) => void
+  /**
+   * Apre il REPORT utilizzo tabelle: vive in una TAB (come la Ricerca), non in una finestra
+   * (richiesta utente: "la form si apre come le tab").
+   */
+  onOpenReport?: () => void
   /** Cambia il database attivo (nuova connessione con lo stesso server). */
   onSwitchDatabase?: (database: string) => void
   /** Colori personalizzati per database. */
@@ -83,18 +99,33 @@ interface Props {
   rightDockEl: HTMLElement | null
   /** Notifica quale pannello è agganciato a destra (null = nessuno) per mostrare/nascondere la colonna. */
   onRightDockChange: (panel: 'db' | 'objects' | null) => void
-  /** Apre una stored procedure / funzione / vista / trigger: 'alter' genera ALTER, 'open' la definizione CREATE. */
+  /** Apre una stored procedure / funzione / vista / trigger: 'alter' genera ALTER, 'open' la definizione CREATE.
+   *  `asChild`: la tab nasce FIGLIA di quella attiva (voci del tasto destro). */
   onOpenObject?: (
     kind: 'procedure' | 'function' | 'view' | 'trigger',
     schema: string,
     name: string,
     mode: 'alter' | 'open',
+    asChild?: boolean,
   ) => void
   /** Apre il DIAGRAMMA delle chiamate di una routine (chi la chiama / cosa chiama). */
   onShowCallGraph?: (schema: string, name: string, kind: 'procedure' | 'function') => void
 }
 
-type HitKind = 'tabella' | 'vista' | 'procedura' | 'funzione' | 'trigger' | 'check'
+type HitKind = 'tabella' | 'vista' | 'procedura' | 'funzione' | 'trigger' | 'check' | 'indice' | 'vincolo'
+
+/** Voce della sezione "Vincoli" della treeview: chiave primaria, unique, chiave esterna o check. */
+interface VoceVincolo {
+  nome: string
+  tipo: 'PRIMARY KEY' | 'UNIQUE' | 'FOREIGN KEY' | 'CHECK'
+  /** Riga di dettaglio (colonne del vincolo, tabella riferita, testo del CHECK). */
+  dettaglio: string
+  /** Script per (ri)creare il vincolo. */
+  sqlCreate: string
+  /** Script di cancellazione (ALTER TABLE … DROP CONSTRAINT). */
+  sqlDrop: string
+  disabilitato?: boolean
+}
 
 interface SearchHit {
   kind: HitKind
@@ -107,6 +138,10 @@ interface SearchHit {
   view?: ViewInfo
   trigger?: TriggerInfo
   check?: CheckConstraintInfo
+  /** Indice della tabella (per lo script CREATE/DROP INDEX). */
+  index?: IndexInfo
+  /** Vincolo della tabella (per gli script ADD/DROP CONSTRAINT). */
+  vincolo?: VoceVincolo
 }
 
 /** Voce del menu contestuale (SSMS): azione foglia oppure sottomenu "Script ...". */
@@ -125,9 +160,10 @@ export default function Sidebar({
   loading,
   activeDatabase,
   connectionId,
-  onInsertText,
+  onNuovaTab,
   onPreviewInEditor,
   onOpenScript,
+  onOpenReport,
   onOpenObject,
   onShowCallGraph,
   onSwitchDatabase,
@@ -136,7 +172,57 @@ export default function Sidebar({
   rightDockEl,
   onRightDockChange,
 }: Props) {
+  /**
+   * GERARCHIA DELLE TAB: le voci del tasto destro aprono la nuova tab come FIGLIA di quella
+   * attiva (richiesta utente: "una tab sotto quella corrente, in senso di gerarchia").
+   */
+  const apriScriptFiglia = (title: string, sql: string) => onOpenScript?.(title, sql, true)
+  const apriOggettoFiglio = (
+    kind: 'procedure' | 'function' | 'view' | 'trigger',
+    schema: string,
+    name: string,
+    mode: 'alter' | 'open',
+  ) => onOpenObject?.(kind, schema, name, mode, true)
+
   const [query, setQuery] = useState('')
+  /**
+   * VOCE SELEZIONATA NELL'ALBERO (richiesta utente: "rendi le voci della treeview selezionabili,
+   * adesso non si capisce cosa è selezionato"). Si tiene la CHIAVE della riga cliccata (o cliccata
+   * col tasto destro), non l'elemento: sopravvive a espansioni, filtri e nuovi dati.
+   */
+  const [nodoSel, setNodoSel] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('sql-intelli:nodoSel.v1')
+    } catch {
+      return null
+    }
+  })
+  /** Registra il clic (o il tasto destro) sulla riga dell'albero: `data-nodo` dice quale. */
+  const selezionaDaClic = (e: React.MouseEvent | React.FocusEvent) => {
+    const riga = (e.target as HTMLElement).closest?.('[data-nodo]')
+    if (!riga) return
+    const chiave = riga.getAttribute('data-nodo') || null
+    if (!chiave || chiave === nodoSel) return
+    setNodoSel(chiave)
+    try {
+      localStorage.setItem('sql-intelli:nodoSel.v1', chiave)
+    } catch {
+      /* ignora */
+    }
+  }
+  /**
+   * La classe dell'evidenziazione si applica DOPO il render, su tutte le righe che dichiarano
+   * `data-nodo`: così non serve calcolare la classe in ognuno dei punti in cui si disegna una
+   * voce dell'albero (ce ne sono una dozzina) e la riga resta evidenziata anche quando l'albero
+   * si ridisegna (espansione di una tabella, ricerca, aggiornamento dello schema).
+   */
+  useEffect(() => {
+    // Si guarda l'intero documento, non solo il ref: un pannello STACCATO (floating) viene
+    // disegnato in un portale fuori dalla sidebar, e le sue righe devono evidenziarsi uguale.
+    for (const el of document.querySelectorAll('[data-nodo]')) {
+      el.classList.toggle(CLASSE_NODO_ATTIVO, el.getAttribute('data-nodo') === nodoSel)
+    }
+  })
   // Filtro per nome nella lista dei database
   const [dbFilter, setDbFilter] = useState('')
   // Pannelli (stile Visual Studio): database in alto, oggetti+ricerca sotto.
@@ -263,8 +349,8 @@ export default function Sidebar({
   // Nodo del database attivo: true = oggetti nascosti (nodo chiuso)
   const [collapsedDb, setCollapsedDb] = useState(false)
 
-  // Report utilizzo tabelle (modale)
-  const [reportOpen, setReportOpen] = useState(false)
+  // Modifiche agli oggetti (modale): griglia con giorno e ora dell'ultima modifica
+  const [changesOpen, setChangesOpen] = useState(false)
 
   const toggleDbNode = (name: string) => {
     if (name === activeDatabase) {
@@ -277,6 +363,13 @@ export default function Sidebar({
   // Tabelle: gruppi di prefisso e campi delle tabelle chiusi di default
   const [expandedTables, setExpandedTables] = useState<Set<string>>(() => new Set())
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set())
+  /**
+   * SOTTOGRUPPI del nodo tabella (Colonne / Indici / Chiavi esterne / Vincoli / Trigger): ognuno è
+   * un NODO apribile per conto suo, così l'albero non mostra tutto in fila (richiesta utente:
+   * "annida nella treeview delle tabelle le colonne in un nodo, indici in un altro e fk in un
+   * altro ecc…"). La chiave è `${tabella}|${gruppo}`.
+   */
+  const [openSottogruppi, setOpenSottogruppi] = useState<Set<string>>(() => new Set())
 
   const tableGroups = useMemo(
     () => (summary ? groupTablesByPrefix(summary.tables) : []),
@@ -319,8 +412,87 @@ export default function Sidebar({
     return map
   }, [summary])
 
+  /**
+   * CHIAVI ESTERNE uscenti raggruppate per tabella (e per nome del vincolo: le FK composite hanno
+   * una riga per colonna). Servono alla sezione "Vincoli" della treeview, dove prima le chiavi
+   * esterne non comparivano affatto (richiesta utente: "metti nella treeview anche i constraint").
+   */
+  const foreignKeysByTable = useMemo(() => {
+    const map = new Map<string, Map<string, ForeignKeyInfo[]>>()
+    if (!summary) return map
+    for (const fk of summary.foreignKeys) {
+      const key = `${fk.schema}.${fk.table}`
+      const perNome = map.get(key) ?? new Map<string, ForeignKeyInfo[]>()
+      const gruppo = perNome.get(fk.name) ?? []
+      gruppo.push(fk)
+      perNome.set(fk.name, gruppo)
+      map.set(key, perNome)
+    }
+    return map
+  }, [summary])
+
+  /**
+   * VINCOLI di una tabella visti come voci pronte: PRIMARY KEY e UNIQUE (dagli indici),
+   * FOREIGN KEY uscenti e CHECK. Ognuna porta gli script CREATE/DROP, così dalla treeview si
+   * può generare sia la creazione sia la cancellazione del vincolo.
+   */
+  const vincoliDiTabella = (t: TableInfo): VoceVincolo[] => {
+    const voci: VoceVincolo[] = []
+    for (const ix of (t.indexes ?? []).filter(i => indiceVincolo(i))) {
+      const tipo = ix.isPrimaryKey ? 'PRIMARY KEY' : 'UNIQUE'
+      voci.push({
+        nome: ix.name,
+        tipo,
+        dettaglio: `${tipo}${ix.isClustered ? ' CLUSTERED' : ' NONCLUSTERED'}${(ix.columns ?? []).length > 0 ? ` (${(ix.columns ?? []).join(', ')})` : ''}`,
+        sqlCreate: scriptAddConstraint(t, ix),
+        sqlDrop: scriptDropConstraint(t.schema, t.name, ix.name),
+      })
+    }
+    const tKey = `${t.schema}.${t.name}`
+    for (const [nome, gruppo] of foreignKeysByTable.get(tKey) ?? []) {
+      const primi = gruppo[0]
+      voci.push({
+        nome,
+        tipo: 'FOREIGN KEY',
+        dettaglio: `(${gruppo.map(g => g.column).join(', ')}) → ${primi.refSchema}.${primi.refTable} (${gruppo.map(g => g.refColumn).join(', ')})`,
+        sqlCreate: scriptForeignKey(t.schema, t.name, nome, gruppo),
+        sqlDrop: scriptDropConstraint(t.schema, t.name, nome),
+      })
+    }
+    for (const cc of checksByTable.get(tKey) ?? []) {
+      voci.push({
+        nome: cc.name,
+        tipo: 'CHECK',
+        dettaglio: cc.definition,
+        sqlCreate: scriptCheckConstraint(cc.schema, cc.tableName, cc.name, cc.definition, cc.isDisabled),
+        sqlDrop: scriptDropConstraint(cc.schema, cc.tableName, cc.name),
+        disabilitato: cc.isDisabled,
+      })
+    }
+    return voci
+  }
+
   const toggleTable = (key: string) =>
     setExpandedTables(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) {
+        next.delete(key)
+        // chiudendo la tabella si richiudono anche i suoi sottogruppi (si riparte puliti)
+        setOpenSottogruppi(s => {
+          const dopo = new Set(s)
+          for (const k of dopo) if (k.startsWith(`${key}|`)) dopo.delete(k)
+          return dopo
+        })
+      } else {
+        next.add(key)
+        // aprendo la tabella si apre subito il nodo COLONNE: è quello che serve quasi sempre
+        setOpenSottogruppi(s => new Set(s).add(`${key}|colonne`))
+      }
+      return next
+    })
+
+  const toggleSottogruppo = (key: string) =>
+    setOpenSottogruppi(prev => {
       const next = new Set(prev)
       if (next.has(key)) next.delete(key)
       else next.add(key)
@@ -390,7 +562,7 @@ export default function Sidebar({
             label: 'Seleziona le prime 1000 righe',
             icon: <Rows3 className="h-3.5 w-3.5" />,
             hint: 'SELECT TOP (1000) in una nuova tab',
-            run: () => onOpenScript?.(`SELECT ${qname}`, scriptSelectTable(t)),
+            run: () => apriScriptFiglia(`SELECT ${qname}`, scriptSelectTable(t)),
           },
           {
             id: 'script',
@@ -398,13 +570,13 @@ export default function Sidebar({
             icon: <FileCode2 className="h-3.5 w-3.5" />,
             hint: 'Genera lo script della tabella',
             submenu: [
-              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`CREATE ${qname}`, scriptCreateTable(t)) },
-              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('table', hit.schema, hit.name)) },
-              { id: 'select', label: 'SELECT', icon: <Rows3 className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`SELECT ${qname}`, scriptSelectTable(t)) },
-              { id: 'insert', label: 'INSERT', icon: <Plus className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`INSERT ${qname}`, scriptInsertTable(t)) },
-              { id: 'update', label: 'UPDATE', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`UPDATE ${qname}`, scriptUpdateTable(t)) },
-              { id: 'delete', label: 'DELETE', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DELETE ${qname}`, scriptDeleteTable(t)) },
-              { id: 'merge', label: 'MERGE', icon: <GitMerge className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`MERGE ${qname}`, scriptMergeTable(t)) },
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`CREATE ${qname}`, scriptCreateTable(t, { checks: summary?.checkConstraints, foreignKeys: summary?.foreignKeys, triggers: summary?.triggers }, activeDatabase)) },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => apriScriptFiglia(`DROP ${qname}`, scriptDropObject('table', hit.schema, hit.name)) },
+              { id: 'select', label: 'SELECT', icon: <Rows3 className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`SELECT ${qname}`, scriptSelectTable(t)) },
+              { id: 'insert', label: 'INSERT', icon: <Plus className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`INSERT ${qname}`, scriptInsertTable(t)) },
+              { id: 'update', label: 'UPDATE', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`UPDATE ${qname}`, scriptUpdateTable(t)) },
+              { id: 'delete', label: 'DELETE', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => apriScriptFiglia(`DELETE ${qname}`, scriptDeleteTable(t)) },
+              { id: 'merge', label: 'MERGE', icon: <GitMerge className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`MERGE ${qname}`, scriptMergeTable(t)) },
             ],
           },
         ]
@@ -416,7 +588,7 @@ export default function Sidebar({
             label: 'Seleziona le prime 1000 righe',
             icon: <Rows3 className="h-3.5 w-3.5" />,
             hint: 'SELECT TOP (1000) in una nuova tab',
-            run: () => onOpenScript?.(`SELECT ${qname}`, select1000(hit.schema, hit.name)),
+            run: () => apriScriptFiglia(`SELECT ${qname}`, select1000(hit.schema, hit.name)),
           },
           {
             id: 'script',
@@ -424,10 +596,10 @@ export default function Sidebar({
             icon: <FileCode2 className="h-3.5 w-3.5" />,
             hint: 'Genera lo script della vista',
             submenu: [
-              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('view', hit.schema, hit.name, 'open') },
-              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('view', hit.schema, hit.name, 'alter') },
-              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('view', hit.schema, hit.name)) },
-              { id: 'select', label: 'SELECT', icon: <Rows3 className="h-3.5 w-3.5" />, run: () => onOpenScript?.(`SELECT ${qname}`, select1000(hit.schema, hit.name)) },
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('view', hit.schema, hit.name, 'open') },
+              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('view', hit.schema, hit.name, 'alter') },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => apriScriptFiglia(`DROP ${qname}`, scriptDropObject('view', hit.schema, hit.name)) },
+              { id: 'select', label: 'SELECT', icon: <Rows3 className="h-3.5 w-3.5" />, run: () => apriScriptFiglia(`SELECT ${qname}`, select1000(hit.schema, hit.name)) },
             ],
           },
         ]
@@ -438,15 +610,15 @@ export default function Sidebar({
             id: 'exec',
             label: 'Esegui stored procedure',
             icon: <Play className="h-3.5 w-3.5" />,
-            hint: 'Inserisci EXEC con i parametri',
-            run: () => onInsertText(scriptExecProcedure(p)),
+            hint: 'EXEC con i parametri in una nuova tab',
+            run: () => apriScriptFiglia(`EXEC ${p.name}`, scriptExecProcedure(p)),
           },
           {
             id: 'modify',
             label: 'Modifica',
             icon: <SquarePen className="h-3.5 w-3.5" />,
             hint: 'Genera CREATE OR ALTER PROCEDURE in una nuova tab',
-            run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'alter'),
+            run: () => apriOggettoFiglio('procedure', hit.schema, hit.name, 'alter'),
           },
           {
             id: 'callgraph',
@@ -461,10 +633,10 @@ export default function Sidebar({
             icon: <FileCode2 className="h-3.5 w-3.5" />,
             hint: 'Genera lo script della stored procedure',
             submenu: [
-              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'open') },
-              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('procedure', hit.schema, hit.name, 'alter') },
-              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('procedure', hit.schema, hit.name)) },
-              { id: 'execute', label: 'EXECUTE', icon: <Play className="h-3.5 w-3.5" />, run: () => onInsertText(scriptExecProcedure(p)) },
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('procedure', hit.schema, hit.name, 'open') },
+              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('procedure', hit.schema, hit.name, 'alter') },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => apriScriptFiglia(`DROP ${qname}`, scriptDropObject('procedure', hit.schema, hit.name)) },
+              { id: 'execute', label: 'EXECUTE', icon: <Play className="h-3.5 w-3.5" />, run: () => apriScriptFiglia('EXEC ' + p.name, scriptExecProcedure(p)) },
             ],
           },
         ]
@@ -476,7 +648,7 @@ export default function Sidebar({
             label: 'Modifica',
             icon: <SquarePen className="h-3.5 w-3.5" />,
             hint: 'Genera CREATE OR ALTER FUNCTION in una nuova tab',
-            run: () => onOpenObject?.('function', hit.schema, hit.name, 'alter'),
+            run: () => apriOggettoFiglio('function', hit.schema, hit.name, 'alter'),
           },
           {
             id: 'callgraph',
@@ -491,9 +663,9 @@ export default function Sidebar({
             icon: <FileCode2 className="h-3.5 w-3.5" />,
             hint: 'Genera lo script della funzione',
             submenu: [
-              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('function', hit.schema, hit.name, 'open') },
-              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('function', hit.schema, hit.name, 'alter') },
-              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('function', hit.schema, hit.name)) },
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('function', hit.schema, hit.name, 'open') },
+              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('function', hit.schema, hit.name, 'alter') },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => apriScriptFiglia(`DROP ${qname}`, scriptDropObject('function', hit.schema, hit.name)) },
             ],
           },
         ]
@@ -504,7 +676,7 @@ export default function Sidebar({
             label: 'Modifica',
             icon: <SquarePen className="h-3.5 w-3.5" />,
             hint: 'Genera CREATE OR ALTER TRIGGER in una nuova tab',
-            run: () => onOpenObject?.('trigger', hit.schema, hit.name, 'alter'),
+            run: () => apriOggettoFiglio('trigger', hit.schema, hit.name, 'alter'),
           },
           {
             id: 'script',
@@ -512,9 +684,9 @@ export default function Sidebar({
             icon: <FileCode2 className="h-3.5 w-3.5" />,
             hint: 'Genera lo script del trigger',
             submenu: [
-              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => onOpenObject?.('trigger', hit.schema, hit.name, 'open') },
-              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => onOpenObject?.('trigger', hit.schema, hit.name, 'alter') },
-              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => onOpenScript?.(`DROP ${qname}`, scriptDropObject('trigger', hit.schema, hit.name)) },
+              { id: 'create', label: 'CREATE', icon: <FileCode2 className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('trigger', hit.schema, hit.name, 'open') },
+              { id: 'alter', label: 'CREATE OR ALTER', icon: <SquarePen className="h-3.5 w-3.5" />, run: () => apriOggettoFiglio('trigger', hit.schema, hit.name, 'alter') },
+              { id: 'drop', label: 'DROP', icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, run: () => apriScriptFiglia(`DROP ${qname}`, scriptDropObject('trigger', hit.schema, hit.name)) },
             ],
           },
         ]
@@ -528,10 +700,87 @@ export default function Sidebar({
             icon: <SquarePen className="h-3.5 w-3.5" />,
             hint: 'Apre ALTER TABLE … ADD CONSTRAINT CHECK in una nuova tab per vedere/modificare il vincolo',
             run: () =>
-              onOpenScript?.(
+              apriScriptFiglia(
                 label,
                 scriptCheckConstraint(cc.schema, cc.tableName, cc.name, cc.definition, cc.isDisabled),
               ),
+          },
+        ]
+      }
+      /**
+       * INDICE: come in SSMS "Script Index as →", con CREATE e DROP. Per un indice che è in
+       * realtà un vincolo (PK / UNIQUE CONSTRAINT) lo script di cancellazione è quello giusto
+       * (ALTER TABLE … DROP CONSTRAINT): lo decide scriptDropIndex.
+       */
+      case 'indice': {
+        const t = hit.table!
+        const ix = hit.index!
+        const label = `Indice ${ix.name}`
+        const tipo = `${ix.isUnique ? 'UNIQUE ' : ''}${ix.isClustered ? 'CLUSTERED' : 'NONCLUSTERED'}`
+        return [
+          {
+            id: 'script',
+            label: 'Script indice',
+            icon: <FileCode2 className="h-3.5 w-3.5" />,
+            hint: `${tipo} INDEX ${ix.name}`,
+            submenu: [
+              {
+                id: 'create',
+                label: 'CREATE',
+                icon: <FileCode2 className="h-3.5 w-3.5" />,
+                run: () => apriScriptFiglia(`CREATE ${label}`, scriptCreateIndex(t, ix)),
+              },
+              {
+                id: 'drop',
+                label: 'DROP',
+                icon: <Trash2 className="h-3.5 w-3.5" />,
+                danger: true,
+                run: () => apriScriptFiglia(`DROP ${label}`, scriptDropIndex(t, ix)),
+              },
+            ],
+          },
+          {
+            id: 'copy',
+            label: 'Copia nome',
+            icon: <Braces className="h-3.5 w-3.5" />,
+            run: () => void navigator.clipboard?.writeText(sqlIdent(ix.name)),
+          },
+        ]
+      }
+      /**
+       * VINCOLO (PRIMARY KEY, UNIQUE, FOREIGN KEY, CHECK): gli script per ricrearlo e per
+       * cancellarlo con ALTER TABLE … DROP CONSTRAINT.
+       */
+      case 'vincolo': {
+        const v = hit.vincolo!
+        const label = `${v.tipo} ${v.nome}`
+        return [
+          {
+            id: 'script',
+            label: 'Script vincolo',
+            icon: <FileCode2 className="h-3.5 w-3.5" />,
+            hint: v.dettaglio,
+            submenu: [
+              {
+                id: 'create',
+                label: v.tipo === 'FOREIGN KEY' ? 'ADD CONSTRAINT' : 'CREATE',
+                icon: <FileCode2 className="h-3.5 w-3.5" />,
+                run: () => apriScriptFiglia(label, v.sqlCreate),
+              },
+              {
+                id: 'drop',
+                label: 'DROP CONSTRAINT',
+                icon: <Trash2 className="h-3.5 w-3.5" />,
+                danger: true,
+                run: () => apriScriptFiglia(`DROP ${label}`, v.sqlDrop),
+              },
+            ],
+          },
+          {
+            id: 'copy',
+            label: 'Copia nome',
+            icon: <Braces className="h-3.5 w-3.5" />,
+            run: () => void navigator.clipboard?.writeText(sqlIdent(v.nome)),
           },
         ]
       }
@@ -627,6 +876,7 @@ export default function Sidebar({
           <div key={d.name}>
             <button
               onClick={() => toggleDbNode(d.name)}
+              data-nodo={chiaveNodo('db', d.name)}
               onContextMenu={e => {
                 e.preventDefault()
                 setColorMenu({ db: d.name, x: e.clientX, y: e.clientY })
@@ -657,15 +907,24 @@ export default function Sidebar({
         )
       })}
       </div>
-      {/* Report utilizzo tabelle del database attivo */}
+      {/* Report utilizzo tabelle del database attivo + MODIFICHE agli oggetti (giorno e ora) */}
       {connectionId && (
-        <div className="shrink-0 border-t border-zinc-800 p-2">
+        <div className="shrink-0 space-y-1 border-t border-zinc-800 p-2">
           <button
-            onClick={() => setReportOpen(true)}
+            onClick={() => onOpenReport?.()}
             className="flex w-full items-center justify-center gap-1.5 rounded border border-zinc-700 px-2 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-sky-700 hover:bg-sky-950/30 hover:text-sky-300"
-            title="Report utilizzo tabelle: spazio riservato/usato, dati, indici, righe e accessi — ordinabile per colonna"
+            title="Report utilizzo tabelle: spazio riservato/usato, dati, indici, righe e accessi — si apre in una tab"
+            data-report="apri"
           >
             <Rows3 className="h-3.5 w-3.5 text-sky-400" /> Report utilizzo tabelle
+          </button>
+          <button
+            onClick={() => setChangesOpen(true)}
+            className="flex w-full items-center justify-center gap-1.5 rounded border border-zinc-700 px-2 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-amber-700 hover:bg-amber-950/30 hover:text-amber-300"
+            title="Modifiche agli oggetti: la griglia con store, funzioni, viste, tabelle e trigger e QUANDO sono stati modificati (giorno e ora) — ordinabile per colonna"
+            data-modifiche="apri"
+          >
+            <History className="h-3.5 w-3.5 text-amber-400" /> Modifiche agli oggetti
           </button>
         </div>
       )}
@@ -698,7 +957,8 @@ export default function Sidebar({
               return (
                 <button
                   key={`${h.kind}-${h.schema}-${h.name}-${i}`}
-                  onClick={isProc ? undefined : () => onInsertText(qualified(h.schema, h.name))}
+                  data-nodo={chiaveNodo(h.kind, h.schema, h.name)}
+                  onClick={isProc ? undefined : () => setNodoSel(chiaveNodo(h.kind, h.schema, h.name))}
                   onContextMenu={e => openObjectMenu(e, h)}
                   draggable={isProc}
                   onDragStart={
@@ -715,7 +975,7 @@ export default function Sidebar({
                   title={
                     isProc
                       ? 'Trascina nel editor per generare EXEC con i parametri — tasto destro per le azioni'
-                      : 'Clicca per inserire nel editor — tasto destro per le azioni'
+                      : 'Clicca per selezionare — tasto destro: copia negli appunti o apri in nuova tab'
                   }
                 >
                   <KindIcon kind={h.kind} />
@@ -732,7 +992,7 @@ export default function Sidebar({
           <div className="space-y-1 border-t border-zinc-800 pt-2 pl-2">
             <Section
               title="Tabelle"
-              icon={<Table2 className="h-4 w-4 text-sky-400" />}
+              icon={<TypeIcon tipo="tabella" size={15} />}
               count={summary.tables.length}
               open={!!openSections.tables}
               onToggle={() => toggle('tables')}
@@ -743,6 +1003,7 @@ export default function Sidebar({
                   <div key={g.key}>
                     <button
                       onClick={() => toggleGroup(g.key)}
+                      data-nodo={chiaveNodo('schema', g.key)}
                       className="flex w-full items-center gap-1.5 rounded px-2 py-1 pl-2 text-left text-xs font-semibold text-zinc-400 transition-colors hover:bg-zinc-800/70 hover:text-zinc-200"
                     >
                       {groupOpen ? (
@@ -750,7 +1011,7 @@ export default function Sidebar({
                       ) : (
                         <ChevronRight className="h-3.5 w-3.5 shrink-0" />
                       )}
-                      <FolderOpen className="h-3.5 w-3.5 shrink-0 text-zinc-500" />
+                      <TypeIcon tipo="schema" size={13} />
                       <span>{g.label}</span>
                       <span className="ml-auto rounded-full bg-zinc-800 px-1.5 text-[10px] text-zinc-400">
                         {g.tables.length}
@@ -762,16 +1023,24 @@ export default function Sidebar({
                           const tKey = `${t.schema}.${t.name}`
                           const expanded = expandedTables.has(tKey)
                           const tableTriggers = triggersByTable.map.get(tKey) ?? []
-                          const tableChecks = checksByTable.get(tKey) ?? []
+                          // INDICI veri (non vincoli: PK/UNIQUE CONSTRAINT stanno fra i vincoli)
+                          const indiciVeri = (t.indexes ?? []).filter(ix => !indiceVincolo(ix))
+                          // VINCOLI: chiave primaria, unique, chiavi esterne uscenti e CHECK
+                          const vincoli = expanded ? vincoliDiTabella(t) : []
+                          // ...ma nell'albero stanno in DUE nodi distinti (richiesta utente:
+                          // "indici in un altro e fk in un altro ecc…")
+                          const chiaviEsterne = vincoli.filter(v => v.tipo === 'FOREIGN KEY')
+                          const altriVincoli = vincoli.filter(v => v.tipo !== 'FOREIGN KEY')
                           return (
                             <TableRow
                               key={tKey}
+                              nodo={chiaveNodo('tabella', t.schema, t.name)}
                               label={t.schema !== 'dbo' ? `${t.schema}.${t.name}` : t.name}
                               badge={`${t.columnCount}`}
                               usageText={usageDetail(t.usage)}
                               expanded={expanded}
                               onToggleExpand={() => toggleTable(tKey)}
-                              onInsert={() => onInsertText(qualified(t.schema, t.name))}
+                              onInsert={() => setNodoSel(chiaveNodo('tabella', t.schema, t.name))}
                               onHover={e => hoverTable(e, t)}
                               onHoverLeave={scheduleClose}
                               onQuickPreview={onPreviewInEditor ? () => onPreviewInEditor(quickPreviewSql(t)) : undefined}
@@ -781,94 +1050,166 @@ export default function Sidebar({
                             >
                               {expanded && (
                                 <>
-                                  <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
-                                    Colonne
-                                  </div>
-                                  {t.columns?.map(c => (
-                                    <button
-                                      key={c.name}
-                                      onClick={() => onInsertText(sqlIdent(c.name))}
-                                      onMouseEnter={e => hoverColumn(e, t.name, c)}
-                                      onMouseLeave={scheduleClose}
-                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-                                      title={`${c.dataType}${c.isNullable ? ' NULL' : ''}${c.isIdentity ? ' IDENTITY' : ''}`}
+                                  {/* SOTTOGRUPPI: ognuno è un nodo apribile per conto suo
+                                      (Colonne, Indici, Chiavi esterne, Vincoli, Trigger). */}
+                                  <NodoGruppo
+                                    titolo="Colonne"
+                                    quantita={t.columns?.length ?? 0}
+                                    aperto={openSottogruppi.has(`${tKey}|colonne`)}
+                                    onToggle={() => toggleSottogruppo(`${tKey}|colonne`)}
+                                    nodo={chiaveNodo('gruppo', t.schema, t.name, 'colonne')}
+                                  >
+                                    {t.columns?.map(c => (
+                                      <button
+                                        key={c.name}
+                                        data-nodo={chiaveNodo('colonna', t.schema, t.name, c.name)}
+                                        onClick={() => void copiaTesto(sqlIdent(c.name))}
+                                        onMouseEnter={e => hoverColumn(e, t.name, c)}
+                                        onMouseLeave={scheduleClose}
+                                        className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-12 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                                        title={`${c.dataType}${c.isNullable ? ' NULL' : ''}${c.isIdentity ? ' IDENTITY' : ''}`}
+                                      >
+                                        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${c.isIdentity ? 'bg-amber-400' : c.isNullable ? 'bg-zinc-600' : 'bg-emerald-500'}`} />
+                                        <span className="min-w-0 break-all font-mono">{c.name}</span>
+                                        <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">{c.dataType}</span>
+                                      </button>
+                                    ))}
+                                  </NodoGruppo>
+
+                                  {indiciVeri.length > 0 && (
+                                    <NodoGruppo
+                                      titolo="Indici"
+                                      quantita={indiciVeri.length}
+                                      aperto={openSottogruppi.has(`${tKey}|indici`)}
+                                      onToggle={() => toggleSottogruppo(`${tKey}|indici`)}
+                                      nodo={chiaveNodo('gruppo', t.schema, t.name, 'indici')}
                                     >
-                                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${c.isIdentity ? 'bg-amber-400' : c.isNullable ? 'bg-zinc-600' : 'bg-emerald-500'}`} />
-                                      <span className="min-w-0 break-all font-mono">{c.name}</span>
-                                      <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">{c.dataType}</span>
-                                    </button>
-                                  ))}
-                                  {t.indexes && t.indexes.length > 0 && (
-                                    <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
-                                      Indici
-                                    </div>
+                                      {indiciVeri.map(ix => (
+                                        <button
+                                          key={ix.name}
+                                          data-nodo={chiaveNodo('indice', t.schema, t.name, ix.name)}
+                                          onClick={() => apriScriptFiglia(`Indice ${ix.name}`, scriptCreateIndex(t, ix))}
+                                          onContextMenu={e =>
+                                            openObjectMenu(e, {
+                                              kind: 'indice',
+                                              schema: t.schema,
+                                              name: ix.name,
+                                              detail: t.name,
+                                              table: t,
+                                              index: ix,
+                                            })
+                                          }
+                                          className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-12 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                                          title={`${ix.isUnique ? 'UNIQUE ' : ''}${ix.isClustered ? 'CLUSTERED' : 'NONCLUSTERED'} INDEX ${ix.name}${
+                                            (ix.columns ?? []).length > 0 ? `\nColonne: ${(ix.columns ?? []).join(', ')}` : ''
+                                          }${
+                                            (ix.includedColumns ?? []).length > 0 ? `\nINCLUDE: ${(ix.includedColumns ?? []).join(', ')}` : ''
+                                          }${ix.filterDefinition ? `\nFiltro: ${ix.filterDefinition}` : ''}\nClicca per lo script CREATE — tasto destro per CREATE/DROP`}
+                                        >
+                                          <TypeIcon tipo="indice" size={12} />
+                                          <span className="min-w-0 break-all font-mono">{ix.name}</span>
+                                          {ix.isUnique && (
+                                            <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-zinc-400">UNIQUE</span>
+                                          )}
+                                          {ix.isClustered && (
+                                            <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-sky-300/80">CLUSTERED</span>
+                                          )}
+                                          {ix.columns && ix.columns.length > 0 && (
+                                            <span className="ml-auto min-w-0 break-all text-right font-mono text-[10px] text-zinc-600">
+                                              {ix.columns.join(', ')}
+                                            </span>
+                                          )}
+                                        </button>
+                                      ))}
+                                    </NodoGruppo>
                                   )}
-                                  {t.indexes?.map(ix => (
-                                    <div
-                                      key={ix.name}
-                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-xs text-zinc-500"
-                                      title={`${ix.name}${ix.isPrimaryKey ? ' — PRIMARY KEY' : ix.isUnique ? ' — UNIQUE' : ''}${ix.columns && ix.columns.length > 0 ? `\nColonne: ${ix.columns.join(', ')}` : ''}`}
+
+                                  {/* CHIAVI ESTERNE in un nodo a parte (richiesta utente:
+                                      "indici in un altro e fk in un altro") */}
+                                  {chiaviEsterne.length > 0 && (
+                                    <NodoGruppo
+                                      titolo="Chiavi esterne"
+                                      quantita={chiaviEsterne.length}
+                                      aperto={openSottogruppi.has(`${tKey}|fk`)}
+                                      onToggle={() => toggleSottogruppo(`${tKey}|fk`)}
+                                      nodo={chiaveNodo('gruppo', t.schema, t.name, 'fk')}
                                     >
-                                      <KeyRound className="h-3 w-3 shrink-0 text-amber-400/70" />
-                                      <span className="min-w-0 break-all font-mono text-zinc-400">{ix.name}</span>
-                                      {ix.isPrimaryKey ? (
-                                        <span className="shrink-0 rounded bg-amber-950/70 px-1 text-[9px] font-bold uppercase text-amber-300">PK</span>
-                                      ) : ix.isUnique ? (
-                                        <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-zinc-400">UNIQUE</span>
-                                      ) : null}
-                                      {ix.columns && ix.columns.length > 0 && (
-                                        <span className="ml-auto min-w-0 break-all text-right font-mono text-[10px] text-zinc-600">
-                                          {ix.columns.join(', ')}
-                                        </span>
-                                      )}
-                                    </div>
-                                  ))}
+                                      {chiaviEsterne.map(v => (
+                                        <VoceVincoloRiga
+                                          key={`${v.tipo}:${v.nome}`}
+                                          v={v}
+                                          nodo={chiaveNodo('vincolo', t.schema, t.name, v.nome)}
+                                          onApri={() => apriScriptFiglia(`${v.tipo} ${v.nome}`, v.sqlCreate)}
+                                          onMenu={e =>
+                                            openObjectMenu(e, {
+                                              kind: 'vincolo',
+                                              schema: t.schema,
+                                              name: v.nome,
+                                              detail: t.name,
+                                              table: t,
+                                              vincolo: v,
+                                            })
+                                          }
+                                        />
+                                      ))}
+                                    </NodoGruppo>
+                                  )}
+
+                                  {/* VINCOLI: chiave primaria, unique e CHECK (le FK stanno sopra) */}
+                                  {altriVincoli.length > 0 && (
+                                    <NodoGruppo
+                                      titolo="Vincoli"
+                                      quantita={altriVincoli.length}
+                                      aperto={openSottogruppi.has(`${tKey}|vincoli`)}
+                                      onToggle={() => toggleSottogruppo(`${tKey}|vincoli`)}
+                                      nodo={chiaveNodo('gruppo', t.schema, t.name, 'vincoli')}
+                                    >
+                                      {altriVincoli.map(v => (
+                                        <VoceVincoloRiga
+                                          key={`${v.tipo}:${v.nome}`}
+                                          v={v}
+                                          nodo={chiaveNodo('vincolo', t.schema, t.name, v.nome)}
+                                          onApri={() => apriScriptFiglia(`${v.tipo} ${v.nome}`, v.sqlCreate)}
+                                          onMenu={e =>
+                                            openObjectMenu(e, {
+                                              kind: 'vincolo',
+                                              schema: t.schema,
+                                              name: v.nome,
+                                              detail: t.name,
+                                              table: t,
+                                              vincolo: v,
+                                            })
+                                          }
+                                        />
+                                      ))}
+                                    </NodoGruppo>
+                                  )}
+
                                   {tableTriggers.length > 0 && (
-                                    <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
-                                      Trigger
-                                    </div>
-                                  )}
-                                  {tableTriggers.map(trg => (
-                                    <button
-                                      key={trg.name}
-                                      onClick={() => onInsertText(qualified(trg.schema, trg.name))}
-                                      onContextMenu={e =>
-                                        openObjectMenu(e, { kind: 'trigger', schema: trg.schema, name: trg.name, detail: trg.tableName, trigger: trg })
-                                      }
-                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-                                      title="Clicca per inserire — tasto destro per le azioni"
+                                    <NodoGruppo
+                                      titolo="Trigger"
+                                      quantita={tableTriggers.length}
+                                      aperto={openSottogruppi.has(`${tKey}|trigger`)}
+                                      onToggle={() => toggleSottogruppo(`${tKey}|trigger`)}
+                                      nodo={chiaveNodo('gruppo', t.schema, t.name, 'trigger')}
                                     >
-                                      <Flame className="h-3 w-3 shrink-0 text-rose-400/70" />
-                                      <span className="min-w-0 break-all font-mono">{trg.name}</span>
-                                    </button>
-                                  ))}
-                                  {tableChecks.length > 0 && (
-                                    <div className="pl-9 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
-                                      Vincoli CHECK
-                                    </div>
+                                      {tableTriggers.map(trg => (
+                                        <button
+                                          key={trg.name}
+                                          data-nodo={chiaveNodo('trigger', trg.schema, trg.name)}
+                                          onClick={() => setNodoSel(chiaveNodo('trigger', trg.schema, trg.name))}
+                                          onContextMenu={e =>
+                                            openObjectMenu(e, { kind: 'trigger', schema: trg.schema, name: trg.name, detail: trg.tableName, trigger: trg })
+                                          }
+                                          className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-12 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                                          title="Clicca per inserire — tasto destro per le azioni"
+                                        >
+                                          <TypeIcon tipo="trigger" size={12} />
+                                          <span className="min-w-0 break-all font-mono">{trg.name}</span>
+                                        </button>
+                                      ))}
+                                    </NodoGruppo>
                                   )}
-                                  {tableChecks.map(cc => (
-                                    <button
-                                      key={cc.name}
-                                      onClick={() =>
-                                        onOpenScript?.(
-                                          `Vincolo CHECK ${cc.name}`,
-                                          scriptCheckConstraint(cc.schema, cc.tableName, cc.name, cc.definition, cc.isDisabled),
-                                        )
-                                      }
-                                      onContextMenu={e =>
-                                        openObjectMenu(e, { kind: 'check', schema: cc.schema, name: cc.name, detail: cc.tableName, check: cc })
-                                      }
-                                      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-10 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-                                      title={`Clicca per vedere/modificare il vincolo — tasto destro per le azioni`}
-                                    >
-                                      <BadgeCheck className="h-3 w-3 shrink-0 text-emerald-400/70" />
-                                      <span className="min-w-0 break-all font-mono">{cc.name}</span>
-                                      {cc.isDisabled && (
-                                        <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-amber-400">off</span>
-                                      )}
-                                    </button>
-                                  ))}
                                 </>
                               )}
                             </TableRow>
@@ -883,7 +1224,7 @@ export default function Sidebar({
 
             <Section
               title="Viste"
-              icon={<Eye className="h-4 w-4 text-violet-400" />}
+              icon={<TypeIcon tipo="vista" size={15} />}
               count={summary.views.length}
               open={!!openSections.views}
               onToggle={() => toggle('views')}
@@ -891,8 +1232,9 @@ export default function Sidebar({
               {summary.views.map(v => (
                 <ObjectRow
                   key={`${v.schema}.${v.name}`}
+                  nodo={chiaveNodo('vista', v.schema, v.name)}
                   label={v.schema !== 'dbo' ? `${v.schema}.${v.name}` : v.name}
-                  onInsert={() => onInsertText(qualified(v.schema, v.name))}
+                  onInsert={() => setNodoSel(chiaveNodo('vista', v.schema, v.name))}
                   onContextMenu={e =>
                     openObjectMenu(e, { kind: 'vista', schema: v.schema, name: v.name, view: v })
                   }
@@ -910,7 +1252,7 @@ export default function Sidebar({
               <div className="space-y-1 pl-2">
                 <Section
                   title="Stored Procedure"
-                  icon={<FileCode2 className="h-3.5 w-3.5 text-emerald-400" />}
+                  icon={<TypeIcon tipo="procedura" size={15} />}
                   count={summary.procedures.length}
                   open={!!openSections.procedures}
                   onToggle={() => toggle('procedures')}
@@ -919,6 +1261,7 @@ export default function Sidebar({
                   {summary.procedures.map(p => (
                     <ObjectRow
                       key={`${p.schema}.${p.name}`}
+                      nodo={chiaveNodo('procedura', p.schema, p.name)}
                       label={p.schema !== 'dbo' ? `${p.schema}.${p.name}` : p.name}
                       draggable
                       onDragStart={e => {
@@ -943,7 +1286,7 @@ export default function Sidebar({
 
                 <Section
                   title="Funzioni"
-                  icon={<Zap className="h-3.5 w-3.5 text-amber-400" />}
+                  icon={<TypeIcon tipo="funzione" size={15} />}
                   count={summary.functions.length}
                   open={!!openSections.functions}
                   onToggle={() => toggle('functions')}
@@ -952,8 +1295,9 @@ export default function Sidebar({
                   {summary.functions.map(f => (
                     <ObjectRow
                       key={`${f.schema}.${f.name}`}
+                      nodo={chiaveNodo('funzione', f.schema, f.name)}
                       label={f.schema !== 'dbo' ? `${f.schema}.${f.name}` : f.name}
-                      onInsert={() => onInsertText(qualified(f.schema, f.name))}
+                      onInsert={() => setNodoSel(chiaveNodo('funzione', f.schema, f.name))}
                       onContextMenu={e =>
                         openObjectMenu(e, { kind: 'funzione', schema: f.schema, name: f.name })
                       }
@@ -964,7 +1308,7 @@ export default function Sidebar({
                 {triggersByTable.orphans.length > 0 && (
                   <Section
                     title="Trigger"
-                    icon={<Flame className="h-3.5 w-3.5 text-rose-400" />}
+                    icon={<TypeIcon tipo="trigger" size={15} />}
                     count={triggersByTable.orphans.length}
                     open={!!openSections.triggers}
                     onToggle={() => toggle('triggers')}
@@ -973,9 +1317,10 @@ export default function Sidebar({
                     {triggersByTable.orphans.map(t => (
                       <ObjectRow
                         key={`${t.schema}.${t.tableName}.${t.name}`}
+                        nodo={chiaveNodo('trigger', t.schema, t.name)}
                         label={t.name}
                         detail={t.schema !== 'dbo' ? `${t.schema}.${t.tableName}` : t.tableName}
-                        onInsert={() => onInsertText(qualified(t.schema, t.name))}
+                        onInsert={() => setNodoSel(chiaveNodo('trigger', t.schema, t.name))}
                         onContextMenu={e =>
                           openObjectMenu(e, { kind: 'trigger', schema: t.schema, name: t.name, detail: t.tableName, trigger: t })
                         }
@@ -997,7 +1342,14 @@ export default function Sidebar({
   const objectsFloating = panels.objects.open && panels.objects.floating
 
   return (
-    <div ref={sidebarRef} className="flex h-full flex-col">
+    <div
+      ref={sidebarRef}
+      className="flex h-full flex-col"
+      // La selezione delle voci dell'albero si prende QUI (delegata): ogni riga dichiara
+      // `data-nodo`, quindi non serve un gestore per riga. Il tasto destro seleziona pure lui.
+      onClickCapture={selezionaDaClic}
+      onContextMenuCapture={selezionaDaClic}
+    >
       {/* Pannello DATABASE ancorato a sinistra: lista dei database */}
       {dbDockedLeft && (
         <DockPanel
@@ -1040,6 +1392,7 @@ export default function Sidebar({
           onToggleFloat={floatObjects}
           accent="text-emerald-300"
           dockClassName="min-h-0 flex-1"
+          bodyClassName="flex flex-col overflow-hidden"
           onScroll={clearCloseTimerAndHover}
         >
           {objectsContent()}
@@ -1105,6 +1458,7 @@ export default function Sidebar({
           onDockLeft={dockObjectsLeft}
           onDockRight={dockObjectsRight}
           accent="text-emerald-300"
+          bodyClassName="flex flex-col overflow-hidden"
           onScroll={clearCloseTimerAndHover}
         >
           {objectsContent()}
@@ -1142,6 +1496,7 @@ export default function Sidebar({
             onToggleFloat={floatObjects}
             accent="text-emerald-300"
             dockClassName="min-h-0 flex-1"
+            bodyClassName="flex flex-col overflow-hidden"
             onScroll={clearCloseTimerAndHover}
           >
             {objectsContent()}
@@ -1215,13 +1570,25 @@ export default function Sidebar({
             {colorMenu.db === activeDatabase && (
               <button
                 onClick={() => {
-                  setReportOpen(true)
+                  onOpenReport?.()
                   setColorMenu(null)
                 }}
                 className="mt-2 flex w-full items-center gap-1.5 rounded border-t border-zinc-800 px-2 pt-1.5 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-sky-300"
-                title="Report utilizzo tabelle del database attivo"
+                title="Report utilizzo tabelle del database attivo (si apre in una tab)"
               >
                 <Rows3 className="h-3.5 w-3.5 text-sky-400" /> Report utilizzo tabelle…
+              </button>
+            )}
+            {colorMenu.db === activeDatabase && (
+              <button
+                onClick={() => {
+                  setChangesOpen(true)
+                  setColorMenu(null)
+                }}
+                className="flex w-full items-center gap-1.5 rounded px-2 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-amber-300"
+                title="Modifiche agli oggetti: quando sono stati modificati (giorno e ora)"
+              >
+                <History className="h-3.5 w-3.5 text-amber-400" /> Modifiche agli oggetti…
               </button>
             )}
           </div>
@@ -1243,15 +1610,43 @@ export default function Sidebar({
             y={objectMenu.y}
             title={`${objectMenu.hit.schema}.${objectMenu.hit.name}`}
             subtitle={objectMenu.hit.kind}
-            actions={objectActions(objectMenu.hit)}
+            actions={[
+              // RICHIESTA UTENTE: "aggiungi due opzioni, o copia in clipboard o apri in nuova tab,
+              // ma mai che metti il testo nella tab attiva". Queste due voci ci sono per OGNI oggetto.
+              {
+                id: 'copia-nome',
+                label: 'Copia negli appunti',
+                hint: qualified(objectMenu.hit.schema, objectMenu.hit.name),
+                icon: <ClipboardCopy className="h-3.5 w-3.5 text-sky-400" />,
+                run: () => {
+                  void copiaTesto(qualified(objectMenu.hit.schema, objectMenu.hit.name))
+                },
+              },
+              {
+                id: 'nuova-tab',
+                label: 'Apri in nuova tab',
+                hint: 'il nome in una tab nuova, senza toccare quella attiva',
+                icon: <FilePlus2 className="h-3.5 w-3.5 text-emerald-400" />,
+                run: () => {
+                  const nome = qualified(objectMenu.hit.schema, objectMenu.hit.name)
+                  onNuovaTab?.(objectMenu.hit.name, `${nome}\n`)
+                },
+              },
+              ...objectActions(objectMenu.hit),
+            ]}
             onClose={() => setObjectMenu(null)}
           />
         </>
       )}
 
-      {/* Report utilizzo tabelle (ordinabile per colonna) */}
-      {reportOpen && connectionId && (
-        <TableReportModal connectionId={connectionId} onClose={() => setReportOpen(false)} />
+      {/* Modifiche agli oggetti: griglia con giorno e ora dell'ultima modifica */}
+      {changesOpen && connectionId && (
+        <ChangesModal
+          connectionId={connectionId}
+          database={activeDatabase}
+          onClose={() => setChangesOpen(false)}
+          onOpenObject={(kind, schema, name) => onOpenObject?.(kind, schema, name, 'alter', true)}
+        />
       )}
     </div>
   )
@@ -1351,8 +1746,20 @@ function ObjectMenu({
   )
 }
 
-function Section({
-  title,
+/** Triangolino PIENO (stile SourceTree) per aprire/chiudere i nodi: ▸ chiuso, ▾ aperto. */
+function Triangolino({ open, className = 'text-zinc-500' }: { open: boolean; className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 8 8"
+      className={`h-2 w-2 shrink-0 transition-transform duration-100 ${open ? 'rotate-90' : ''} ${className}`}
+      aria-hidden
+    >
+      <path fill="currentColor" d="M1.6 1 7 4 1.6 7V1Z" />
+    </svg>
+  )
+}
+
+function Section({  title,
   icon,
   count,
   open,
@@ -1372,11 +1779,12 @@ function Section({
     <div>
       <button
         onClick={onToggle}
+        data-nodo={chiaveNodo('sezione', title)}
         className={`flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs font-semibold transition-colors hover:bg-zinc-800/70 hover:text-zinc-200 ${
           nested ? 'normal-case tracking-normal text-zinc-400' : 'uppercase tracking-wide text-zinc-400'
         }`}
       >
-        {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+        <Triangolino open={open} />
         {icon}
         <span>{title}</span>
         <span className="ml-auto rounded-full bg-zinc-800 px-1.5 text-[10px] text-zinc-400">{count}</span>
@@ -1389,6 +1797,7 @@ function Section({
 function ObjectRow({
   label,
   detail,
+  nodo,
   onInsert,
   onContextMenu,
   draggable,
@@ -1397,6 +1806,8 @@ function ObjectRow({
 }: {
   label: string
   detail?: string
+  /** Chiave della voce (`data-nodo`): serve alla selezione dell'albero. */
+  nodo?: string
   onInsert?: () => void
   onContextMenu?: (e: MouseEvent<HTMLElement>) => void
   draggable?: boolean
@@ -1407,6 +1818,7 @@ function ObjectRow({
     <div>
       <button
         onClick={onInsert}
+        data-nodo={nodo}
         onContextMenu={onContextMenu}
         draggable={draggable}
         onDragStart={onDragStart}
@@ -1415,7 +1827,7 @@ function ObjectRow({
         }`}
         title={
           onInsert
-            ? 'Clicca per inserire nel editor — tasto destro per le azioni'
+            ? 'Clicca per selezionare — tasto destro: copia negli appunti o apri in nuova tab'
             : draggable
               ? 'Trascina nel editor per generare EXEC con i parametri — tasto destro per le azioni'
               : 'Tasto destro per le azioni'
@@ -1432,6 +1844,7 @@ function ObjectRow({
 function TableRow({
   label,
   badge,
+  nodo,
   usageText,
   expanded,
   onToggleExpand,
@@ -1444,6 +1857,8 @@ function TableRow({
 }: {
   label: string
   badge?: string
+  /** Chiave della voce (`data-nodo`): serve alla selezione dell'albero. */
+  nodo?: string
   usageText?: string
   expanded: boolean
   onToggleExpand: () => void
@@ -1462,18 +1877,20 @@ function TableRow({
           className="shrink-0 rounded p-1 pl-4 text-zinc-500 transition-colors hover:text-zinc-300"
           title={expanded ? 'Chiudi i campi' : 'Mostra i campi'}
         >
-          {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          <Triangolino open={expanded} />
         </button>
         <button
           onClick={onInsert}
+          data-nodo={nodo}
           onMouseEnter={onHover}
           onMouseLeave={onHoverLeave}
           onContextMenu={onContextMenu}
           className="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-[13px] text-zinc-200 transition-colors hover:bg-zinc-800"
           title={usageText ? `${usageText} — clicca per inserire, tasto destro per le azioni` : 'Clicca per inserire, tasto destro per le azioni'}
         >
+          <TypeIcon tipo="tabella" size={13} />
           <span className="min-w-0 break-all font-mono">{label}</span>
-          {badge && <span className="ml-auto shrink-0 rounded bg-zinc-800 px-1 text-[10px] text-zinc-500">{badge}</span>}
+          {badge && <span className="ml-auto shrink-0 rounded-full bg-zinc-800 px-1.5 text-[10px] text-zinc-500">{badge}</span>}
         </button>
         {onQuickPreview && (
           <button
@@ -1492,17 +1909,104 @@ function TableRow({
   )
 }
 
+/**
+ * NODO DI UN SOTTOGRUPPO della tabella (Colonne / Indici / Chiavi esterne / Vincoli / Trigger).
+ * Richiesta utente: "annida nella treeview delle tabelle le colonne in un nodo, indici in un altro
+ * e fk in un altro ecc…" — ogni gruppo ha la sua freccia, il conteggio e si apre per conto suo.
+ */
+function NodoGruppo({
+  titolo,
+  quantita,
+  aperto,
+  onToggle,
+  nodo,
+  children,
+}: {
+  titolo: string
+  quantita: number
+  aperto: boolean
+  onToggle: () => void
+  /** Chiave della voce (`data-nodo`) per la selezione dell'albero. */
+  nodo?: string
+  children: ReactNode
+}) {
+  return (
+    <div>
+      <button
+        onClick={onToggle}
+        data-nodo={nodo}
+        className="flex w-full items-center gap-1.5 rounded px-2 py-0.5 pl-8 text-left text-[10px] font-semibold uppercase tracking-wide text-zinc-500 transition-colors hover:bg-zinc-800/60 hover:text-zinc-300"
+        title={`${aperto ? 'Chiudi' : 'Apri'} ${titolo.toLowerCase()} (${quantita})`}
+      >
+        <Triangolino open={aperto} />
+        <TypeIcon tipo="gruppo" size={12} />
+        <span>{titolo}</span>
+        <span className="ml-auto rounded-full bg-zinc-800 px-1.5 py-px text-[10px] font-normal normal-case tracking-normal text-zinc-400">
+          {quantita}
+        </span>
+      </button>
+      {aperto && <div className="space-y-0.5">{children}</div>}
+    </div>
+  )
+}
+
+/** Riga di un VINCOLO nell'albero (usata sia sotto "Chiavi esterne" sia sotto "Vincoli"). */
+function VoceVincoloRiga({
+  v,
+  nodo,
+  onApri,
+  onMenu,
+}: {
+  v: VoceVincolo
+  nodo: string
+  onApri: () => void
+  onMenu: (e: MouseEvent<HTMLElement>) => void
+}) {
+  return (
+    <button
+      data-nodo={nodo}
+      onClick={onApri}
+      onContextMenu={onMenu}
+      className="flex w-full items-center gap-2 rounded px-2 py-0.5 pl-12 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+      title={`${v.tipo} ${v.nome}\n${v.dettaglio}\nClicca per lo script di creazione — tasto destro per CREATE/DROP`}
+    >
+      {v.tipo === 'CHECK' ? (
+        <TypeIcon tipo="check" size={12} />
+      ) : v.tipo === 'FOREIGN KEY' ? (
+        <TypeIcon tipo="chiaveEsterna" size={12} />
+      ) : (
+        <TypeIcon tipo="chiave" size={12} />
+      )}
+      <span className="min-w-0 break-all font-mono">{v.nome}</span>
+      <span
+        className={`shrink-0 rounded px-1 text-[9px] font-bold uppercase ${
+          v.tipo === 'PRIMARY KEY'
+            ? 'bg-amber-950/70 text-amber-300'
+            : v.tipo === 'FOREIGN KEY'
+              ? 'bg-violet-950/70 text-violet-300'
+              : 'bg-zinc-800 text-zinc-400'
+        }`}
+      >
+        {v.tipo === 'PRIMARY KEY' ? 'PK' : v.tipo === 'FOREIGN KEY' ? 'FK' : v.tipo}
+      </span>
+      {v.disabilitato && (
+        <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] font-semibold uppercase text-amber-400">off</span>
+      )}
+    </button>
+  )
+}
+
 function KindIcon({ kind }: { kind: HitKind }) {
   switch (kind) {
     case 'tabella':
-      return <Table2 className="h-3.5 w-3.5 shrink-0 text-sky-400" />
+      return <TypeIcon tipo="tabella" size={14} />
     case 'vista':
-      return <Eye className="h-3.5 w-3.5 shrink-0 text-violet-400" />
+      return <TypeIcon tipo="vista" size={14} />
     case 'procedura':
-      return <FileCode2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+      return <TypeIcon tipo="procedura" size={14} />
     case 'funzione':
-      return <Zap className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+      return <TypeIcon tipo="funzione" size={14} />
     default:
-      return <Flame className="h-3.5 w-3.5 shrink-0 text-rose-400" />
+      return <TypeIcon tipo="trigger" size={14} />
   }
 }

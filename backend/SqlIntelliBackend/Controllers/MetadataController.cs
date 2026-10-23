@@ -13,6 +13,7 @@ public class MetadataController(
     MetadataService metadata,
     MetadataCache cache,
     QueryService query,
+    SearchService search,
     ILogger<MetadataController> logger) : ControllerBase
 {
     private bool TryGetConnectionString(string connectionId, out string cs)
@@ -178,6 +179,24 @@ public class MetadataController(
         return Ok(results);
     }
 
+    /// <summary>
+    /// Ricerca testuale GENERALE nel database della connessione (stile Redgate SQL Search): cerca
+    /// il testo nei nomi e nelle definizioni degli oggetti e, con <c>data=true</c>, anche nei dati
+    /// delle colonne testuali. Il testo è sempre parametrizzato e solo in lettura.
+    /// </summary>
+    [HttpGet("text-search")]
+    public async Task<ActionResult<TextSearchResponse>> TextSearch(
+        [FromRoute] string connectionId,
+        [FromQuery] string? q,
+        [FromQuery] bool data = false,
+        CancellationToken ct = default)
+    {
+        if (!TryGetConnectionString(connectionId, out var cs))
+            return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
+        var result = await search.SearchAsync(cs, q, data, ct);
+        return Ok(result);
+    }
+
     /// <summary>Report utilizzo tabelle: spazio riservato/usato/dati/indici, righe, indici e accessi (ordinabile lato client).</summary>
     [HttpGet("report/tables")]
     public async Task<ActionResult<List<TableReportRow>>> TableReport([FromRoute] string connectionId, CancellationToken ct)
@@ -195,10 +214,10 @@ public class MetadataController(
                    SUM(CASE WHEN i.index_id > 1 THEN a.used_pages ELSE 0 END) * 8 AS IndexKb,
                    SUM(a.total_pages - a.used_pages) * 8 AS UnusedKb,
                    COUNT(DISTINCT i.index_id) AS IndexCount,
-                   COALESCE(us.Reads, 0) AS Reads,
-                   COALESCE(us.Writes, 0) AS Writes,
-                   CONVERT(varchar(30), us.LastRead, 126) AS LastRead,
-                   CONVERT(varchar(30), us.LastWrite, 126) AS LastWrite
+                   COALESCE(MAX(us.Reads), 0) AS Reads,
+                   COALESCE(MAX(us.Writes), 0) AS Writes,
+                   CONVERT(varchar(30), MAX(us.LastRead), 126) AS LastRead,
+                   CONVERT(varchar(30), MAX(us.LastWrite), 126) AS LastWrite
             FROM sys.tables t
             INNER JOIN sys.schemas s ON s.schema_id = t.schema_id
             INNER JOIN sys.partitions p ON p.object_id = t.object_id
@@ -215,7 +234,11 @@ public class MetadataController(
                 GROUP BY object_id
             ) us ON us.object_id = t.object_id
             WHERE t.is_ms_shipped = 0
-            GROUP BY s.name, t.name, t.create_date, us.Reads, us.Writes, us.LastRead, us.LastWrite
+            -- La tabella è il gruppo: (schema, nome) è la chiave di sys.tables, quindi UNA riga per
+            -- tabella. Le colonne di us vanno AGGREGATE (MAX), non messe nella GROUP BY: mettendole
+            -- lì la stessa tabella poteva finire in due gruppi con somme PARZIALI (es. 11.194 +
+            -- 22.388 righe invece di 33.582) e il report mostrava la tabella due volte.
+            GROUP BY s.name, t.name, t.create_date
             ORDER BY s.name, t.name;
             """;
 
@@ -245,6 +268,53 @@ public class MetadataController(
                 L(11),
                 S(12),
                 S(13)));
+        }
+        return Ok(rows);
+    }
+
+    /// <summary>
+    /// MODIFICHE AGLI OGGETTI: elenco piatto degli oggetti del database della connessione con la
+    /// data di creazione e di ULTIMA modifica (ordinate dalla più recente). È la griglia della
+    /// finestra "Modifiche": store, funzioni, viste, tabelle e trigger con giorno e ora.
+    /// Le date sono in UTC (ISO 8601) perché è così che SQL Server le registra: la finestra le
+    /// converte nell'ora locale.
+    /// </summary>
+    [HttpGet("changes")]
+    public async Task<ActionResult<List<ObjectChangeRow>>> ObjectChanges([FromRoute] string connectionId, CancellationToken ct)
+    {
+        if (!TryGetConnectionString(connectionId, out var cs))
+            return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
+
+        const string sql = """
+            SELECT s.name,
+                   o.name,
+                   o.type,
+                   o.type_desc,
+                   CONVERT(varchar(30), o.create_date, 126) + 'Z',
+                   CONVERT(varchar(30), o.modify_date, 126) + 'Z'
+            FROM sys.objects o
+            INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
+            WHERE o.is_ms_shipped = 0
+              AND o.type IN ('P', 'V', 'FN', 'IF', 'TF', 'TR', 'U')
+            ORDER BY o.modify_date DESC;
+            """;
+
+        await using var conn = new SqlConnection(cs);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.CommandTimeout = 60;
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        var rows = new List<ObjectChangeRow>();
+        while (await r.ReadAsync(ct))
+        {
+            rows.Add(new ObjectChangeRow(
+                r.GetString(0),
+                r.GetString(1),
+                r.GetString(2).Trim(),
+                r.GetString(3),
+                r.IsDBNull(4) ? null : r.GetString(4),
+                r.IsDBNull(5) ? null : r.GetString(5)));
         }
         return Ok(rows);
     }

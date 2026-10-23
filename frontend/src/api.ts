@@ -5,10 +5,13 @@ import type {
   ConnectionRequest,
   ConnectionTestResult,
   DatabaseSummary,
+  ObjectChangeRow,
+  PlanResult,
   QueryResult,
   RoutineCallGraph,
   SavedConnectionDto,
   SearchResult,
+  TextSearchResult,
   TableReportRow,
 } from './types'
 
@@ -85,6 +88,16 @@ export const api = {
   searchObjects: (connectionId: string, q: string) =>
     http<SearchResult[]>(`/metadata/${connectionId}/search?q=${encodeURIComponent(q)}`),
 
+  /**
+   * RICERCA TESTUALE GENERALE nel database della connessione (stile Redgate SQL Search):
+   * nomi e definizioni delle strutture e, con `data = true`, anche i valori nelle colonne
+   * di testo. La scansione dei dati è limitata dal backend (tabelle e tempo).
+   */
+  textSearch: (connectionId: string, q: string, data: boolean) =>
+    http<TextSearchResult>(
+      `/metadata/${connectionId}/text-search?q=${encodeURIComponent(q)}&data=${data ? 'true' : 'false'}`,
+    ),
+
   /** Definizione (testo) di una stored procedure / funzione / vista / trigger. */
   getObjectDefinition: (connectionId: string, schema: string, name: string) =>
     http<{ definition: string }>(
@@ -95,6 +108,13 @@ export const api = {
   getRoutineCallGraph: (connectionId: string) =>
     http<RoutineCallGraph>(`/metadata/${connectionId}/routine-call-graph`),
 
+  /** Piano di esecuzione STIMATO (SET SHOWPLAN_XML ON): la query NON viene eseguita. */
+  executionPlan: (connectionId: string, sql: string) =>
+    http<PlanResult>(`/query/${connectionId}/plan`, {
+      method: 'POST',
+      body: JSON.stringify({ sql, timeoutSeconds: 60 }),
+    }),
+
   execute: (connectionId: string, sql: string, timeoutSeconds?: number) =>
     http<QueryResult>(`/query/${connectionId}/execute`, {
       method: 'POST',
@@ -104,6 +124,10 @@ export const api = {
   /** Report utilizzo tabelle: spazio riservato/usato/dati/indici, righe, indici e accessi. */
   tableReport: (connectionId: string) =>
     http<TableReportRow[]>(`/metadata/${connectionId}/report/tables`),
+
+  /** Modifiche agli oggetti: creazione e ultima modifica (giorno e ora) di store, viste, tabelle… */
+  objectChanges: (connectionId: string) =>
+    http<ObjectChangeRow[]>(`/metadata/${connectionId}/changes`),
 
   autocomplete: (connectionId: string, sql: string, apiKey?: string) =>
     http<AutocompleteResponse>(`/autocomplete/${connectionId}`, {

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { ChevronLeft, ChevronRight, Code2, Table2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowUp, ChevronLeft, ChevronRight, Code2, Rows3, Square, Table2 } from 'lucide-react'
 import type { CellValue, DatabaseSummary, QueryMessage, QueryResult } from '../types'
 import { suggestTargetTables } from '../sqlGen'
 import { Badge, Button, Spinner } from './ui'
@@ -20,6 +20,12 @@ interface Props {
   onOpenObject?: (o: ErrorObjectRef) => void
   /** Doppio clic sull'errore: porta il cursore sulla riga indicata da SQL Server. */
   onJumpToLine?: (m: QueryMessage) => void
+  /**
+   * Vista "tutti i result set uno di seguito all'altro" (un solo scorrimento, niente
+   * paginazione). È un'IMPOSTAZIONE DELLA TAB corrente: la ricorda App per ogni editor.
+   */
+  continuous?: boolean
+  onContinuousChange?: (v: boolean) => void
 }
 
 export default function ResultsPanel({
@@ -29,12 +35,16 @@ export default function ResultsPanel({
   summary,
   onOpenObject,
   onJumpToLine,
+  continuous = false,
+  onContinuousChange,
 }: Props) {
   const [setIndex, setSetIndex] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   // modalità generatore: seleziona righe/colonne e genera INSERT/UPDATE/MERGE/DELETE/#tmp
   const [genMode, setGenMode] = useState(false)
+  // contenitore della vista in sequenza: serve al pulsante "Torna su"
+  const seqRef = useRef<HTMLDivElement | null>(null)
 
   // Tabella target PROPOSTA (modificabile) per ogni result set: ricavata dal SQL
   // eseguito ("data un recordset non serve digitare il nome tabella: lo proponiamo").
@@ -88,10 +98,30 @@ export default function ResultsPanel({
   const start = totalRows === 0 ? 0 : (safePage - 1) * pageSize + 1
   const end = Math.min(safePage * pageSize, totalRows)
 
+  // "tutti i result set in sequenza": ha senso solo con più di un set
+  const multiSet = result.resultSets.length > 1
+  const continuo = continuous && multiSet
+  const righeTotali = result.resultSets.reduce((n, s) => n + s.rows.length, 0)
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-1.5 text-xs text-zinc-400">
-        {result.resultSets.length > 1 && (
+        {multiSet && (
+          <Button
+            variant={continuo ? 'primary' : 'ghost'}
+            size="sm"
+            onClick={() => onContinuousChange?.(!continuo)}
+            title={
+              continuo
+                ? 'Torna alla vista con un result set alla volta (con paginazione)'
+                : 'Mostra tutti i result set uno di seguito all’altro, con un solo scorrimento'
+            }
+          >
+            {continuo ? <Square className="h-3.5 w-3.5" /> : <Rows3 className="h-3.5 w-3.5" />}
+            {continuo ? 'Un set alla volta' : 'Tutti in sequenza'}
+          </Button>
+        )}
+        {multiSet && (!continuo || genMode) && (
           <div className="flex items-center gap-1">
             {result.resultSets.map((s, i) => (
               <button
@@ -108,6 +138,11 @@ export default function ResultsPanel({
               </button>
             ))}
           </div>
+        )}
+        {continuo && (
+          <span className="font-medium text-zinc-300">
+            {result.resultSets.length} result set in sequenza · {righeTotali.toLocaleString('it-IT')} righe
+          </span>
         )}
         <span className="ml-auto flex items-center gap-2">
           <Button
@@ -133,9 +168,56 @@ export default function ResultsPanel({
             columns={activeSet.columns}
             rows={pageRows as CellValue[][]}
             initialTarget={suggestedTargets[setIndex] || suggestedTargets.find(t => t !== '') || ''}
+            /* lo schema serve a usare TUTTE le colonne della primary key (anche composita) nella
+               condizione ON della MERGE: la chiave non è detto che sia una sola */
+            summary={summary}
             firstRowNumber={start}
           />
         </div>
+      ) : continuo ? (
+        /* VISTA IN SEQUENZA: tutti i result set uno sotto l'altro in UN SOLO scorrimento
+           (niente paginazione: si scorre fino in fondo). La barra di ogni set resta fissa
+           in alto mentre lo si attraversa, così si sa sempre quale set si sta leggendo. */
+        <>
+          <div ref={seqRef} className="min-h-0 flex-1 overflow-auto" data-testid="risultati-in-sequenza">
+            {result.resultSets.map((s, i) => (
+              <section key={i} data-set={i + 1}>
+                <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-y border-zinc-700 bg-zinc-900/95 px-3 py-1 text-xs backdrop-blur">
+                  <span className="font-semibold text-sky-300">Set {i + 1}</span>
+                  <span className="text-zinc-400">
+                    {s.rowCount.toLocaleString('it-IT')} righe · {s.columns.length} colonne
+                  </span>
+                  {s.affectedRows > 0 && <Badge tone="amber">{s.affectedRows} righe modificate</Badge>}
+                  {s.truncated && (
+                    <Badge tone="rose">troncato a {s.rowCount.toLocaleString('it-IT')} righe</Badge>
+                  )}
+                </div>
+                {s.columns.length > 0 && s.rows.length > 0 ? (
+                  <ResultDataTable
+                    columns={s.columns}
+                    rows={s.rows as CellValue[][]}
+                    firstRowNumber={1}
+                    stickyHeader={false}
+                  />
+                ) : (
+                  <div className="px-3 py-2 text-xs text-zinc-500">Nessuna riga.</div>
+                )}
+              </section>
+            ))}
+          </div>
+          <div className="flex items-center justify-between border-t border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-400">
+            <span>
+              {result.resultSets.length} result set · {righeTotali.toLocaleString('it-IT')} righe in totale
+            </span>
+            <button
+              onClick={() => seqRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
+              title="Torna all'inizio dei risultati"
+            >
+              <ArrowUp className="h-3.5 w-3.5" /> Torna su
+            </button>
+          </div>
+        </>
       ) : (
         <>
       {/* Vista normale: stessa tabella del generatore (numero di riga, linee delle colonne,

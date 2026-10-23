@@ -1,4 +1,4 @@
-import type { CellValue, ColumnInfo, DatabaseSummary, ForeignKeyInfo, FunctionInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableReportRow, TableUsage } from './types'
+import type { CellValue, CheckConstraintInfo, ColumnInfo, DatabaseSummary, ForeignKeyInfo, FunctionInfo, IndexInfo, ProcParamInfo, ProcedureInfo, TableCooccurrence, TableInfo, TableReportRow, TableUsage, TriggerInfo } from './types'
 
 /**
  * Identificatore SQL: restituisce il nome senza parentesi quadre se è "sicuro"
@@ -934,15 +934,288 @@ function columnTypeSql(c: ColumnInfo): string {
   return t
 }
 
-/** Script CREATE TABLE generato dai metadati (colonne, identità, nullabilità). */
-export function scriptCreateTable(table: TableInfo): string {
-  const defs = (table.columns ?? []).map(c => {
-    const parts = [`    ${sqlIdent(c.name)}`, columnTypeSql(c)]
-    if (c.isIdentity) parts.push('IDENTITY(1,1)')
-    if (!c.isNullable) parts.push('NOT NULL')
-    return parts.join(' ')
+/** Filegroup fra parentesi quadre, come fa SSMS: ON [SECONDARY]. */
+export function nomeFilegroup(fg: string): string {
+  return `[${fg.replace(/]/g, ']]')}]`
+}
+
+/**
+ * Coda di un indice/vincolo per lo script CREATE, scritta come la attacca SSMS:
+ *   )WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF,
+ *          ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = OFF, FILLFACTOR = 90,
+ *          OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [SECONDARY]
+ * Le voci senza informazione (fill factor 0, filegroup sconosciuto) vengono omesse.
+ * Il testo NON ha ritorni a capo: la parentesi di chiusura e "WITH" stanno sulla stessa riga.
+ */
+export function opzioniIndice(i: IndexInfo): string {
+  const voci = [
+    `PAD_INDEX = ${i.isPadded ? 'ON' : 'OFF'}`,
+    `STATISTICS_NORECOMPUTE = ${i.statisticsNoRecompute ? 'ON' : 'OFF'}`,
+    `IGNORE_DUP_KEY = ${i.ignoreDupKey ? 'ON' : 'OFF'}`,
+    `ALLOW_ROW_LOCKS = ${i.allowRowLocks === false ? 'OFF' : 'ON'}`,
+    `ALLOW_PAGE_LOCKS = ${i.allowPageLocks === false ? 'OFF' : 'ON'}`,
+  ]
+  if (i.fillFactor && i.fillFactor > 0) voci.push(`FILLFACTOR = ${i.fillFactor}`)
+  voci.push(`OPTIMIZE_FOR_SEQUENTIAL_KEY = ${i.optimizeForSequentialKey ? 'ON' : 'OFF'}`)
+  const filegroup = i.fileGroup ? ` ON ${nomeFilegroup(i.fileGroup)}` : ''
+  return `WITH (${voci.join(', ')})${filegroup}`
+}
+
+/** Identificatore SEMPRE fra parentesi quadre: [dbo].[Tabella] — come gli script di SSMS. */
+function qIdent(nome: string): string {
+  return `[${nome.replace(/]/g, ']]')}]`
+}
+
+/**
+ * True se l'indice è in realtà un VINCOLO: PRIMARY KEY oppure UNIQUE CONSTRAINT
+ * (sys.indexes.is_unique_constraint). I vincoli stanno DENTRO la CREATE TABLE come CONSTRAINT, e
+ * si cancellano con "ALTER TABLE … DROP CONSTRAINT" (SQL Server non accetta "DROP INDEX" su un
+ * vincolo). Un UNIQUE INDEX "normale" invece è un indice: CREATE UNIQUE INDEX / DROP INDEX.
+ * Se il backend non manda il dato (is_unique_constraint assente) si mantiene il comportamento
+ * storico: una chiave UNIQUE viene trattata come vincolo.
+ */
+export function indiceVincolo(ix: IndexInfo): boolean {
+  if (ix.isPrimaryKey) return true
+  if (!ix.isUnique) return false
+  return ix.isUniqueConstraint !== false
+}
+
+/**
+ * Blocco di un vincolo di indice (PRIMARY KEY / UNIQUE) scritto come lo mette SSMS: colonne una
+ * per riga con ASC/DESC e coda ")WITH (…) ON [filegroup]". Si usa DENTRO la CREATE TABLE
+ * (preceduto da una virgola) e dopo "ALTER TABLE … ADD" per il vincolo da solo.
+ */
+export function bloccoVincoloIndice(i: IndexInfo, tipo: 'PRIMARY KEY' | 'UNIQUE'): string {
+  const tipo0 = i.isClustered ? 'CLUSTERED' : 'NONCLUSTERED'
+  const discendenti = new Set((i.descendingColumns ?? []).map(c => c.toLowerCase()))
+  const colonne = (i.columns ?? [])
+    .map(c => `\t${qIdent(c)} ${discendenti.has(c.toLowerCase()) ? 'DESC' : 'ASC'}`)
+    .join(',\n')
+  return ` CONSTRAINT ${qIdent(i.name)} ${tipo} ${tipo0} \n(\n${colonne}\n)${opzioniIndice(i)}`
+}
+
+/**
+ * Script ALTER TABLE … ADD CONSTRAINT di un vincolo PRIMARY KEY / UNIQUE: serve a ricreare il
+ * vincolo da solo (dalla treeview) e nei casi in cui si è appena cancellato con DROP CONSTRAINT.
+ */
+export function scriptAddConstraint(table: TableInfo, ix: IndexInfo): string {
+  const tipo: 'PRIMARY KEY' | 'UNIQUE' = ix.isPrimaryKey ? 'PRIMARY KEY' : 'UNIQUE'
+  const target = qualified(table.schema, table.name)
+  return `ALTER TABLE ${target} ADD${bloccoVincoloIndice(ix, tipo)}\nGO\n`
+}
+
+/**
+ * Script CREATE di un INDICE, stile SSMS "Script Index as → CREATE": colonne chiave una per riga
+ * con ASC/DESC, colonne INCLUDE (copertura), filtro degli indici filtrati e opzioni/filegroup.
+ * Richiesta utente: "metti nello script di generazione anche gli indici".
+ */
+export function scriptCreateIndex(table: TableInfo, ix: IndexInfo): string {
+  const target = `${qIdent(table.schema)}.${qIdent(table.name)}`
+  const tipo = ix.isUnique ? 'UNIQUE ' : ''
+  const cluster = ix.isClustered ? 'CLUSTERED' : 'NONCLUSTERED'
+  const discendenti = new Set((ix.descendingColumns ?? []).map(c => c.toLowerCase()))
+  const chiave = (ix.columns ?? []).map(c => `\t${qIdent(c)} ${discendenti.has(c.toLowerCase()) ? 'DESC' : 'ASC'}`).join(',\n')
+  const include = (ix.includedColumns ?? []).length > 0
+    ? `\nINCLUDE (${(ix.includedColumns ?? []).map(qIdent).join(', ')})`
+    : ''
+  const filtro = ix.filterDefinition ? `\nWHERE ${ix.filterDefinition}` : ''
+  return [
+    `/****** Object:  Index ${qIdent(ix.name)} ******/`,
+    `CREATE ${tipo}${cluster} INDEX ${qIdent(ix.name)} ON ${target}`,
+    `(\n${chiave}\n)${include}${filtro}`,
+    opzioniIndice(ix),
+    'GO',
+    '',
+  ].join('\n')
+}
+
+/**
+ * Script di CANCELLAZIONE di un indice: "DROP INDEX … ON …" per un indice vero,
+ * "ALTER TABLE … DROP CONSTRAINT …" quando l'indice è un vincolo (PK / UNIQUE CONSTRAINT).
+ * Richiesta utente: "metti nello script di cancellazione anche gli indici e i constraint".
+ */
+export function scriptDropIndex(table: TableInfo, ix: IndexInfo): string {
+  const target = qualified(table.schema, table.name)
+  if (indiceVincolo(ix)) return scriptDropConstraint(table.schema, table.name, ix.name)
+  return `DROP INDEX ${sqlIdent(ix.name)} ON ${target};\n`
+}
+
+/** Script di cancellazione di un vincolo (PRIMARY KEY, UNIQUE, CHECK, FOREIGN KEY, DEFAULT). */
+export function scriptDropConstraint(schema: string, tableName: string, name: string): string {
+  return `ALTER TABLE ${qualified(schema, tableName)} DROP CONSTRAINT ${sqlIdent(name)};\n`
+}
+
+/**
+ * Script per (ri)creare una CHIAVE ESTERNA, nello stesso stile con cui scriptCreateTable la
+ * emette: "WITH CHECK ADD CONSTRAINT … FOREIGN KEY(…) REFERENCES …" + "CHECK CONSTRAINT …".
+ */
+export function scriptForeignKey(
+  schema: string,
+  tableName: string,
+  name: string,
+  righeFk: ForeignKeyInfo[],
+): string {
+  if (righeFk.length === 0) return ''
+  const target = qualified(schema, tableName)
+  const locali = righeFk.map(r => qIdent(r.column)).join(', ')
+  const riferite = righeFk.map(r => qIdent(r.refColumn)).join(', ')
+  const ref = `${qIdent(righeFk[0].refSchema)}.${qIdent(righeFk[0].refTable)}`
+  return [
+    `-- Chiave esterna ${name} su ${target}`,
+    `ALTER TABLE ${target}  WITH CHECK ADD  CONSTRAINT ${qIdent(name)} FOREIGN KEY(${locali})`,
+    `REFERENCES ${ref} (${riferite})`,
+    'GO',
+    `ALTER TABLE ${target} CHECK CONSTRAINT ${qIdent(name)}`,
+    'GO',
+    '',
+  ].join('\n')
+}
+
+/**
+ * Script CREATE TABLE generato dai metadati, scritto come lo scrive SSMS ("Script tabella →
+ * CREATE"): banner, SET ANSI_NULLS/QUOTED_IDENTIFIER, CREATE TABLE con gli identificatori fra
+ * parentesi quadre, PRIMARY KEY/UNIQUE con le opzioni dell'indice e il filegroup, DEFAULT, CHECK e
+ * chiavi esterne come ALTER TABLE separati, indici NON di vincolo come CREATE INDEX, proprietà
+ * estese e trigger in coda.
+ * Richiesta utente: "lo script di creazione di una tabella deve riportare anche proprietà estese,
+ * trigger, constraint, primary key, ecc…" e "fallo identico a SSMS".
+ * `extra` porta i vincoli del sommario (CHECK e FK stanno in elenchi a parte, con la tabella e lo
+ * schema di appartenenza); `database` è il database attivo, che SSMS cita con un USE in testa.
+ * I trigger arrivano con il CORPO letto da sys.sql_modules: senza definizione si elencano solo i
+ * nomi, per non inventare SQL.
+ */
+export function scriptCreateTable(
+  table: TableInfo,
+  extra: { checks?: CheckConstraintInfo[] | null; foreignKeys?: ForeignKeyInfo[] | null; triggers?: TriggerInfo[] | null } = {},
+  database?: string | null,
+): string {
+  /** Identificatore SEMPRE fra parentesi quadre, come lo script di SSMS: [dbo].[Tabella]. */
+  const q = (nome: string) => `[${nome.replace(/]/g, ']]')}]`
+  const target = `${q(table.schema)}.${q(table.name)}`
+  /** Tipo di dato con il nome fra parentesi quadre: [nvarchar](10), [decimal](15, 0). */
+  const tipoBracket = (c: ColumnInfo): string => {
+    const t = columnTypeSql(c)
+    const i = t.indexOf('(')
+    return i === -1 ? q(t) : `${q(t.slice(0, i))}${t.slice(i)}`
+  }
+  const defs: string[] = (table.columns ?? []).map(c => {
+    // colonna CALCOLATA: nel database di origine è un'espressione, non un tipo
+    if (c.isComputed && c.computedDefinition) return `\t${q(c.name)} AS ${c.computedDefinition}`
+    const parti = [`\t${q(c.name)}`, tipoBracket(c)]
+    if (c.isIdentity) parti.push('IDENTITY(1,1)')
+    parti.push(c.isNullable ? 'NULL' : 'NOT NULL')
+    return parti.join(' ')
   })
-  return `CREATE TABLE ${qualified(table.schema, table.name)} (\n${defs.join(',\n')}\n);\n`
+
+  const indici = table.indexes ?? []
+  const pk = indici.find(i => i.isPrimaryKey)
+  const vincoli: string[] = []
+  if (pk && (pk.columns ?? []).length > 0) vincoli.push(bloccoVincoloIndice(pk, 'PRIMARY KEY'))
+  for (const uq of indici.filter(i => !i.isPrimaryKey && indiceVincolo(i) && (i.columns ?? []).length > 0)) {
+    vincoli.push(bloccoVincoloIndice(uq, 'UNIQUE'))
+  }
+
+  const fgTabella = (indici.find(i => i.isPrimaryKey) ?? indici[0])?.fileGroup
+  // TABELLA: filegroup dei dati e, se la tabella ha colonne LOB, TEXTIMAGE_ON [filegroup LOB]
+  // (è quello che scrive SSMS: ") ON [SECONDARY] TEXTIMAGE_ON [SECONDARY]")
+  const codaTabella =
+    `${fgTabella ? ` ON ${nomeFilegroup(fgTabella)}` : ''}` +
+    `${table.lobFileGroup ? ` TEXTIMAGE_ON ${nomeFilegroup(table.lobFileGroup)}` : ''}`
+  // Come SSMS: fra un batch e l'altro NON c'è nessuna riga vuota, e i vincoli che non stanno
+  // dentro la CREATE TABLE (DEFAULT, CHECK, chiavi esterne) arrivano subito dopo con il loro GO.
+  const righe: string[] = [
+    // SSMS apre lo script con USE [database]: la tab può girare su qualunque connessione
+    ...(database && database.trim() !== '' ? [`USE ${q(database)}`, 'GO'] : []),
+    `/****** Object:  Table ${target} ******/`,
+    'SET ANSI_NULLS ON',
+    'GO',
+    'SET QUOTED_IDENTIFIER ON',
+    'GO',
+    `CREATE TABLE ${target}(`,
+    [...defs, ...vincoli].join(',\n'),
+    `)${codaTabella}`,
+    'GO',
+  ]
+
+  // DEFAULT: SSMS li aggiunge con un ALTER TABLE per vincolo (due spazi dopo ADD, come SSMS)
+  for (const c of table.columns ?? []) {
+    if (c.isComputed || !c.defaultDefinition) continue
+    const nome = c.defaultName ? `CONSTRAINT ${q(c.defaultName)}  ` : ''
+    righe.push(`ALTER TABLE ${target} ADD  ${nome}DEFAULT ${c.defaultDefinition} FOR ${q(c.name)}`, 'GO')
+  }
+
+  // CHECK: "WITH CHECK ADD" e poi "CHECK CONSTRAINT" (due batch, come SSMS). Un vincolo
+  // DISABILITATO nel database di origine resta disabilitato anche nello script (NOCHECK), perché
+  // lo script deve rispecchiare il database così com'è.
+  for (const c of (extra.checks ?? []).filter(x => x.schema === table.schema && x.tableName === table.name)) {
+    const verifica = c.isDisabled ? 'NOCHECK' : 'CHECK'
+    righe.push(
+      `ALTER TABLE ${target}  WITH ${verifica} ADD  CONSTRAINT ${q(c.name)} CHECK  (${c.definition})`,
+      'GO',
+      `ALTER TABLE ${target} ${verifica} CONSTRAINT ${q(c.name)}`,
+      'GO',
+    )
+  }
+
+  // CHIAVI ESTERNE uscenti (composite raggruppate per nome): stesso schema dei CHECK
+  const fk = (extra.foreignKeys ?? []).filter(f => f.schema === table.schema && f.table === table.name)
+  const perNome = new Map<string, ForeignKeyInfo[]>()
+  for (const f of fk) {
+    const gruppo = perNome.get(f.name) ?? []
+    gruppo.push(f)
+    perNome.set(f.name, gruppo)
+  }
+  for (const [nome, gruppo] of perNome) {
+    const locali = gruppo.map(r => q(r.column)).join(', ')
+    const riferite = gruppo.map(r => q(r.refColumn)).join(', ')
+    const ref = `${q(gruppo[0].refSchema)}.${q(gruppo[0].refTable)}`
+    righe.push(
+      `ALTER TABLE ${target}  WITH CHECK ADD  CONSTRAINT ${q(nome)} FOREIGN KEY(${locali})`,
+      `REFERENCES ${ref} (${riferite})`,
+      'GO',
+      `ALTER TABLE ${target} CHECK CONSTRAINT ${q(nome)}`,
+      'GO',
+    )
+  }
+
+  // INDICI che NON sono vincoli (né PRIMARY KEY né UNIQUE CONSTRAINT): nello script di SSMS
+  // arrivano come CREATE INDEX separati dopo i vincoli. Senza questo pezzo gli indici "normali"
+  // (compresi gli UNIQUE INDEX e le colonne INCLUDE) sparivano dallo script di creazione.
+  for (const ix of indici.filter(i => !indiceVincolo(i) && (i.columns ?? []).length > 0)) {
+    righe.push(...scriptCreateIndex(table, ix).trimEnd().split('\n'), 'GO')
+  }
+
+  // PROPRIETÀ ESTESE: una sola riga per proprietà, scritta come fa SSMS:
+  //   EXEC sys.sp_addextendedproperty @name=N'MS_Description', @value=N'testo' ,
+  //     @level0type=N'SCHEMA',@level0name=N'dbo', @level1type=N'TABLE',@level1name=N'T'
+  const apici = (s: string) => `N'${s.replace(/'/g, "''")}'`
+  const propRiga = (nome: string, valore: string, colonna?: string): string =>
+    `EXEC sys.sp_addextendedproperty @name=${apici(nome)}, @value=${apici(valore)} , ` +
+    `@level0type=N'SCHEMA',@level0name=${apici(table.schema)}, @level1type=N'TABLE',@level1name=${apici(table.name)}` +
+    (colonna ? `, @level2type=N'COLUMN',@level2name=${apici(colonna)}` : '')
+  for (const p of (table.extendedProperties ?? []).filter(x => x.value && x.value.trim() !== '')) {
+    righe.push(propRiga(p.name, p.value), 'GO')
+  }
+  for (const c of table.columns ?? []) {
+    for (const p of (c.extendedProperties ?? []).filter(x => x.value && x.value.trim() !== '')) {
+      righe.push(propRiga(p.name, p.value, c.name), 'GO')
+    }
+  }
+
+  // TRIGGER: con la definizione nel sommario si emette il CREATE TRIGGER così com'è nel database
+  // di origine; se la definizione non c'è, si elencano i nomi (niente SQL inventato).
+  const trigger = (extra.triggers ?? []).filter(t => t.schema === table.schema && t.tableName === table.name)
+  const conCorpo = trigger.filter(t => t.definition && t.definition.trim() !== '')
+  const senzaCorpo = trigger.filter(t => !t.definition || t.definition.trim() === '')
+  if (senzaCorpo.length > 0) {
+    righe.push('-- TRIGGER della tabella (apri ciascuno con "Apri definizione" per il corpo):')
+    for (const t of senzaCorpo) righe.push(`--   ${qualified(t.schema, t.name)}`)
+  }
+  for (const t of conCorpo) {
+    righe.push(`-- Trigger ${qualified(t.schema, t.name)}`, t.definition!.replace(/\r\n/g, '\n').trim(), 'GO')
+  }
+
+  return righe.join('\n') + '\n'
 }
 
 /** Script ALTER TABLE ... ADD CONSTRAINT ... CHECK: per vedere/modificare un vincolo CHECK esistente. */
@@ -968,27 +1241,44 @@ export function scriptCheckConstraint(
   return lines.join('\n') + '\n'
 }
 
-/** Script MERGE generato: chiave = colonna IDENTITY (o la prima), sorgente con valori di default. */
+/**
+ * Script MERGE generato: chiave = colonne della PRIMARY KEY (anche composita), altrimenti la
+ * colonna IDENTITY, altrimenti la prima. I campi chiave NON entrano nell'UPDATE SET (sono già
+ * uguali per la condizione ON, e le identity/calcolate non si aggiornano).
+ */
 export function scriptMergeTable(table: TableInfo): string {
   const cols = table.columns ?? []
-  const pk = cols.find(c => c.isIdentity) ?? cols[0]
+  const pkCols = (table.indexes ?? [])
+    .filter(i => i.isPrimaryKey)
+    .flatMap(i => i.columns ?? [])
+    .filter(c => cols.some(x => x.name.toLowerCase() === c.toLowerCase()))
+  const chiave = pkCols.length > 0
+    ? pkCols
+    : [cols.find(c => c.isIdentity)?.name ?? cols[0]?.name ?? ''].filter(Boolean)
+  const chiavi = new Set(chiave.map(c => c.toLowerCase()))
   const target = qualified(table.schema, table.name)
-  const pkName = pk?.name ?? ''
   const colList = cols.map(c => sqlIdent(c.name)).join(', ')
   const srcCols = cols.map(c => `${sqlDefaultForType(c.dataType, false)} AS ${sqlIdent(c.name)}`).join(', ')
   const updateSet = cols
-    .filter(c => c !== pk)
+    .filter(c => !chiavi.has(c.name.toLowerCase()))
     .map(c => `    ${sqlIdent(c.name)} = src.${sqlIdent(c.name)}`)
     .join(',\n')
-  return [
+  const on = chiave.map(c => `tgt.${sqlIdent(c)} = src.${sqlIdent(c)}`).join(' AND\n    ')
+  const righe = [
     `MERGE INTO ${target} AS tgt`,
     `USING (SELECT ${srcCols}) AS src`,
-    `ON tgt.${sqlIdent(pkName)} = src.${sqlIdent(pkName)}`,
-    'WHEN MATCHED THEN UPDATE SET',
-    updateSet || '    -- nessuna colonna da aggiornare',
+    `ON ${on}`,
+  ]
+  if (updateSet) {
+    righe.push('WHEN MATCHED THEN UPDATE SET', updateSet)
+  } else {
+    righe.push('-- chiave = tutte le colonne: nulla da aggiornare, si inserisce soltanto')
+  }
+  righe.push(
     `WHEN NOT MATCHED THEN INSERT (${colList})`,
     `VALUES (${cols.map(c => `src.${sqlIdent(c.name)}`).join(', ')});`,
-  ].join('\n')
+  )
+  return righe.join('\n')
 }
 
 /** Script EXEC di una stored procedure: IN → @nome = valore (default se noto), OUTPUT → @nome OUTPUT. */
@@ -1134,6 +1424,77 @@ export function sortTableReport(
   return [...rows].sort((a, b) => compareTableReport(a, b, key) * mult)
 }
 
+/** KB → MB/GB con una cifra decimale (come nel report tabelle). */
+export function fmtKb(kb: number): string {
+  if (kb >= 1 << 20) return `${(kb / (1 << 20)).toFixed(1)} GB`
+  if (kb >= 1 << 10) return `${(kb / (1 << 10)).toFixed(1)} MB`
+  return `${kb} KB`
+}
+
+/** Numero con i separatori italiani (1.234). */
+export function fmtNum(n: number): string {
+  return n.toLocaleString('it-IT')
+}
+
+/**
+ * Le N tabelle PIÙ PESANTI del report (spazio riservato su disco), dalla più grande: serve
+ * all'istogramma del report tabelle. A parità di spazio si ordina per nome, così l'istogramma
+ * non "salta" fra un caricamento e l'altro.
+ */
+export function topTablesBySize(rows: TableReportRow[], n = 20): TableReportRow[] {
+  return [...rows]
+    .filter(r => r.reservedKb > 0)
+    .sort(
+      (a, b) =>
+        b.reservedKb - a.reservedKb ||
+        `${a.schema}.${a.name}`.localeCompare(`${b.schema}.${b.name}`),
+    )
+    .slice(0, Math.max(0, n))
+}
+
+/**
+ * Righe del report che corrispondono al filtro per nome ("Filtra per nome…"): si cerca in
+ * "schema.nome". Serve sia all'elenco sia all'ISTOGRAMMA, che deve mostrare solo le tabelle
+ * filtrate (richiesta utente: il grafico deve filtrare con la ricerca).
+ */
+export function filtraTabelleReport(rows: TableReportRow[], filtro: string): TableReportRow[] {
+  const f = filtro.trim().toLowerCase()
+  if (!f) return rows
+  return rows.filter(r => `${r.schema}.${r.name}`.toLowerCase().includes(f))
+}
+
+/**
+ * Script per SVUOTARE il contenuto delle tabelle selezionate nel report tabelle (richiesta utente:
+ * "la possibilità di selezionarle e fare una delete del contenuto, attraverso script generato che
+ * apre nuova tab"): un DELETE FROM per tabella, preceduto dall'elenco di quello che si cancella.
+ * Non si usa TRUNCATE perché il DELETE passa dai trigger e dalle chiavi esterne, come ci si
+ * aspetta da uno script che "svuota" delle tabelle in produzione.
+ */
+export function scriptDeleteTablesContent(
+  rows: { schema: string; name: string; rowCount?: number; dataKb?: number; reservedKb?: number }[],
+): string {
+  if (rows.length === 0) return ''
+  // Sempre [schema].[tabella]: è uno script che CANCELLA dati, il nome non deve dipendere dallo
+  // schema di default della connessione.
+  const nome = (r: { schema: string; name: string }) =>
+    `[${r.schema.replace(/]/g, ']]')}].[${r.name.replace(/]/g, ']]')}]`
+  const elenco = rows.map(
+    r =>
+      `   ${nome(r)}  ${fmtNum(r.rowCount ?? 0)} righe` +
+      `${r.dataKb != null ? ` · ${fmtKb(r.dataKb)} di dati` : ''}` +
+      `${r.reservedKb != null ? ` · ${fmtKb(r.reservedKb)} su disco` : ''}`,
+  )
+  return (
+    `/* Svuota il contenuto di ${rows.length} tabell${rows.length === 1 ? 'a' : 'e'}:\n` +
+    `${elenco.join('\n')}\n\n` +
+    `   ATTENZIONE: i dati vengono eliminati e non si possono recuperare.\n` +
+    `   Se una tabella ha chiavi esterne entranti il DELETE può fallire: svuota prima le figlie\n` +
+    `   oppure usa TRUNCATE TABLE (non passa dai trigger e non è permesso con FK entranti). */\n` +
+    rows.map(r => `DELETE FROM ${nome(r)};`).join('\n') +
+    '\n'
+  )
+}
+
 // ---------- Script "as" stile SSMS (tasto destro) ----------
 
 export type ScriptableKind = 'table' | 'view' | 'procedure' | 'function' | 'trigger'
@@ -1205,6 +1566,12 @@ export interface StatementSnippet {
   label: string
   detail: string
   insertText: string
+  /**
+   * True per gli snippet che devono comparire come PAROLA CHIAVE (icona blu, come EXEC) invece che
+   * con l'icona "snippet" — richiesta utente: "deve essere come le altre tipo EXEC, una parola
+   * chiave, blue". Inseriscono comunque il testo con i segnaposto (tab-stop).
+   */
+  keyword?: boolean
 }
 
 const STATEMENT_SNIPPETS: StatementSnippet[] = [
@@ -1232,6 +1599,35 @@ const STATEMENT_SNIPPETS: StatementSnippet[] = [
     label: 'MERGE INTO',
     detail: 'MERGE INTO ... USING ... (upsert)',
     insertText: 'MERGE INTO ${1:[schema.]tabella} AS tgt\nUSING ${2:sorgente} AS src\nON ${3:/* condizione */}\nWHEN MATCHED THEN UPDATE SET ${4:col = src.col}\nWHEN NOT MATCHED THEN INSERT (${5:colonne})\nVALUES (${6:src.colonne});\n',
+  },
+  // TRIGGER: la sintassi ha DUE pezzi (il nome e "ON <tabella>"), quello che si dimentica più
+  // spesso — segnalazione utente: "la parola enable o disable non viene fuori dall'intellisense".
+  // I segnaposto sono VUOTI (non "[schema.]trigger"): così, fermandosi lì, l'intellisense propone i
+  // NOMI VERI dei trigger e poi la tabella di quel trigger (con il testo fisso il popup si
+  // filtrava su quello e non proponeva nulla — segnalazione utente).
+  {
+    label: 'DISABLE TRIGGER',
+    detail: 'disabilita un trigger: DISABLE TRIGGER <trigger> ON <tabella>',
+    insertText: 'DISABLE TRIGGER ${1} ON ${2};\n',
+    keyword: true,
+  },
+  {
+    label: 'DISABLE TRIGGER ALL',
+    detail: 'disabilita TUTTI i trigger di una tabella',
+    insertText: 'DISABLE TRIGGER ALL ON ${1};\n',
+    keyword: true,
+  },
+  {
+    label: 'ENABLE TRIGGER',
+    detail: 'abilita un trigger: ENABLE TRIGGER <trigger> ON <tabella>',
+    insertText: 'ENABLE TRIGGER ${1} ON ${2};\n',
+    keyword: true,
+  },
+  {
+    label: 'ENABLE TRIGGER ALL',
+    detail: 'abilita TUTTI i trigger di una tabella',
+    insertText: 'ENABLE TRIGGER ALL ON ${1};\n',
+    keyword: true,
   },
 ]
 
@@ -1262,11 +1658,32 @@ export function searchPatternFromQuery(query: string): RegExp | null {
   return new RegExp(tokens.join('.*'), 'i')
 }
 
-/** True se una delle candidate corrisponde alla query (spazi = %). */
+/**
+ * Parole della query (già "pulite"): spazi = separatori. Serve sia alla ricerca laterale sia
+ * all'evidenziazione dei risultati.
+ */
+export function searchTokens(query: string): string[] {
+  return query
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+}
+
+/**
+ * True se una delle candidate corrisponde alla query.
+ *
+ * RICHIESTA UTENTE: "nella ricerca laterale permetti anche di invertire l'ordine delle parole per
+ * trovare comunque il risultato tra i nomi degli oggetti". Prima le parole dovevano comparire NELLO
+ * STESSO ORDINE (la query diventava "parola1.*parola2"): "automatismi engine" NON trovava
+ * "ws_L2_Engine_Automatismi". Ora ogni parola deve essere presente, in QUALSIASI ordine.
+ */
 export function searchMatches(query: string, ...candidates: string[]): boolean {
-  const re = searchPatternFromQuery(query)
-  if (!re) return false
-  return candidates.some(c => re.test(c))
+  const token = searchTokens(query)
+  if (token.length === 0) return false
+  // i candidati (nome, schema…) si guardano INSIEME: "dbo missioni" trova dbo.RUN_MISSIONI anche se
+  // le parole stanno "una nel nome e una nello schema".
+  const testo = candidates.join(' ').toLowerCase()
+  return token.every(t => testo.includes(t.toLowerCase()))
 }
 
 // ---------- Affinità colonne digitate (autocompletamento) ----------
@@ -1607,6 +2024,53 @@ export function fkColumnNames(foreignKeys: ForeignKeyInfo[]): Set<string> {
   return set
 }
 
+/** Proprietario di una colonna nello statement: la tabella e l'alias con cui è scritta (o null). */
+interface ColOwner {
+  table: TableInfo
+  alias: string | null
+}
+
+/**
+ * Chiave di un riferimento di tabella: tabella + alias scritto. Serve a NON contare due volte la
+ * stessa tabella quando lo statement la cita più volte (es. `FROM DAT_UDC du … WHERE EXISTS
+ * (SELECT 1 FROM DAT_UDC)`): erano proprietari "in più" che facevano sembrare condivisa una
+ * colonna univoca, e l'intellisense ci aggiungeva il nome tabella (segnalazione utente).
+ */
+function refKey(table: TableInfo, alias: string | null): string {
+  return `${table.schema}.${table.name}#${(alias ?? '').toLowerCase()}`
+}
+
+/** Tabella di un riferimento, deduplicata per tabella+alias (l'ordine di scrittura è mantenuto). */
+export function dedupRefs<T extends { r: StatementTableRef; table: TableInfo }>(refs: T[]): T[] {
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const x of refs) {
+    const key = refKey(x.table, x.r.alias)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(x)
+  }
+  return out
+}
+
+/**
+ * True se la colonna va QUALIFICATA (alias.col / tabella.col):
+ * - esiste in due tabelle DIVERSE dello statement; oppure
+ * - la STESSA tabella compare con due ALIAS espliciti diversi (self-join: `FROM T a JOIN T b`).
+ * Un secondo riferimento alla stessa tabella senza alias — tipico delle sotto-query
+ * (`EXISTS (SELECT 1 FROM T)`) — NON rende ambigua la colonna: prima bastava quello per
+ * aggiungere il nome tabella anche a colonne univoche.
+ */
+function colonnaCondivisa(owners: ColOwner[]): boolean {
+  if (owners.length < 2) return false
+  const tabelle = new Set(owners.map(o => `${o.table.schema}.${o.table.name}`))
+  if (tabelle.size > 1) return true
+  const aliasEspliciti = new Set(
+    owners.map(o => o.alias?.toLowerCase()).filter((a): a is string => !!a),
+  )
+  return aliasEspliciti.size > 1
+}
+
 /**
  * Elenco ordinato di colonne per il contesto colonna corrente:
  * - se c'è una colonna sinistra in "ON/WHERE ... = " → prima le sue controparti (FK, poi token);
@@ -1624,19 +2088,24 @@ export function buildColumnContextSuggestions(
     .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
     .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined)
 
-  // proprietari per nome colonna (label = alias o nome tabella) e chiave per alias/tabella
-  const colOwners = new Map<string, { col: ColumnInfo; table: TableInfo; label: string }[]>()
+  // proprietari per nome colonna (label = alias o nome tabella) e chiave per alias/tabella.
+  // I riferimenti ripetuti alla STESSA tabella+alias non contano due volte (sotto-query).
+  const colOwners = new Map<string, { col: ColumnInfo; table: TableInfo; label: string; alias: string | null }[]>()
   const aliasToKey = new Map<string, string>()
-  for (const { r, table } of refTables) {
+  for (const { r, table } of dedupRefs(refTables)) {
     const label = r.alias ?? table.name
     aliasToKey.set(label.toLowerCase(), `${table.schema}.${table.name}`)
     for (const c of table.columns ?? []) {
       const lower = c.name.toLowerCase()
+      const entry = { col: c, table, label, alias: r.alias ?? null }
       const list = colOwners.get(lower)
-      if (list) list.push({ col: c, table, label })
-      else colOwners.set(lower, [{ col: c, table, label }])
+      if (list) list.push(entry)
+      else colOwners.set(lower, [entry])
     }
   }
+  /** True se la colonna di quel nome va qualificata (vedi colonnaCondivisa). */
+  const condivisa = (colName: string): boolean =>
+    colonnaCondivisa(colOwners.get(colName.toLowerCase()) ?? [])
 
   const statementTables = refTables.map(x => x.table)
 
@@ -1660,20 +2129,23 @@ export function buildColumnContextSuggestions(
   for (const cp of counterpartList) counterpartKey.add(`${cp.table.schema}.${cp.table.name}.${cp.column.name}`)
 
   const insertTextFor = (c: ColumnInfo, t: TableInfo): string => {
+    if (!condivisa(c.name)) return sqlIdent(c.name)
     const owners = colOwners.get(c.name.toLowerCase()) ?? []
-    const shared = owners.length > 1
-    if (!shared) return sqlIdent(c.name)
     const entry = owners.find(o => `${o.table.schema}.${o.table.name}` === `${t.schema}.${t.name}`)
     return `${sqlIdent(entry?.label ?? t.name)}.${sqlIdent(c.name)}`
   }
 
   const docFor = (c: ColumnInfo, t: TableInfo): string => {
     const owners = colOwners.get(c.name.toLowerCase()) ?? []
-    return columnInfoMarkdown(
-      t,
-      c,
-      owners.map(o => ({ table: o.table, alias: o.label !== o.table.name ? o.label : null })),
-    )
+    const visti = new Set<string>()
+    const elenco: { table: TableInfo; alias: string | null }[] = []
+    for (const o of owners) {
+      const key = refKey(o.table, o.alias)
+      if (visti.has(key)) continue
+      visti.add(key)
+      elenco.push({ table: o.table, alias: o.alias })
+    }
+    return columnInfoMarkdown(t, c, elenco)
   }
 
   const out: ColumnContextSuggestion[] = []
@@ -1688,7 +2160,7 @@ export function buildColumnContextSuggestions(
       isNullable: cp.column.isNullable,
       isIdentity: cp.column.isIdentity,
       ownerLabel: `${cp.table.schema}.${cp.table.name}${cp.viaFk ? ' · FK' : ' · corrispondente'}`,
-      shared: (colOwners.get(cp.column.name.toLowerCase()) ?? []).length > 1,
+      shared: condivisa(cp.column.name),
       documentation: docFor(cp.column, cp.table),
       score: cp.score,
       counterpart: true,
@@ -1714,9 +2186,8 @@ export function buildColumnContextSuggestions(
         dataType: first.col.dataType,
         isNullable: first.col.isNullable,
         isIdentity: first.col.isIdentity,
-        ownerLabel:
-          owners.length === 1 ? owners[0].label : owners.map(o => o.label).join(', '),
-        shared: owners.length > 1,
+        ownerLabel: condivisa(first.col.name) ? [...new Set(owners.map(o => o.label))].join(', ') : first.label,
+        shared: condivisa(first.col.name),
         documentation: docFor(first.col, first.table),
         score: base + fkBoost + histBoost,
         counterpart: false,
@@ -1767,18 +2238,77 @@ export function buildQualifiedColumnSuggestions(
     .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
     .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined)
 
-  const table = refs.find(({ r }) => (r.alias ?? r.tableName).toLowerCase() === qualifier.toLowerCase())?.table
-  if (!table?.columns) return []
+  const table =
+    refs.find(({ r }) => (r.alias ?? r.tableName).toLowerCase() === qualifier.toLowerCase())?.table ??
+    // tabelle locali note solo per nome: le tabelle DERIVATE "(select …) t" e le temporanee
+    // senza alias non compaiono fra i riferimenti FROM/JOIN, ma il sommario le porta con il
+    // nome con cui si qualificano le loro colonne (per la derivata è l'alias stesso).
+    summary.tables.find(t => t.name.toLowerCase() === qualifier.toLowerCase())
+  if (table?.columns) {
+    // insertText = SOLO il nome della colonna: il qualificatore (e il punto) sono già nel testo
+    // ("p." + "X_SCO"), altrimenti confermando il suggerimento si otterrebbe "p.p.X_SCO".
+    return table.columns.map(c => ({
+      name: c.name,
+      insertText: sqlIdent(c.name),
+      dataType: c.dataType,
+      isNullable: c.isNullable,
+      documentation: columnInfoMarkdown(table, c),
+    }))
+  }
 
-  // insertText = SOLO il nome della colonna: il qualificatore (e il punto) sono già nel testo
-  // ("p." + "X_SCO"), altrimenti confermando il suggerimento si otterrebbe "p.p.X_SCO".
-  return table.columns.map(c => ({
+  // FUNZIONI TABELLARI: "FROM dbo.fn_x() a" → scrivendo "a." (o "fn_x.") si propongono le
+  // colonne restituite dalla funzione (segnalato dall'utente: il popup restava vuoto).
+  const fn = extractTableValuedFunctionRefs(stmtText).find(
+    f => (f.alias ?? f.name).toLowerCase() === qualifier.toLowerCase() || f.name.toLowerCase() === qualifier.toLowerCase(),
+  )
+  if (!fn) return []
+  const info =
+    summary.functions.find(
+      f =>
+        f.name.toLowerCase() === fn.name.toLowerCase() &&
+        (!fn.schema || f.schema.toLowerCase() === fn.schema.toLowerCase()),
+    ) ?? summary.functions.find(f => f.name.toLowerCase() === fn.name.toLowerCase())
+  const colonne = info?.columns ?? []
+  return colonne.map(c => ({
     name: c.name,
     insertText: sqlIdent(c.name),
     dataType: c.dataType,
     isNullable: c.isNullable,
-    documentation: columnInfoMarkdown(table, c),
+    documentation: `${sqlIdent(info!.schema)}.${sqlIdent(info!.name)}() · colonna restituita dalla funzione`,
   }))
+}
+
+/** Nome di funzione tabellare: "schema.nome" (o solo "nome" → schema nullo). */
+export interface TableValuedFunctionRef {
+  schema: string | null
+  name: string
+  alias: string | null
+}
+
+/**
+ * Funzioni TABELLARI richiamate nello statement: "FROM dbo.fn_x()", "JOIN fn_y (1) a".
+ * Riconosce l'eventuale alias (con o senza AS) e ignora le funzioni di sistema a colonna singola.
+ */
+export function extractTableValuedFunctionRefs(stmtText: string): TableValuedFunctionRef[] {
+  const code = stmtText.replace(/'[^']*'/g, "''")
+  const re =
+    /\b(?:FROM|JOIN)\s+((?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*))?)\s*\(([^()]*)\)\s*(?:AS\s+)?(\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)?/gi
+  const out: TableValuedFunctionRef[] = []
+  let m: RegExpExecArray | null
+  while ((m = re.exec(code)) !== null) {
+    const raw = m[1].replace(/[\[\]\s]/g, '')
+    const parti = raw.split('.')
+    const nome = parti[parti.length - 1]
+    const schema = parti.length > 1 ? parti[0] : null
+    const aliasGrezzo = (m[3] ?? '').replace(/[\[\]\s]/g, '')
+    // l'alias non può essere una parola chiave che segue la funzione
+    const alias =
+      aliasGrezzo && !/^(ON|WHERE|GROUP|ORDER|INNER|LEFT|RIGHT|FULL|CROSS|JOIN|HAVING|UNION|OPTION|WITH)$/i.test(aliasGrezzo)
+        ? aliasGrezzo
+        : null
+    out.push({ schema, name: nome, alias })
+  }
+  return out
 }
 
 // ---------- Parsing EXEC (autocompletamento parametri delle stored procedure) ----------
@@ -2408,19 +2938,26 @@ export function buildSelectListSuggestions(
     }
   }
 
-  const refTables = extractStatementTableRefs(stmtText)
-    .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
-    .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined)
+  const refTables = dedupRefs(
+    extractStatementTableRefs(stmtText)
+      .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
+      .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined),
+  )
 
-  const colOwners = new Map<string, string[]>()
-  for (const { table } of refTables) {
+  /** Proprietari (tabella+alias) di ogni colonna, per decidere se qualificarla. */
+  const colOwners = new Map<string, ColOwner[]>()
+  for (const { r, table } of refTables) {
     for (const c of table.columns ?? []) {
       const lower = c.name.toLowerCase()
+      const owner: ColOwner = { table, alias: r.alias ?? null }
       const list = colOwners.get(lower)
-      if (list) list.push(`${table.schema}.${table.name}`)
-      else colOwners.set(lower, [`${table.schema}.${table.name}`])
+      if (list) list.push(owner)
+      else colOwners.set(lower, [owner])
     }
   }
+  /** True se la colonna di quel nome va qualificata (nome tabella/alias davanti). */
+  const condivisa = (colName: string): boolean =>
+    colonnaCondivisa(colOwners.get(colName.toLowerCase()) ?? [])
 
   let starText: string | null = null
   let starCount = 0
@@ -2443,13 +2980,18 @@ export function buildSelectListSuggestions(
   // "tutti i campi": proposto SEMPRE nella select-list (con '*' lo sostituisce,
   // senza '*' inserisce tutti i campi al cursore), escludendo quelli già scritti
   {
+    // un nome può comparire una sola volta (niente doppioni se lo statement cita due volte
+    // la stessa tabella): la qualifica si decide su TUTTE le tabelle in scope
     const parts: string[] = []
+    const visti = new Set<string>()
     for (const { r, table } of refTables) {
       const alias = r.alias ?? table.name
       for (const c of table.columns ?? []) {
         if (usedCols.has(c.name.toLowerCase())) continue
-        const owners = colOwners.get(c.name.toLowerCase()) ?? []
-        parts.push(owners.length === 1 ? sqlIdent(c.name) : `${sqlIdent(alias)}.${sqlIdent(c.name)}`)
+        const testo = condivisa(c.name) ? `${sqlIdent(alias)}.${sqlIdent(c.name)}` : sqlIdent(c.name)
+        if (visti.has(testo)) continue
+        visti.add(testo)
+        parts.push(testo)
       }
     }
     if (parts.length > 0) {
@@ -2477,14 +3019,16 @@ export function buildSelectListSuggestions(
   const columns: SelectListColumn[] = []
   const fkCols = fkColumnNames(summary.foreignKeys)
   for (const [, entry] of colMap) {
-    const shared = entry.owners.length > 1
+    // qualifica solo se la colonna è davvero ambigua (due tabelle diverse, o un self-join)
+    const shared = condivisa(entry.c.name)
     columns.push({
       name: entry.c.name,
       dataType: entry.c.dataType,
       isNullable: entry.c.isNullable,
       isIdentity: entry.c.isIdentity,
-      ownerLabel:
-        entry.owners.length === 1 ? entry.owners[0].label : entry.owners.map(o => o.label).join(', '),
+      ownerLabel: shared
+        ? [...new Set(entry.owners.map(o => o.label))].join(', ')
+        : entry.owners[0].label,
       shared,
       documentation: columnInfoMarkdown(
         entry.owners[0].table,
@@ -2501,6 +3045,29 @@ export function buildSelectListSuggestions(
   // Colonne coinvolte in FK (chiavi) prima delle altre: sono quelle usate nei JOIN reali
   columns.sort((a, b) => (b.isFk ? 1 : 0) - (a.isFk ? 1 : 0))
   return { starText, starCount, starOffset, columns }
+}
+
+/**
+ * Colonne di TUTTO lo schema il cui nome CONTIENE il frammento digitato (non solo all'inizio):
+ * serve nella select-list quando non c'è ancora una tabella da cui prendere i campi (la FROM non
+ * è stata scritta): così scrivendo "fefo" esce RIG_REVFEFO_VNA anche senza sapere di che tabella è.
+ */
+export function columnsByFragment(
+  summary: DatabaseSummary,
+  frammento: string,
+  max = 25,
+): { name: string; tableLabel: string; dataType: string; isNullable: boolean }[] {
+  const f = frammento.trim().toLowerCase()
+  if (f.length < 2) return []
+  const out: { name: string; tableLabel: string; dataType: string; isNullable: boolean }[] = []
+  for (const t of summary.tables) {
+    for (const c of t.columns ?? []) {
+      if (!c.name.toLowerCase().includes(f)) continue
+      out.push({ name: c.name, tableLabel: `${t.schema}.${t.name}`, dataType: c.dataType, isNullable: c.isNullable })
+      if (out.length >= max) return out
+    }
+  }
+  return out
 }
 
 /**

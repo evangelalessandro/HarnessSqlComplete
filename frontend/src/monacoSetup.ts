@@ -3,6 +3,7 @@
 // quindi i subpath vanno scritti relativi a "esm/vs" (es. "editor/editor.worker").
 import * as monaco from 'monaco-editor'
 import { loader } from '@monaco-editor/react'
+import { language as sqlLanguage } from 'monaco-editor/languages/definitions/sql/sql'
 import editorWorker from 'monaco-editor/editor/editor.worker?worker'
 import jsonWorker from 'monaco-editor/language/json/json.worker?worker'
 import cssWorker from 'monaco-editor/language/css/css.worker?worker'
@@ -24,5 +25,62 @@ import tsWorker from 'monaco-editor/language/typescript/ts.worker?worker'
 }
 
 loader.config({ monaco })
+
+/**
+ * REGOLE DELLA LINGUA SQL.
+ * Monaco non ha una configurazione per "sql": senza `indentationRules` il tasto Invio non sa
+ * come rientrare e la riga nuova parte da colonna 0 invece di seguire l'indentazione della riga
+ * sopra (segnalazione utente sullo statement UPDATE … SET … WHERE dentro una store).
+ * Con queste regole: andando a capo la riga segue la riga sopra, dopo BEGIN/AS/THEN/ELSE rientra
+ * di un livello e davanti a END/ELSE torna indietro.
+ */
+monaco.languages.setLanguageConfiguration('sql', {
+  comments: { lineComment: '--', blockComment: ['/*', '*/'] },
+  brackets: [['(', ')']],
+  autoClosingPairs: [
+    { open: '(', close: ')' },
+    { open: '[', close: ']' },
+    { open: "'", close: "'", notIn: ['string', 'comment'] },
+  ],
+  surroundingPairs: [
+    { open: '(', close: ')' },
+    { open: '[', close: ']' },
+    { open: "'", close: "'" },
+  ],
+  indentationRules: {
+    increaseIndentPattern: /\b(begin|then|else|as|try|catch)\s*$|\(\s*$/i,
+    decreaseIndentPattern: /^\s*(end|else|end\s+try|end\s+catch)\b|^\s*\)/i,
+  },
+  onEnterRules: [
+    {
+      // "BEGIN ↵ END": la riga nuova rientra e la END resta indietro
+      beforeText: /\b(begin|then|else)\s*$/i,
+      afterText: /^\s*(end|else)\b/i,
+      action: { indentAction: monaco.languages.IndentAction.IndentOutdent },
+    },
+    { beforeText: /\b(begin|then|else)\s*$/i, action: { indentAction: monaco.languages.IndentAction.Indent } },
+    { beforeText: /^\s*end\b/i, action: { indentAction: monaco.languages.IndentAction.Outdent } },
+  ],
+})
+
+/**
+ * PAROLE CHIAVE DEL COLORATORE.
+ * L'elenco di Monaco per il SQL non contiene ENABLE e DISABLE (ha TRIGGER e INSTEAD), quindi
+ * "DISABLE TRIGGER ..." restava scritto in nero invece che blu come le altre parole chiave
+ * (segnalazione utente: "DISABLE e ENABLE rimangono scritte in nero e non blu").
+ * Si registra la lingua SQL con l'elenco esteso: il resto della definizione (tokenizer, operatori,
+ * funzioni) resta quello di Monaco.
+ */
+const PAROLE_CHIAVE_IN_PIU = ['ENABLE', 'DISABLE']
+
+/** Applica l'elenco esteso delle parole chiave al coloratore SQL (idempotente). */
+export function estendiParoleChiaveSql(): void {
+  monaco.languages.setMonarchTokensProvider('sql', {
+    ...sqlLanguage,
+    keywords: [...(sqlLanguage.keywords ?? []), ...PAROLE_CHIAVE_IN_PIU],
+  })
+}
+
+estendiParoleChiaveSql()
 
 export default monaco
