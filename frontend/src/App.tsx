@@ -515,6 +515,18 @@ export default function App() {
         setTabExecuting({})
         setTabResultTab({})
         setTabSql({})
+        // SEGNALAZIONE (trovata rigenerando gli screenshot su un altro database): il DIAGRAMMA DELLE
+        // CHIAMATE restava quello del database precedente — loadCallGraph non ricarica se c'è già un
+        // grafo in memoria, quindi dopo il cambio si vedevano i nodi del vecchio database (e il
+        // diagramma della routine cercata restava vuoto, con il solo nodo selezionato).
+        setCallGraph(null)
+        setCallGraphError(null)
+        // le tab dei diagrammi sono legate agli oggetti del database precedente: si chiudono
+        setEditorTabs(prev => {
+          const filtrate = prev.filter(t => t.kind !== 'graph')
+          if (filtrate.some(t => t.id === activeEditorTab)) return filtrate
+          return filtrate.length > 0 ? filtrate : prev
+        })
         setSummary(await api.getSummary(res.connectionId))
         const targetTab = tabId ?? activeEditorTab
         setEditorTabs(prev => prev.map(t => (t.id === targetTab ? { ...t, database: res.database } : t)))

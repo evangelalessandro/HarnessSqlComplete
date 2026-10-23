@@ -68,6 +68,12 @@ export interface RankedTable {
   table: TableInfo
   score: number
   hints: JoinHint[]
+  /**
+   * FREQUENZA D'USO NEL DATABASE: quante volte questa tabella compare in un JOIN del codice del
+   * database (procedure, viste, funzioni) — somma delle co-occorrenze che la riguardano. Serve a
+   * ordinare i suggerimenti di JOIN col drago (richiesta utente).
+   */
+  frequenzaJoin: number
   /** Percorso transitivo: tabella intermedia quando la candidata non è collegata direttamente (B4). */
   viaTable?: string
   /** Primo percorso con chiave condivisa (per compatibilità). */
@@ -159,11 +165,22 @@ export function rankTablesForJoin(
       }
       // co-occorrenza: quanto spesso questa tabella compare nei JOIN insieme alle tabelle del contesto
       let coScore = 0
+      // totale delle co-occorrenze della tabella (tutti i JOIN del database, senza guardare il contesto)
+      let coTotale = 0
       for (const co of cooccurrences) {
-        if (!ctx.has(co.tableA.toLowerCase()) && !ctx.has(co.tableB.toLowerCase())) continue
-        if (co.tableA.toLowerCase() === name || co.tableB.toLowerCase() === name)
-          coScore += co.count
+        const eA = co.tableA.toLowerCase() === name
+        const eB = co.tableB.toLowerCase() === name
+        if (!eA && !eB) continue
+        coTotale += co.count
+        if (ctx.has(co.tableA.toLowerCase()) || ctx.has(co.tableB.toLowerCase())) coScore += co.count
       }
+      // Frequenza dei JOIN "trovata nel database": TOTALE dei JOIN in cui la tabella compare nel
+      // codice (procedure/viste/funzioni), cioè la somma delle co-occorrenze che la riguardano.
+      // Senza co-occorrenze si ripiega sulle dipendenze reali (quante routine la usano) più le FK
+      // uscenti, così l'ordinamento non resta piatto su database piccoli.
+      const frequenzaJoin = coTotale > 0
+        ? coTotale
+        : (t.usage?.dependencyCount ?? 0) + (t.usage?.fkOutgoing ?? 0)
       // join transitivo: raggiungibile tramite una tabella intermedia (peso minore delle FK dirette);
       // l'viaTable resta anche con FK dirette verso ALTRE tabelle del contesto (via specifica per tabella)
       const transitiva = viaMid.get(name)
@@ -171,7 +188,7 @@ export function rankTablesForJoin(
       const transitiveScore = transitiva ? 400 : 0
       const histScore = historyBoost(t.name) * 300
       const score = hints.length * 1000 + transitiveScore + coScore + histScore + usageScore(t.usage)
-      return { table: t, score, hints, viaTable: transitiva, viaPath: paths[0], viaPaths: paths }
+      return { table: t, score, hints, frequenzaJoin, viaTable: transitiva, viaPath: paths[0], viaPaths: paths }
     })
     .sort((a, b) => b.score - a.score)
 }
@@ -3433,6 +3450,8 @@ export interface JoinSuggestionItem {
   insertText: string
   /** Testo usato da Monaco per il filtro (nome tabella). */
   filterText: string
+  /** Frequenza dei JOIN nel codice del database (per l'ordinamento dei suggerimenti col drago). */
+  frequenza: number
 }
 
 /** Genera un alias breve per una tabella (iniziali delle parole, es. RUN_MISSIONI → rm). */
@@ -3486,6 +3505,7 @@ export function buildJoinSuggestions(
             : `${fkNames.size} relazioni disponibili`,
         insertText: base,
         filterText: t.name,
+        frequenza: candidate.frequenzaJoin,
       },
     ]
   }
@@ -3536,6 +3556,7 @@ export function buildJoinSuggestions(
       detail: `JOIN ${byFk.size > 1 ? `(${hints.length} col.) ` : ''}su ${on}`,
       insertText: useAliases ? `${base} AS ${candAlias} ON (${on})` : `${base} ON (${on})`,
       filterText: t.name,
+      frequenza: candidate.frequenzaJoin,
     })
   }
 
@@ -3552,6 +3573,7 @@ export function buildJoinSuggestions(
       detail: `JOIN via ${v.midTable} su ${onText}`,
       insertText: `${base} ON (${onText})`,
       filterText: t.name,
+      frequenza: candidate.frequenzaJoin,
     })
   }
 
@@ -3562,6 +3584,7 @@ export function buildJoinSuggestions(
       detail: candidate.viaTable ? `raggiungibile via ${candidate.viaTable} (join transitivo)` : 'nessuna relazione FK nota',
       insertText: base,
       filterText: t.name,
+      frequenza: candidate.frequenzaJoin,
     },
   ]
 }

@@ -1,0 +1,363 @@
+/*
+  DATABASE DIMOSTRATIVO per gli screenshot del repository.
+
+  Serve a NON mostrare nomi reali di database, tabelle e query nelle immagini pubblicate su git:
+  qui i nomi sono inventati (DEMO_STORE, ARTICOLI, ORDINI, …) e i dati sono generati.
+
+  Uso (dal progetto, con backend e dev server attivi):
+      node scripts/capture-screenshots.mjs --setup-demo=scripts/demo-db.sql
+  poi gli screenshot con il database dimostrativo attivo:
+      SHOT_DB=DEMO_STORE SHOT_QUERY="…" SHOT_ROUTINE=… node scripts/capture-screenshots.mjs
+
+  Lo script è IDEMPOTENTE: se il database esiste già viene cancellato e ricreato.
+  ATTENZIONE: cancella il database DEMO_STORE. Non usare altri nomi.
+*/
+
+IF DB_ID('DEMO_STORE') IS NOT NULL
+BEGIN
+    ALTER DATABASE [DEMO_STORE] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    DROP DATABASE [DEMO_STORE];
+END
+GO
+
+CREATE DATABASE [DEMO_STORE];
+GO
+
+USE [DEMO_STORE];
+GO
+
+CREATE TABLE dbo.ARTICOLI
+(
+    ART_ID     int IDENTITY (1, 1) NOT NULL CONSTRAINT PK_ARTICOLI PRIMARY KEY,
+    ART_CODICE nvarchar(30)  NOT NULL,
+    ART_DES    nvarchar(80)  NOT NULL,
+    ART_UM     nvarchar(5)   NOT NULL CONSTRAINT DF_ARTICOLI_UM DEFAULT (N'PZ'),
+    ART_CLASSE nvarchar(20)  NULL,
+    ART_ATTIVO bit           NOT NULL CONSTRAINT DF_ARTICOLI_ATTIVO DEFAULT (1)
+);
+GO
+
+CREATE UNIQUE INDEX UX_ARTICOLI_CODICE ON dbo.ARTICOLI (ART_CODICE);
+GO
+
+CREATE TABLE dbo.UBICAZIONI
+(
+    UBI_ID        int IDENTITY (1, 1) NOT NULL CONSTRAINT PK_UBICAZIONI PRIMARY KEY,
+    UBI_CORRIDOIO nvarchar(10) NOT NULL,
+    UBI_CELLA     nvarchar(10) NOT NULL,
+    UBI_DES       nvarchar(50) NULL,
+    UBI_TIPO      nvarchar(10) NOT NULL CONSTRAINT DF_UBICAZIONI_TIPO DEFAULT (N'STD')
+);
+GO
+
+CREATE TABLE dbo.CLIENTI
+(
+    CLI_ID     int IDENTITY (1, 1) NOT NULL CONSTRAINT PK_CLIENTI PRIMARY KEY,
+    CLI_CODICE nvarchar(20) NOT NULL,
+    CLI_DES    nvarchar(60) NOT NULL
+);
+GO
+
+CREATE TABLE dbo.ORDINI
+(
+    ORD_ID      int IDENTITY (1, 1) NOT NULL CONSTRAINT PK_ORDINI PRIMARY KEY,
+    ORD_NUMERO  nvarchar(20) NOT NULL,
+    ORD_DATA    date         NOT NULL,
+    ORD_CLIENTE int          NOT NULL CONSTRAINT FK_ORDINI_CLIENTI REFERENCES dbo.CLIENTI (CLI_ID),
+    ORD_STATO   nvarchar(10) NOT NULL CONSTRAINT DF_ORDINI_STATO DEFAULT (N'APERTO')
+);
+GO
+
+CREATE TABLE dbo.ORDINI_RIGHE
+(
+    RIG_ID       int IDENTITY (1, 1) NOT NULL CONSTRAINT PK_ORDINI_RIGHE PRIMARY KEY,
+    RIG_ORDINE   int            NOT NULL CONSTRAINT FK_ORDINI_RIGHE_ORDINI REFERENCES dbo.ORDINI (ORD_ID),
+    RIG_ARTICOLO int            NOT NULL CONSTRAINT FK_ORDINI_RIGHE_ARTICOLI REFERENCES dbo.ARTICOLI (ART_ID),
+    RIG_QTA      decimal(18, 3) NOT NULL
+);
+GO
+
+CREATE TABLE dbo.MOVIMENTI
+(
+    MOV_ID         int IDENTITY (1, 1) NOT NULL CONSTRAINT PK_MOVIMENTI PRIMARY KEY,
+    MOV_ARTICOLO   int            NOT NULL CONSTRAINT FK_MOVIMENTI_ARTICOLI REFERENCES dbo.ARTICOLI (ART_ID),
+    MOV_UBICAZIONE int            NOT NULL CONSTRAINT FK_MOVIMENTI_UBICAZIONI REFERENCES dbo.UBICAZIONI (UBI_ID),
+    MOV_QTA        decimal(18, 3) NOT NULL,
+    MOV_DATA       datetime2(0)   NOT NULL CONSTRAINT DF_MOVIMENTI_DATA DEFAULT (sysdatetime()),
+    MOV_CAUSALE    nvarchar(10)   NOT NULL
+);
+GO
+
+CREATE TABLE dbo.GIACENZE
+(
+    GIA_ARTICOLO   int            NOT NULL,
+    GIA_UBICAZIONE int            NOT NULL,
+    GIA_QTA        decimal(18, 3) NOT NULL,
+    GIA_AGG        datetime2(0)   NOT NULL CONSTRAINT DF_GIACENZE_AGG DEFAULT (sysdatetime()),
+    CONSTRAINT PK_GIACENZE PRIMARY KEY (GIA_ARTICOLO, GIA_UBICAZIONE),
+    CONSTRAINT FK_GIACENZE_ARTICOLI FOREIGN KEY (GIA_ARTICOLO) REFERENCES dbo.ARTICOLI (ART_ID),
+    CONSTRAINT FK_GIACENZE_UBICAZIONI FOREIGN KEY (GIA_UBICAZIONE) REFERENCES dbo.UBICAZIONI (UBI_ID)
+);
+GO
+
+CREATE VIEW dbo.VW_GIACENZE_DETTAGLIO
+AS
+SELECT A.ART_CODICE,
+       A.ART_DES,
+       U.UBI_CORRIDOIO,
+       U.UBI_CELLA,
+       G.GIA_QTA,
+       G.GIA_AGG
+FROM dbo.GIACENZE AS G
+    INNER JOIN dbo.ARTICOLI AS A ON A.ART_ID = G.GIA_ARTICOLO
+    INNER JOIN dbo.UBICAZIONI AS U ON U.UBI_ID = G.GIA_UBICAZIONE;
+GO
+
+CREATE FUNCTION dbo.FN_TOT_MOVIMENTI (@articolo int)
+RETURNS decimal(18, 3)
+AS
+BEGIN
+    DECLARE @tot decimal(18, 3);
+    SELECT @tot = ISNULL(SUM(MOV_QTA), 0) FROM dbo.MOVIMENTI WHERE MOV_ARTICOLO = @articolo;
+    RETURN @tot;
+END
+GO
+
+CREATE PROCEDURE dbo.SP_GIACENZE
+    @codice nvarchar(30) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT V.ART_CODICE,
+           V.ART_DES,
+           V.UBI_CORRIDOIO,
+           V.UBI_CELLA,
+           V.GIA_QTA
+    FROM dbo.VW_GIACENZE_DETTAGLIO AS V
+    WHERE @codice IS NULL
+          OR V.ART_CODICE = @codice
+    ORDER BY V.ART_CODICE,
+             V.UBI_CORRIDOIO,
+             V.UBI_CELLA;
+END
+GO
+
+CREATE PROCEDURE dbo.SP_MOVIMENTI_ARTICOLO
+    @codice nvarchar(30)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT M.MOV_ID,
+           A.ART_CODICE,
+           U.UBI_CORRIDOIO,
+           U.UBI_CELLA,
+           M.MOV_QTA,
+           M.MOV_CAUSALE,
+           M.MOV_DATA
+    FROM dbo.MOVIMENTI AS M
+        INNER JOIN dbo.ARTICOLI AS A ON A.ART_ID = M.MOV_ARTICOLO
+        INNER JOIN dbo.UBICAZIONI AS U ON U.UBI_ID = M.MOV_UBICAZIONE
+    WHERE A.ART_CODICE = @codice
+    ORDER BY M.MOV_DATA DESC;
+END
+GO
+
+CREATE PROCEDURE dbo.SP_RIORDINO
+    @classe nvarchar(10) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @msg nvarchar(200) = N'Riordino avviato';
+    PRINT @msg;
+
+    EXEC dbo.SP_GIACENZE;
+
+    SELECT A.ART_CODICE,
+           A.ART_DES,
+           ISNULL(SUM(G.GIA_QTA), 0) AS QTA_TOTALE,
+           dbo.FN_TOT_MOVIMENTI(A.ART_ID) AS QTA_MOVIMENTATA
+    FROM dbo.ARTICOLI AS A
+        LEFT JOIN dbo.GIACENZE AS G ON G.GIA_ARTICOLO = A.ART_ID
+    WHERE @classe IS NULL
+          OR A.ART_CLASSE = @classe
+    GROUP BY A.ART_CODICE,
+             A.ART_DES,
+             A.ART_ID
+    HAVING ISNULL(SUM(G.GIA_QTA), 0) < 100
+    ORDER BY QTA_TOTALE,
+             A.ART_CODICE;
+END
+GO
+
+CREATE TRIGGER dbo.TR_MOVIMENTI_GIACENZE
+ON dbo.MOVIMENTI
+AFTER INSERT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    MERGE dbo.GIACENZE AS g
+    USING (SELECT MOV_ARTICOLO, MOV_UBICAZIONE, SUM(MOV_QTA) AS q
+           FROM inserted
+           GROUP BY MOV_ARTICOLO, MOV_UBICAZIONE) AS s
+    ON g.GIA_ARTICOLO = s.MOV_ARTICOLO
+       AND g.GIA_UBICAZIONE = s.MOV_UBICAZIONE
+    WHEN MATCHED THEN UPDATE SET GIA_QTA = g.GIA_QTA + s.q, GIA_AGG = sysdatetime()
+    WHEN NOT MATCHED THEN INSERT (GIA_ARTICOLO, GIA_UBICAZIONE, GIA_QTA) VALUES (s.MOV_ARTICOLO, s.MOV_UBICAZIONE, s.q);
+END
+GO
+
+
+/* --------------------------------------------------- catena di chiamate (per il diagramma) */
+/* SP_AUTOMAZIONE_01 chiama 02, 02 chiama 03 … fino a 09: il diagramma mostra la catena.
+   Le procedure si creano dall'ULTIMA alla prima, così nessuna cita un oggetto non ancora creato. */
+
+CREATE PROCEDURE dbo.SP_AUTOMAZIONE_09
+AS
+BEGIN
+    SET NOCOUNT ON;
+    PRINT N'SP_AUTOMAZIONE_09';
+    EXEC dbo.SP_GIACENZE @codice = NULL;
+END
+GO
+
+CREATE PROCEDURE dbo.SP_AUTOMAZIONE_08
+AS
+BEGIN
+    SET NOCOUNT ON;
+    PRINT N'SP_AUTOMAZIONE_08';
+    EXEC dbo.SP_AUTOMAZIONE_09;
+    EXEC dbo.SP_GIACENZE @codice = NULL;
+END
+GO
+
+CREATE PROCEDURE dbo.SP_AUTOMAZIONE_07
+AS
+BEGIN
+    SET NOCOUNT ON;
+    PRINT N'SP_AUTOMAZIONE_07';
+    EXEC dbo.SP_AUTOMAZIONE_08;
+    EXEC dbo.SP_GIACENZE @codice = NULL;
+END
+GO
+
+CREATE PROCEDURE dbo.SP_AUTOMAZIONE_06
+AS
+BEGIN
+    SET NOCOUNT ON;
+    PRINT N'SP_AUTOMAZIONE_06';
+    EXEC dbo.SP_AUTOMAZIONE_07;
+    EXEC dbo.SP_GIACENZE @codice = NULL;
+END
+GO
+
+CREATE PROCEDURE dbo.SP_AUTOMAZIONE_05
+AS
+BEGIN
+    SET NOCOUNT ON;
+    PRINT N'SP_AUTOMAZIONE_05';
+    EXEC dbo.SP_AUTOMAZIONE_06;
+    EXEC dbo.SP_GIACENZE @codice = NULL;
+END
+GO
+
+CREATE PROCEDURE dbo.SP_AUTOMAZIONE_04
+AS
+BEGIN
+    SET NOCOUNT ON;
+    PRINT N'SP_AUTOMAZIONE_04';
+    EXEC dbo.SP_AUTOMAZIONE_05;
+    EXEC dbo.SP_GIACENZE @codice = NULL;
+END
+GO
+
+CREATE PROCEDURE dbo.SP_AUTOMAZIONE_03
+AS
+BEGIN
+    SET NOCOUNT ON;
+    PRINT N'SP_AUTOMAZIONE_03';
+    EXEC dbo.SP_AUTOMAZIONE_04;
+    EXEC dbo.SP_GIACENZE @codice = NULL;
+END
+GO
+
+CREATE PROCEDURE dbo.SP_AUTOMAZIONE_02
+AS
+BEGIN
+    SET NOCOUNT ON;
+    PRINT N'SP_AUTOMAZIONE_02';
+    EXEC dbo.SP_AUTOMAZIONE_03;
+    EXEC dbo.SP_GIACENZE @codice = NULL;
+END
+GO
+
+CREATE PROCEDURE dbo.SP_AUTOMAZIONE_01
+AS
+BEGIN
+    SET NOCOUNT ON;
+    PRINT N'SP_AUTOMAZIONE_01';
+    EXEC dbo.SP_AUTOMAZIONE_02;
+    EXEC dbo.SP_GIACENZE @codice = NULL;
+END
+GO
+
+/* ---------------------------------------------------------------- dati finti */
+
+INSERT INTO dbo.UBICAZIONI (UBI_CORRIDOIO, UBI_CELLA, UBI_DES, UBI_TIPO)
+SELECT TOP (20)
+       CONCAT('C', RIGHT('00' + CAST(n AS varchar(3)), 2)),
+       CONCAT('K', RIGHT('00' + CAST(n AS varchar(3)), 2)),
+       CONCAT(N'Cella dimostrativa ', n),
+       CASE WHEN n % 5 = 0 THEN N'HOLD' ELSE N'STD' END
+FROM (SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_objects) AS x;
+GO
+
+INSERT INTO dbo.CLIENTI (CLI_CODICE, CLI_DES)
+SELECT TOP (15)
+       CONCAT('CLI', RIGHT('000' + CAST(n AS varchar(4)), 3)),
+       CONCAT(N'Cliente demo ', n)
+FROM (SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_objects) AS x;
+GO
+
+INSERT INTO dbo.ARTICOLI (ART_CODICE, ART_DES, ART_UM, ART_CLASSE)
+SELECT TOP (60)
+       CONCAT('ART', RIGHT('0000' + CAST(n AS varchar(5)), 4)),
+       CONCAT(N'Articolo dimostrativo ', n),
+       CASE WHEN n % 3 = 0 THEN N'KG' ELSE N'PZ' END,
+       CASE WHEN n % 4 = 0 THEN N'RICAMBI' WHEN n % 3 = 0 THEN N'CONSUMABILI' ELSE N'MATERIALI' END
+FROM (SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_objects) AS x;
+GO
+
+INSERT INTO dbo.ORDINI (ORD_NUMERO, ORD_DATA, ORD_CLIENTE, ORD_STATO)
+SELECT TOP (25)
+       CONCAT('ORD-2026-', RIGHT('0000' + CAST(n AS varchar(5)), 4)),
+       DATEADD(DAY, -n, CAST('2026-10-01' AS date)),
+       ((n - 1) % 15) + 1,
+       CASE WHEN n % 7 = 0 THEN N'CHIUSO' ELSE N'APERTO' END
+FROM (SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_objects) AS x;
+GO
+
+INSERT INTO dbo.ORDINI_RIGHE (RIG_ORDINE, RIG_ARTICOLO, RIG_QTA)
+SELECT TOP (120)
+       ((n - 1) % 25) + 1,
+       ((n - 1) % 60) + 1,
+       CAST(((n % 9) + 1) * 2.5 AS decimal(18, 3))
+FROM (SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_objects) AS x;
+GO
+
+/* il trigger TR_MOVIMENTI_GIACENZE aggiorna le giacenze a ogni inserimento */
+INSERT INTO dbo.MOVIMENTI (MOV_ARTICOLO, MOV_UBICAZIONE, MOV_QTA, MOV_DATA, MOV_CAUSALE)
+SELECT TOP (400)
+       ((n - 1) % 60) + 1,
+       ((n - 1) % 20) + 1,
+       CAST(((n % 7) + 1) * 3 AS decimal(18, 3)),
+       DATEADD(MINUTE, -n * 37, CAST('2026-10-20T18:00:00' AS datetime2(0))),
+       CASE WHEN n % 3 = 0 THEN N'CARICO' ELSE N'SCARICO' END
+FROM (SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_objects) AS x;
+GO
+
+PRINT N'DEMO_STORE pronto.';
+GO

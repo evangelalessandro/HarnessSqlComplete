@@ -36,6 +36,7 @@ const VERIFY_ERRORS = process.argv.includes('--verify-errors')
 const VERIFY_TAB_CURSOR = process.argv.includes('--verify-tab-cursor')
 const DUMP_GENERATOR = process.argv.includes('--dump-generator')
 const DUMP_TABBAR = process.argv.includes('--dump-tabbar')
+const SETUP_DEMO = process.argv.find(a => a.startsWith('--setup-demo='))?.slice('--setup-demo='.length) ?? null
 const VERIFY_FORMAT = process.argv.includes('--verify-format')
 const VERIFY_SCHEMA_REFRESH = process.argv.includes('--verify-schema-refresh')
 const VERIFY_PAIR_HIGHLIGHT = process.argv.includes('--verify-pair-highlight')
@@ -61,6 +62,8 @@ const VERIFY_SHIFT_SELEZIONE = process.argv.includes('--verify-shift-selezione')
 const VERIFY_FORMATTA_CTE = process.argv.includes('--verify-formatta-cte')
 const VERIFY_FORMATTA_ASSIGN = process.argv.includes('--verify-formatta-assign')
 const VERIFY_TREEVIEW_COMANDI = process.argv.includes('--verify-treeview-comandi')
+const VERIFY_FORMATTA_UNION = process.argv.includes('--verify-formatta-union')
+const VERIFY_JOIN_FREQUENZA = process.argv.includes('--verify-join-frequenza')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
 const VERIFY_DATABASE_INTELLISENSE = process.argv.includes('--verify-database-intellisense')
 const VERIFY_UNDO_REDO = process.argv.includes('--verify-undo-redo')
@@ -105,6 +108,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 // Parametri della cattura (login salvata e query da mostrare negli screenshot)
 const LOGIN_NAME = process.env.SHOT_LOGIN ?? 'sql2019'
+/** Database da attivare prima degli screenshot (es. DEMO_STORE: nomi inventati, niente nomi reali su git). */
+const SHOT_DB = process.env.SHOT_DB ?? ''
 const QUERY =
   process.env.SHOT_QUERY ??
   'SELECT TOP 25 UDC_UDC, UDC_TIPOUDC, UDC_ARTICOLO, UDC_UBIUDC, UDC_CORRIDOIO, UDC_CELLA, UDC_CAUSMISS\nFROM dbo.DAT_UDC\nWHERE UDC_UDC > 0\nORDER BY UDC_UDC DESC;'
@@ -7990,6 +7995,207 @@ async function verifyCopiaCella(page) {
 }
 
 /**
+ * PREPARAZIONE (`--setup-demo=<file.sql>`): crea il DATABASE DIMOSTRATIVO usato dagli screenshot,
+ * così nelle immagini pubblicate su git non compaiono nomi reali di database/tabelle/query.
+ * Passa dalle API del backend già in esecuzione (nessuna password nel comando): elenca le login
+ * salvate, si connette con quella di SHOT_LOGIN e esegue lo script un batch per volta (separatore GO),
+ * fermandosi al primo errore.
+ */
+async function setupDemo(files) {
+  const api = process.env.SHOT_API ?? 'http://localhost:5213'
+  const leggi = async u => {
+    const r = await fetch(u)
+    if (!r.ok) throw new Error(`${u} → ${r.status} ${await r.text()}`)
+    return r.json()
+  }
+  const logins = await leggi(`${api}/api/connections`)
+  const login = logins.find(l => (l.name || '').toLowerCase().includes(LOGIN_NAME.toLowerCase()))
+  if (!login) throw new Error(`login salvata "${LOGIN_NAME}" non trovata (trovate: ${logins.map(l => l.name).join(', ')})`)
+  console.log(`  login: ${login.name} (${login.server}/${login.database})`)
+  const conn = await fetch(`${api}/api/connections/saved/${login.id}/connect`, { method: 'POST' })
+  if (!conn.ok) throw new Error(`connessione fallita: ${conn.status} ${await conn.text()}`)
+  const connessione = await conn.json()
+  console.log(`  connessione: ${connessione.connectionId} su ${connessione.database}`)
+
+  const esegui = async (sql, titolo) => {
+    const r = await fetch(`${api}/api/query/${connessione.connectionId}/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sql, timeoutSeconds: 120 }),
+    })
+    const corpo = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(`${titolo}: HTTP ${r.status} ${JSON.stringify(corpo).slice(0, 300)}`)
+    if (corpo.error) throw new Error(`${titolo}: ${corpo.error}`)
+    return corpo
+  }
+
+  for (const file of files) {
+    const script = readFileSync(file, 'utf8')
+    const batch = script
+      .split(/^\s*GO\s*$/gim)
+      .map(b => b.trim())
+      .filter(b => b.length > 0 && !/^\/\*[\s\S]*?\*\/$/.test(b))
+    console.log(`  ${file}: ${batch.length} batch`)
+    for (let i = 0; i < batch.length; i++) {
+      const titolo = `${file} batch ${i + 1}`
+      const primo = batch[i].split('\n').find(r => r.trim() && !r.trim().startsWith('/*'))?.trim().slice(0, 60) ?? ''
+      const esito = await esegui(batch[i], titolo)
+      const msg = [...(esito.messages ?? []), ...(esito.errors ?? []).map(e => e.message)].filter(Boolean).join(' | ')
+      console.log(`   ${String(i + 1).padStart(2)}/${batch.length} ok  ${primo}${msg ? `  → ${msg.slice(0, 80)}` : ''}`)
+    }
+  }
+
+  // verifica finale: la tabella ARTICOLI deve esistere con delle righe
+  const check = await esegui(
+    `SELECT DB_NAME() AS db, (SELECT COUNT(*) FROM sys.tables WHERE name IN ('ARTICOLI','ORDINI','GIACENZE')) AS tabelle, (SELECT COUNT(*) FROM dbo.ARTICOLI) AS articoli`,
+    'verifica finale',
+  )
+  const riga = check.resultSets?.[0]?.rows?.[0] ?? []
+  console.log(`  verifica: database=${JSON.stringify(riga[0])} tabelle=${JSON.stringify(riga[1])} articoli=${JSON.stringify(riga[2])}`)
+  const tabelle = Number(riga[1] ?? 0)
+  const articoli = Number(riga[2] ?? 0)
+  if (tabelle < 3 || articoli < 10) throw new Error('database dimostrativo incompleto')
+  console.log('\ndatabase dimostrativo pronto: si possono rifare gli screenshot con SHOT_DB=DEMO_STORE')
+}
+/**
+ * VERIFICA (--verify-join-frequenza): i suggerimenti di JOIN col drago sono ordinati per FREQUENZA
+ * d'uso nel database (JOIN trovati nel codice delle procedure/viste/funzioni).
+ * Richiesta utente: "i join con l'icona del drago devono essere ordinati per frequenza di uso trovato
+ * nel database".
+ */
+async function verifyJoinFrequenza(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  const SQL = 'SELECT *\nFROM dbo.DAT_UDC u\nINNER JOIN '
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(400)
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors(); const area = e => { const dom = e.getDomNode().getBoundingClientRect(); return dom.width * dom.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    if (!ed) return;
+    const testo = ${JSON.stringify('@@SQL@@')};
+    ed.setValue(testo);
+    const righe = testo.split('\\n');
+    ed.setPosition({ lineNumber: righe.length, column: righe[righe.length - 1].length + 1 });
+    ed.focus();
+    ed.trigger('verify', 'editor.action.triggerSuggest', {});
+  })()`.replace('"@@SQL@@"', JSON.stringify(SQL)))
+  await sleep(2200)
+
+  const voci = await page.eval(`(() => {
+    const w = document.querySelector('.suggest-widget.visible');
+    if (!w) return null;
+    return [...w.querySelectorAll('.monaco-list-row')].map(r => (r.textContent || '').replace(/\\s+/g, ' ').trim()).slice(0, 12);
+  })()`)
+  console.log('  suggerimenti (in ordine):')
+  ;(voci ?? []).forEach((v, i) => console.log(`   ${String(i + 1).padStart(2)} ${v}`))
+  check('il popup dei suggerimenti si apre in posizione JOIN', !!voci && voci.length > 0)
+
+  const draghi = (voci ?? []).filter(v => v.includes('🐉'))
+  check('ci sono suggerimenti col drago', draghi.length >= 2, `${draghi.length} voci col drago`)
+
+  const frequenze = draghi
+    .map(v => /(\d+) join nel codice/.exec(v))
+    .filter(Boolean)
+    .map(m => Number(m[1]))
+  console.log(`  frequenze dei draghi: ${JSON.stringify(frequenze)}`)
+  const ordinate = frequenze.every((f, i) => i === 0 || frequenze[i - 1] >= f)
+  check('i draghi sono ordinati per frequenza decrescente', frequenze.length >= 2 && ordinate, JSON.stringify(frequenze))
+  check('i primi posti sono occupati dai draghi', (voci ?? []).slice(0, 3).every(v => v.includes('🐉')))
+  await page.screenshot('join-frequenza')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-formatta-union): nell'editor vero, Ctrl+Shift+F su una CTE con UNION.
+ * Segnalazione utente: "le union non le formatta bene" (il corpo della CTE finiva su una riga).
+ */
+async function verifyFormattaUnion(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const SQL = [
+    ';with FUNCTIONS as (',
+    "   select 'ws_A' as FN_NAME",
+    "    union select 'ws_CUSTOM_B' as FN_NAME",
+    "    union select 'BAYKITT' as FN_NAME",
+    ')',
+    'select FN_NAME from FUNCTIONS',
+    "union all",
+    "select 'X' as FN_NAME",
+  ].join('\n')
+  const r = await editorRect(page)
+  await page.clickPoint(r.x + 220, r.y + 46)
+  await sleep(400)
+  // testo impostato dal modello: Ctrl+A + digitazione lasciava residui in coda
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors(); const area = e => { const dom = e.getDomNode().getBoundingClientRect(); return dom.width * dom.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    if (ed) { ed.setValue(${JSON.stringify('@@SQL@@')}); ed.setPosition({ lineNumber: 1, column: 1 }); ed.focus(); }
+  })()`.replace('"@@SQL@@"', JSON.stringify(SQL)))
+  await sleep(900)
+  await page.press('f', { code: 'KeyF', vk: 70, modifiers: 10 }) // Ctrl+Shift+F
+  await sleep(2500)
+  const dopo = await page.eval(`(async () => { const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors(); const area = e => { const r = e.getDomNode().getBoundingClientRect(); return r.width * r.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    return ed ? ed.getValue() : '' })()`)
+  const righe = dopo.split('\n')
+  righe.forEach((x, i) => console.log(`   ${String(i + 1).padStart(2)} ${x.replace(/ /g, '·')}`))
+  check('nessuna riga con due SELECT', !righe.some(x => (x.match(/SELECT/gi) ?? []).length > 1))
+  check('i rami UNION sono su righe proprie', righe.filter(x => x.trim() === 'UNION').length >= 2, `${righe.filter(x => x.trim() === 'UNION').length} righe UNION`)
+  check('UNION ALL su riga propria', righe.some(x => x.trim() === 'UNION ALL'))
+  check('la CTE apre la parentesi su una riga sua', righe.some(x => x.trim() === '('))
+  check('i tre rami della CTE sono indentati', righe.filter(x => /^ {2}SELECT/.test(x)).length >= 3)
+  await page.screenshot('formatta-union')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+/**
  * VERIFICA (--verify-treeview-comandi): dalla treeview i comandi offrono "Copia negli appunti" e
  * "Apri in nuova tab" e NON scrivono più nella tab attiva.
  * Richiesta utente: "ai comandi aggiungi due opzioni, o copia in clipboard o apri in nuova tab, ma mai
@@ -8695,6 +8901,12 @@ async function dumpTabbar(page) {
 }
 
 async function main() {
+  // preparazione del database dimostrativo: solo API del backend, nessun browser
+  if (SETUP_DEMO) {
+    console.log('preparo il database dimostrativo (nomi inventati per gli screenshot pubblicati)')
+    await setupDemo([SETUP_DEMO])
+    return
+  }
   const { proc, profileDir } = launchBrowser()
   let page
   try {
@@ -8830,6 +9042,16 @@ async function main() {
 
     if (VERIFY_MULTICURSORE) {
       await verifyMulticursore(page)
+      return
+    }
+
+    if (VERIFY_JOIN_FREQUENZA) {
+      await verifyJoinFrequenza(page)
+      return
+    }
+
+    if (VERIFY_FORMATTA_UNION) {
+      await verifyFormattaUnion(page)
       return
     }
 
@@ -9019,6 +9241,27 @@ async function main() {
     await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
     // lo schema serve all'intellisense e al diagramma: si aspetta che la sidebar lo mostri
     await page.waitFor(`document.body.textContent.includes('Tabelle')`, 30000, 'schema caricato')
+    // SHOT_DB: si passa al DATABASE DIMOSTRATIVO (nomi inventati) prima di fotografare, così nelle
+    // immagini pubblicate su git non compaiono nomi reali di database e tabelle.
+    if (SHOT_DB) {
+      const cambiato = await page.eval(`(() => {
+        const sel = document.querySelector('select');
+        if (!sel) return false;
+        const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB)});
+        if (!opt) return false;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+        setter.call(sel, opt.value);
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      })()`)
+      if (!cambiato) throw new Error(`database "${SHOT_DB}" non presente nella combo`)
+      await sleep(1500)
+      await page.waitFor(`document.body.textContent.includes('Tabelle')`, 60000, 'schema del database dimostrativo')
+      await sleep(2500)
+      const attivo = await page.eval(`(() => { const s = document.querySelector('select'); return s ? (s.options[s.selectedIndex]?.textContent || '').trim() : '' })()`)
+      console.log(`  database attivo: ${attivo}`)
+      if (!attivo.includes(SHOT_DB)) throw new Error(`il database attivo non è ${SHOT_DB} (è "${attivo}")`)
+    }
     await sleep(2500)
     await page.screenshot('02-schema-editor')
     console.log(

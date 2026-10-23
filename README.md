@@ -27,6 +27,17 @@ statement dai risultati, **diagramma delle chiamate fra routine** e assistente I
 Gli screenshot si rigenerano con `node scripts/capture-screenshots.mjs` (backend e dev server attivi):
 pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
 
+Le immagini usano un **database dimostrativo con nomi inventati** (nessun nome reale di database,
+tabella o query finisce su git): `scripts/demo-db.sql` crea `DEMO_STORE` con tabelle `ARTICOLI`,
+`ORDINI`, `UBICAZIONI`, `GIACENZE`… e una catena di procedure per il diagramma delle chiamate.
+
+```powershell
+node scripts/capture-screenshots.mjs --setup-demo=scripts/demo-db.sql   # crea/rifà DEMO_STORE
+$env:SHOT_DB = 'DEMO_STORE'
+$env:SHOT_ROUTINE = 'SP_AUTOMAZIONE_09'
+node scripts/capture-screenshots.mjs
+```
+
 ---
 
 ## Funzionalità
@@ -108,7 +119,7 @@ pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
 - **Tabella temporanee e variabili tabella**: `#tmp` e `@tab` definite nel documento entrano nell'ambito
   (da `CREATE TABLE #t`, `DECLARE @t TABLE`, `SELECT ... INTO #t`, `INSERT INTO #t`). Per `SELECT … INTO #t`
   le colonne si ricavano dalla select-list (anche con `TOP n *`, alias di funzione e alias per posizione tipo
-  `SCO_GIAC + SCO_VER X_GIAC`) e, con `*`, dalla sorgente: tabella dello schema, altra temporanea o **CTE**
+  `GIA_QTA + MOV_QTA QTA`) e, con `*`, dalla sorgente: tabella dello schema, altra temporanea o **CTE**
   definita nel testo.
 - **Alias delle tabelle, delle derivate e delle funzioni tabellari**: dopo `alias.` arrivano i campi della
   sorgente — tabella, tabella derivata `(select …) t`, CTE, temporanea e **funzione tabellare**
@@ -343,6 +354,17 @@ query results, a **routine call graph** and an optional AI assistant.
 Regenerate them with `node scripts/capture-screenshots.mjs` (backend and dev server running): it drives
 headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
 
+The images are taken on a **demo database with made-up names** (no real database, table or query name
+ends up in git): `scripts/demo-db.sql` creates `DEMO_STORE` with `ARTICOLI`, `ORDINI`, `UBICAZIONI`,
+`GIACENZE`… plus a chain of procedures for the call graph.
+
+```powershell
+node scripts/capture-screenshots.mjs --setup-demo=scripts/demo-db.sql   # create/refresh DEMO_STORE
+$env:SHOT_DB = 'DEMO_STORE'
+$env:SHOT_ROUTINE = 'SP_AUTOMAZIONE_09'
+node scripts/capture-screenshots.mjs
+```
+
 ## Features
 
 ### Connections and sessions
@@ -410,8 +432,8 @@ headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
 - **Smart brackets**: identifiers are inserted without `[brackets]` when they are not needed.
 - **Temp tables and table variables** defined in the document are in scope (`CREATE TABLE #t`,
   `DECLARE @t TABLE`, `SELECT ... INTO #t`, `INSERT INTO #t`). For `SELECT … INTO #t` the columns come from
-  the select list (including `TOP n *`, function aliases and positional aliases like `SCO_GIAC + SCO_VER
-  X_GIAC`) and, with `*`, from the source: a schema table, another temp table or a **CTE** defined in the text.
+  the select list (including `TOP n *`, function aliases and positional aliases like `GIA_QTA + MOV_QTA
+  QTA`) and, with `*`, from the source: a schema table, another temp table or a **CTE** defined in the text.
 - **Table aliases** and **GOTO labels**: after `GOTO ` every label in the document is offered (including
   the ones defined further down; labels inside commented-out code are ignored).
 - **SSMS-style errors**: number/level/state, procedure and line; double-clicking a message moves the

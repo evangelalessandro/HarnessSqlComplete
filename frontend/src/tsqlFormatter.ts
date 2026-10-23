@@ -3186,6 +3186,13 @@ function splitStatementClauses(segment: Token[], _up: (t: Token) => string): { t
       hasClause = true
       break
     }
+    // UNION / EXCEPT / INTERSECT aprono un ramo nuovo: senza, una SELECT senza FROM ma con UNION
+    // ("select 'a' as X union select 'b'") restava tutta su una riga — ed era il caso delle CTE
+    // con UNION: il corpo finiva a riga unica dentro le parentesi (segnalazione utente).
+    if (u === 'UNION' || u === 'EXCEPT' || u === 'INTERSECT') {
+      hasClause = true
+      break
+    }
     if (isUpdate && (u === 'SET' || u === 'WHERE')) {
       hasClause = true
       break

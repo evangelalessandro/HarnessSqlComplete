@@ -1330,27 +1330,52 @@ export function provideSqlCompletions({
             // alias già scritto nell'editor vengono riferite con il loro alias (altrimenti SQL invalido).
             const stmtRefs = extractStatementTableRefs(stmtText)
             const aliasedCtxTables = new Set(stmtRefs.filter(r => r.alias).map(r => r.tableName.toLowerCase()))
+            /**
+             * RICHIESTA UTENTE: "i join con l'icona del drago devono essere ordinati per frequenza di uso
+             * trovato nel database".
+             * I suggerimenti con il drago (quelli che inseriscono anche la clausola ON) vanno prima e in
+             * ordine di FREQUENZA reale: quante volte quella tabella compare in un JOIN del codice del
+             * database (procedure/viste/funzioni) insieme alle tabelle già nella query (co-occorrenze
+             * calcolate dal backend), con ripiego sulle dipendenze quando il contesto è vuoto.
+             */
+            type VoceJoin = {
+              item: ReturnType<typeof buildJoinSuggestions>[number]
+              join: boolean
+              dettaglio: string
+              table: (typeof rankedTables)[number]['table']
+            }
+            const vociJoin: VoceJoin[] = []
             for (const ranked of rankedTables) {
               const needsAlias = contextTables.includes(ranked.table.name.toLowerCase())
               for (const item of buildJoinSuggestions(ranked, contextTableInfos, isJoinPosition, needsAlias, aliasedCtxTables)) {
                 const details = [usageDetail(ranked.table.usage)]
                 if (ranked.hints.length > 0) details.push(`${ranked.hints.length} FK`)
-                const detail = details.filter(Boolean).join(' · ') || `tabella · ${ranked.table.columnCount} colonne`
-                // Il DRAGO segna i suggerimenti di JOIN veri (quelli che inseriscono la clausola
-                // ON): si vede subito quali voci costruiscono il join. È solo l'etichetta: il
-                // filtro continua a usare filterText (il nome della tabella), quindi scrivere
-                // "dat_" trova ancora DAT_UDC.
-                const inserisceJoin = item.insertText.includes(' ON (')
-                push({
-                  label: inserisceJoin ? etichettaDrago(item.label) : item.label,
-                  detail: item.detail || detail,
-                  documentation: columnInfoMarkdown(ranked.table, null),
-                  kind: monaco.languages.CompletionItemKind.Struct,
-                  insertText: item.insertText,
-                  range,
-                  filterText: item.filterText,
-                })
+                const dettaglio = details.filter(Boolean).join(' · ') || `tabella · ${ranked.table.columnCount} colonne`
+                vociJoin.push({ item, join: item.insertText.includes(' ON ('), dettaglio, table: ranked.table })
               }
+            }
+            vociJoin.sort((a, b) => {
+              // prima i JOIN veri (drago), poi le voci semplici; dentro ogni gruppo la frequenza
+              if (a.join !== b.join) return a.join ? -1 : 1
+              if (b.item.frequenza !== a.item.frequenza) return b.item.frequenza - a.item.frequenza
+              return a.item.label.localeCompare(b.item.label)
+            })
+            for (const { item, join, dettaglio, table } of vociJoin) {
+              // Per i JOIN (drago) il dettaglio è la clausola vera + quante volte quel JOIN compare
+              // nel codice del database: è il criterio con cui sono ordinati. Per le altre voci resta
+              // il dettaglio di utilizzo (FK, dipendenze, righe).
+              const detail = join
+                ? [item.detail, item.frequenza > 0 ? `${item.frequenza} join nel codice` : ''].filter(Boolean).join(' · ')
+                : dettaglio
+              push({
+                label: join ? etichettaDrago(item.label) : item.label,
+                detail,
+                documentation: columnInfoMarkdown(table, null),
+                kind: monaco.languages.CompletionItemKind.Struct,
+                insertText: item.insertText,
+                range,
+                filterText: item.filterText,
+              })
             }
 
             for (const v of st.summary.views) {
