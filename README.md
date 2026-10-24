@@ -326,6 +326,12 @@ I fixture dei database reali si rigenerano con gli script in `frontend/scripts/`
 
 Vedi [LICENSE.txt](LICENSE.txt).
 
+## Sostieni il progetto
+
+Se questo strumento ti fa risparmiare tempo, puoi offrirmi un caffè (o sostenere lo sviluppo) su Patreon:
+
+❤️ **[patreon.com/c/alessandroevangelisti](https://www.patreon.com/c/alessandroevangelisti)**
+
 ---
 ---
 
@@ -615,3 +621,9 @@ Fixture files built from real databases are regenerated with the scripts in `fro
 ## License
 
 See [LICENSE.txt](LICENSE.txt).
+
+## Support the project
+
+If this tool saves you time, you can buy me a coffee (or support development) on Patreon:
+
+❤️ **[patreon.com/c/alessandroevangelisti](https://www.patreon.com/c/alessandroevangelisti)**

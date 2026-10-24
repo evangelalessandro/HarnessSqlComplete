@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { BookOpen, Search, Sparkles, Wand2, X } from 'lucide-react'
+import { BookOpen, Heart, Search, Sparkles, Wand2, X } from 'lucide-react'
 import { Badge } from './ui'
 import { HELP_SECTIONS, HELP_SEARCHABLE } from '../helpContent'
+import { PATREON_LABEL, PATREON_URL } from '../links'
 const SECTIONS = HELP_SECTIONS
 const SEARCHABLE = HELP_SEARCHABLE
 
@@ -83,6 +84,21 @@ export default function HelpPage({ onClose }: { onClose: () => void }) {
               </section>
             ))}
           </div>
+        </div>
+
+        {/* Sostieni il progetto: link alla pagina Patreon dell'autore */}
+        <div className="flex flex-wrap items-center gap-2 border-t border-zinc-800 px-5 py-2.5 text-xs text-zinc-400">
+          <Heart className="h-3.5 w-3.5 text-rose-400" />
+          <span>Se lo strumento ti fa risparmiare tempo, puoi sostenere lo sviluppo su Patreon:</span>
+          <a
+            href={PATREON_URL}
+            target="_blank"
+            rel="noreferrer"
+            data-patreon=""
+            className="font-semibold text-rose-300 underline decoration-rose-500/40 underline-offset-2 hover:text-rose-200"
+          >
+            {PATREON_LABEL}
+          </a>
         </div>
       </div>
     </div>

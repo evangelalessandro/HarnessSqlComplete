@@ -65,6 +65,7 @@ const VERIFY_TREEVIEW_COMANDI = process.argv.includes('--verify-treeview-comandi
 const VERIFY_FORMATTA_UNION = process.argv.includes('--verify-formatta-union')
 const VERIFY_JOIN_FREQUENZA = process.argv.includes('--verify-join-frequenza')
 const VERIFY_GO_N = process.argv.includes('--verify-go-n')
+const VERIFY_PATREON = process.argv.includes('--verify-patreon')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
 const VERIFY_DATABASE_INTELLISENSE = process.argv.includes('--verify-database-intellisense')
 const VERIFY_UNDO_REDO = process.argv.includes('--verify-undo-redo')
@@ -8059,6 +8060,52 @@ async function setupDemo(files) {
   console.log('\ndatabase dimostrativo pronto: si possono rifare gli screenshot con SHOT_DB=DEMO_STORE')
 }
 /**
+ * VERIFICA (--verify-patreon): in fondo alla Guida c'è il link alla pagina Patreon dell'autore.
+ * Richiesta utente: "metti il link alla mia pagina patreon".
+ */
+async function verifyPatreon(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  const aperta = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.getAttribute('title') || '').includes('Apri la guida') || (b.textContent || '').includes('Aiuto'))`,
+  )
+  check('il pulsante della Guida si trova', aperta === true)
+  await sleep(1200)
+  const link = await page.eval(`(() => {
+    const a = document.querySelector('[data-patreon]') || [...document.querySelectorAll('a')].find(a => (a.href || '').includes('patreon'));
+    return a ? { href: a.href, testo: (a.textContent || '').trim(), target: a.target } : null;
+  })()`)
+  console.log(`  link: ${JSON.stringify(link)}`)
+  check("c'è il link a Patreon nella Guida", !!link && /patreon\.com\/c\/alessandroevangelisti/.test(link.href))
+  check('il link si apre in una nuova scheda', !!link && link.target === '_blank')
+  check('il testo del link è leggibile', !!link && /patreon\.com\/c\/alessandroevangelisti/.test(link.testo))
+  await page.screenshot('guida-patreon')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * VERIFICA (--verify-go-n): "GO n" esegue il batch n volte, come in SSMS.
  * Richiesta utente: "permetti anche di eseguire il comando GO seguito da un numero, che esegue, come in
  * ssms, la query fino al go x volte".
@@ -9110,6 +9157,11 @@ async function main() {
 
     if (VERIFY_MULTICURSORE) {
       await verifyMulticursore(page)
+      return
+    }
+
+    if (VERIFY_PATREON) {
+      await verifyPatreon(page)
       return
     }
 
