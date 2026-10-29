@@ -146,6 +146,11 @@ export const HELP_SECTIONS: HelpSection[] = [
           'I suggerimenti dipendono dalla posizione: dopo FROM/JOIN solo tabelle e viste, dopo EXEC solo stored procedure, nella select-list e in WHERE/ON/GROUP/ORDER solo colonne e funzioni, dopo un alias (r.) le colonne qualificate di quella tabella. Nella ORDER BY le direzioni ASC/DESC compaiono solo dopo aver scelto il campo.',
       },
       {
+        title: 'GROUP BY mirata',
+        detail:
+          'Nella GROUP BY i suggerimenti arrivano già nell\u2019ordine giusto: prima la voce "tutte le colonne della select-list" che riempie la clausola con le espressioni non aggregate mancanti, poi le espressioni della select-list SENZA aggregati (quelle che per forza devono stare nella GROUP BY, con l\u2019alias tolto), e solo dopo le altre colonne delle tabelle. Le colonne già scritte nella GROUP BY e quelle dentro SUM/COUNT/… non vengono riproposte.',
+      },
+      {
         title: 'Nomi dei DATABASE',
         detail:
           'Dopo "USE " il popup propone solo i database del server (quello corrente e gli altri), e in posizione di tabella (FROM/JOIN/INTO/UPDATE) i database compaiono in coda alle tabelle dello schema: servono per scrivere nomi in tre parti come "[WSBASE].dbo.Tabella". I nomi con spazi vengono inseriti fra parentesi quadre.',

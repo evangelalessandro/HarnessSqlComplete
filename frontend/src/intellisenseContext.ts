@@ -36,6 +36,7 @@ export interface IntellisenseContext {
     | 'selectList'
     | 'columnContext'
     | 'orderBy'
+    | 'groupBy'
     | 'generic'
   /** Categorie di suggerimenti ammesse in questo contesto. */
   allowed: SuggestionCategory[]
@@ -48,6 +49,8 @@ export interface IntellisenseContext {
   inSelectList: boolean
   /** True quando il cursore è dentro la ORDER BY (… ORDER BY a, b ▮): solo colonne + ASC/DESC. */
   inOrderBy: boolean
+  /** True dentro la GROUP BY: lì i suggerimenti sono MIRATI (colonne non aggregate della select-list). */
+  inGroupBy: boolean
   /** True dopo "FROM t " / "JOIN t " (c'è già una tabella, serve la clausola successiva). */
   afterTableName: boolean
   statementStart: boolean
@@ -123,6 +126,19 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
   })()
 
   /**
+   * GROUP BY: come la ORDER BY, ma qui il suggerimento è MIRATO (richiesta utente: "quando si fa la
+   * group by che sia più mirato"): devono arrivare PRIMA le colonne della select-list che NON sono
+   * dentro un aggregato (sono quelle che per forza devono stare nella GROUP BY), poi le altre.
+   */
+  const inGroupBy = (() => {
+    let last = ''
+    for (const m of stmtBefore.matchAll(/\b(ORDER\s+BY|GROUP\s+BY|WHERE|HAVING|UNION|FROM|SET)\b/gi)) {
+      last = m[1].toUpperCase()
+    }
+    return last.startsWith('GROUP')
+  })()
+
+  /**
    * True se la voce corrente della ORDER BY ha già un campo ("ORDER BY col ▮"): solo allora
    * ha senso proporre ASC/DESC. Subito dopo "ORDER BY " o dopo una virgola si sceglie il campo.
    */
@@ -186,6 +202,10 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
     // dentro la ORDER BY: colonne dello statement + ASC/DESC (solo dopo un campo)
     kind = 'orderBy'
     allowed = orderFieldTyped ? ['columns', 'orderDirections'] : ['columns']
+  } else if (inGroupBy) {
+    // dentro la GROUP BY: solo colonne (quelle non aggregate della select-list vengono prima)
+    kind = 'groupBy'
+    allowed = ['columns', 'functions']
   } else if (inSelectList) {
     kind = 'selectList'
     allowed = ['columns', 'functions', 'snippets']
@@ -214,6 +234,7 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
     isColumnContext,
     inSelectList,
     inOrderBy,
+    inGroupBy,
     afterTableName,
     statementStart,
   }

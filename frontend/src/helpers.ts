@@ -2933,6 +2933,122 @@ export interface SelectListSuggestions {
   columns: SelectListColumn[]
 }
 
+/** Voce mirata per la GROUP BY. */
+export interface GroupBySuggestion {
+  /** Testo mostrato nel popup. */
+  label: string
+  /** Testo inserito (espressione o colonna). */
+  insertText: string
+  /** 'select' = espressione della select-list NON aggregata: è quella che deve stare nella GROUP BY. */
+  origine: 'select' | 'altra'
+  /** Riga di dettaglio nel popup. */
+  detail: string
+}
+
+/** Funzioni di aggregazione T-SQL: se una voce della select-list le contiene non va in GROUP BY. */
+const AGGREGATI = /\b(SUM|COUNT|COUNT_BIG|AVG|MIN|MAX|STRING_AGG|STDEV|STDEVP|VAR|VARP|CHECKSUM_AGG|GROUPING|GROUPING_ID|APPROX_COUNT_DISTINCT)\s*\(/i
+
+/**
+ * AIUTO MIRATO PER LA GROUP BY (richiesta utente: "quando si fa la group by che sia più mirato").
+ *
+ * Restituisce le espressioni della SELECT che NON contengono un aggregato, cioè quelle che per
+ * forza devono comparire nella GROUP BY di T-SQL, nell'ordine in cui compaiono nella select-list e
+ * senza quelle già scritte dopo "GROUP BY". Il chiamante le mette PRIMA delle altre colonne.
+ *
+ * Note di T-SQL:
+ *  - l'alias della select-list NON è utilizzabile nella GROUP BY ("AS totale" va tolto);
+ *  - un'espressione con un aggregato dentro (es. "COALESCE(SUM(x), 0)") non è raggruppabile;
+ *  - le posizioni (GROUP BY 1) non le proponiamo: qui il suggerimento sono i nomi veri.
+ */
+export function buildGroupBySuggestions(stmtText: string, stmtBefore: string): GroupBySuggestion[] {
+  // fine della select-list: il primo FROM di primo livello dopo il SELECT
+  const selectStart = (() => {
+    const m = /\bSELECT\b/gi
+    let last = -1
+    for (const x of stmtText.matchAll(m)) last = x.index ?? last
+    return last
+  })()
+  if (selectStart < 0) return []
+  let depth = 0
+  let selectEnd = stmtText.length
+  for (let i = selectStart; i < stmtText.length; i++) {
+    const ch = stmtText[i]
+    if (ch === '(') depth++
+    else if (ch === ')') depth = Math.max(0, depth - 1)
+    else if (depth === 0 && /[A-Za-z_]/.test(ch) && /\bFROM\b/i.test(stmtText.slice(i, i + 5))) {
+      selectEnd = i
+      break
+    }
+  }
+  const lista = stmtText.slice(selectStart + 'SELECT'.length, selectEnd)
+  // voci di primo livello (virgole fuori dalle parentesi)
+  const voci: string[] = []
+  let prof = 0
+  let acc = ''
+  for (const ch of lista) {
+    if (ch === '(') prof++
+    else if (ch === ')') prof = Math.max(0, prof - 1)
+    if (ch === ',' && prof === 0) {
+      voci.push(acc)
+      acc = ''
+      continue
+    }
+    acc += ch
+  }
+  voci.push(acc)
+
+  // già scritte nella GROUP BY corrente (per non riproporle)
+  const gia = new Set<string>()
+  const gb = /\bGROUP\s+BY\b([\s\S]*)$/i.exec(stmtBefore)
+  if (gb) {
+    for (const m of gb[1].matchAll(/\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_.]*/g)) {
+      gia.add(m[0].replace(/[\[\]]/g, '').toLowerCase())
+    }
+  }
+
+  const out: GroupBySuggestion[] = []
+  const visti = new Set<string>()
+  for (const voce of voci) {
+    // via il commento in coda e l'eventuale "AS alias" (nella GROUP BY l'alias non vale)
+    let testo = voce.replace(/--[^\n]*$/g, '').replace(/\/\*[\s\S]*?\*\//g, '').trim()
+    if (!testo) continue
+    if (AGGREGATI.test(testo)) continue
+    testo = testo.replace(/\s+AS\s+(?:\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)\s*$/i, '').trim()
+    if (!testo || testo === '*' || /[?]/.test(testo)) continue
+    // "TOP 10 DISTINCT X.ID": si tolgono TUTTI i prefissi (in qualsiasi ordine), tenendo la colonna
+    for (;;) {
+      const prima = testo
+      testo = testo
+        .replace(/^(?:DISTINCT|ALL|TOP\s*\(?\s*\d+\s*\)?(?:\s+PERCENT)?(?:\s+WITH\s+TIES)?)\s+/i, '')
+        .trim()
+      if (testo === prima) break
+    }
+    const chiave = testo.toLowerCase()
+    if (!testo || visti.has(chiave)) continue
+    if (gia.has(chiave)) continue
+    // se la GROUP BY contiene già UNA delle colonne dell'espressione, la salto: sarebbe un doppione
+    const colonne = [...testo.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)].map(m => m[0].toLowerCase())
+    if (colonne.some(c => gia.has(c)) && colonne.length === 1) continue
+    visti.add(chiave)
+    out.push({
+      label: testo,
+      insertText: testo,
+      origine: 'select',
+      detail: 'select-list (non aggregata) · deve stare nella GROUP BY',
+    })
+  }
+  return out
+}
+
+/**
+ * Testo da inserire per riempire la GROUP BY con tutte le espressioni non aggregate della select-list
+ * non ancora presenti (è la voce "aiuto" del popup). Vuoto se non c'è nulla da aggiungere.
+ */
+export function groupByAllText(voci: GroupBySuggestion[]): string {
+  const colonne = voci.filter(v => v.origine === 'select').map(v => v.insertText)
+  return [...new Set(colonne)].join(', ')
+}
+
 /**
  * Calcola i suggerimenti per la select-list di uno statement:
  * colonne delle tabelle referenziate (anche dopo il cursore), deduplicate,

@@ -122,9 +122,12 @@ describe('INTELLIGENZA INTELLISENSE — classificazione del contesto', () => {
     expect(allows(ctx, 'columns')).toBe(false)
   })
 
-  it('dopo "GROUP BY " → columnContext', () => {
+  it('dopo "GROUP BY " → groupBy (suggerimenti mirati: colonne non aggregate della select-list)', () => {
     const ctx = ctxFor('SELECT a FROM T GROUP BY ')
-    expect(ctx.kind).toBe('columnContext')
+    expect(ctx.kind).toBe('groupBy')
+    expect(ctx.inGroupBy).toBe(true)
+    expect(allows(ctx, 'columns')).toBe(true)
+    expect(allows(ctx, 'tables')).toBe(false)
   })
 
   it('dopo "ORDER BY " → orderBy (solo colonne: ASC/DESC solo dopo il campo)', () => {
@@ -244,7 +247,7 @@ describe('INTELLIGENZA INTELLISENSE — qualità del ranking (casi reali)', () =
   it('dopo la virgola di "GROUP BY a, " il contesto resta di colonne (niente tabelle)', () => {
     // scenario utente: SELECT ... FROM dbo.MAG_CORRIDOI group by COR_CORRIDOIO ,
     const ctx = ctxFor('SELECT COR_CORRIDOIO, COR_AREA FROM dbo.MAG_CORRIDOI group by COR_CORRIDOIO ,')
-    expect(ctx.kind).toBe('columnContext')
+    expect(ctx.kind).toBe('groupBy')
     expect(allows(ctx, 'columns')).toBe(true)
     expect(allows(ctx, 'functions')).toBe(true)
     expect(allows(ctx, 'tables')).toBe(false)

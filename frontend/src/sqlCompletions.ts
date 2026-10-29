@@ -6,7 +6,7 @@ import * as monaco from 'monaco-editor'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
 import { isTextOffsetInComment } from './helpers'
 import { etichettaDrago } from './dragon'
-import { buildColumnContextSuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, columnsByFragment, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail } from './helpers'
+import { buildColumnContextSuggestions, buildGroupBySuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, columnsByFragment, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail, groupByAllText } from './helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
 import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectAlterTableTrigger, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectEnableDisableTriggerName, detectEnableDisableTriggerOn, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, dropColumnSnippet, extractDeclaredVariables, extractRoutineParameters, nomiTriggerDigitati, setOptionInsertText, setOptionLabel, systemVariablePrefixLen, tabellaDelTrigger, variablePrefixLen, vincoliCollegati } from './tsqlSnippets'
 import { extractCteTables, extractDerivedTables, extractLocalTables } from './localTables'
@@ -154,7 +154,7 @@ export function provideSqlCompletions({
           const stmtText = fullText.slice(stmtRange.start, stmtRange.end)
           const stmtBefore = stmtText.slice(0, cursorOffset - stmtRange.start)
           const ctx = classifyContext({ prefix, stmtBefore })
-          const { isTablePosition, isJoinPosition, isExecPosition, isColumnContext, inSelectList, inOrderBy } = ctx
+          const { isTablePosition, isJoinPosition, isExecPosition, isColumnContext, inSelectList, inOrderBy, inGroupBy } = ctx
 
           const suggestions: monaco.languages.CompletionItem[] = []
           let rank = 0
@@ -1300,7 +1300,42 @@ export function provideSqlCompletions({
                 }
               }
               const ctxCols = buildColumnContextSuggestions(stmtText, stmtBefore, word.word, st.summary, historyColumnBoost)
+              /**
+               * GROUP BY MIRATA (richiesta utente: "quando si fa la group by che sia più mirato"):
+               * prima le espressioni della select-list che NON contengono un aggregato — sono quelle
+               * che devono per forza stare nella GROUP BY — poi le altre colonne. In più una voce
+               * "aiuto" che riempie la clausola con tutte le colonne non aggregate mancanti.
+               */
+              const vociGroupBy = inGroupBy ? buildGroupBySuggestions(stmtText, stmtBefore) : []
+              if (vociGroupBy.length > 0) {
+                const tutte = groupByAllText(vociGroupBy)
+                if (tutte) {
+                  push({
+                    label: 'tutte le colonne della select-list',
+                    detail: `GROUP BY: ${tutte}`,
+                    documentation: `Riempie la \`GROUP BY\` con le espressioni non aggregate della select-list non ancora presenti:\n\`\`\`sql\n${tutte}\n\`\`\``,
+                    kind: monaco.languages.CompletionItemKind.Snippet,
+                    insertText: tutte,
+                    range,
+                    filterText: 'tutte le colonne',
+                    sortText: completionSortText(-1),
+                  })
+                }
+                for (const voce of vociGroupBy) {
+                  push({
+                    label: voce.label,
+                    detail: voce.detail,
+                    kind: monaco.languages.CompletionItemKind.Field,
+                    insertText: voce.insertText,
+                    range,
+                    filterText: completionFilterText(voce.label),
+                  })
+                }
+              }
+              // le colonne già proposte sopra non si ripetono nella lista generale
+              const giaProposte = new Set(vociGroupBy.map((v: { insertText: string }) => v.insertText.toLowerCase()))
               for (const col of ctxCols) {
+                if (inGroupBy && giaProposte.has(col.name.toLowerCase())) continue
                 push({
                   label: col.name,
                   detail: [

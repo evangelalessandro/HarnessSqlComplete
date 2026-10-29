@@ -48,7 +48,8 @@ describe('ORDER BY: contesto e categorie ammesse', () => {
 
   it('fuori dalla ORDER BY il contesto NON è orderBy (WHERE/GROUP BY/SELECT)', () => {
     expect(ctxFor('SELECT a FROM t WHERE ').kind).toBe('columnContext')
-    expect(ctxFor('SELECT a FROM t GROUP BY ').kind).toBe('columnContext')
+    expect(ctxFor('SELECT a FROM t GROUP BY ').kind).toBe('groupBy') // la GROUP BY ha il suo contesto mirato
+    expect(ctxFor('SELECT a FROM t GROUP BY ').inOrderBy).toBe(false)
     expect(ctxFor('SELECT a FROM t ORDER BY a WHERE ').inOrderBy).toBe(false)
     expect(ctxFor('SELECT ').inOrderBy).toBe(false)
   })

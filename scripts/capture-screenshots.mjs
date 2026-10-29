@@ -67,6 +67,7 @@ const VERIFY_JOIN_FREQUENZA = process.argv.includes('--verify-join-frequenza')
 const VERIFY_GO_N = process.argv.includes('--verify-go-n')
 const VERIFY_PATREON = process.argv.includes('--verify-patreon')
 const VERIFY_FORMATTA_UPDATE_COMMENTO = process.argv.includes('--verify-formatta-update-commento')
+const VERIFY_GROUP_BY = process.argv.includes('--verify-group-by')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
 const VERIFY_DATABASE_INTELLISENSE = process.argv.includes('--verify-database-intellisense')
 const VERIFY_UNDO_REDO = process.argv.includes('--verify-undo-redo')
@@ -8061,6 +8062,95 @@ async function setupDemo(files) {
   console.log('\ndatabase dimostrativo pronto: si possono rifare gli screenshot con SHOT_DB=DEMO_STORE')
 }
 /**
+ * VERIFICA (--verify-group-by): in posizione GROUP BY i suggerimenti sono MIRATI: arrivano prima le
+ * espressioni della select-list senza aggregati (sono quelle che devono stare nella GROUP BY) e c'è la
+ * voce "tutte le colonne della select-list" che riempie la clausola.
+ * Richiesta utente: "puoi anche mettere un aiuto per autocompletamento o altro, quando si fa la group
+ * by che sia più mirato".
+ */
+async function verifyGroupBy(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+  // il database dimostrativo ha ARTICOLI/GIACENZE (nomi inventati anche negli screenshot)
+  if (SHOT_DB) {
+    await page.eval(`(() => {
+      const sel = document.querySelector('select');
+      if (!sel) return false;
+      const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB)});
+      if (!opt) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+      setter.call(sel, opt.value);
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`)
+    await page.waitFor(`document.body.textContent.includes('Tabelle')`, 60000, 'schema del db dimostrativo')
+    await sleep(2500)
+  }
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  const SQL = [
+    'SELECT A.ART_CODICE,',
+    '       A.ART_DES,',
+    '       SUM(G.GIA_QTA) AS TOT',
+    'FROM dbo.ARTICOLI AS A',
+    '  INNER JOIN dbo.GIACENZE AS G ON G.GIA_ARTICOLO = A.ART_ID',
+    'GROUP BY ',
+  ].join('\n')
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors(); const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    if (!ed) return;
+    const testo = ${JSON.stringify('@@SQL@@')};
+    ed.setValue(testo);
+    const righe = testo.split('\\n');
+    ed.setPosition({ lineNumber: righe.length, column: righe[righe.length - 1].length + 1 });
+    ed.focus();
+    ed.trigger('verify', 'editor.action.triggerSuggest', {});
+  })()`.replace('"@@SQL@@"', JSON.stringify(SQL)))
+  await sleep(2200)
+
+  const voci = await page.eval(`(() => {
+    const w = document.querySelector('.suggest-widget.visible');
+    if (!w) return null;
+    return [...w.querySelectorAll('.monaco-list-row')].map(r => (r.textContent || '').replace(/\\s+/g, ' ').trim()).slice(0, 8);
+  })()`)
+  console.log('  suggerimenti in GROUP BY:')
+  ;(voci ?? []).forEach((v, i) => console.log(`   ${String(i + 1).padStart(2)} ${v}`))
+  check('il popup si apre nella GROUP BY', !!voci && voci.length > 0)
+  check(
+    "la prima voce è l'aiuto \"tutte le colonne della select-list\"",
+    !!voci && /tutte le colonne della select-list/i.test(voci[0]),
+    voci?.[0],
+  )
+  const testi = (voci ?? []).join(' | ')
+  check('propone le colonne non aggregate della select-list', /ART_CODICE/i.test(testi) && /ART_DES/i.test(testi))
+  check('NON propone la colonna dentro SUM', !/SUM|TOT/i.test(testi), testi.slice(0, 120))
+  await page.screenshot('group-by-suggerimenti')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
  * VERIFICA (--verify-formatta-update-commento): nell'editor vero, Ctrl+Shift+F su un UPDATE con un
  * commento "--" su riga propria fra la lista del SET e la FROM.
  * Richiesta utente: "se formatto questa query non si formatta bene, mentre se tolgo il commento sì".
@@ -9225,6 +9315,11 @@ async function main() {
 
     if (VERIFY_MULTICURSORE) {
       await verifyMulticursore(page)
+      return
+    }
+
+    if (VERIFY_GROUP_BY) {
+      await verifyGroupBy(page)
       return
     }
 
