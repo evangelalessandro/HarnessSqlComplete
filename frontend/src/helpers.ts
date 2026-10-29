@@ -2712,9 +2712,21 @@ export interface TableGroup {
  * Le tabelle senza underscore finiscono nel gruppo "Varie". Case-insensitive.
  */
 export function groupTablesByPrefix(tables: TableInfo[]): TableGroup[] {
+  /**
+   * Con tabelle distribuite su PIÙ SCHEMI (es. AdventureWorks: Sales/Person/Production/Purchasing/
+   * HumanResources) il raggruppamento utile è per SCHEMA, come in SSMS: per prefisso del nome si
+   * finiva con un unico gruppo "Varie" da 71 tabelle (visto provando AdventureWorks2019). Sui database
+   * con tutte le tabelle in dbo resta il raggruppamento per prefisso (DAT_, MAG_, …).
+   */
+  const schemi = new Set(tables.map(t => (t.schema || 'dbo').toLowerCase()))
+  const perSchema = schemi.size > 1
   const map = new Map<string, TableGroup>()
   for (const t of tables) {
-    const raw = t.name.includes('_') ? t.name.split('_')[0] : 'Varie'
+    const raw = perSchema
+      ? t.schema || 'dbo'
+      : t.name.includes('_')
+        ? t.name.split('_')[0]
+        : 'Varie'
     const key = raw.toLowerCase()
     let g = map.get(key)
     if (!g) {

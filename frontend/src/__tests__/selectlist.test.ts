@@ -201,6 +201,18 @@ describe('groupTablesByPrefix: raggruppamento per prefisso', () => {
     expect(groups[3].tables.map(t => t.name)).toEqual(['Ordini'])
   })
 
+  it('con tabelle su PIÙ schemi raggruppa per SCHEMA (come SSMS, es. AdventureWorks)', () => {
+    const groups = groupTablesByPrefix([
+      mkTbl('Sales', 'SalesOrderHeader', [mkCol('id')]),
+      mkTbl('Sales', 'Customer', [mkCol('id')]),
+      mkTbl('Person', 'Person', [mkCol('id')]),
+      mkTbl('Production', 'Product', [mkCol('id')]),
+      mkTbl('dbo', 'ErrorLog', [mkCol('id')]),
+    ])
+    expect(groups.map(g => g.label)).toEqual(['dbo', 'Person', 'Production', 'Sales'])
+    expect(groups.find(g => g.label === 'Sales')!.tables.map(t => t.name)).toEqual(['Customer', 'SalesOrderHeader'])
+  })
+
   it('case-insensitive: Bckup_ e BCKUP_ nello stesso gruppo', () => {
     const groups = groupTablesByPrefix([
       mkTbl('dbo', 'BCKUP_UDC', [mkCol('id')]),

@@ -69,6 +69,7 @@ const VERIFY_PATREON = process.argv.includes('--verify-patreon')
 const VERIFY_FORMATTA_UPDATE_COMMENTO = process.argv.includes('--verify-formatta-update-commento')
 const VERIFY_GROUP_BY = process.argv.includes('--verify-group-by')
 const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
+const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
 const VERIFY_DATABASE_INTELLISENSE = process.argv.includes('--verify-database-intellisense')
 const VERIFY_UNDO_REDO = process.argv.includes('--verify-undo-redo')
@@ -8063,6 +8064,128 @@ async function setupDemo(files) {
   console.log('\ndatabase dimostrativo pronto: si possono rifare gli screenshot con SHOT_DB=DEMO_STORE')
 }
 /**
+ * VERIFICA (--verify-aw): giro completo su un database Microsoft (AdventureWorks2019), con schemi NON
+ * dbo (Sales/Person/Production) e oggetti pubblici: intellisense, GROUP BY mirata, JOIN col drago
+ * ordinati per frequenza reale (co-occorrenze) ed esecuzione di una query vera.
+ */
+async function verifyAw(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const combo = async () =>
+    await page.eval(`(() => { const s = document.querySelector('select'); return s ? (s.options[s.selectedIndex]?.textContent || '').trim() : '' })()`)
+  const cambiaDb = async db => {
+    await page.eval(`(() => {
+      const s = document.querySelector('select');
+      const opt = [...s.options].find(o => (o.textContent || '').trim() === ${JSON.stringify('@@DB@@')});
+      if (!opt) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+      setter.call(s, opt.value);
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`.replace('"@@DB@@"', JSON.stringify(db)))
+    await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema del db Microsoft')
+    await sleep(3000)
+  }
+  const scriviEChiediSuggerimenti = async sql => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors(); const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      if (!ed) return;
+      const testo = ${JSON.stringify('@@SQL@@')};
+      ed.setValue(testo);
+      const righe = testo.split('\\n');
+      ed.setPosition({ lineNumber: righe.length, column: righe[righe.length - 1].length + 1 });
+      ed.focus();
+      ed.trigger('verify', 'editor.action.triggerSuggest', {});
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+    await sleep(2200)
+    return await page.eval(`(() => {
+      const w = document.querySelector('.suggest-widget.visible');
+      if (!w) return null;
+      return [...w.querySelectorAll('.monaco-list-row')].map(r => (r.textContent || '').replace(/\\s+/g, ' ').trim()).slice(0, 8);
+    })()`)
+  }
+
+  await cambiaDb('AdventureWorks2019')
+  const attivo = await combo()
+  check('database Microsoft attivo', attivo === 'AdventureWorks2019', attivo)
+  const albero = await page.eval(`(document.body.textContent || '')`)
+  check('la sidebar mostra gli oggetti di AdventureWorks', /Sales|Person|Production/i.test(albero))
+  await page.screenshot('adventureworks')
+
+  // 1) GROUP BY mirata con uno schema NON dbo
+  const gb = await scriviEChiediSuggerimenti(
+    'SELECT S.CustomerID,\n       COUNT(*) AS N\nFROM Sales.SalesOrderHeader AS S\nGROUP BY ',
+  )
+  console.log('  GROUP BY:')
+  ;(gb ?? []).slice(0, 4).forEach((v, i) => console.log(`   ${i + 1} ${v}`))
+  check('GROUP BY: prima voce è l aiuto', !!gb && /tutte le colonne della select-list/i.test(gb[0]))
+  check('GROUP BY: propone S.CustomerID (schema non dbo)', !!gb && /S\.CustomerID/i.test(gb.join(' | ')))
+  check('GROUP BY: NON propone l aggregato', !!gb && !/COUNT/i.test(gb.join(' | ')))
+
+  // 2) JOIN col drago ordinati per frequenza (co-occorrenze REALI di AdventureWorks)
+  const join = await scriviEChiediSuggerimenti('SELECT *\nFROM Person.Person AS P\nINNER JOIN ')
+  console.log('  JOIN:')
+  ;(join ?? []).slice(0, 6).forEach((v, i) => console.log(`   ${i + 1} ${v}`))
+  const draghi = (join ?? []).filter(v => v.includes('🐉'))
+  const frequenze = draghi
+    .map(v => /(\d+) join nel codice/.exec(v))
+    .filter(Boolean)
+    .map(m => Number(m[1]))
+  console.log(`  frequenze: ${JSON.stringify(frequenze)}`)
+  check('JOIN: ci sono suggerimenti col drago', draghi.length >= 1, `${draghi.length}`)
+  check(
+    'JOIN: ordinati per frequenza decrescente',
+    frequenze.length < 2 || frequenze.every((f, i) => i === 0 || frequenze[i - 1] >= f),
+    JSON.stringify(frequenze),
+  )
+
+  // 3) esecuzione di una query vera su AdventureWorks
+  const SQL = "SELECT TOP 25 S.SalesOrderID, S.OrderDate, S.TotalDue, C.AccountNumber\nFROM Sales.SalesOrderHeader AS S\n  INNER JOIN Sales.Customer AS C ON C.CustomerID = S.CustomerID\nORDER BY S.TotalDue DESC;"
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors(); const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    if (ed) { ed.setValue(${JSON.stringify('@@SQL@@')}); ed.focus(); }
+  })()`.replace('"@@SQL@@"', JSON.stringify(SQL)))
+  await sleep(600)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await page.waitFor(`document.body.textContent.includes('per pagina')`, 40000, 'griglia dei risultati')
+  await sleep(1500)
+  const griglia = await page.eval(`(() => {
+    const righe = [...document.querySelectorAll('tbody tr')];
+    const intestazioni = [...document.querySelectorAll('thead th')].map(th => (th.textContent || '').trim()).filter(Boolean);
+    return { righe: righe.length, intestazioni: intestazioni.slice(0, 5) };
+  })()`)
+  console.log(`  griglia: ${JSON.stringify(griglia)}`)
+  check('query eseguita: 25 righe nella griglia', griglia.righe === 25, `${griglia.righe}`)
+  check('colonne di AdventureWorks (SalesOrderID/TotalDue)', /SalesOrderID/i.test(griglia.intestazioni.join(' ')) || /TotalDue/i.test(griglia.intestazioni.join(' ')))
+  await page.screenshot('adventureworks-risultati')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+/**
  * VERIFICA (--verify-db-tab): il database è legato alla TAB: cambiando tab la combo deve tornare al
  * database di quella tab.
  * Segnalazione utente: "il database selezionato deve essere collegato alla tab, ho visto che cambiando
@@ -9416,6 +9539,11 @@ async function main() {
 
     if (VERIFY_MULTICURSORE) {
       await verifyMulticursore(page)
+      return
+    }
+
+    if (VERIFY_AW) {
+      await verifyAw(page)
       return
     }
 
