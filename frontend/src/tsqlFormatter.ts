@@ -1077,19 +1077,24 @@ function formatRoutineConProfilo(sql: string, profile: FormatProfile): string {
   for (let k = startIdx; k < body.length; k++) {
     const t = body[k]
     // commento su riga propria (già indentato).
-    // Di norma è un segmento a sé, così resta sulla sua riga. ECCEZIONE: se lo statement è una
-    // SELECT ancora "aperta" (non è ancora arrivata a FROM/WHERE/…), il commento RESTA dentro lo
-    // statement: prima spezzava la query in due e la parte FROM/WHERE/ORDER BY finiva tutta su una
-    // riga (segnalazione utente: commento "--,@x_note=X_NOTE" fra le assegnazioni e la FROM).
+    // Di norma è un segmento a sé, così resta sulla sua riga. ECCEZIONE: se lo statement è ancora
+    // "aperto" (non è ancora arrivata la clausola che può seguire un commento: FROM/WHERE/…), il
+    // commento RESTA dentro lo statement, altrimenti lo spezza in due e la seconda parte finisce tutta
+    // su una riga. Casi reali segnalati dall'utente:
+    //  - SELECT con le assegnazioni e "--,@x_note=X_NOTE" prima della FROM;
+    //  - UPDATE con la lista del SET e "--commento" prima della FROM (il SET non chiude lo statement:
+    //    la clausola che conta è la FROM/WHERE che viene dopo).
     const statementAperto =
       seg.length > 0 &&
       seg[0]?.type === 'word' &&
-      seg[0].text.toUpperCase() === 'SELECT' &&
+      ['SELECT', 'UPDATE', 'INSERT', 'MERGE', 'DELETE'].includes(seg[0].text.toUpperCase()) &&
       !seg.some(
         (tk, iTk) =>
           iTk > 0 &&
           tk.type === 'word' &&
-          ['FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING', 'UNION', 'VALUES', 'OPTION'].includes(tk.text.toUpperCase()),
+          ['FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING', 'UNION', 'VALUES', 'OPTION', 'OUTPUT'].includes(
+            tk.text.toUpperCase(),
+          ),
       )
     if (t.type === 'comment' && t.ownLine && segDepth === 0 && caseDepth === 0) {
       if (statementAperto) {
@@ -2727,7 +2732,9 @@ function setClauseRows(basePad: string, tokens: Token[], up: (t: Token) => strin
     }
     if (t.type === 'comment' && (t.ownLine || t.text.startsWith('--'))) {
       flushItem()
-      out.push(`${basePad}${' '.repeat(setIndent + 'SET '.length)}${up(t)}`)
+      // commento su riga propria dentro il SET: si mette al margine dello STATEMENT (non indentato
+      // come i campi), che è dove sta di solito nel codice: "…,MIS_NO_REG = 1 / --commento / FROM …"
+      out.push(`${basePad}${up(t)}`)
       continue
     }
     cur.push(t)
