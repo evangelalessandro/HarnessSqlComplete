@@ -68,6 +68,7 @@ const VERIFY_GO_N = process.argv.includes('--verify-go-n')
 const VERIFY_PATREON = process.argv.includes('--verify-patreon')
 const VERIFY_FORMATTA_UPDATE_COMMENTO = process.argv.includes('--verify-formatta-update-commento')
 const VERIFY_GROUP_BY = process.argv.includes('--verify-group-by')
+const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
 const VERIFY_DATABASE_INTELLISENSE = process.argv.includes('--verify-database-intellisense')
 const VERIFY_UNDO_REDO = process.argv.includes('--verify-undo-redo')
@@ -8062,6 +8063,106 @@ async function setupDemo(files) {
   console.log('\ndatabase dimostrativo pronto: si possono rifare gli screenshot con SHOT_DB=DEMO_STORE')
 }
 /**
+ * VERIFICA (--verify-db-tab): il database è legato alla TAB: cambiando tab la combo deve tornare al
+ * database di quella tab.
+ * Segnalazione utente: "il database selezionato deve essere collegato alla tab, ho visto che cambiando
+ * tab, associata ad un altro db, non ha cambiato la combo col db precedentemente associato a questa tab".
+ */
+async function verifyDbTab(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const combo = async () =>
+    await page.eval(`(() => { const s = document.querySelector('select'); return s ? (s.options[s.selectedIndex]?.textContent || '').trim() : '' })()`)
+  const cambiaDb = async db => {
+    const ok = await page.eval(`(() => {
+      const s = document.querySelector('select');
+      if (!s) return false;
+      const opt = [...s.options].find(o => (o.textContent || '').trim() === ${JSON.stringify('@@DB@@')});
+      if (!opt) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+      setter.call(s, opt.value);
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`.replace('"@@DB@@"', JSON.stringify(db)))
+    await sleep(3000)
+    return ok
+  }
+  const tabs = async () => await page.eval(`[...document.querySelectorAll('.sql-tab')].map(t => (t.getAttribute('title') || '').split(' — ')[0])`)
+  /** Clic sul TITOLO della tab (è il bottone che la attiva): centro del bottone. */
+  const clicTab = async indice => {
+    const punto = await page.eval(`(() => {
+      const tabs = [...document.querySelectorAll('.sql-tab')];
+      const tab = tabs[${indice}] || tabs[0];
+      if (!tab) return null;
+      const bottone = tab.querySelector('button');
+      if (!bottone) return null;
+      const r = bottone.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+    await sleep(3500)
+    return !!punto
+  }
+  /** Titolo della tab attiva (il suo bottone ha font-bold). */
+  const tabAttiva = async () =>
+    await page.eval(`(() => {
+      const t = [...document.querySelectorAll('.sql-tab')].find(t => (t.querySelector('button')?.className || '').includes('font-bold'));
+      return t ? (t.querySelector('button')?.textContent || '').trim() : '';
+    })()`)
+
+  const dbIniziale = await combo()
+  console.log(`  database iniziale: ${dbIniziale}`)
+  check("c'è un database attivo", !!dbIniziale)
+
+  // seconda tab, poi le si assegna DEMO_STORE
+  const nuova = await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Nuova'))`)
+  check('si crea una seconda tab', nuova === true)
+  await sleep(1500)
+  const dbTab2Prima = await combo()
+  check('la nuova tab eredita il database attivo', dbTab2Prima === dbIniziale, `${dbTab2Prima}`)
+  const cambiato = await cambiaDb(SHOT_DB || 'DEMO_STORE')
+  const dbTab2 = await combo()
+  console.log(`  tab 2 → ${dbTab2}`)
+  check('cambiando database la combo segue (tab 2)', cambiato && dbTab2 === (SHOT_DB || 'DEMO_STORE'), dbTab2)
+
+  // torna alla prima tab: la combo deve tornare al database di QUELLA tab
+  await clicTab(0)
+  console.log(`  tab attiva dopo il clic: ${await tabAttiva()}`)
+  const dbTab1 = await combo()
+  const listaTab = await tabs()
+  console.log(`  tab: ${JSON.stringify(listaTab)} · combo dopo il ritorno alla tab 1: ${dbTab1}`)
+  check('tornando alla tab 1 la combo torna al SUO database', dbTab1 === dbIniziale, `${dbTab1} (atteso ${dbIniziale})`)
+
+  // e ritornando alla tab 2 deve riprendere il suo
+  await clicTab(1)
+  const dbTab2Bis = await combo()
+  console.log(`  combo tornando alla tab 2: ${dbTab2Bis}`)
+  check('tornando alla tab 2 la combo riprende il SUO database', dbTab2Bis === dbTab2, `${dbTab2Bis} (atteso ${dbTab2})`)
+  await page.screenshot('db-legato-alla-tab')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+/**
  * VERIFICA (--verify-group-by): in posizione GROUP BY i suggerimenti sono MIRATI: arrivano prima le
  * espressioni della select-list senza aggregati (sono quelle che devono stare nella GROUP BY) e c'è la
  * voce "tutte le colonne della select-list" che riempie la clausola.
@@ -9315,6 +9416,11 @@ async function main() {
 
     if (VERIFY_MULTICURSORE) {
       await verifyMulticursore(page)
+      return
+    }
+
+    if (VERIFY_DB_TAB) {
+      await verifyDbTab(page)
       return
     }
 

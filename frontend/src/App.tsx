@@ -529,7 +529,15 @@ export default function App() {
         })
         setSummary(await api.getSummary(res.connectionId))
         const targetTab = tabId ?? activeEditorTab
-        setEditorTabs(prev => prev.map(t => (t.id === targetTab ? { ...t, database: res.database } : t)))
+        setEditorTabs(prev =>
+          prev.map(t => {
+            if (t.id === targetTab) return { ...t, database: res.database }
+            // le tab senza database (vecchie, o create prima di connettersi) si legano al database che
+            // stavano mostrando PRIMA di questo cambio: altrimenti cambiando tab non ci si torna più.
+            if (!t.database && connection?.database) return { ...t, database: connection.database }
+            return t
+          }),
+        )
       } catch (e) {
         setBanner(e instanceof Error ? e.message : String(e))
       } finally {
@@ -896,7 +904,16 @@ export default function App() {
       const persisted = loadPersistedTabs(res.server)
       // i legami padre/figlia salvati possono puntare a tab non più esistenti: si ripuliscono
       const persistedTabs = persisted ? sanitizeTabParents(persisted.tabs) : []
-      setEditorTabs(persisted ? persistedTabs : [firstTab()])
+      /**
+       * SEGNALAZIONE UTENTE: "il database selezionato deve essere collegato alla tab: cambiando tab,
+       * associata a un altro db, non ha cambiato la combo col db precedentemente associato a questa
+       * tab". La causa era una tab con `database` VUOTO (creata prima di connettersi, o salvata da una
+       * sessione precedente): al cambio tab il controllo `if (t.database && …)` non scattava e la combo
+       * restava sul database dell'altra tab. Qui il database diventa ESPLICITO su ogni tab appena
+       * connessa, così ogni tab ha il suo e ci si può tornare.
+       */
+      const conDatabase = (t: EditorTab): EditorTab => (t.database ? t : { ...t, database: res.database })
+      setEditorTabs(persisted ? persistedTabs.map(conDatabase) : [conDatabase(firstTab())])
       setActiveEditorTab(persistedTabs.some(t => t.id === persisted?.active) ? persisted!.active : 'tab-1')
         // nuova connessione: i risultati delle tab appartenevano al DB precedente
         setTabResults({})
