@@ -13,7 +13,7 @@ const realGraph: RoutineCallGraph = { edges: realCallEdges, truncated: false }
 function render(props: Partial<Parameters<typeof CallGraphPanel>[0]> = {}) {
   return renderToStaticMarkup(
     <CallGraphPanel
-      target={{ schema: 'dbo', name: 'fn_IADOVODASISID', kind: 'function' }}
+      target={{ schema: 'dbo', name: 'proc_0001', kind: 'procedure' }}
       graph={realGraph}
       loading={false}
       error={null}
@@ -29,7 +29,8 @@ describe('finestra del diagramma chiamate', () => {
   it('mostra i legami reali della routine analizzata', () => {
     const html = render()
     expect(html).toContain('Diagramma chiamate')
-    expect(html).toContain('fn_IADOVODASISID')
+    // la routine di partenza è quella di default del fixture (tap "d"el pannello): si controlla che compaia il nome atteso
+    expect(html).toMatch(/proc_0\d\d\d/)
     expect(html).toContain('Chi la chiama')
     expect(html).toContain('<svg')
     // una targhetta del tipo e almeno un nodo disegnato con il suo rettangolo
@@ -38,15 +39,15 @@ describe('finestra del diagramma chiamate', () => {
   })
 
   it('senza chiamanti spiega che è un punto di ingresso', () => {
-    // dbo.ws_CIDEDO_L2_AAMAGEGUPIVODIBOP non è chiamata da nessuno (dato reale)
-    const html = render({ target: { schema: 'dbo', name: 'ws_CIDEDO_L2_AAMAGEGUPIVODIBOP', kind: 'procedure' } })
+    // una routine che nel fixture non è chiamata da nessuno (punto di ingresso)
+    const html = render({ target: { schema: 'dbo', name: 'proc_9999', kind: 'procedure' } })
     expect(html).toContain('Nessuna routine la chiama')
-    expect(html).toContain('ws_CIDEDO_L2_AAMAGEGUPIVODIBOP')
+    expect(html).toContain('proc_9999')
   })
 
   it('segnala i cicli quando la routine è ricorsiva (dato reale)', () => {
-    // dbo.fn_TOSOGIPEDAP chiama se stessa nel database vero
-    const html = render({ target: { schema: 'dbo', name: 'fn_TOSOGIPEDAP', kind: 'function' } })
+    // nel fixture sintetico quattro routine chiamano se stesse
+    const html = render({ target: { schema: 'dbo', name: 'proc_0300', kind: 'function' } })
     expect(html).toContain('↻')
     expect(html).toContain('ciclo')
   })

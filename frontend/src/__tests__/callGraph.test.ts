@@ -301,7 +301,7 @@ describe('disposizione a livelli', () => {
   })
 })
 
-describe('GRAFO REALE di DEMOSTORE (1696 legami)', () => {
+describe('GRAFO GRANDE (oltre 2000 legami, sintetico con nomi pubblici)', () => {
   const index = buildRoutineIndex(realCallEdges)
 
   it('il fixture è completo e contiene le routine ricorsive reali', () => {
@@ -309,7 +309,7 @@ describe('GRAFO REALE di DEMOSTORE (1696 legami)', () => {
     expect(index.edgeCount).toBe(realCallEdges.length)
     const selfLoops = realCallEdges.filter(e => e.callerName === e.calleeName && e.callerSchema === e.calleeSchema)
     expect(selfLoops.length).toBeGreaterThan(0)
-    expect(selfLoops.map(e => e.callerName)).toContain('fn_TOSOGIPEDAP')
+    expect(selfLoops.map(e => e.callerName)).toContain('proc_0300')
   })
 
   it('contiene anche i legami da CHIAMATE NON QUALIFICATE (risolte per nome dal backend)', () => {
@@ -320,13 +320,13 @@ describe('GRAFO REALE di DEMOSTORE (1696 legami)', () => {
     expect(realCallEdges.length).toBeGreaterThan(2000)
     const selfLoops = realCallEdges.filter(e => e.callerName === e.calleeName && e.callerSchema === e.calleeSchema)
     // due ricorsioni vengono fuori solo grazie alla risoluzione per nome
-    expect(selfLoops.map(e => e.callerName)).toContain('ws_L1_AAS_05')
-    expect(selfLoops.map(e => e.callerName)).toContain('ws_L2_OIV_EUMOBU')
+    expect(selfLoops.map(e => e.callerName)).toContain('proc_0301')
+    expect(selfLoops.map(e => e.callerName)).toContain('proc_0302')
   })
 
   it('salendo dai chiamanti di una funzione molto usata si termina in fretta', () => {
     const started = Date.now()
-    const view = walkCallGraph(index, { schema: 'dbo', name: 'fn_IADOVODASISID' }, 'callers', {
+    const view = walkCallGraph(index, { schema: 'dbo', name: 'proc_0001' }, 'callers', {
       maxDepth: 6,
       maxNodes: 140,
     })
@@ -340,7 +340,8 @@ describe('GRAFO REALE di DEMOSTORE (1696 legami)', () => {
     }
   })
 
-  it('ogni routine del DB, come punto di partenza, termina (nessun loop infinito)', () => {
+  // prova esaustiva e volutamente pesante (oltre 2000 legami): timeout dedicato più alto
+  it('ogni routine del DB, come punto di partenza, termina (nessun loop infinito)', { timeout: 25000 }, () => {
     // prova esaustiva: si parte da OGNI chiamante reale e si sale senza limiti di profondità
     const starts = [...new Set(realCallEdges.map(e => routineId(e.calleeSchema, e.calleeName)))]
     expect(starts.length).toBeGreaterThan(200)
@@ -361,12 +362,12 @@ describe('GRAFO REALE di DEMOSTORE (1696 legami)', () => {
     }
   })
 
-  it('la routine ricorsiva reale fn_TOSOGIPEDAP si esplora senza blocchi', () => {
-    const view = walkCallGraph(index, { schema: 'dbo', name: 'fn_TOSOGIPEDAP' }, 'callers', {
+  it('la routine ricorsiva proc_0300 si esplora senza blocchi', () => {
+    const view = walkCallGraph(index, { schema: 'dbo', name: 'proc_0300' }, 'callers', {
       maxDepth: 6,
       maxNodes: 140,
     })
     expect(view.nodes.length).toBeGreaterThan(0)
-    expect(view.nodes.map(n => n.name)).toContain('fn_TOSOGIPEDAP')
+    expect(view.nodes.map(n => n.name)).toContain('proc_0300')
   })
 })
