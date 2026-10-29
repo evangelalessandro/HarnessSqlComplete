@@ -27,16 +27,25 @@ statement dai risultati, **diagramma delle chiamate fra routine** e assistente I
 Gli screenshot si rigenerano con `node scripts/capture-screenshots.mjs` (backend e dev server attivi):
 pilota Chrome headless via CDP e salva i PNG in `docs/screenshots/`.
 
-Le immagini usano un **database dimostrativo con nomi inventati** (nessun nome reale di database,
-tabella o query finisce su git): `scripts/demo-db.sql` crea `DEMO_STORE` con tabelle `ARTICOLI`,
-`ORDINI`, `UBICAZIONI`, `GIACENZE`… e una catena di procedure per il diagramma delle chiamate.
+Le immagini sono prese su **AdventureWorks2019** (il database di esempio pubblico Microsoft): nessun nome
+reale di database, tabella o query di produzione finisce su git.
 
 ```powershell
-node scripts/capture-screenshots.mjs --setup-demo=scripts/demo-db.sql   # crea/rifà DEMO_STORE
-$env:SHOT_DB = 'DEMO_STORE'
-$env:SHOT_ROUTINE = 'SP_AUTOMAZIONE_09'
+$env:SHOT_DB = 'AdventureWorks2019'
+$env:SHOT_ROUTINE = 'uspLogError'   # 11 chiamanti: buon diagramma delle chiamate
+$env:SHOT_QUERY = @"
+SELECT TOP 25 S.SalesOrderID, S.OrderDate, S.TotalDue, C.AccountNumber
+FROM Sales.SalesOrderHeader AS S
+  INNER JOIN Sales.Customer AS C ON C.CustomerID = S.CustomerID
+WHERE S.TotalDue > 1000
+ORDER BY S.TotalDue DESC;
+"@
 node scripts/capture-screenshots.mjs
 ```
+
+Se AdventureWorks non è disponibile, `scripts/demo-db.sql` crea un `DEMO_STORE` equivalente con nomi
+inventati (`node scripts/capture-screenshots.mjs --setup-demo=scripts/demo-db.sql`, poi
+`SHOT_DB=DEMO_STORE` e `SHOT_ROUTINE=SP_AUTOMAZIONE_09`).
 
 ---
 
@@ -360,16 +369,25 @@ query results, a **routine call graph** and an optional AI assistant.
 Regenerate them with `node scripts/capture-screenshots.mjs` (backend and dev server running): it drives
 headless Chrome over CDP and writes the PNGs to `docs/screenshots/`.
 
-The images are taken on a **demo database with made-up names** (no real database, table or query name
-ends up in git): `scripts/demo-db.sql` creates `DEMO_STORE` with `ARTICOLI`, `ORDINI`, `UBICAZIONI`,
-`GIACENZE`… plus a chain of procedures for the call graph.
+The images are taken on **AdventureWorks2019** (the public Microsoft sample database): no real
+production database, table or query name ends up in git.
 
 ```powershell
-node scripts/capture-screenshots.mjs --setup-demo=scripts/demo-db.sql   # create/refresh DEMO_STORE
-$env:SHOT_DB = 'DEMO_STORE'
-$env:SHOT_ROUTINE = 'SP_AUTOMAZIONE_09'
+$env:SHOT_DB = 'AdventureWorks2019'
+$env:SHOT_ROUTINE = 'uspLogError'   # 11 callers: a good call graph
+$env:SHOT_QUERY = @"
+SELECT TOP 25 S.SalesOrderID, S.OrderDate, S.TotalDue, C.AccountNumber
+FROM Sales.SalesOrderHeader AS S
+  INNER JOIN Sales.Customer AS C ON C.CustomerID = S.CustomerID
+WHERE S.TotalDue > 1000
+ORDER BY S.TotalDue DESC;
+"@
 node scripts/capture-screenshots.mjs
 ```
+
+If AdventureWorks is not available, `scripts/demo-db.sql` builds an equivalent `DEMO_STORE` with
+made-up names (`node scripts/capture-screenshots.mjs --setup-demo=scripts/demo-db.sql`, then
+`SHOT_DB=DEMO_STORE` and `SHOT_ROUTINE=SP_AUTOMAZIONE_09`).
 
 ## Features
 

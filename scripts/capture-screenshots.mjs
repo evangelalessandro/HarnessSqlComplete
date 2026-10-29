@@ -70,6 +70,8 @@ const VERIFY_FORMATTA_UPDATE_COMMENTO = process.argv.includes('--verify-formatta
 const VERIFY_GROUP_BY = process.argv.includes('--verify-group-by')
 const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
+const VERIFY_AW_SCRIPT = process.argv.includes('--verify-aw-script')
+const VERIFY_AW_GRAFO = process.argv.includes('--verify-aw-grafo')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
 const VERIFY_DATABASE_INTELLISENSE = process.argv.includes('--verify-database-intellisense')
 const VERIFY_UNDO_REDO = process.argv.includes('--verify-undo-redo')
@@ -9542,6 +9544,16 @@ async function main() {
       return
     }
 
+    if (VERIFY_AW_GRAFO) {
+      await verifyAwGrafo(page)
+      return
+    }
+
+    if (VERIFY_AW_SCRIPT) {
+      await verifyAwScript(page)
+      return
+    }
+
     if (VERIFY_AW) {
       await verifyAw(page)
       return
@@ -9906,7 +9918,303 @@ async function main() {
   }
 }
 
+/**
+ * VERIFICA (--verify-aw-script): confronto fra lo script CREATE TABLE generato dall'app per una tabella
+ * di AdventureWorks2019 e le definizioni UFFICIALI lette dai cataloghi (sys.columns/indexes/foreign_keys/
+ * default_constraints/check_constraints/triggers). Verifica anche che il corpo del trigger sia in coda.
+ */
+async function verifyAwScript(page) {
+  const api = process.env.SHOT_API ?? 'http://localhost:5213'
+  const TAB = 'Sales.SalesOrderHeader'
+
+  // ---- definizioni ufficiali, da una connessione API separata sullo stesso database
+  const logins = await (await fetch(`${api}/api/connections`)).json()
+  const login = logins.find(l => (l.name || '').toLowerCase().includes(LOGIN_NAME.toLowerCase()))
+  const conn0 = await (await fetch(`${api}/api/connections/saved/${login.id}/connect`, { method: 'POST' })).json()
+  const sw = await (
+    await fetch(`${api}/api/connections/${conn0.connectionId}/switch-database`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ database: 'AdventureWorks2019' }),
+    })
+  ).json()
+  const apiId = sw.connectionId
+  const interroga = async sql => {
+    const r = await fetch(`${api}/api/query/${apiId}/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sql, timeoutSeconds: 120 }),
+    })
+    const corpo = await r.json()
+    if (corpo.error) throw new Error(`catalogo: ${corpo.error}`)
+    return corpo.resultSets?.[0]?.rows ?? []
+  }
+  const nom = TAB.split('.')[1]
+  const oid = `OBJECT_ID('${TAB}')`
+  const colonne = await interroga(
+    `SELECT c.name, ty.name FROM sys.columns c JOIN sys.types ty ON ty.user_type_id = c.user_type_id WHERE c.object_id = ${oid} ORDER BY c.column_id`,
+  )
+  const indici = await interroga(
+    `SELECT i.name, i.type_desc, i.is_unique, i.is_primary_key, c.name AS chiave FROM sys.indexes i
+       LEFT JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.key_ordinal > 0
+       LEFT JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+      WHERE i.object_id = ${oid} AND i.type > 0 ORDER BY i.index_id, ic.key_ordinal`,
+  )
+  const fk = await interroga(
+    `SELECT fk.name, OBJECT_SCHEMA_NAME(fk.referenced_object_id) + '.' + OBJECT_NAME(fk.referenced_object_id) AS rif
+       FROM sys.foreign_keys fk WHERE fk.parent_object_id = ${oid}`,
+  )
+  const defaulti = await interroga(`SELECT name FROM sys.default_constraints WHERE parent_object_id = ${oid}`)
+  const checkVincoli = await interroga(`SELECT name FROM sys.check_constraints WHERE parent_object_id = ${oid}`)
+  const trigger = await interroga(
+    `SELECT tr.name, m.definition FROM sys.triggers tr JOIN sys.sql_modules m ON m.object_id = tr.object_id WHERE tr.parent_id = ${oid}`,
+  )
+  console.log(
+    `  ufficiale: ${colonne.length} colonne · ${new Set(indici.map(i => i[0])).size} indici · ${fk.length} FK · ${defaulti.length} default · ${checkVincoli.length} check · ${trigger.length} trigger`,
+  )
+
+  // ---- browser: stesso database, script CREATE dalla treeview
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+  await page.eval(`(() => {
+    const s = document.querySelector('select');
+    const opt = [...s.options].find(o => (o.textContent || '').trim() === 'AdventureWorks2019');
+    if (!opt) return false;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+    setter.call(s, opt.value);
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`)
+  await page.waitFor(`document.body.textContent.includes('Tabelle')`, 60000, 'schema AdventureWorks')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // ricerca in Oggetti (per nome tabella, senza schema) e script CREATE dal tasto destro
+  const campo = `document.querySelector('input[placeholder^="Cerca (spazio"]')`
+  await page.eval(`(() => {
+    const i = ${campo};
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(i, ${JSON.stringify(nom)});
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`)
+  await sleep(1500)
+  await page.eval(`(() => {
+    const s = [...document.querySelectorAll('span')].find(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(nom)});
+    if (s) s.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window }));
+  })()`)
+  await sleep(900)
+  const voce = await page.eval(`(() => {
+    const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Script tabella');
+    if (!b) return null;
+    b.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+    const r = b.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (voce) {
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(voce.x), y: Math.round(voce.y), buttons: 0 })
+    await sleep(800)
+  }
+  const creato = await page.eval(`(() => {
+    const b = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'CREATE');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (creato) await page.clickPoint(creato.x, creato.y)
+  await sleep(3000)
+
+  const script = await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors(); const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    return ed ? ed.getValue() : ''
+  })()`)
+  script.split('\n').slice(0, 12).forEach((r, i) => console.log(`   ${String(i + 1).padStart(2)} ${r.replace(/ /g, '·')}`))
+  check('lo script CREATE della tabella si apre', /SalesOrderHeader/i.test(script), script.slice(0, 40).replace(/\n/g, ' '))
+  check('lo script contiene USE [AdventureWorks2019]', /USE \[AdventureWorks2019\]/i.test(script))
+
+  const norm = s => String(s).replace(/[\[\]\s]/g, '').toLowerCase()
+  const scriptNorm = norm(script)
+  // 1) tutte le colonne ufficiali, nell ordine del catalogo
+  const mancanti = colonne.filter(([nome]) => !scriptNorm.includes(norm(nome)))
+  check(
+    'tutte le colonne ufficiali sono nello script',
+    mancanti.length === 0,
+    mancanti.length ? `mancano: ${mancanti.slice(0, 5).map(c => c[0]).join(', ')}` : `${colonne.length} colonne`,
+  )
+  const posizioni = colonne.map(([nome]) => scriptNorm.indexOf(norm(nome)))
+  const inOrdine = posizioni.every((p, i) => i === 0 || p > posizioni[i - 1])
+  check('le colonne sono nello stesso ORDINE del catalogo', inOrdine)
+
+  // 2) indici (nome + chiave)
+  const nomiIndici = [...new Set(indici.map(i => i[0]))]
+  const indiciPersi = nomiIndici.filter(nome => !scriptNorm.includes(norm(nome)))
+  check('tutti gli indici ufficiali (nome) sono nello script', indiciPersi.length === 0, indiciPersi.length ? `mancano: ${indiciPersi.join(', ')}` : `${nomiIndici.length} indici`)
+  const chiaviMancanti = indici.filter(([, , , , chiave]) => chiave && !scriptNorm.includes(norm(chiave)))
+  check('le colonne chiave degli indici sono nello script', chiaviMancanti.length === 0, chiaviMancanti.length ? chiaviMancanti.slice(0, 3).map(k => k[4]).join(', ') : '')
+
+  // 3) vincoli: FK, default, check
+  const fkPersi = fk.filter(([nome]) => !scriptNorm.includes(norm(nome)))
+  check('tutte le FK ufficiali sono nello script', fkPersi.length === 0, fkPersi.length ? `mancano: ${fkPersi.slice(0, 4).map(f => f[0]).join(', ')}` : `${fk.length} FK`)
+  const defaultPersi = defaulti.filter(([nome]) => !scriptNorm.includes(norm(nome)))
+  check('tutti i vincoli DEFAULT sono nello script', defaultPersi.length === 0, defaultPersi.length ? `mancano: ${defaultPersi.slice(0, 4).map(d => d[0]).join(', ')}` : `${defaulti.length} default`)
+  const checkPersi = checkVincoli.filter(([nome]) => !scriptNorm.includes(norm(nome)))
+  check('tutti i vincoli CHECK sono nello script', checkPersi.length === 0, checkPersi.length ? `mancano: ${checkPersi.slice(0, 4).map(c => c[0]).join(', ')}` : `${check.length} check`)
+
+  // 4) trigger: nome + corpo vero in coda allo script
+  for (const [nome, corpo] of trigger) {
+    check(`il trigger ${nome} è in coda allo script`, scriptNorm.includes(norm(nome)))
+    const frammento = String(corpo || '')
+      .split('\n')
+      .map(r => r.trim())
+      .find(r => r.length > 25 && !/^(SET|--|\/\*)/i.test(r))
+    if (frammento) {
+      const trovato = scriptNorm.includes(norm(frammento))
+      console.log(`   corpo: ${JSON.stringify(frammento.slice(0, 70))} → ${trovato ? 'trovato' : 'NON trovato'}`)
+      check('il corpo del trigger è quello del database (non vuoto/sintetico)', trovato)
+    }
+  }
+  await page.screenshot('adventureworks-script-create')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+/**
+ * VERIFICA (--verify-aw-grafo): diagramma delle chiamate su AdventureWorks2019 con un oggetto che ha
+ * MOLTI chiamanti reali (dbo.uspLogError, chiamata da 11 routine fra procedure e trigger).
+ */
+async function verifyAwGrafo(page) {
+  const api = process.env.SHOT_API ?? 'http://localhost:5213'
+  const ROUTINE = 'uspLogError'
+
+  // ufficiale: chi la chiama (dal grafo calcolato dal backend)
+  const logins = await (await fetch(`${api}/api/connections`)).json()
+  const login = logins.find(l => (l.name || '').toLowerCase().includes(LOGIN_NAME.toLowerCase()))
+  const conn0 = await (await fetch(`${api}/api/connections/saved/${login.id}/connect`, { method: 'POST' })).json()
+  const sw = await (
+    await fetch(`${api}/api/connections/${conn0.connectionId}/switch-database`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ database: 'AdventureWorks2019' }),
+    })
+  ).json()
+  const grafo = await (await fetch(`${api}/api/metadata/${sw.connectionId}/routine-call-graph`)).json()
+  const edges = grafo.edges ?? grafo.Edges ?? []
+  const chiamanti = edges.filter(e => (e.calleeName || '').toLowerCase() === ROUTINE.toLowerCase())
+  console.log(`  ufficiale: ${chiamanti.length} chiamanti di ${ROUTINE}`)
+  chiamanti.slice(0, 12).forEach(e => console.log(`   ${e.callerSchema}.${e.callerName} (${e.callerType})`))
+
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(1500)
+  await page.eval(`(() => {
+    const s = document.querySelector('select');
+    const opt = [...s.options].find(o => (o.textContent || '').trim() === 'AdventureWorks2019');
+    if (!opt) return false;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+    setter.call(s, opt.value);
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`)
+  await page.waitFor(`document.body.textContent.includes('Tabelle')`, 60000, 'schema AdventureWorks')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // ricerca della routine nel pannello Oggetti e voce "Diagramma chiamate"
+  await page.eval(`(() => {
+    const i = document.querySelector('input[placeholder^="Cerca (spazio"]');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(i, ${JSON.stringify(ROUTINE)});
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`)
+  await sleep(1500)
+  const trovata = await page.waitFor(
+    `[...document.querySelectorAll('span')].some(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(ROUTINE)})`,
+    15000,
+    'routine nei risultati',
+  )
+  check('la routine compare nei risultati', trovata === true)
+  await page.eval(`(() => {
+    const s = [...document.querySelectorAll('span')].find(s => s.children.length === 0 && (s.textContent || '').trim() === ${JSON.stringify(ROUTINE)});
+    if (s) s.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window }));
+  })()`)
+  await sleep(900)
+  const aperto = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Diagramma chiamate'))`,
+  )
+  check('la voce "Diagramma chiamate" è nel menu', aperto === true)
+  await page.waitFor(`document.body.textContent.includes('Diagramma chiamate —')`, 40000, 'finestra del diagramma')
+  await page.waitFor(`document.querySelectorAll('svg g rect').length > 3`, 45000, 'nodi del diagramma disegnati')
+  await sleep(2000)
+
+  const stato = await page.eval(`(() => {
+    const w = document.body.textContent || '';
+    // l'intestazione del diagramma dice "N chiamanti · M livelli · …"
+    const m = w.match(/(\\d+)\\s*chiamanti/);
+    const nodi = [...document.querySelectorAll('svg g rect')].length;
+    const testi = [...document.querySelectorAll('svg text')].map(t => (t.textContent || '').trim()).filter(Boolean);
+    return { nodi, contatore: m ? { chiamanti: Number(m[1]) } : null, nomi: testi, testoPannello: w.slice(0, 4000) };
+  })()`)
+  console.log(`  diagramma: ${JSON.stringify({ nodi: stato.nodi, contatore: stato.contatore })}`)
+  console.log(`  nomi nel diagramma: ${JSON.stringify(stato.nomi)}`)
+  check('il diagramma disegna i nodi', stato.nodi >= 5, `${stato.nodi} rect`)
+  check(
+    'il diagramma mostra i chiamanti ufficiali',
+    stato.contatore ? stato.contatore.chiamanti >= 8 : false,
+    JSON.stringify(stato.contatore),
+  )
+  const nomiAttesi = chiamanti.map(e => e.callerName.toLowerCase())
+  // i nomi possono stare nei nodi (svg text) o nel pannello delle informazioni: si guarda tutto
+  const testoDiagramma = (stato.nomi.join(' ') + ' ' + (stato.testoPannello || '')).toLowerCase()
+  const trovati = nomiAttesi.filter(n => testoDiagramma.includes(n))
+  check(
+    'i nomi dei chiamanti sono quelli del database',
+    trovati.length >= 4,
+    `${trovati.length}/${nomiAttesi.length}: ${trovati.slice(0, 6).join(', ')}`,
+  )
+  await page.screenshot('adventureworks-grafo')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
 main().catch(e => {
-  console.error('ERRORE:', e.message)
+  console.error('ERRORE:', e.message + '\n' + (e.stack || ''))
   process.exit(1)
 })
