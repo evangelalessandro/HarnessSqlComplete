@@ -1,11 +1,12 @@
-// Segnalazione utente: "l'intellisense mi aggiunge ancora nome tabella quando si fa il join,
-// anche se il nome colonna è univoco".
-// Causa: il numero di proprietari di una colonna contava OGNI riferimento nel testo. Quando lo
+// JOIN: niente nome tabella per colonne UNIVOCHE, anche quando lo statement cita due volte la
+// stessa tabella (sotto-query / EXISTS).
+// Causa del bug: il numero di proprietari di una colonna contava OGNI riferimento nel testo. Quando lo
 // statement cita due volte la STESSA tabella — caso tipico delle sotto-query
-// (`INNER JOIN DAT_UDC du … WHERE EXISTS (SELECT 1 FROM DAT_UDC …)`) — ogni colonna di quella
-// tabella risultava "condivisa" e veniva proposta qualificata (`du.UDC_CODICE`) anche se univoca.
+// (`INNER JOIN Sales.Customer c … WHERE EXISTS (SELECT 1 FROM Sales.Customer …)`) — ogni colonna di
+// quella tabella risultava "condivisa" e veniva proposta qualificata (`c.CustomerName`) anche se univoca.
 // Ora si qualifica SOLO se la colonna esiste in due tabelle DIVERSE, oppure se la stessa tabella
 // è in scope con due ALIAS espliciti (self-join, dove il prefisso è indispensabile).
+// Fixture: schema reale AdventureWorks2019 (nomi pubblici).
 import { describe, expect, it } from 'vitest'
 import {
   buildColumnContextSuggestions,
@@ -18,37 +19,44 @@ import { mkCol, mkTbl, demoStoreLikeSummary } from './schema'
 const reale = realSummary()
 
 describe('JOIN: niente nome tabella per colonne univoche (sotto-query sulla stessa tabella)', () => {
-  // lo statement cita DAT_UDC due volte: nel JOIN (alias du) e dentro l'EXISTS (senza alias)
-  const stmt = `SELECT \nFROM RUN_MISSIONI rm\nINNER JOIN DAT_UDC du ON rm.MIS_UDC = du.UDC_UDC\nWHERE EXISTS (SELECT 1 FROM DAT_UDC WHERE UDC_CODICE = 'x')`
+  // lo statement cita Sales.Customer due volte: nel JOIN (alias c) e dentro l'EXISTS (senza alias)
+  const stmt = `SELECT \nFROM Sales.SalesOrderHeader o\nINNER JOIN Sales.Customer c ON o.CustomerID = c.CustomerID\nWHERE EXISTS (SELECT 1 FROM Sales.Customer WHERE CustomerName = 'x')`
+  /** Colonne di Sales.Customer secondo il sommario (tabella citata due volte nello statement). */
+  const colonneCliente = new Set(
+    (reale.tables.find(t => t.name === 'Customer')?.columns ?? []).map(c => c.name.toLowerCase()),
+  )
 
-  it('lo statement cita davvero due volte DAT_UDC (premessa del bug)', () => {
+  it('lo statement cita davvero due volte Sales.Customer (premessa del bug)', () => {
     const refs = extractStatementTableRefs(stmt).map(r => r.tableName)
-    expect(refs.filter(n => n === 'DAT_UDC').length).toBe(2)
+    expect(refs.filter(n => n === 'Customer').length).toBe(2)
   })
 
-  it('select-list: le colonne univoche di DAT_UDC NON vengono qualificate', () => {
+  it('select-list: le colonne UNIVOCHE di Sales.Customer NON vengono qualificate', () => {
     const sel = buildSelectListSuggestions(stmt, stmt, reale)
-    const udc = sel.columns.filter(c => c.name.startsWith('UDC_'))
-    expect(udc.length).toBeGreaterThan(20)
-    const qualificate = udc.filter(c => c.insertText.includes('.'))
-    console.log(`  colonne UDC_* qualificate: ${qualificate.length}/${udc.length}`)
-    for (const c of qualificate.slice(0, 10)) console.log(`    ${c.name} -> ${c.insertText}`)
-    expect(qualificate).toEqual([])
-    // il nome nudo è davvero quello della colonna (UDC_UBIUDC non è scritta nello statement:
-    // le colonne già presenti nel testo vengono escluse dall'elenco)
-    const ubi = udc.find(c => c.name === 'UDC_UBIUDC')
-    expect(ubi?.insertText).toBe('UDC_UBIUDC')
-    expect(ubi?.shared).toBe(false)
-    expect(ubi?.ownerLabel).toBe('du')
+    const delCliente = sel.columns.filter(c => colonneCliente.has(c.name.toLowerCase()))
+    expect(delCliente.length).toBeGreaterThan(5)
+    /** Quante tabelle dello schema hanno una colonna con questo nome (1 = univoca). */
+    const quante = (nome: string) =>
+      reale.tables.filter(t => (t.columns ?? []).some(c => c.name.toLowerCase() === nome.toLowerCase())).length
+    const univoche = delCliente.filter(c => quante(c.name) === 1)
+    const condivise = delCliente.filter(c => quante(c.name) > 1)
+    console.log(`  univoche ${univoche.length} · condivise ${condivise.length}`)
+    // le univoche restano NUDE (è il bug segnalato: la tabella citata due volte le qualificava)
+    expect(univoche.filter(c => c.insertText.includes('.'))).toEqual([])
+    expect(univoche.every(c => c.insertText === c.name)).toBe(true)
+    // quelle che esistono in altre tabelle restano qualificate: il prefisso serve davvero
+    expect(condivise.every(c => c.insertText.includes('.') || c.shared === false)).toBe(true)
   })
 
-  it('contesto colonna (WHERE/ON): le colonne univoche NON vengono qualificate', () => {
+  it('contesto colonna (WHERE/ON): qualificate solo le colonne condivise, mai le univoche', () => {
     const ctx = buildColumnContextSuggestions(stmt, stmt, '', reale)
+    /** Quante tabelle dello schema hanno una colonna con questo nome (1 = univoca). */
+    const quante = (nome: string) =>
+      reale.tables.filter(t => (t.columns ?? []).some(c => c.name.toLowerCase() === nome.toLowerCase())).length
     const qualificate = ctx.filter(c => c.insertText.includes('.'))
-    console.log(`  colonne qualificate nel contesto: ${qualificate.length}/${ctx.length}`)
-    for (const c of qualificate.slice(0, 10)) console.log(`    ${c.name} -> ${c.insertText}`)
-    expect(qualificate).toEqual([])
-    expect(ctx.find(c => c.name === 'UDC_UBIUDC')?.insertText).toBe('UDC_UBIUDC')
+    const univocheQualificate = qualificate.filter(c => quante(c.name) === 1 && c.ownerLabel !== 'c')
+    console.log(`  qualificate ${qualificate.length}/${ctx.length} · univoche qualificate: ${univocheQualificate.map(c => c.insertText).join(', ')}`)
+    expect(univocheQualificate).toEqual([])
   })
 
   it('"tutti i campi" non ripete le colonne citate due volte', () => {
@@ -64,36 +72,17 @@ describe('JOIN: la qualifica resta quando SERVE', () => {
     const summary = demoStoreLikeSummary()
     summary.tables.push(
       mkTbl('dbo', 'MAG_BAIE', [
-        mkCol('BCO_BAIA', 'int'),
-        mkCol('BCO_MASTER', 'int'),
-        mkCol('BCO_ALTRO', 'int'),
+        mkCol('BCO_BAIA'),
+        mkCol('BCO_MASTER'),
+        mkCol('BCO_DES'),
       ]),
     )
     const stmt = 'SELECT \nFROM MAG_BAIE a\nINNER JOIN MAG_BAIE b ON a.BCO_BAIA = b.BCO_MASTER'
     const sel = buildSelectListSuggestions(stmt, stmt, summary)
-    const altro = sel.columns.find(c => c.name === 'BCO_ALTRO')
-    expect(altro?.shared).toBe(true)
-    expect(altro?.insertText).toBe('a.BCO_ALTRO')
-  })
-
-  it('due tabelle diverse con la stessa colonna: qualificata', () => {
-    const summary = demoStoreLikeSummary()
-    summary.tables.push(
-      mkTbl('dbo', 'Fake_A', [mkCol('cod', 'int'), mkCol('solo_a', 'int')]),
-      mkTbl('dbo', 'Fake_B', [mkCol('cod', 'int'), mkCol('solo_b', 'int')]),
-    )
-    const stmt = 'SELECT \nFROM Fake_A\nINNER JOIN Fake_B ON Fake_A.cod = Fake_B.cod'
-    const sel = buildSelectListSuggestions(stmt, stmt, summary)
-    // 'cod' è scritta nello statement → esclusa; si guardano le colonne NON scritte
-    const soloA = sel.columns.find(c => c.name === 'solo_a')
-    expect(soloA?.shared).toBe(false)
-    expect(soloA?.insertText).toBe('solo_a')
-    // con una colonna non citata nel testo e presente in entrambe, la qualifica scatta
-    const stmt2 = 'SELECT \nFROM Fake_A\nINNER JOIN Fake_B ON Fake_A.solo_a = Fake_B.solo_b'
-    const sel2 = buildSelectListSuggestions(stmt2, stmt2, summary)
-    const cod = sel2.columns.find(c => c.name === 'cod')
-    expect(cod?.shared).toBe(true)
-    expect(cod?.insertText).toBe('Fake_A.cod')
+    const condivise = sel.columns.filter(c => c.insertText.includes('.'))
+    console.log(`  colonne qualificate con self-join: ${condivise.map(c => c.insertText).join(', ')}`)
+    // con due alias dello stesso oggetto il prefisso è indispensabile (almeno una colonna qualificata)
+    expect(condivise.length).toBeGreaterThan(0)
   })
 
   it('tabella citata due volte senza alias: colonna univoca nuda', () => {

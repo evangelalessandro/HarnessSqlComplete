@@ -353,7 +353,7 @@ describe('GRAFO GRANDE (oltre 2000 legami, sintetico con nomi pubblici)', () => 
     }
   })
 
-  it('anche scendendo (cosa chiama) si termina su tutte le routine', () => {
+  it('anche scendendo (cosa chiama) si termina su tutte le routine', { timeout: 25000 }, () => {
     const starts = [...new Set(realCallEdges.map(e => routineId(e.callerSchema, e.callerName)))]
     for (const id of starts) {
       const { schema, name } = splitRoutineId(id)

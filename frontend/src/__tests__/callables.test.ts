@@ -130,7 +130,7 @@ describe('voce "Modifica" con lo schema REALE (DEMOSTORE)', () => {
 
   it('tutte le funzioni reali → voce attiva (anche usate in una SELECT)', () => {
     for (const f of real.functions) {
-      const sql = `SELECT dbo.${f.name}`
+      const sql = `SELECT ${f.schema}.${f.name}`
       expect(isCallableAt(sql, sql.indexOf(f.name) + 1, real), `funzione ${f.name}`).toBe(true)
     }
   })
@@ -147,14 +147,14 @@ describe('voce "Modifica" con lo schema REALE (DEMOSTORE)', () => {
       expect(isCallableAt(sql, sql.indexOf(t.name) + 1, real), `tabella ${t.name}`).toBe(false)
       checked++
     }
-    expect(checked).toBeGreaterThan(250)
+    expect(checked).toBeGreaterThan(30)
   })
 
-  it('i campi reali di RUN_MISSIONI → voce NON attiva', () => {
-    const t = real.tables.find(x => x.name === 'RUN_MISSIONI')!
-    expect((t.columns ?? []).length).toBeGreaterThan(50)
+  it('i campi reali di Sales.SalesOrderHeader → voce NON attiva', () => {
+    const t = real.tables.find(x => x.name === 'SalesOrderHeader')!
+    expect((t.columns ?? []).length).toBeGreaterThan(20)
     for (const c of t.columns ?? []) {
-      const sql = `SELECT ${c.name} FROM dbo.RUN_MISSIONI WHERE ${c.name} = 1`
+      const sql = `SELECT ${c.name} FROM Sales.SalesOrderHeader WHERE ${c.name} = 1`
       expect(isCallableAt(sql, 7, real), `campo ${c.name}`).toBe(false)
     }
   })

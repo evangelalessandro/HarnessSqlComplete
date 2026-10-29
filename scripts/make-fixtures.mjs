@@ -49,6 +49,27 @@ const interroga = async sql => {
   return r.resultSets?.[0]?.rows ?? []
 }
 
+if (cosa === 'summary') {
+  // Sommario COMPLETO del database (tabelle, viste, procedure, funzioni, trigger, FK, co-occorrenze):
+  // sostituisce il vecchio dump del database di produzione usato dai test sul "real schema".
+  const s = await leggi(`${api}/api/metadata/${attiva}/summary?refresh=true`)
+  const corpo = `// File GENERATO da scripts/make-fixtures.mjs — non modificare a mano.
+// Schema di ${database} (database di esempio Microsoft): nomi pubblici, nessun riferimento al database
+// di produzione dell'autore. Rigenera con:
+//   node scripts/make-fixtures.mjs ${database} 0 summary
+/* eslint-disable */
+import type { DatabaseSummary } from '../../types'
+
+export function realSummary(): DatabaseSummary {
+  // il JSON arriva dal backend così com'è (campi opzionali compresi): il cast evita rumore di tipi
+  return ${JSON.stringify(s)} as unknown as DatabaseSummary
+}
+`
+  writeFileSync('frontend/src/__tests__/fixtures/demoStoreReal.ts', corpo)
+  const kb = (Buffer.byteLength(corpo) / 1024).toFixed(0)
+  console.log(`scritto demoStoreReal.ts: ${kb} KB · tabelle ${s.tables?.length} · viste ${s.views?.length} · proc ${s.procedures?.length} · FK ${s.foreignKeys?.length} da ${database}`)
+  process.exit(0)
+}
 if (cosa === 'routine-call-graph') {
   const grafo = await leggi(`${api}/api/metadata/${attiva}/routine-call-graph`)
   const edges = grafo.edges ?? grafo.Edges ?? []

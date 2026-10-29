@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
-// TEST SULLO SCHEMA REALE (DEMOSTORE), non su quello finto.
+// TEST SU UNO SCHEMA REALE DI GRANDI DIMENSIONI (AdventureWorks2019), non su quello finto.
 //
 // Perché serve: lo schema di comodo dei test ha `functions: []`, `triggers: []` e nessun
 // vincolo CHECK. Un provider che si aspetta una forma diversa da quella che il backend
 // spedisce davvero (es. `typeDesc` invece di `type`) passerebbe tutti i test e si
-// romperebbe nell'app. Qui i dati arrivano dal backend vero: 286 tabelle, 260 funzioni
-// (179 scalari + 81 tabellari), 400 FK, 138 trigger, 460 vincoli CHECK.
+// romperebbe nell'app. Qui i dati arrivano dal backend vero su AdventureWorks2019: 71 tabelle,
+// 20 viste, 11 funzioni (10 scalari + 1 tabellare), 91 FK, 11 trigger, 89 vincoli CHECK.
 //
-// Il fixture si rigenera con: node scripts/makeSchemaFixture.mjs
+// Il fixture si rigenera con: node scripts/make-fixtures.mjs AdventureWorks2019 0 summary
 import { describe, expect, it } from 'vitest'
 import * as monaco from 'monaco-editor'
 import { provideSqlCompletions } from '../sqlCompletions'
@@ -42,13 +42,14 @@ function labelsAfter(sql: string): string[] {
 }
 
 describe('schema reale: la fixture ha la forma che manda il backend', () => {
-  it('è lo schema vero di DEMOSTORE', () => {
-    expect(summary.tables.length).toBeGreaterThan(250)
-    expect(summary.procedures.length).toBeGreaterThan(500)
-    expect(summary.functions.length).toBeGreaterThan(200)
-    expect(summary.foreignKeys.length).toBeGreaterThan(300)
-    expect(summary.triggers.length).toBeGreaterThan(100)
-    expect(summary.checkConstraints?.length ?? 0).toBeGreaterThan(400)
+  it('è lo schema vero di AdventureWorks2019', () => {
+    expect(summary.tables.length).toBeGreaterThan(60)
+    expect(summary.views.length).toBeGreaterThan(10)
+    expect(summary.procedures.length).toBeGreaterThan(5)
+    expect(summary.functions.length).toBeGreaterThan(5)
+    expect(summary.foreignKeys.length).toBeGreaterThan(80)
+    expect(summary.triggers.length).toBeGreaterThan(5)
+    expect(summary.checkConstraints?.length ?? 0).toBeGreaterThan(50)
   })
 
   it('le funzioni hanno { schema, name, type } con i type_desc di SQL Server', () => {
@@ -59,10 +60,9 @@ describe('schema reale: la fixture ha la forma che manda il backend', () => {
     }
   })
 
-  it('riconosce le funzioni tabellari per tipo (incluse le INLINE)', () => {
-    expect(tvfs.length).toBeGreaterThan(50)
-    expect(scalars.length).toBeGreaterThan(100)
-    expect(tvfs.some(f => f.type === 'SQL_INLINE_TABLE_VALUED_FUNCTION')).toBe(true)
+  it('riconosce le funzioni tabellari per tipo', () => {
+    expect(tvfs.length).toBeGreaterThan(0)
+    expect(scalars.length).toBeGreaterThan(5)
     expect(tvfs.some(f => f.type === 'SQL_TABLE_VALUED_FUNCTION')).toBe(true)
     // le scalari non devono mai passare per tabellari
     expect(scalars.some(f => isTableValuedFunctionType(f.type))).toBe(false)
@@ -78,27 +78,27 @@ describe('schema reale: la fixture ha la forma che manda il backend', () => {
   })
 
   it('le tabelle chiave del DB hanno le colonne reali', () => {
-    const rm = summary.tables.find(t => t.name === 'RUN_MISSIONI')
-    expect(rm, 'RUN_MISSIONI assente').toBeTruthy()
-    const cols = (rm?.columns ?? []).map(c => c.name)
-    expect(cols.length).toBeGreaterThan(50)
-    expect(cols).toContain('MIS_UDC')
-    expect(cols).toContain('MIS_OPERATORE')
+    const ord = summary.tables.find(t => t.name === 'SalesOrderHeader')
+    expect(ord, 'Sales.SalesOrderHeader assente').toBeTruthy()
+    const cols = (ord?.columns ?? []).map(c => c.name)
+    expect(cols.length).toBeGreaterThan(20)
+    expect(cols).toContain('TotalDue')
+    expect(cols).toContain('CustomerID')
   })
 })
 
 describe('schema reale: suggerimenti corretti sul database vero', () => {
   it('la query dell utente: dopo "inner join" arrivano le funzioni tabellari reali', () => {
-    // caso segnalato: SELECT MIS_UDC,MIS_OPERATORE FROM dbo.RUN_MISSIONI inner join ▮
-    const labels = labelsAfter('SELECT MIS_UDC,MIS_OPERATORE FROM dbo.RUN_MISSIONI inner join ')
+    // caso segnalato: SELECT … FROM tabella inner join ▮
+    const labels = labelsAfter('SELECT TotalDue,CustomerID FROM Sales.SalesOrderHeader inner join ')
     const lower = labels.map(l => l.toLowerCase())
     const tvfProposte = tvfs.filter(f => lower.includes(`${f.schema}.${f.name}`.toLowerCase()))
-    expect(tvfProposte.length, 'nessuna funzione tabellare proposta dopo inner join').toBeGreaterThan(10)
+    expect(tvfProposte.length, 'nessuna funzione tabellare proposta dopo innerjoin').toBeGreaterThan(0)
     // nessuna funzione SCALARE: non è una sorgente di righe, dopo JOIN non va proposta
     const scalariProposte = scalars.filter(f => lower.includes(`${f.schema}.${f.name}`.toLowerCase()))
     expect(scalariProposte.map(f => f.name)).toEqual([])
     // e restano proposte le tabelle
-    expect(labels.some(l => l.toUpperCase().includes('RUN_MISSIONI'))).toBe(true)
+    expect(labels.some(l => l.toUpperCase().includes('SALESORDERHEADER') || l.toUpperCase().includes('CUSTOMER'))).toBe(true)
   })
 
   it('dopo FROM propone tabelle reali e funzioni tabellari, mai funzioni scalari', () => {
@@ -110,32 +110,32 @@ describe('schema reale: suggerimenti corretti sul database vero', () => {
   })
 
   it('nella WHERE propone le colonne reali della tabella dello statement', () => {
-    const labels = labelsAfter('SELECT * FROM dbo.RUN_MISSIONI WHERE ')
-    expect(labels).toContain('MIS_UDC')
-    expect(labels).toContain('MIS_OPERATORE')
+    const labels = labelsAfter('SELECT * FROM Sales.SalesOrderHeader WHERE ')
+    expect(labels).toContain('TotalDue')
+    expect(labels).toContain('CustomerID')
   })
 
   it('dopo EXEC propone le stored procedure reali', () => {
     const labels = labelsAfter('EXEC ')
     const lower = new Set(labels.map(l => l.toLowerCase()))
     const proposte = summary.procedures.filter(p => lower.has(`${p.schema}.${p.name}`.toLowerCase()))
-    expect(proposte.length, 'nessuna stored procedure proposta dopo EXEC').toBeGreaterThan(10)
+    expect(proposte.length, 'nessuna stored procedure proposta dopo EXEC').toBeGreaterThan(0)
   })
 
   it('nella JOIN propone le tabelle collegate da FK reali', () => {
-    // DAT_UDC è collegata a RUN_MISSIONI dalla FK FK_RUN_MISSIONI_DAT_UDC
-    const labels = labelsAfter('SELECT * FROM dbo.RUN_MISSIONI JOIN ')
-    expect(labels.some(l => l.toUpperCase().includes('DAT_UDC'))).toBe(true)
+    // Sales.SalesOrderHeader è collegata a Sales.Customer dalla FK FK_SalesOrderHeader_Customer_CustomerID
+    const labels = labelsAfter('SELECT * FROM Sales.SalesOrderHeader JOIN ')
+    expect(labels.some(l => l.toUpperCase().includes('CUSTOMER'))).toBe(true)
   })
 })
 
 describe('schema reale: il provider non si spacca su query vere', () => {
   const QUERIES = [
-    'SELECT MIS_UDC, MIS_OPERATORE FROM dbo.RUN_MISSIONI',
-    'SELECT * FROM dbo.RUN_MISSIONI WHERE MIS_UDC = ',
-    'SELECT a.UDC_UDC FROM dbo.DAT_UDC a JOIN dbo.RUN_MISSIONI b ON a.UDC_UDC = b.MIS_UDC',
+    'SELECT TotalDue, CustomerID FROM Sales.SalesOrderHeader',
+    'SELECT * FROM Sales.SalesOrderHeader WHERE CustomerID = ',
+    'SELECT c.CustomerID FROM Sales.Customer c JOIN Sales.SalesOrderHeader o ON c.CustomerID = o.CustomerID',
     'EXEC dbo.',
-    'SELECT * FROM dbo.MAG_CELLE ORDER BY ',
+    'SELECT * FROM Production.Product ORDER BY ',
   ]
 
   // timeout ampio: il provider viene eseguito a OGNI offset di diverse query vere e, con la
