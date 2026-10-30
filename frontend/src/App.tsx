@@ -1604,11 +1604,13 @@ export default function App() {
   }
 
   const aiConfigured = aiStatus?.configured ?? false
-  const aiStatusText = aiStatus
-    ? aiConfigured
-      ? `DeepSeek ${aiStatus.model}`
-      : 'DeepSeek: chiave non configurata'
-    : 'IA: stato sconosciuto'
+  /**
+   * RICHIESTA UTENTE: "nascondi anche la label che dice chiave deepseek non configurata".
+   * Quando l'IA non è configurata non si mostra NESSuna etichetta: la barra resta pulita. Se invece la
+   * chiave c'è, l'etichetta dice modello e stato (informazione utile). Lo stato "sconosciuto" (backend
+   * che non risponde) resta invisibile: non serve a chi usa l'app.
+   */
+  const aiStatusText = aiStatus?.configured ? `DeepSeek ${aiStatus.model}` : ''
   const dbNames = summary?.databases.map(d => d.name) ?? []
   const dbOptions = dbNames.includes(connection.database) ? dbNames : [connection.database, ...dbNames]
   const activeTabInfo = editorTabs.find(t => t.id === activeEditorTab)
@@ -1659,7 +1661,8 @@ export default function App() {
         <Badge tone="sky">
           {connection.server} · {connection.database}
         </Badge>
-        <Badge tone={aiConfigured ? 'emerald' : 'amber'}>{aiStatusText}</Badge>
+        {/* etichetta IA solo quando la chiave è configurata (richiesta utente) */}
+        {aiConfigured && <Badge tone="emerald">{aiStatusText}</Badge>}
         {summary ? (
           <Badge tone="emerald">Schema: {summary.tables.length} tabelle</Badge>
         ) : (

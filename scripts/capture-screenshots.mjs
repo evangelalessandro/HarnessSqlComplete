@@ -70,6 +70,7 @@ const VERIFY_FORMATTA_UPDATE_COMMENTO = process.argv.includes('--verify-formatta
 const VERIFY_GROUP_BY = process.argv.includes('--verify-group-by')
 const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
+const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_AW_SCRIPT = process.argv.includes('--verify-aw-script')
 const VERIFY_AW_GRAFO = process.argv.includes('--verify-aw-grafo')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
@@ -9554,6 +9555,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_ETICHETTA_IA) {
+      await verifyEtichettaIa(page)
+      return
+    }
+
     if (VERIFY_AW) {
       await verifyAw(page)
       return
@@ -10214,6 +10220,54 @@ async function verifyAwGrafo(page) {
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
 }
 
+/**
+ * VERIFICA (--verify-etichetta-ia): la barra in alto (e quella dell'editor) NON mostra l'etichetta
+ * "DeepSeek: chiave non configurata" quando l'IA non è configurata.
+ * Richiesta utente: "nascondi anche la label che dice chiave deepseek non configurata".
+ */
+async function verifyEtichettaIa(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  const testo = await page.eval(`(document.body.textContent || '').replace(/\\s+/g, ' ')`)
+  console.log(`  barra in alto: ${JSON.stringify(testo.slice(0, 160))}`)
+  check('nessuna scritta "chiave non configurata"', !/chiave non configurata/i.test(testo))
+  check('nessuna scritta "stato sconosciuto"', !/stato sconosciuto/i.test(testo))
+  // quando l'IA non è configurata non c'è nessuna etichetta DeepSeek visibile nella barra
+  const badgeIa = await page.eval(`[...document.querySelectorAll('span')].map(s => (s.textContent || '').trim()).filter(t => /^DeepSeek/i.test(t))`)
+  console.log(`  etichette DeepSeek visibili: ${JSON.stringify(badgeIa)}`)
+  check("nessuna etichetta DeepSeek se la chiave non è configurata", badgeIa.length === 0)
+  // il toggle resta, con il tooltip che spiega cosa serve
+  const toggle = await page.eval(`(() => {
+    const el = [...document.querySelectorAll('[title]')].find(e => (e.getAttribute('title') || '').includes('chiave DeepSeek'));
+    return el ? el.getAttribute('title') : null;
+  })()`)
+  console.log(`  tooltip del toggle IA: ${JSON.stringify(toggle)}`)
+  check('il toggle IA spiega che serve la chiave (tooltip)', !!toggle)
+  await page.screenshot('barra-senza-etichetta-ia')
+
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
 main().catch(e => {
   console.error('ERRORE:', e.message + '\n' + (e.stack || ''))
   process.exit(1)

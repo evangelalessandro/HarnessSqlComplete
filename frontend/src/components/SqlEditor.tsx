@@ -1152,7 +1152,16 @@ export default function SqlEditor({
           >
             {theme === 'vs-dark' ? <Sun className="h-4 w-4 text-amber-300" /> : <Moon className="h-4 w-4 text-sky-300" />}
           </Button>
-          <Toggle checked={aiEnabled} onChange={onAiEnabledChange} label="Autocompletamento IA" />
+          <Toggle
+            checked={aiEnabled}
+            onChange={onAiEnabledChange}
+            label="Autocompletamento IA"
+            title={
+              aiConfigured
+                ? 'Suggerimenti in linea con DeepSeek'
+                : 'Richiede una chiave DeepSeek configurata sul backend'
+            }
+          />
           <Toggle
             checked={syntaxCheck}
             onChange={setSyntaxCheck}
@@ -1166,7 +1175,9 @@ export default function SqlEditor({
             title="Selezione a BLOCCHI come in SSMS (Alt+C): trascina col mouse un rettangolo di testo e quello che scrivi va su TUTTE le righe selezionate. Per più cursori: Alt+clic oppure Maiusc+Alt+Giù / Maiusc+Alt+Su."
             data-multiriga="blocchi"
           />
-          <Badge tone={aiConfigured ? 'emerald' : 'amber'}>{aiStatusText}</Badge>
+          {/* etichetta IA solo quando la chiave è configurata (richiesta utente: niente
+              "chiave non configurata" nella barra) */}
+          {aiConfigured && <Badge tone="emerald">{aiStatusText}</Badge>}
         </div>
       </div>
       <div className="min-h-0 flex-1">
