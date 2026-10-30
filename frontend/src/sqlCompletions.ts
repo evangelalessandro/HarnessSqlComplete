@@ -6,6 +6,7 @@ import * as monaco from 'monaco-editor'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
 import { isTextOffsetInComment } from './helpers'
 import { etichettaDrago } from './dragon'
+import { contestoParteData, costruisciFinestra, finestraDigitata, suggerimentiParteData } from './funzioniSql'
 import { buildColumnContextSuggestions, buildGroupBySuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, columnsByFragment, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail, groupByAllText } from './helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
 import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectAlterTableTrigger, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectEnableDisableTriggerName, detectEnableDisableTriggerOn, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, dropColumnSnippet, extractDeclaredVariables, extractRoutineParameters, nomiTriggerDigitati, setOptionInsertText, setOptionLabel, systemVariablePrefixLen, tabellaDelTrigger, variablePrefixLen, vincoliCollegati } from './tsqlSnippets'
@@ -161,6 +162,55 @@ export function provideSqlCompletions({
           const push = (item: monaco.languages.CompletionItem) => {
             suggestions.push({ ...item, sortText: completionSortText(rank) })
             rank++
+          }
+
+          /**
+           * AIUTO SULLE FUNZIONI (richieste utente):
+           *  - "un aiuto per le funzioni tipo DATEADD: proporre nel primo parametro i dati possibili":
+           *    dentro il primo argomento di DATEADD/DATEDIFF/DATEPART/… si propongono le PARTI DI DATA
+           *    (year, quarter, month, day… con le abbreviazioni e l'etichetta in italiano);
+           *  - "funzioni window tipo RANK(): proponi tutto il costrutto": si propone il costrutto intero
+           *    (RANK() OVER (PARTITION BY … ORDER BY …)) come snippet, così è già pronto da completare.
+           * Il ghost text fa il resto: propone la parte MANCANTE e si accorcia mentre si scrive.
+           */
+          const colonneStatement = (() => {
+            if (!st.summary) return [] as string[]
+            const refs = extractStatementTableRefs(stmtText)
+            const out: string[] = []
+            for (const r of refs) {
+              const t = st.summary.tables.find(x => x.name.toLowerCase() === r.tableName.toLowerCase())
+              for (const c of t?.columns ?? []) {
+                const nome = r.alias ? `${r.alias}.${c.name}` : c.name
+                if (!out.includes(nome)) out.push(nome)
+              }
+            }
+            return out
+          })()
+          const ctxParteData = contestoParteData(textBefore, textBefore.length)
+          if (ctxParteData) {
+            for (const v of suggerimentiParteData(textBefore, textBefore.length)) {
+              push({
+                label: v.label,
+                detail: v.detail,
+                kind: monaco.languages.CompletionItemKind.EnumMember,
+                insertText: v.valore,
+                range,
+                filterText: v.valore,
+              })
+            }
+          }
+          const finestra = finestraDigitata(word.word)
+          if (finestra) {
+            const costrutto = costruisciFinestra(finestra, colonneStatement)
+            push({
+              label: costrutto,
+              detail: `finestra · ${finestra.descrizione}`,
+              documentation: `Costrutto completo della funzione window \`${finestra.nome}\`:\n\`\`\`sql\n${costrutto}\n\`\`\`\nTab per inserirlo e poi si adatta a quello che scrivi (il fantasma propone la parte mancante).`,
+              kind: monaco.languages.CompletionItemKind.Snippet,
+              insertText: costrutto,
+              range,
+              filterText: finestra.nome,
+            })
           }
 
           /**

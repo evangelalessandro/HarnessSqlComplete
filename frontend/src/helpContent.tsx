@@ -146,6 +146,11 @@ export const HELP_SECTIONS: HelpSection[] = [
           'I suggerimenti dipendono dalla posizione: dopo FROM/JOIN solo tabelle e viste, dopo EXEC solo stored procedure, nella select-list e in WHERE/ON/GROUP/ORDER solo colonne e funzioni, dopo un alias (r.) le colonne qualificate di quella tabella. Nella ORDER BY le direzioni ASC/DESC compaiono solo dopo aver scelto il campo.',
       },
       {
+        title: 'Aiuto sulle funzioni: parti di data e funzioni window',
+        detail:
+          'Nel primo argomento di DATEADD, DATEDIFF, DATEDIFF_BIG, DATEPART, DATENAME, DATETRUNC e DATE_BUCKET i suggerimenti sono le PARTI DI DATA che SQL Server accetta — year, quarter, month, dayofyear, day, week, weekday, hour, minute, second, millisecond, microsecond, nanosecond, iso_week — ognuna con le sue abbreviazioni (dd, mm, yy…) e con l\u2019etichetta in italiano nel dettaglio. Per le funzioni window (ROW_NUMBER, RANK, DENSE_RANK, NTILE, PERCENT_RANK, CUME_DIST, LAG, LEAD, FIRST_VALUE, LAST_VALUE) viene proposto il COSTRUTTO INTERO, per esempio RANK() OVER (PARTITION BY … ORDER BY …), con colonne vere della tabella dello statement; appena scrivi la funzione compare anche il ghost text con la parte che manca, che si accorcia mentre digiti (PARTITION BY, poi ORDER BY, poi la parentesi) e sparisce quando il costrutto è completo.',
+      },
+      {
         title: 'GROUP BY mirata',
         detail:
           'Nella GROUP BY i suggerimenti arrivano già nell\u2019ordine giusto: prima la voce "tutte le colonne della select-list" che riempie la clausola con le espressioni non aggregate mancanti, poi le espressioni della select-list SENZA aggregati (quelle che per forza devono stare nella GROUP BY, con l\u2019alias tolto), e solo dopo le altre colonne delle tabelle. Le colonne già scritte nella GROUP BY e quelle dentro SUM/COUNT/… non vengono riproposte.',

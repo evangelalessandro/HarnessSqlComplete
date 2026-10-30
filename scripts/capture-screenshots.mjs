@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_FUNZIONI_DATA = process.argv.includes('--verify-funzioni-data')
 const VERIFY_AW_SCRIPT = process.argv.includes('--verify-aw-script')
 const VERIFY_AW_GRAFO = process.argv.includes('--verify-aw-grafo')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
@@ -9556,6 +9557,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_FUNZIONI_DATA) {
+      await verifyFunzioniData(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -10342,6 +10348,182 @@ async function verifyNuovaTabRisultati(page) {
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
 }
+/**
+ * VERIFICA (--verify-funzioni-data): aiuto sulle funzioni, in due parti.
+ *  A) DATEADD(&) -> il primo parametro propone le PARTI DI DATA (day, month, dd, iso_week...);
+ *  B) RANK(&)   -> il ghost text propone il COSTRUTTO INTERO () OVER (PARTITION BY ... ORDER BY ...))
+ *     e si accorcia man mano che si scrive, fino a sparire quando il costrutto e' completo.
+ * Richieste utente: "un aiuto per le funzioni tipo dateadd e proponi nel primo parametro i dati
+ * possibili, cosi' come nelle funzioni window tipo rank(): proponi tutto il costrutto in ghost e poi ti
+ * adatti a quello che scrivo".
+ */
+async function verifyFunzioniData(page) {
+  const selLogin = '[title="Clicca per connetterti con questa login"]'
+  await page.waitFor("document.querySelector('input')", 10000)
+  await page.waitFor(
+    '[...document.querySelectorAll(' + JSON.stringify(selLogin) + ')]' +
+      ".some(e => (e.textContent || '').includes(" + JSON.stringify(LOGIN_NAME) + '))',
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    '[...document.querySelectorAll(' + JSON.stringify(selLogin) + ')]' +
+      ".find(e => (e.textContent || '').includes(" + JSON.stringify(LOGIN_NAME) + '))',
+  )
+  await page.waitFor("document.querySelector('.monaco-editor')", 30000, 'editor pronto')
+  await page.waitFor("document.body.textContent.includes('Schema:')", 60000, 'schema caricato')
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, extra) => {
+    esiti.push(ok)
+    console.log('  ' + (ok ? 'PASS' : 'FAIL') + '  ' + nome + (extra ? '  (' + extra + ')' : ''))
+  }
+  /** Confronto dei testi del ghost: Monaco disegna una riga per nodo e perde gli spazi. */
+  const norm = (s) => (s || '').replace(/\s+/g, '')
+
+  const trovaEditor =
+    'const m = (await import("/src/monacoSetup.ts")).default;' +
+    'const eds = m.editor.getEditors();' +
+    'const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };' +
+    'const ed = [...eds].sort((a, b) => area(b) - area(a))[0];'
+
+  /** Svuota l'editor e scrive il testo COME UN UTENTE: i suggerimenti partono dalla digitazione. */
+  const digita = async (testo) => {
+    await page.eval('(async () => {' + trovaEditor + "ed.setValue(''); ed.focus(); })()")
+    await sleep(300)
+    await page.typeText(testo)
+    await sleep(2200)
+  }
+  const voci = async () =>
+    await page.eval(
+      "[...document.querySelectorAll('.suggest-widget .monaco-list-row')]" +
+        ".map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())",
+    )
+  const dettagli = async () =>
+    await page.eval(
+      "[...document.querySelectorAll('.suggest-widget .monaco-list-row')]" +
+        ".map(r => ((r.querySelector('.details-label') || r).textContent || '').trim())",
+    )
+  /** Il ghost text: Monaco lo disegna su piu' nodi (uno per riga), quindi si uniscono. */
+  const ghost = async () =>
+    await page.eval(
+      '(function () {' +
+        "const nodi = [...document.querySelectorAll('.monaco-editor .ghost-text, .monaco-editor [class*=\"ghost-text\"], .monaco-editor .suggest-preview-text')];" +
+        "const testi = nodi.map(e => (e.textContent || '')).filter(t => t.trim().length > 0);" +
+        "return testi.length ? testi.join('') : null;" +
+        '})()',
+    )
+  /** Diagnostica: nodi con "ghost" nella classe. */
+  const ghostNodi = async () =>
+    await page.eval(
+      "[...document.querySelectorAll('.monaco-editor [class]')]" +
+        ".filter(e => [...e.classList].some(c => /ghost/i.test(c)))" +
+        ".map(e => (e.className || '') + ' => ' + JSON.stringify((e.textContent || '').slice(0, 90)))",
+    )
+
+  /** Forza il calcolo del ghost (chiude il popup, che altrimenti lo nasconde, e lo richiede). */
+  const mostraGhost = async () => {
+    await page.eval(
+      '(async () => {' + trovaEditor +
+        "ed.trigger('test', 'hideSuggestWidget', {});" +
+        "ed.trigger('test', 'editor.action.inlineSuggest.trigger', {});" +
+        '})()',
+    )
+    await sleep(1500)
+  }
+  // ---- lo schema serve: per il fantasma ci vogliono COLONNE VERE della tabella dello statement.
+  // Si passa ad AdventureWorks2019 (database di esempio pubblico, con Sales.Customers).
+  const cambiaDb = async (db) => {
+    const ok = await page.eval(
+      '(function () {' +
+        "const s = document.querySelector('select');" +
+        'if (!s) return false;' +
+        "const opt = [...s.options].find(o => (o.textContent || '').trim() === " +
+        JSON.stringify(db) +
+        ');' +
+        'if (!opt) return false;' +
+        "const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;" +
+        'setter.call(s, opt.value);' +
+        "s.dispatchEvent(new Event('change', { bubbles: true }));" +
+        'return true;' +
+        '})()',
+    )
+    await page.waitFor("document.body.textContent.includes('Schema:')", 60000, 'schema dopo il cambio db')
+    await sleep(3000)
+    return ok
+  }
+  const dbOk = await cambiaDb('AdventureWorks2019')
+  console.log('  database della prova: ' + (dbOk ? 'AdventureWorks2019' : 'quello gia attivo'))
+
+  // ---- A) DATEADD: parti di data nel primo parametro
+  await digita('SELECT DATEADD(d')
+  const vociA = await voci()
+  const detA = await dettagli()
+  console.log('  voci dopo "DATEADD(d": ' + JSON.stringify(vociA.slice(0, 12)))
+  console.log('  dettagli: ' + JSON.stringify(detA.slice(0, 4)))
+  check('propone "day"', vociA.includes('day'))
+  check('propone "dd"', vociA.includes('dd'))
+  check('propone "dayofyear"', vociA.includes('dayofyear'))
+  check('il dettaglio spiega "parte di data"', /parte di data/i.test(JSON.stringify(detA)))
+  await page.screenshot('dateadd-parti-di-data')
+
+  await digita('SELECT DATEADD(iso')
+  const vociA2 = await voci()
+  console.log('  voci dopo "DATEADD(iso": ' + JSON.stringify(vociA2.slice(0, 6)))
+  check('propone "iso_week"', vociA2.includes('iso_week'))
+
+  // ---- B) RANK(: costrutto intero in ghost. Si scrive lo statement INTERO e si mette il cursore
+  //          dopo "RANK(" (come quando lo si e' appena digitato).
+  /** Scrive il testo e mette il cursore all'indice indicato (o in fondo). */
+  const scriviPosiziona = async (testo, indice) => {
+    await page.eval(
+      '(async () => {' + trovaEditor +
+        'const model = ed.getModel();' +
+        'ed.setValue(' + JSON.stringify(testo) + ');' +
+        'const i = ' + JSON.stringify(typeof indice === 'number' ? indice : -1) + ';' +
+        'ed.setPosition(model.getPositionAt(i >= 0 ? i : model.getValueLength()));' +
+        'ed.focus();' +
+        '})()',
+    )
+    await sleep(1200)
+    await mostraGhost()
+    await sleep(1500)
+  }
+
+  const stmtRank = 'SELECT RANK(\nFROM Sales.Customer'
+  await scriviPosiziona(stmtRank, stmtRank.indexOf('RANK(') + 'RANK('.length)
+  const g1 = await ghost()
+  console.log('  ghost dopo "RANK(": ' + JSON.stringify(g1))
+  console.log('  nodi ghost: ' + JSON.stringify(await ghostNodi()))
+  check('il ghost propone il costrutto con OVER (', /OVER\(/i.test(norm(g1)))
+  check(
+    'il ghost scrive PARTITION BY e ORDER BY',
+    /PARTITIONBY/i.test(norm(g1)) && /ORDERBY/i.test(norm(g1)),
+  )
+  check('il ghost usa una colonna vera della tabella', /CustomerID|AccountNumber/i.test(g1 || ''))
+  await page.screenshot('rank-costrutto-ghost')
+
+  // ---- B2) il ghost si ADATTA: si e' scritto meta' costrutto, deve proporre solo il resto
+  const stmtMeta = 'SELECT RANK() OVER (PARTITION BY CustomerID '
+  await scriviPosiziona(stmtMeta, stmtMeta.length)
+  const g2 = await ghost()
+  console.log('  ghost dopo "RANK() OVER (PARTITION BY CustomerID ": ' + JSON.stringify(g2))
+  console.log('  nodi ghost: ' + JSON.stringify(await ghostNodi()))
+  check('il ghost ora propone solo ORDER BY', /^ORDERBY/i.test(norm(g2)))
+
+  // ---- B3) costrutto completo: niente piu' ghost
+  const stmtCompleto = 'SELECT RANK() OVER (PARTITION BY CustomerID ORDER BY AccountNumber)'
+  await scriviPosiziona(stmtCompleto, stmtCompleto.length)
+  const g3 = await ghost()
+  console.log('  ghost a costrutto completo: ' + JSON.stringify(g3))
+  check('a costrutto completo non propone piu niente', g3 === null)
+  const falliti = esiti.filter(e => !e).length
+  console.log('\nesito: ' + (esiti.length - falliti) + '/' + esiti.length + ' controlli superati')
+  if (falliti > 0) throw new Error(falliti + ' controlli falliti')
+}
+
+
 main().catch(e => {
   console.error('ERRORE:', e.message + '\n' + (e.stack || ''))
   process.exit(1)

@@ -15,13 +15,14 @@
 // temporanee o quando il testo c'è già).
 
 import { buildJoinText, findTableRefs, qualified, sqlIdent } from './helpers'
+import { restoFinestra } from './funzioniSql'
 import type { JoinHint } from './helpers'
 import type { DatabaseSummary, TableInfo } from './types'
 
 /** Un suggerimento in linea: il testo da inserire e il motivo (per i test e il tooltip). */
 export interface SuggerimentoInline {
   testo: string
-  motivo: 'join-on' | 'colonna-successiva'
+  motivo: 'join-on' | 'colonna-successiva' | 'finestra'
 }
 
 /** Lunghezza massima di un suggerimento (oltre è più fastidio che aiuto). */
@@ -217,6 +218,17 @@ export function suggerisciInLinea(sql: string, offset: number, summary: Database
   const stmt = sql.slice(inizio, fine)
   const prima = sql.slice(inizio, offset)
   const dopo = sql.slice(offset, fine)
+
+  /**
+   * FUNZIONI WINDOW (richiesta utente: "proponi tutto il costrutto in ghost e poi ti adatti a quello
+   * che scrivo"). Dopo "RANK(" il fantasma mostra il resto del costrutto con una colonna vera dello
+   * statement; appena si scrive, il fantasma si accorcia e sparisce quando il costrutto è completo.
+   */
+  const colonne = tabelleDelloStatement(summary, stmt).flatMap(t => (t.columns ?? []).map(c => c.name))
+  const resto = restoFinestra(sql, offset, colonne)
+  if (resto && resto.length > 0 && resto.length <= MAX_SUGGERIMENTO) {
+    return { testo: resto, motivo: 'finestra' }
+  }
 
   return suggerisciOnDelJoin(prima, dopo, stmt, summary) ?? suggerisciColonnaSuccessiva(prima, dopo, stmt, summary)
 }
