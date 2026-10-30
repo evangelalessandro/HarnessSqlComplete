@@ -592,15 +592,20 @@ export default function App() {
         fileHandle,
         fileName: fileName ?? (fromFile ? title : undefined),
         parentId: padre,
-        // la visibilità dei risultati è della tab: le nuove partono dall'ultima scelta fatta
-        resultsVisible: risultatiPredefiniti,
+        /**
+         * RICHIESTA UTENTE: "quando fai nuova scheda parti con i risultati nascosti, che tanto non ci
+         * sono". La visibilità resta una proprietà della TAB (chi la riapre la ritrova come l'ha
+         * lasciata), ma una tab APPENA creata non ha risultati da mostrare: parte nascosta e il pannello
+         * compare da solo alla prima esecuzione (o con Ctrl+R).
+         */
+        resultsVisible: false,
       }
       const dove = position ?? newTabPositionRef.current
       setEditorTabs(prev => (padre ? insertTabAsChild(prev, tab, padre) : insertTabAt(prev, tab, activeEditorTab, dove)))
       setActiveEditorTab(tab.id)
       return tab.id
     },
-    [editorTabs, activeEditorTab, connection, risultatiPredefiniti],
+    [editorTabs, activeEditorTab, connection],
   )
 
   /**

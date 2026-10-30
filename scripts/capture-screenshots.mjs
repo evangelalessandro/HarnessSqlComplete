@@ -71,6 +71,7 @@ const VERIFY_GROUP_BY = process.argv.includes('--verify-group-by')
 const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
+const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
 const VERIFY_AW_SCRIPT = process.argv.includes('--verify-aw-script')
 const VERIFY_AW_GRAFO = process.argv.includes('--verify-aw-grafo')
 const VERIFY_COPIA_CELLA = process.argv.includes('--verify-copia-cella')
@@ -9555,6 +9556,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_NUOVA_TAB_RISULTATI) {
+      await verifyNuovaTabRisultati(page)
+      return
+    }
+
     if (VERIFY_ETICHETTA_IA) {
       await verifyEtichettaIa(page)
       return
@@ -10265,6 +10271,74 @@ async function verifyEtichettaIa(page) {
   await page.screenshot('barra-senza-etichetta-ia')
 
   const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+/**
+ * VERIFICA (--verify-nuova-tab-risultati): una tab APPENA creata parte con il pannello dei risultati
+ * NASCOSTO (non c'è niente da mostrare); dopo un'esecuzione il pannello compare.
+ * Richiesta utente: "quando fai nuova scheda parti con i risultati nascosti, che tanto non ci sono".
+ */
+async function verifyNuovaTabRisultati(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Il pannello dei risultati si vede? (presenza della sua barra con "Risultati") */
+  const pannelloRisultatiVisibile = async () =>
+    await page.eval(`(() => {
+      // il pannello è visibile se c'è la sua scheda "Risultati" (con o senza contatore) e si vede
+      const el = [...document.querySelectorAll('*')].find(e => {
+        const t = (e.textContent || '').trim();
+        return /^Risultati\\s*\\d*$/.test(t);
+      });
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return r.height > 0 && r.width > 0 && r.bottom <= window.innerHeight + 5;
+    })()`)
+
+  // 1) nuova tab → pannello nascosto
+  const nuova = await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim().includes('Nuova'))`,
+  )
+  check('il pulsante "Nuova" si trova', nuova === true)
+  await sleep(1200)
+  const visibileNuova = await pannelloRisultatiVisibile()
+  console.log(`  nuova tab · pannello risultati visibile: ${visibileNuova}`)
+  check('la nuova tab parte con i risultati NASCOSTI', visibileNuova === false)
+
+  // 2) si esegue una query: il pannello deve comparire
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors(); const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    if (ed) { ed.setValue('SELECT 1 AS UNO'); ed.focus(); }
+  })()`)
+  await sleep(600)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(3500)
+  const visibileDopo = await pannelloRisultatiVisibile()
+  console.log(`  dopo l esecuzione · pannello risultati visibile: ${visibileDopo}`)
+  check("dopo l'esecuzione il pannello compare", visibileDopo === true)
+  await page.screenshot('nuova-tab-risultati-nascosti')
+
+  const falliti = esiti.filter((e) => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
 }
