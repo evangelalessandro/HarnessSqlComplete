@@ -249,12 +249,48 @@ cd backend/SqlIntelliBackend && dotnet run
 cd frontend && npm install && npm run dev
 ```
 
-Su Windows c'è anche uno script che avvia (o ferma) entrambi in due finestre:
+### Avvio con doppio clic (Windows)
+
+`avvia.cmd` nella cartella del progetto: controlla i prerequisiti, avvia i due server e **non chiude la
+finestra** — a fine script (e in caso di errore) attende un tasto, così si legge sempre cosa manca.
+
+| Comando | Cosa fa |
+|---|---|
+| `avvia.cmd` | avvia backend + app e apre il browser |
+| `avvia.cmd -Diagnosi` | **controlla solo** i prerequisiti: una riga `[OK]`/`[--]` per ognuno, con la versione trovata e il link per rimediare |
+| `avvia.cmd -Stop` | ferma i due server |
+| `avvia.cmd -Anteprima` | stampa i comandi che eseguirebbe, senza eseguirli |
+
+Oppure da PowerShell:
 
 ```powershell
-.\scripts\start-app.ps1          # avvia backend + app e apre il browser
-.\scripts\start-app.ps1 -Stop    # ferma i due server
+.\scripts\start-app.ps1 -Diagnosi   # rapporto sui prerequisiti
+.\scripts\start-app.ps1             # avvia backend + app e apre il browser
+.\scripts\start-app.ps1 -Stop       # ferma i due server
 ```
+
+### Primo avvio su un altro computer
+
+Non serve preparare niente a mano:
+
+1. installa **.NET 10 SDK** e **Node.js 20+** (durante l'installazione di Node lascia attivo "Add to PATH"),
+2. apri la cartella del progetto e lancia `avvia.cmd` (o `avvia.cmd -Diagnosi` per il controllo),
+3. la prima volta `frontend\node_modules` non esiste: **lo installa lo script** con `npm install`
+   (serve internet, qualche minuto; non è un errore, la riga `[--]` è solo informativa),
+4. nell'app scegli l'istanza SQL Server (es. `.\sqldev` o `SERVER\ISTANZA`) e una login: le credenziali
+   si salvano nel backend, non nel codice.
+
+Se `npm install` non riesce:
+
+```powershell
+cd frontend
+npm install                     # riprova a mano
+npm cache clean --force         # cache rovinata
+npm config set proxy http://utente:password@proxy:porta   # dietro proxy aziendale
+node --version                  # deve essere 20 o più
+```
+
+In caso di dubbi `avvia.cmd -Diagnosi` dice esattamente cosa manca, con il rimedio accanto.
 
 **Chiave DeepSeek (opzionale)** per l'autocompletamento IA, in
 `backend/SqlIntelliBackend/appsettings.json`:
