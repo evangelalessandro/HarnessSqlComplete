@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_GRIGLIA_DB = process.argv.includes('--verify-griglia-db')
 const VERIFY_FUNZIONI_DATA = process.argv.includes('--verify-funzioni-data')
 const VERIFY_AW_SCRIPT = process.argv.includes('--verify-aw-script')
 const VERIFY_AW_GRAFO = process.argv.includes('--verify-aw-grafo')
@@ -311,7 +312,9 @@ function launchBrowser() {
     [
       '--headless=new',
       '--disable-gpu',
-      '--hide-scrollbars',
+      // Con --hide-scrollbars le barre non occupano spazio: né le misure né le foto le mostrano.
+      // SHOT_SCROLLBARS=1 le lascia visibili (serve alla verifica --verify-griglia-db).
+      ...(process.env.SHOT_SCROLLBARS ? [] : ['--hide-scrollbars']),
       '--no-first-run',
       '--no-default-browser-check',
       `--remote-debugging-port=${PORT}`,
@@ -9562,6 +9565,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_GRIGLIA_DB) {
+      await verifyGrigliaDb(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -10521,6 +10529,281 @@ async function verifyFunzioniData(page) {
   const falliti = esiti.filter(e => !e).length
   console.log('\nesito: ' + (esiti.length - falliti) + '/' + esiti.length + ' controlli superati')
   if (falliti > 0) throw new Error(falliti + ' controlli falliti')
+}
+
+
+/**
+ * VERIFICA (--verify-griglia-db): tre richieste dell'utente in un colpo solo.
+ *  A) griglia dei risultati: si possono selezionare UNA O PIÙ RIGHE e la selezione si VEDE (barretta
+ *     azzurra + barra "N righe selezionate"); Ctrl+clic aggiunge, Maiusc+clic prende l'intervallo.
+ *  B) barre di scorrimento più larghe: il contenitore dei risultati e l'editor devono avere barre da
+ *     16px (prima ~8-10px) così si prendono meglio con il mouse.
+ *  C) il database legato alla TAB: cambiando tab in fretta il database della combo (e quello VERO della
+ *     connessione) deve restare quello della tab attiva, senza "rimbalzi".
+ */
+async function verifyGrigliaDb(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2000)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const cambiaDb = async (db, attesa = 4000) => {
+    const ok = await page.eval(`(() => {
+      const s = document.querySelector('select[data-db-tab]') || document.querySelector('select');
+      if (!s) return false;
+      const opt = [...s.options].find(o => (o.textContent || '').trim() === ${JSON.stringify('@@DB@@')});
+      if (!opt) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+      setter.call(s, opt.value);
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`.replace('"@@DB@@"', JSON.stringify(db)))
+    await sleep(attesa)
+    return ok
+  }
+  const combo = async () =>
+    await page.eval(`(() => {
+      const s = document.querySelector('select[data-db-tab]') || document.querySelector('select');
+      return s ? (s.options[s.selectedIndex]?.textContent || '').trim() : '';
+    })()`)
+  const badgeSchema = async () =>
+    await page.eval(`(() => {
+      const m = (document.body.textContent || '').match(/Schema:\\s*([\\d.]+)\\s*tabelle/);
+      return m ? Number(m[1]) : -1;
+    })()`)
+  const esegui = async (sql) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      ed.focus(); ed.setValue(${JSON.stringify('@@SQL@@')});
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+    await sleep(500)
+    await page.press('F5', { code: 'F5', vk: 116 })
+    await sleep(3500)
+  }
+  /** Clic su una riga della griglia con eventuali modificatori (Ctrl/Maiusc). */
+  const clicRiga = async (numeroRiga, mods = {}) => {
+    const fatto = await page.eval(`(() => {
+      const tr = document.querySelector('[data-riga="${numeroRiga}"]');
+      if (!tr) return false;
+      tr.dispatchEvent(new MouseEvent('click', {
+        bubbles: true, cancelable: true,
+        ctrlKey: ${mods.ctrl ? 'true' : 'false'},
+        metaKey: false,
+        shiftKey: ${mods.shift ? 'true' : 'false'},
+      }));
+      return true;
+    })()`)
+    await sleep(350)
+    return fatto
+  }
+  const selezionate = async () =>
+    await page.eval(`[...document.querySelectorAll('[data-riga][data-selezionata]')].map(tr => tr.getAttribute('data-riga'))`)
+  const barraSelezione = async () =>
+    await page.eval(`(() => {
+      const el = document.querySelector('[data-righe-selezionate]');
+      return el ? (el.textContent || '').replace(/\\s+/g, ' ').trim() : null;
+    })()`)
+
+  // si parte da AdventureWorks2019: nomi pubblici, 71 tabelle
+  await cambiaDb('AdventureWorks2019', 5000)
+
+  // ---------------- A) selezione delle righe
+  await esegui(
+    'SELECT TOP 60 BusinessEntityID, FirstName, LastName, Title, Suffix, EmailPromotion\nFROM Person.Person\nORDER BY BusinessEntityID',
+  )
+  const righe = await page.eval(`document.querySelectorAll('[data-riga]').length`)
+  console.log(`  righe nella griglia: ${righe}`)
+  check('la griglia ha righe da selezionare', righe >= 3, `${righe} righe`)
+
+  await clicRiga(2)
+  const sel2 = await selezionate()
+  console.log(`  dopo clic sulla riga 2: ${JSON.stringify(sel2)} · barra: ${JSON.stringify(await barraSelezione())}`)
+  check('clic semplice: una sola riga selezionata', sel2.length === 1 && sel2[0] === '2')
+  check('la barra dice quante righe sono selezionate', (await barraSelezione() || '').includes('1 riga selezionata'))
+
+  await clicRiga(4, { ctrl: true })
+  const sel4 = await selezionate()
+  console.log(`  dopo Ctrl+clic sulla riga 4: ${JSON.stringify(sel4)}`)
+  check('Ctrl+clic aggiunge la riga (2 + 4)', sel4.length === 2 && sel4.includes('2') && sel4.includes('4'))
+
+  await clicRiga(6, { shift: true })
+  const sel6 = (await selezionate()).map(Number).sort((a, b) => a - b)
+  console.log(`  dopo Maiusc+clic sulla riga 6: ${JSON.stringify(sel6)} · barra: ${JSON.stringify(await barraSelezione())}`)
+  check('Maiusc+clic prende l intervallo 4-6', [4, 5, 6].every((n) => sel6.includes(n)))
+  check('la barra conta le righe dell intervallo', (await barraSelezione() || '').includes('righe selezionate'))
+
+  // il colore: la riga selezionata ha la classe dedicata (sfondo + barretta)
+  const classi = await page.eval(`(() => {
+    const tr = document.querySelector('[data-riga][data-selezionata]');
+    return tr ? tr.className : '';
+  })()`)
+  console.log(`  classi della riga selezionata: ${JSON.stringify(classi)}`)
+  check('la riga selezionata ha il colore dedicato', /sql-row-selected/.test(classi))
+  check('la riga selezionata ha la barretta colorata', /sql-row-selected-ring/.test(classi))
+  await page.screenshot('griglia-righe-selezionate')
+
+  // deseleziona con Esc
+  await page.press('Escape', { code: 'Escape', vk: 27 })
+  await sleep(400)
+  check('Esc toglie la selezione', (await selezionate()).length === 0)
+
+  // ---------------- B) barre di scorrimento più larghe
+  // Si misura dove la barra c'è SICURAMENTE: l'editor (scrollbar di Monaco) e l'albero laterale
+  // (340 stored procedure). Nel pannello risultati la barra compare solo se il contenuto sborda, quindi
+  // lì si misura e si riporta senza far fallire il controllo se il contenuto ci sta.
+  const barraDi = async (selettore, usaPadre) =>
+    await page.eval(`(() => {
+      const base = document.querySelector(${JSON.stringify('@@SEL@@')});
+      if (!base) return -1;
+      const el = ${usaPadre ? 'base.parentElement' : 'base'};
+      if (!el) return -1;
+      return el.offsetWidth - el.clientWidth;
+    })()`.replace('"@@SEL@@"', JSON.stringify(selettore)))
+  const barraEditor = await page.eval(`(() => {
+    const s = document.querySelector('.monaco-editor .scrollbar.vertical');
+    if (!s) return -1;
+    return Math.round(s.getBoundingClientRect().width);
+  })()`)
+  // l'albero è dentro la sidebar: si cerca il suo contenitore che scorre davvero (scrollHeight > clientHeight)
+  const barraAlbero = await page.eval(`(() => {
+    const aside = document.querySelector('aside');
+    if (!aside) return -1;
+    for (const el of aside.querySelectorAll('*')) {
+      const st = getComputedStyle(el);
+      const scorre = /(auto|scroll)/.test(st.overflowY) || /(auto|scroll)/.test(st.overflowX);
+      if (scorre && (el.scrollHeight > el.clientHeight + 2 || el.scrollWidth > el.clientWidth + 2)) {
+        return el.offsetWidth - el.clientWidth;
+      }
+    }
+    return -1;
+  })()`)
+  const barraRisultati = await page.eval(`(() => {
+    const tabella = document.querySelector('[data-riga]');
+    if (!tabella) return -1;
+    let el = tabella.parentElement;
+    while (el && el !== document.body) {
+      const st = getComputedStyle(el);
+      if (/(auto|scroll)/.test(st.overflowY) || /(auto|scroll)/.test(st.overflowX)) {
+        return el.offsetWidth - el.clientWidth;
+      }
+      el = el.parentElement;
+    }
+    return -1;
+  })()`)
+  console.log(
+    `  larghezza barre: editor ${barraEditor}px · albero ${barraAlbero}px · risultati ${barraRisultati}px`,
+  )
+  // Misura DETERMINISTICA: un contenitore temporaneo con overflow:scroll, si legge la differenza fra
+  // larghezza totale e larghezza del contenuto (è esattamente la barra). Non dipende da quale pannello
+  // sta scorrendo in quel momento.
+  const barraSintetica = await page.eval(`(() => {
+    const d = document.createElement('div');
+    d.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:100px;height:100px;overflow:scroll';
+    const p = document.createElement('div');
+    p.style.cssText = 'width:400px;height:400px';
+    d.appendChild(p);
+    document.body.appendChild(d);
+    const larghezza = d.offsetWidth - d.clientWidth;
+    d.remove();
+    return larghezza;
+  })()`)
+  const barrePagina = await page.eval(`(() => {
+    const larghezze = [];
+    for (const el of document.querySelectorAll('*')) {
+      const st = getComputedStyle(el);
+      const scorre = /(auto|scroll)/.test(st.overflowY) || /(auto|scroll)/.test(st.overflowX);
+      if (!scorre) continue;
+      const larghezza = el.offsetWidth - el.clientWidth;
+      if (larghezza > 0) larghezze.push(larghezza);
+    }
+    return larghezze;
+  })()`)
+  console.log(
+    `  barra di un contenitore di prova: ${barraSintetica}px · barre presenti nella pagina: ${JSON.stringify(barrePagina)}`,
+  )
+  if (process.env.SHOT_SCROLLBARS) {
+    check('barra dell editor più larga (>= 14px)', barraEditor >= 14, `${barraEditor}px`)
+    check('le barre dell app sono larghe (>= 14px)', barraSintetica >= 14, `${barraSintetica}px`)
+  } else {
+    console.log('  (browser lanciato con --hide-scrollbars: per misurare le barre usa SHOT_SCROLLBARS=1)')
+  }
+  // ---------------- C) database legato alla tab (cambio tab "a rimbalzo")
+  const clicTab = async (indice) => {
+    const punto = await page.eval(`(() => {
+      const tabs = [...document.querySelectorAll('.sql-tab')];
+      const tab = tabs[${indice}];
+      if (!tab) return null;
+      const b = tab.querySelector('button');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`)
+    if (punto) await page.clickPoint(punto.x, punto.y)
+  }
+  /** Titolo di ogni tab ridotto al DATABASE: "Query 1 · db: AdventureWorks2019" -> "AdventureWorks2019". */
+  const titoliTab = async () =>
+    await page.eval(`[...document.querySelectorAll('.sql-tab')].map(t => {
+      const titolo = t.getAttribute('title') || '';
+      const m = titolo.match(/db:\\s*([^\\s\\u2014]+)/);
+      return m ? m[1] : titolo;
+    })`)
+  /** Il database VERO della connessione: il numero di tabelle dello schema caricato. */
+  const atteso = { AdventureWorks2019: 71, WSGSDMALTA: 340 }
+
+  // tab 2 su un ALTRO database
+  await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim().includes('Nuova'))`,
+  )
+  await sleep(1500)
+  await cambiaDb('WSGSDMALTA', 6000)
+  check('la seconda tab è su WSGSDMALTA', (await combo()) === 'WSGSDMALTA')
+  check('lo schema attivo è quello di WSGSDMALTA', (await badgeSchema()) === atteso.WSGSDMALTA, `${await badgeSchema()} tabelle`)
+
+  // rimbalzo veloce fra le due tab (è il caso che sbagliava il database)
+  for (const giro of [0, 1, 1, 0, 1, 0]) {
+    await clicTab(giro)
+    await sleep(250)
+  }
+  await sleep(7000)
+
+  // ora ogni tab deve mostrare IL SUO database, sia nella combo sia nello schema vero
+  const titoli = await titoliTab()
+  console.log(`  tab presenti: ${JSON.stringify(titoli)}`)
+  let tuttoOk = true
+  for (let i = 0; i < titoli.length; i++) {
+    await clicTab(i)
+    await sleep(5000)
+    const dbTab = titoli[i]
+    const inCombo = await combo()
+    const tabelle = await badgeSchema()
+    const coerente = inCombo === dbTab && tabelle === atteso[dbTab]
+    if (!coerente) tuttoOk = false
+    console.log(`    tab ${i + 1} (${dbTab}): combo ${inCombo}, schema ${tabelle} tabelle -> ${coerente ? 'ok' : 'SBAGLIATO'}`)
+  }
+  check('ogni tab mostra il PROPRIO database (combo e schema vero)', tuttoOk)
+  await page.screenshot('db-per-tab-dopo-rimbalzo')
+
+  const falliti = esiti.filter((e) => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
 }
 
 

@@ -46,3 +46,59 @@ export function reorderColumns(order: readonly number[], from: number, to: numbe
 export function identityOrder(columnCount: number): number[] {
   return Array.from({ length: Math.max(0, columnCount) }, (_, i) => i)
 }
+
+/**
+ * SELEZIONE DELLE RIGHE DELLA GRIGLIA (richiesta utente: "posso selezionare una o più righe della
+ * griglia e avere un colore in evidenza per capire che l'ho selezionata").
+ *
+ * Tre modi, come nei fogli di calcolo:
+ *  - 'sostituisci' (clic semplice): resta selezionata solo quella riga; se era GIÀ l'unica selezionata
+ *    si deseleziona (così un secondo clic la toglie, senza dover cercare il pulsante);
+ *  - 'aggiungi' (Ctrl/Cmd+clic): aggiunge o toglie la riga;
+ *  - 'intervallo' (Maiusc+clic): dalla riga dell'ultimo clic (`ancora`) fino a quella cliccata.
+ * Restituisce la nuova selezione e la nuova ancora, senza mutare quella in ingresso.
+ */
+export type ModoSelezioneRighe = 'sostituisci' | 'aggiungi' | 'intervallo'
+
+export interface SelezioneRighe {
+  righe: Set<number>
+  ancora: number | null
+}
+
+/** Crea una selezione vuota. */
+export function selezioneVuota(): SelezioneRighe {
+  return { righe: new Set<number>(), ancora: null }
+}
+
+export function aggiornaSelezioneRighe(
+  corrente: SelezioneRighe,
+  indice: number,
+  modo: ModoSelezioneRighe,
+): SelezioneRighe {
+  const righe = new Set(corrente.righe)
+  if (modo === 'aggiungi') {
+    if (righe.has(indice)) {
+      righe.delete(indice)
+      return { righe, ancora: indice }
+    }
+    righe.add(indice)
+    return { righe, ancora: indice }
+  }
+  if (modo === 'intervallo') {
+    const da = corrente.ancora ?? indice
+    const inizio = Math.min(da, indice)
+    const fine = Math.max(da, indice)
+    for (let i = inizio; i <= fine; i++) righe.add(i)
+    return { righe, ancora: corrente.ancora ?? indice }
+  }
+  // 'sostituisci'
+  const soloQuesta = righe.size === 1 && righe.has(indice)
+  return soloQuesta ? { righe: new Set<number>(), ancora: null } : { righe: new Set([indice]), ancora: indice }
+}
+
+/** True se il clic va trattato come "aggiungi" (Ctrl o Cmd) o "intervallo" (Maiusc). */
+export function modoSelezioneDaEvento(e: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }): ModoSelezioneRighe {
+  if (e.shiftKey) return 'intervallo'
+  if (e.ctrlKey || e.metaKey) return 'aggiungi'
+  return 'sostituisci'
+}

@@ -393,6 +393,19 @@ export default function SqlEditor({
     editor.updateOptions(opzioniMonaco(blocchiRef.current))
     // GHOST TEXT: suggerimenti in linea (testo grigio, Tab per accettare), dal database
     editor.updateOptions({ inlineSuggest: { enabled: true } })
+    /**
+     * BARRE DI SCORRIMENTO PIÙ LARGHE (richiesta utente: "le scroll bar le voglio più larghe … e posso
+     * selezionarle meglio con il mouse"). Monaco ha le sue, non seguono la CSS della pagina: qui si
+     * portano a 16px come quelle dell'app (prima erano 10/14 e con il mouse si sbagliava bersaglio).
+     */
+    editor.updateOptions({
+      scrollbar: {
+        verticalScrollbarSize: 16,
+        horizontalScrollbarSize: 16,
+        useShadows: false,
+        alwaysConsumeMouseWheel: false,
+      },
+    })
     // Alt+C accende/spegne la selezione a blocchi, come in SSMS
     editor.addCommand(monaco.KeyMod.Alt | monaco.KeyCode.KeyC, () => toggleBlocchiRef.current?.())
 

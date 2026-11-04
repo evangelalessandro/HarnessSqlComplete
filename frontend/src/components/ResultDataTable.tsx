@@ -13,12 +13,16 @@
 // - righe alternate a gruppi di TRE colori;
 // - colonne spostabili trascinando l'intestazione: cambia solo la vista, l'ordine dei dati
 //   resta quello originale (selezione e SQL generato continuano a usare l'ordine vero).
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ClipboardCopy, Copy, GripVertical, Maximize2, X } from "lucide-react";
 import {
+  aggiornaSelezioneRighe,
   identityOrder,
+  modoSelezioneDaEvento,
   reorderColumns,
   rowBackgroundClass,
+  selezioneVuota,
+  type SelezioneRighe,
 } from "../resultGrid";
 import { copiaTesto, rigaPerCopia, testoPerCopia } from "../clipboard";
 import type { CellValue } from "../types";
@@ -50,6 +54,14 @@ interface Props {
     selected: Set<number>;
     onToggle: (originalIndex: number) => void;
   };
+  /**
+   * SELEZIONE DELLE RIGHE con il mouse (richiesta utente: "posso selezionare una o più righe della
+   * griglia e che abbia qualche colore in evidenza per capire che l'ho selezionata").
+   * Clic = una riga, Ctrl+clic = aggiungi/togli, Maiusc+clic = intervallo. La selezione si vede con
+   * lo sfondo `sql-row-selected` (lo stesso usato dal generatore SQL) e con una barretta azzurra a
+   * sinistra. Non serve a generare SQL: è solo per leggere/leggere meglio i dati.
+   */
+  selectableRows?: boolean;
 }
 
 export default function ResultDataTable({
@@ -59,7 +71,10 @@ export default function ResultDataTable({
   stickyHeader = true,
   rowSelection,
   colSelection,
+  selectableRows = false,
 }: Props) {
+  /** Righe selezionate con il mouse (solo quando `selectableRows`). */
+  const [selezione, setSelezione] = useState<SelezioneRighe>(() => selezioneVuota());
   // Ordine di VISUALIZZAZIONE delle colonne (indici originali): si cambia trascinando l'header.
   const [colOrder, setColOrder] = useState<number[]>(() =>
     identityOrder(columns.length),
@@ -93,6 +108,26 @@ export default function ResultDataTable({
     setDropCol(null);
   }, [columns]);
 
+  // righe diverse (altra query, altra pagina) → la selezione di prima non vale più
+  useEffect(() => {
+    setSelezione(selezioneVuota());
+  }, [rows]);
+
+  /** Gestisce il clic sulla riga con i tre modi (semplice, Ctrl/Cmd, Maiusc). */
+  const clicRiga = useCallback((ri: number, e: React.MouseEvent) => {
+    setSelezione((corrente) => aggiornaSelezioneRighe(corrente, ri, modoSelezioneDaEvento(e)));
+  }, []);
+
+  /** Esc deseleziona tutto, come nei fogli di calcolo. */
+  useEffect(() => {
+    if (!selectableRows || selezione.righe.size === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSelezione(selezioneVuota());
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectableRows, selezione.righe.size]);
+
   const order = useMemo(() => {
     // se le colonne cambiano mentre l'ordine è ancora quello vecchio, si ignorano gli indici fuori range
     const valid = colOrder.filter((i) => i >= 0 && i < columns.length);
@@ -118,6 +153,29 @@ export default function ResultDataTable({
 
   return (
     <>
+      {selectableRows && selezione.righe.size > 0 && (
+        <div
+          className="sticky left-0 z-30 flex items-center gap-2 border-b border-sky-800/60 bg-sky-950/70 px-3 py-1 text-xs text-sky-100"
+          data-righe-selezionate={selezione.righe.size}
+        >
+          <span className="font-semibold">
+            {selezione.righe.size === 1 ? '1 riga selezionata' : `${selezione.righe.size} righe selezionate`}
+          </span>
+          <span className="text-sky-300/80">
+            {selezione.righe.size === 1
+              ? `riga ${firstRowNumber + [...selezione.righe][0]}`
+              : `righe ${firstRowNumber + Math.min(...selezione.righe)}–${firstRowNumber + Math.max(...selezione.righe)}`}
+          </span>
+          <button
+            onClick={() => setSelezione(selezioneVuota())}
+            className="ml-auto rounded border border-sky-700/70 px-2 py-0.5 text-[11px] text-sky-100 transition-colors hover:bg-sky-900/70"
+            title="Togli la selezione (Esc)"
+            data-deseleziona-righe=""
+          >
+            Deseleziona
+          </button>
+        </div>
+      )}
       <table className="w-full border-collapse text-left text-[13px]">
         <thead className={stickyHeader ? "sticky top-0 z-10" : ""}>
           <tr>
@@ -199,16 +257,29 @@ export default function ResultDataTable({
         </thead>
         <tbody>
           {rows.map((row, ri) => {
-            // sfondo (3 colori alternati) usato anche dalle celle fisse, che sono opache
-            const selected = rowSelection?.selected.has(ri) ?? false;
+            // sfondo (3 colori alternati) usato anche dalle celle fisse, che sono opache.
+            // La selezione col MOUSE e quella del generatore SQL si sommano: entrambe evidenziano.
+            const sceltaDaGeneratore = rowSelection?.selected.has(ri) ?? false;
+            const sceltaColMouse = selectableRows && selezione.righe.has(ri);
+            const selected = sceltaDaGeneratore || sceltaColMouse;
             const bg = rowBackgroundClass(ri, selected);
+            const cliccabile = Boolean(rowSelection) || selectableRows;
             return (
               <tr
                 key={ri}
-                className={`${bg} ${rowSelection ? "cursor-pointer transition-colors" : ""}`}
-                onClick={
-                  rowSelection ? () => rowSelection.onToggle(ri) : undefined
-                }
+                className={`${bg} ${cliccabile ? "cursor-pointer transition-colors" : ""} ${
+                  sceltaColMouse ? "sql-row-selected-ring" : ""
+                }`}
+                data-riga={firstRowNumber + ri}
+                data-selezionata={sceltaColMouse ? "sì" : undefined}
+                aria-selected={cliccabile ? selected : undefined}
+                onClick={(e) => {
+                  if (rowSelection) {
+                    rowSelection.onToggle(ri);
+                    return;
+                  }
+                  if (selectableRows) clicRiga(ri, e);
+                }}
               >
                 {rowSelection && (
                   <td

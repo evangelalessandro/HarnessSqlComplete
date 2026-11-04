@@ -400,6 +400,21 @@ export default function App() {
     const n = Number(t.id.replace(/^tab-/, ''))
     if (!Number.isNaN(n) && n >= tabCounter.current) tabCounter.current = n + 1
   }
+  /**
+   * COPIE AGGIORNATE di stato e connessione per le funzioni asincrone (cambio database).
+   * Servono perché `switchDatabase` gira DENTRO UNA CODA: quando parte, il `connection` catturato
+   * dalla closure è quello di quando è stata chiamata, che nel frattempo può essere già cambiato.
+   * Leggendole dai ref si ottiene sempre il valore VERO del momento (era la causa per cui una tab
+   * restava con il database sbagliato).
+   */
+  const connectionRef = useRef<ConnectResponse | null>(null)
+  const editorTabsRef = useRef<EditorTab[]>(editorTabs)
+  const activeEditorTabRef = useRef<string>(activeEditorTab)
+  /** Coda dei cambi database: uno per volta, nell'ordine richiesto. */
+  const switchQueueRef = useRef<Promise<void>>(Promise.resolve())
+  connectionRef.current = connection ?? null
+  editorTabsRef.current = editorTabs
+  activeEditorTabRef.current = activeEditorTab
 
   // Salva le tab (ultima query inclusa) a ogni modifica, nella chiave dell'istanza connessa
   useEffect(() => {
@@ -501,52 +516,77 @@ export default function App() {
     setEditorTabs(prev => prev.map(t => (t.id === activeEditorTab ? { ...t, sql: editor.getValue() } : t)))
   }, [editor, activeEditorTab, editorTabs])
 
-  /** Cambia database della connessione (e lo lega alla tab indicata o a quella attiva). */
+  /**
+   * Cambia database della connessione (e lo lega alla tab indicata o a quella attiva).
+   *
+   * SEGNALAZIONE UTENTE: "cambiando tab con il db selezionato legato alla tab, una tab aveva il db
+   * sbagliato".
+   * Due cause, entrambe risolte qui:
+   *  1) il backend, a ogni switch-database, restituisce un NUOVO connectionId e invalida quello
+   *     vecchio. Cambiando tab in fretta partivano due switch sovrapposti che si uccidevano la
+   *     sessione a vicenda: vinceva l'ultimo risposta arrivata, quindi una tab poteva restare legata a
+   *     un database diverso da quello della connessione. Ora le richieste passano da una CODA: una
+   *     alla volta, nell'ordine in cui sono state chieste.
+   *  2) i risultati di TUTTE le tab venivano azzerati a ogni cambio: ora si buttano solo quelli delle
+   *     tab legate al database che si sta lasciando.
+   */
   const switchDatabase = useCallback(
     async (database: string, tabId?: string) => {
       if (!connection || database === connection.database) return
-      setBanner(null)
-      setLoadingSummary(true)
-      try {
-        const res = await api.switchDatabase(connection.connectionId, database)
-        setConnection(res)
-        // cambio database: i risultati delle tab si riferivano al DB precedente
-        setTabResults({})
-        setTabExecuting({})
-        setTabResultTab({})
-        setTabSql({})
-        // SEGNALAZIONE (trovata rigenerando gli screenshot su un altro database): il DIAGRAMMA DELLE
-        // CHIAMATE restava quello del database precedente — loadCallGraph non ricarica se c'è già un
-        // grafo in memoria, quindi dopo il cambio si vedevano i nodi del vecchio database (e il
-        // diagramma della routine cercata restava vuoto, con il solo nodo selezionato).
-        setCallGraph(null)
-        setCallGraphError(null)
-        // le tab dei diagrammi sono legate agli oggetti del database precedente: si chiudono
-        setEditorTabs(prev => {
-          const filtrate = prev.filter(t => t.kind !== 'graph')
-          if (filtrate.some(t => t.id === activeEditorTab)) return filtrate
-          return filtrate.length > 0 ? filtrate : prev
-        })
-        setSummary(await api.getSummary(res.connectionId))
-        const targetTab = tabId ?? activeEditorTab
-        setEditorTabs(prev =>
-          prev.map(t => {
-            if (t.id === targetTab) return { ...t, database: res.database }
-            // le tab senza database (vecchie, o create prima di connettersi) si legano al database che
-            // stavano mostrando PRIMA di questo cambio: altrimenti cambiando tab non ci si torna più.
-            if (!t.database && connection?.database) return { ...t, database: connection.database }
-            return t
-          }),
-        )
-      } catch (e) {
-        setBanner(e instanceof Error ? e.message : String(e))
-      } finally {
-        setLoadingSummary(false)
+      // dentro la coda: ogni switch parte quando il precedente ha finito (e ha aggiornato connection)
+      const esegui = async () => {
+        const corrente = connectionRef.current
+        if (!corrente || database === corrente.database) return
+        setBanner(null)
+        setLoadingSummary(true)
+        try {
+          const res = await api.switchDatabase(corrente.connectionId, database)
+          setConnection(res)
+          connectionRef.current = res
+          // risultati: si scartano solo quelli delle tab legate al database VECCHIO
+          const dbPrima = corrente.database
+          const tabDelVecchio = new Set(
+            editorTabsRef.current.filter(t => t.database === dbPrima).map(t => t.id),
+          )
+          const scarta = <T,>(prev: Record<string, T>): Record<string, T> => {
+            const fuori: Record<string, T> = {}
+            for (const [k, v] of Object.entries(prev)) if (!tabDelVecchio.has(k)) fuori[k] = v
+            return fuori
+          }
+          setEditorTabs(prev => {
+            // 1) le tab dei diagrammi sono legate agli oggetti del database precedente: si chiudono
+            // 2) le tab senza database (vecchie, o create prima di connettersi) si legano al database che
+            //    stavano mostrando PRIMA di questo cambio: altrimenti cambiando tab non ci si torna più
+            const filtrate = prev.filter(t => t.kind !== 'graph')
+            const base = filtrate.some(t => t.id === activeEditorTabRef.current) || filtrate.length === 0 ? filtrate : prev
+            return base.map(t => {
+              const conDb = t.database ? t : { ...t, database: dbPrima }
+              if (t.id === (tabId ?? activeEditorTabRef.current)) return { ...conDb, database: res.database }
+              return conDb
+            })
+          })
+          setTabResults(scarta)
+          setTabSql(scarta)
+          setTabResultTab(scarta)
+          setTabExecuting({})
+          // SEGNALAZIONE (trovata rigenerando gli screenshot su un altro database): il DIAGRAMMA DELLE
+          // CHIAMATE restava quello del database precedente — loadCallGraph non ricarica se c'è già un
+          // grafo in memoria, quindi dopo il cambio si vedevano i nodi del vecchio database.
+          setCallGraph(null)
+          setCallGraphError(null)
+          setSummary(await api.getSummary(res.connectionId))
+        } catch (e) {
+          setBanner(e instanceof Error ? e.message : String(e))
+        } finally {
+          setLoadingSummary(false)
+        }
       }
+      const coda = switchQueueRef.current.then(esegui, esegui)
+      switchQueueRef.current = coda.catch(() => undefined)
+      return coda
     },
     [connection, activeEditorTab],
   )
-
   const switchEditorTab = useCallback(
     (id: string) => {
       if (id === activeEditorTab) return
@@ -1765,13 +1805,21 @@ export default function App() {
           {/* Barra delle tab dell'editor: a capo su 2 righe, poi elenco "»" */}
           <div className="flex items-center gap-1 border-b border-zinc-800 bg-zinc-900/60 px-1">
             <select
-              value={connection.database}
+              /**
+               * SEGNALAZIONE UTENTE: "cambiando tab con il db selezionato legato alla tab, una tab
+               * aveva il db sbagliato". La combo mostrava il database della CONNESSIONE, che cambia
+               * solo a switch finito: nel frattempo (o se lo switch falliva) restava il DB vecchio,
+               * mentre la tab ne dichiarava un altro. Ora la fonte di verità è la TAB attiva: la combo
+               * è sempre coerente con l'etichetta della tab, e il cambio vero si allinea dopo.
+               */
+              value={activeDbName}
               onChange={e => void handleSwitchDatabase(e.target.value)}
               className="mr-1 shrink-0 rounded border bg-zinc-900 px-1.5 py-1 text-xs font-semibold hover:border-sky-700 focus:outline-none"
               style={{ borderColor: activeDbColor, color: activeDbColor }}
-              title="Database attivo — seleziona per cambiare"
+              title={`Database attivo per questa tab: ${activeDbName} — seleziona per cambiare`}
+              data-db-tab=""
             >
-              {(dbOptions).map(d => (
+              {(dbOptions.includes(activeDbName) ? dbOptions : [activeDbName, ...dbOptions]).map(d => (
                 <option key={d} value={d}>
                   {d}
                 </option>

@@ -99,6 +99,72 @@ body {
   background-color: #e0f2fe; /* sky-100 */
 }
 
+/* RIGA SELEZIONATA COL MOUSE (o col generatore SQL): oltre allo sfondo, una BARRETTA azzurra a
+   sinistra, così la selezione si vede anche quando lo sfondo è chiaro o la riga è già colorata. */
+.sql-row-selected-ring {
+  box-shadow: inset 3px 0 0 0 #38bdf8; /* sky-400 */
+}
+.sql-row-selected-ring > td:first-child {
+  box-shadow: inset 3px 0 0 0 #38bdf8;
+}
+.theme-light .sql-row-selected-ring {
+  box-shadow: inset 3px 0 0 0 #0284c7; /* sky-600 */
+}
+.theme-light .sql-row-selected-ring > td:first-child {
+  box-shadow: inset 3px 0 0 0 #0284c7;
+}
+
+/* ---------------------------------------------------------------------------------------------
+   BARRE DI SCORRIMENTO PIÙ LARGHE (richiesta utente: "le scroll bar le voglio più larghe … e posso
+   selezionarle meglio con il mouse").
+   Prima erano quelle sottili del sistema (~8px): con il mouse si sbagliava spesso bersaglio.
+   Ora sono 16px, con il pollice più scuro e un bordo trasparente che lo stacca dalla pista; al
+   passaggio del mouse il pollice si schiarisce. Vale per tutti i contenitori dell'app (griglia
+   risultati, albero, pannelli, anteprime) e anche per i menu di Monaco.
+   --------------------------------------------------------------------------------------------- */
+* {
+  scrollbar-width: auto;
+  scrollbar-color: #52525b #18181b;
+}
+::-webkit-scrollbar {
+  width: 16px;
+  height: 16px;
+}
+::-webkit-scrollbar-track {
+  background: #18181b;
+}
+::-webkit-scrollbar-thumb {
+  background-color: #52525b;
+  border: 3px solid transparent;
+  border-radius: 9px;
+  background-clip: padding-box;
+  min-height: 40px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: #71717a;
+}
+::-webkit-scrollbar-thumb:active {
+  background-color: #a1a1aa;
+}
+::-webkit-scrollbar-corner {
+  background: #18181b;
+}
+.theme-light * {
+  scrollbar-color: #a1a1aa #e4e4e7;
+}
+.theme-light ::-webkit-scrollbar-track {
+  background: #e4e4e7;
+}
+.theme-light ::-webkit-scrollbar-thumb {
+  background-color: #a1a1aa;
+}
+.theme-light ::-webkit-scrollbar-thumb:hover {
+  background-color: #71717a;
+}
+.theme-light ::-webkit-scrollbar-corner {
+  background: #e4e4e7;
+}
+
 /* Evidenziazione del campo corrispondente negli INSERT (colonna <-> valore) */.monaco-editor .sql-pair-highlight {
   background-color: rgba(245, 158, 11, 0.2);
   box-shadow: inset 0 -2px 0 rgba(245, 158, 11, 0.8);

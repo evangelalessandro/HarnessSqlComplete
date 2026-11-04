@@ -198,6 +198,7 @@ export default function ResultsPanel({
                     rows={s.rows as CellValue[][]}
                     firstRowNumber={1}
                     stickyHeader={false}
+                    selectableRows
                   />
                 ) : (
                   <div className="px-3 py-2 text-xs text-zinc-500">Nessuna riga.</div>
@@ -223,7 +224,12 @@ export default function ResultsPanel({
       {/* Vista normale: stessa tabella del generatore (numero di riga, linee delle colonne,
           tre colori alternati, colonne spostabili trascinando l'intestazione) */}
       <div className="min-h-0 flex-1 overflow-auto">
-        <ResultDataTable columns={activeSet.columns} rows={pageRows as CellValue[][]} firstRowNumber={start} />
+        <ResultDataTable
+          columns={activeSet.columns}
+          rows={pageRows as CellValue[][]}
+          firstRowNumber={start}
+          selectableRows
+        />
       </div>
 
       <div className="flex items-center justify-between border-t border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-400">
