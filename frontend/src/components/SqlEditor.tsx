@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { Activity, Eraser, Eye, FolderOpen, IndentDecrease, IndentIncrease, Loader2, MessageSquare, Moon, Pilcrow, Play, Redo2, Save, Settings2, Sun, Undo2, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
+import { Activity, Eraser, Eye, FolderOpen, IndentDecrease, IndentIncrease, Loader2, MessageSquare, Moon, Pilcrow, Play, Redo2, Save, SaveAll, Settings2, Sun, Undo2, Wand2, ZoomIn, ZoomOut } from 'lucide-react'
 import monaco from '../monacoSetup'
 import { api } from '../api'
 import { syntaxIssuesFromCheck } from '../syntaxCheck'
@@ -32,7 +32,7 @@ import { BLOCCHI_KEY, opzioniMonaco, parseBlocchi, serializzaBlocchi } from '../
 import { SPAZI_KEY, opzioniSpazi, parseSpazi, serializzaSpazi } from '../whitespaceMode'
 import { azioneCursore, cursoreDaAggiungere, cursoreDaNeutralizzare, selezioneVerticale } from '../multiCursor'
 import FormatProfilePanel from './FormatProfilePanel'
-import { Badge, Button, Spinner, Toggle } from './ui'
+import { Badge, Button, Spinner } from './ui'
 
 /** Testo del tipo per il dettaglio di una colonna ("INT NULL"), o '' se il tipo
  *  non è noto (colonne di temporanee dedotte da "SELECT … INTO", variabili tabella…). */
@@ -1000,198 +1000,284 @@ export default function SqlEditor({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2">
-        <div className="flex items-center gap-2">
-          <span className="relative">
-            <Button
-              variant="secondary"
-              onClick={() => {
-                const sql = getSqlToExecute()
-                recordTablesFromSql(sql)
-                onExecute(sql)
-              }}
-              loading={executing}
-              title="Esegui (F5 / Ctrl+Invio) — se hai selezionato del testo esegue solo la selezione"
-            >
-              {/* la freccia è VERDE (colore dell'esecuzione), il pulsante resta neutro come gli altri */}
-              <Play className="h-4 w-4 fill-emerald-400 text-emerald-400" /> Esegui
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={() => onAnteprimaRef.current?.()}
-              title="Anteprima delle modifiche (Alt+P): mostra le righe che un UPDATE/DELETE toccherebbe, senza modificare niente"
-              data-anteprima="modifiche"
-            >
-              <Eye className="h-4 w-4 text-sky-400" /> Anteprima
-            </Button>
-            <Button
-              variant="ghost"
-              onClick={() => onPianoRef.current?.()}
-              title="Piano di esecuzione stimato (Alt+E): operatori e indici suggeriti, senza eseguire la query"
-              data-piano="apri"
-            >
-              <Activity className="h-4 w-4 text-amber-400" /> Piano
-            </Button>
-            {/* Fuoco del drago: scaturisce dal pulsante a ogni query eseguita */}
-            {fireVisible && (
-              <div className="pointer-events-none absolute -top-5 left-1/2 z-30 h-16 w-24 -translate-x-1/2">
-                {Array.from({ length: Math.min(6 + Math.floor(dragonLevel / 10), 18) }).map((_, i) => (
-                  <span
-                    key={`${fireTick}-${i}`}
-                    className="dragon-flame absolute text-lg leading-none"
-                    style={{
-                      left: `${6 + (i * 82) / Math.min(6 + Math.floor(dragonLevel / 10), 18)}%`,
-                      bottom: '4px',
-                      animationDelay: `${(i % 6) * 0.13}s`,
-                      animationDuration: `${1.2 + (i % 4) * 0.3}s`,
-                      fontSize: `${14 + Math.min(dragonLevel / 100, 1) * 10}px`,
-                    }}
-                  >
-                    🔥
-                  </span>
-                ))}
-              </div>
-            )}
-          </span>
-          <Button variant="secondary" onClick={() => onSave?.()} title="Salva la query (Ctrl+S) — sovrascrive il file originale se aperto">
-            <Save className="h-4 w-4 text-sky-400" /> Salva
-          </Button>
-          <Button variant="ghost" onClick={() => onSaveAs?.()} title="Salva con nome (Ctrl+Shift+S) — scegli dove salvarla">
-            <Save className="h-4 w-4 text-sky-300" /> Salva con nome
-          </Button>
-          <Button variant="ghost" onClick={() => onOpenFile?.()} title="Apri file .sql (permette di sovrascrivere l'originale)">
-            <FolderOpen className="h-4 w-4 text-amber-400" /> Apri file
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={() => {
-              editorRef.current?.focus()
-              void editorRef.current?.getAction('editor.action.commentLine')?.run()
-            }}
-            title="Commenta / togli il commento alle righe selezionate (Ctrl+/)"
-          >
-            <MessageSquare className="h-4 w-4 text-lime-400" /> Commenta
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={() => {
-              editorRef.current?.focus()
-              void editorRef.current?.getAction('editor.action.indentLines')?.run()
-            }}
-            title="Aumenta il rientro delle righe selezionate (Tab)"
-          >
-            <IndentIncrease className="h-4 w-4 text-teal-300" /> Rientra
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={() => {
-              editorRef.current?.focus()
-              void editorRef.current?.getAction('editor.action.outdentLines')?.run()
-            }}
-            title="Riduce il rientro delle righe selezionate (Shift+Tab)"
-          >
-            <IndentDecrease className="h-4 w-4 text-teal-300" /> Fuori rientro
-          </Button>
+      {/* ------------------------------------------------------------------------------------
+          BARRA COMPATTA (richiesta utente: "fai la barra dei tasti che occupi meno spazio, o metti
+          delle tooltip per le icone").
+          Prima ogni pulsante aveva il testo su una riga che andava a capo ("Salva con nome",
+          "Fuori rientro", "Spazi e tab"): la barra diventava alta 2-3 righe. Ora è UNA riga di icone
+          con il tooltip (title) che dice nome, scorciatoia e cosa fa; solo "Esegui" tiene il testo
+          perché è l'azione principale. Le etichette restano nel DOM come `sr-only`: i lettori di
+          schermo e le verifiche automatiche che cercano il testo del pulsante continuano a trovarle.
+          ------------------------------------------------------------------------------------ */}
+      <div
+        className="flex items-center gap-1 overflow-x-auto whitespace-nowrap border-b border-zinc-800 bg-zinc-900/60 px-2 py-1"
+        data-barra-editor=""
+      >
+        <span className="relative shrink-0">
           <Button
             variant="secondary"
-            onClick={handleFormat}
-            loading={formatting}
-            disabled={formatting}
-            data-formatta={formatting ? 'in-corso' : 'pronto'}
-            title="Formatta (Ctrl+Shift+F) — con una selezione formatta solo quella parte"
+            size="sm"
+            onClick={() => {
+              const sql = getSqlToExecute()
+              recordTablesFromSql(sql)
+              onExecute(sql)
+            }}
+            loading={executing}
+            title="Esegui (F5 / Ctrl+Invio) — se hai selezionato del testo esegue solo la selezione"
           >
-            {!formatting && <Wand2 className="h-4 w-4 text-violet-400" />} {formatting ? 'Formattazione…' : 'Formatta'}
+            <Play className="h-4 w-4 fill-emerald-400 text-emerald-400" /> Esegui
           </Button>
-          <Button
-            variant="ghost"
-            onClick={() => setProfileOpen(true)}
-            title="Impostazioni di formattazione (importa/edita/esporta il profilo T-SQL)"
-          >
-            <Settings2 className="h-4 w-4 text-sky-300" />
-          </Button>
-          <Button
-            variant={mostraSpazi ? 'primary' : 'ghost'}
-            onClick={toggleSpazi}
-            title="Mostra i caratteri invisibili: spazio (·) e tab (→)"
-            data-spazi={mostraSpazi ? 'on' : 'off'}
-          >
-            <Pilcrow className={mostraSpazi ? 'h-4 w-4 text-amber-200' : 'h-4 w-4 text-zinc-400'} /> Spazi e tab
-          </Button>
-          <Button variant="ghost" onClick={() => editorRef.current?.setValue('')}>
-            <Eraser className="h-4 w-4 text-rose-400" /> Svuota
-          </Button>
-        </div>
-        <div className="flex items-center gap-3">
-          {/* UNDO / REDO della tab attiva (richiesta utente: pulsanti per annullare e ripetere) */}
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              disabled={!undoRedo.undo}
-              onClick={() => {
-                editorRef.current?.focus()
-                editorRef.current?.trigger('sqlIntelli', 'undo', null)
-              }}
-              title="Annulla l'ultima modifica di questa tab (Ctrl+Z)"
-              data-undo=""
-            >
-              <Undo2 className="h-4 w-4 text-violet-300" /> Annulla
-            </Button>
-            <Button
-              variant="ghost"
-              disabled={!undoRedo.redo}
-              onClick={() => {
-                editorRef.current?.focus()
-                editorRef.current?.trigger('sqlIntelli', 'redo', null)
-              }}
-              title="Ripeti la modifica annullata (Ctrl+Y oppure Ctrl+Shift+Z)"
-              data-redo=""
-            >
-              <Redo2 className="h-4 w-4 text-violet-300" /> Ripeti
-            </Button>
-          </div>
-          <div className="flex items-center gap-1">
-            <Button variant="ghost" onClick={() => onZoomFont?.(-1)} title="Riduci testo (Ctrl+rotella giù)">
-              <ZoomOut className="h-4 w-4 text-sky-300/80" />
-            </Button>
-            <span className="w-6 text-center text-xs tabular-nums text-zinc-400">{fontSize}</span>
-            <Button variant="ghost" onClick={() => onZoomFont?.(1)} title="Ingrandisci testo (Ctrl+rotella su)">
-              <ZoomIn className="h-4 w-4 text-sky-300" />
-            </Button>
-          </div>
-          <Button
-            variant="ghost"
-            onClick={() => onToggleTheme?.()}
-            title={theme === 'vs-dark' ? 'Passa al tema chiaro' : 'Passa al tema scuro'}
-          >
-            {theme === 'vs-dark' ? <Sun className="h-4 w-4 text-amber-300" /> : <Moon className="h-4 w-4 text-sky-300" />}
-          </Button>
-          <Toggle
-            checked={aiEnabled}
-            onChange={onAiEnabledChange}
-            label="Autocompletamento IA"
-            title={
-              aiConfigured
-                ? 'Suggerimenti in linea con DeepSeek'
-                : 'Richiede una chiave DeepSeek configurata sul backend'
-            }
-          />
-          <Toggle
-            checked={syntaxCheck}
-            onChange={setSyntaxCheck}
-            label="Verifica sintassi"
-            title="Sottolinea gli errori reali di SQL Server (esegue il testo in una transazione che viene annullata — nessun effetto collaterale)"
-          />
-          <Toggle
-            checked={blocchi}
-            onChange={toggleBlocchi}
-            label="Scrittura su più righe"
-            title="Selezione a BLOCCHI come in SSMS (Alt+C): trascina col mouse un rettangolo di testo e quello che scrivi va su TUTTE le righe selezionate. Per più cursori: Alt+clic oppure Maiusc+Alt+Giù / Maiusc+Alt+Su."
-            data-multiriga="blocchi"
-          />
-          {/* etichetta IA solo quando la chiave è configurata (richiesta utente: niente
-              "chiave non configurata" nella barra) */}
-          {aiConfigured && <Badge tone="emerald">{aiStatusText}</Badge>}
-        </div>
+          {/* Fuoco del drago: scaturisce dal pulsante a ogni query eseguita */}
+          {fireVisible && (
+            <div className="pointer-events-none absolute -top-5 left-1/2 z-30 h-16 w-24 -translate-x-1/2">
+              {Array.from({ length: Math.min(6 + Math.floor(dragonLevel / 10), 18) }).map((_, i) => (
+                <span
+                  key={`${fireTick}-${i}`}
+                  className="dragon-flame absolute text-lg leading-none"
+                  style={{
+                    left: `${6 + (i * 82) / Math.min(6 + Math.floor(dragonLevel / 10), 18)}%`,
+                    bottom: '4px',
+                    animationDelay: `${(i % 6) * 0.13}s`,
+                    animationDuration: `${1.2 + (i % 4) * 0.3}s`,
+                    fontSize: `${14 + Math.min(dragonLevel / 100, 1) * 10}px`,
+                  }}
+                >
+                  🔥
+                </span>
+              ))}
+            </div>
+          )}
+        </span>
+        <SeparatoreBarra />
+        <Button
+          variant="secondary"
+          size="sm"
+          className="px-1.5"
+          onClick={() => onAnteprimaRef.current?.()}
+          title="Anteprima delle modifiche (Alt+P): mostra le righe che un UPDATE/DELETE toccherebbe, senza modificare niente"
+          data-anteprima="modifiche"
+        >
+          <Eye className="h-4 w-4 text-sky-400" />
+          <span className="sr-only">Anteprima</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="px-1.5"
+          onClick={() => onPianoRef.current?.()}
+          title="Piano di esecuzione stimato (Alt+E): operatori e indici suggeriti, senza eseguire la query"
+          data-piano="apri"
+        >
+          <Activity className="h-4 w-4 text-amber-400" />
+          <span className="sr-only">Piano</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="px-1.5"
+          onClick={() => onSave?.()}
+          title="Salva la query (Ctrl+S) — sovrascrive il file originale se aperto"
+        >
+          <Save className="h-4 w-4 text-sky-400" />
+          <span className="sr-only">Salva</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="px-1.5"
+          onClick={() => onSaveAs?.()}
+          title="Salva con nome (Ctrl+Shift+S) — scegli dove salvarla"
+        >
+          <SaveAll className="h-4 w-4 text-sky-300" />
+          <span className="sr-only">Salva con nome</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="px-1.5"
+          onClick={() => onOpenFile?.()}
+          title="Apri file .sql (permette di sovrascrivere l'originale)"
+        >
+          <FolderOpen className="h-4 w-4 text-amber-400" />
+          <span className="sr-only">Apri file</span>
+        </Button>
+        <SeparatoreBarra />
+        <Button
+          variant="ghost"
+          size="sm"
+          className="px-1.5"
+          onClick={() => {
+            editorRef.current?.focus()
+            void editorRef.current?.getAction('editor.action.commentLine')?.run()
+          }}
+          title="Commenta / togli il commento alle righe selezionate (Ctrl+/)"
+        >
+          <MessageSquare className="h-4 w-4 text-lime-400" />
+          <span className="sr-only">Commenta</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="px-1.5"
+          onClick={() => {
+            editorRef.current?.focus()
+            void editorRef.current?.getAction('editor.action.indentLines')?.run()
+          }}
+          title="Aumenta il rientro delle righe selezionate (Tab)"
+        >
+          <IndentIncrease className="h-4 w-4 text-teal-300" />
+          <span className="sr-only">Rientra</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="px-1.5"
+          onClick={() => {
+            editorRef.current?.focus()
+            void editorRef.current?.getAction('editor.action.outdentLines')?.run()
+          }}
+          title="Riduce il rientro delle righe selezionate (Shift+Tab)"
+        >
+          <IndentDecrease className="h-4 w-4 text-teal-300" />
+          <span className="sr-only">Fuori rientro</span>
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="px-1.5"
+          onClick={handleFormat}
+          loading={formatting}
+          disabled={formatting}
+          data-formatta={formatting ? 'in-corso' : 'pronto'}
+          title="Formatta (Ctrl+Shift+F) — con una selezione formatta solo quella parte"
+        >
+          {!formatting && <Wand2 className="h-4 w-4 text-violet-400" />}
+          <span className="sr-only">{formatting ? 'Formattazione…' : 'Formatta'}</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="px-1.5"
+          onClick={() => setProfileOpen(true)}
+          title="Impostazioni di formattazione (importa/edita/esporta il profilo T-SQL)"
+        >
+          <Settings2 className="h-4 w-4 text-sky-300" />
+          <span className="sr-only">Impostazioni di formattazione</span>
+        </Button>
+        <Button
+          variant={mostraSpazi ? 'primary' : 'ghost'}
+          size="sm"
+          className="px-1.5"
+          onClick={toggleSpazi}
+          title="Mostra i caratteri invisibili: spazio (·) e tab (→)"
+          data-spazi={mostraSpazi ? 'on' : 'off'}
+        >
+          <Pilcrow className={mostraSpazi ? 'h-4 w-4 text-amber-200' : 'h-4 w-4 text-zinc-400'} />
+          <span className="sr-only">Spazi e tab</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="px-1.5"
+          onClick={() => editorRef.current?.setValue('')}
+          title="Svuota l'editor (la query non viene salvata)"
+        >
+          <Eraser className="h-4 w-4 text-rose-400" />
+          <span className="sr-only">Svuota</span>
+        </Button>
+        <SeparatoreBarra />
+        {/* UNDO / REDO della tab attiva */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="px-1.5"
+          disabled={!undoRedo.undo}
+          onClick={() => {
+            editorRef.current?.focus()
+            editorRef.current?.trigger('sqlIntelli', 'undo', null)
+          }}
+          title="Annulla l'ultima modifica di questa tab (Ctrl+Z)"
+          data-undo=""
+        >
+          <Undo2 className="h-4 w-4 text-violet-300" />
+          <span className="sr-only">Annulla</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="px-1.5"
+          disabled={!undoRedo.redo}
+          onClick={() => {
+            editorRef.current?.focus()
+            editorRef.current?.trigger('sqlIntelli', 'redo', null)
+          }}
+          title="Ripeti la modifica annullata (Ctrl+Y oppure Ctrl+Shift+Z)"
+          data-redo=""
+        >
+          <Redo2 className="h-4 w-4 text-violet-300" />
+          <span className="sr-only">Ripeti</span>
+        </Button>
+        <SeparatoreBarra />
+        <Button
+          variant="ghost"
+          size="sm"
+          className="px-1"
+          onClick={() => onZoomFont?.(-1)}
+          title="Riduci testo (Ctrl+rotella giù)"
+        >
+          <ZoomOut className="h-4 w-4 text-sky-300/80" />
+        </Button>
+        <span className="w-6 shrink-0 text-center text-[11px] tabular-nums text-zinc-400" title="Dimensione del testo">
+          {fontSize}
+        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="px-1"
+          onClick={() => onZoomFont?.(1)}
+          title="Ingrandisci testo (Ctrl+rotella su)"
+        >
+          <ZoomIn className="h-4 w-4 text-sky-300" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="px-1.5"
+          onClick={() => onToggleTheme?.()}
+          title={theme === 'vs-dark' ? 'Passa al tema chiaro' : 'Passa al tema scuro'}
+        >
+          {theme === 'vs-dark' ? <Sun className="h-4 w-4 text-amber-300" /> : <Moon className="h-4 w-4 text-sky-300" />}
+        </Button>
+        <SeparatoreBarra />
+        {/* Toggle compatti: interruttore + tooltip, etichetta solo per i lettori di schermo */}
+        <TripSwitch
+          checked={aiEnabled}
+          onCambia={onAiEnabledChange}
+          label="Autocompletamento IA"
+          title={
+            aiConfigured
+              ? 'Autocompletamento IA attivo: suggerimenti in linea con DeepSeek'
+              : 'Autocompletamento IA: richiede una chiave DeepSeek configurata sul backend'
+          }
+        />
+        <TripSwitch
+          checked={syntaxCheck}
+          onCambia={setSyntaxCheck}
+          label="Verifica sintassi"
+          title="Verifica sintassi: sottolinea gli errori reali di SQL Server (esegue il testo in una transazione che viene annullata — nessun effetto collaterale)"
+        />
+        <TripSwitch
+          checked={blocchi}
+          onCambia={toggleBlocchi}
+          label="Scrittura su più righe"
+          title="Scrittura a BLOCCHI come in SSMS (Alt+C): trascina col mouse un rettangolo di testo e quello che scrivi va su TUTTE le righe selezionate. Per più cursori: Alt+clic oppure Maiusc+Alt+Giù / Maiusc+Alt+Su."
+          data-multiriga="blocchi"
+        />
+        {aiConfigured && (
+          <span className="ml-auto shrink-0">
+            <Badge tone="emerald">{aiStatusText}</Badge>
+          </span>
+        )}
       </div>
       <div className="min-h-0 flex-1">
         <Editor
@@ -1308,4 +1394,54 @@ function debounce(ms: number, token: monaco.CancellationToken): Promise<void> {
       resolve()
     }, ms)
   })
+}
+
+/**
+ * Separatore verticale fra i gruppi della barra compatta (Esegui | modifica | formattazione | …).
+ */
+function SeparatoreBarra() {
+  return <span className="mx-1 h-5 w-px shrink-0 bg-zinc-700/70" aria-hidden="true" />
+}
+
+/**
+ * Interruttore COMPATTO: solo il "pirulo" più il tooltip. L'etichetta resta nel DOM come `sr-only`
+ * (richiesta utente: "la barra dei tasti … occupi meno spazio, o metti delle tooltip per le icone"),
+ * così i lettori di schermo — e le verifiche automatiche — continuano a trovarla.
+ */
+function TripSwitch({
+  checked,
+  onCambia,
+  label,
+  title,
+  ...rest
+}: {
+  checked: boolean
+  onCambia: (v: boolean) => void
+  label: string
+  title: string
+} & Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'onChange' | 'title'>) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={label}
+      aria-pressed={checked}
+      onClick={() => onCambia(!checked)}
+      className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 transition-colors hover:bg-zinc-800"
+      {...rest}
+    >
+      <span
+        className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors ${
+          checked ? 'bg-sky-600' : 'bg-zinc-700'
+        }`}
+      >
+        <span
+          className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${
+            checked ? 'translate-x-3.5' : 'translate-x-0.5'
+          }`}
+        />
+      </span>
+      <span className="sr-only">{label}</span>
+    </button>
+  )
 }

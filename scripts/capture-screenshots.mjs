@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_BARRA_COMPATTA = process.argv.includes('--verify-barra-compatta')
 const VERIFY_VERIFY_GRIGLIA_DB = process.argv.includes('--verify-griglia-db')
 const VERIFY_FUNZIONI_DATA = process.argv.includes('--verify-funzioni-data')
 const VERIFY_AW_SCRIPT = process.argv.includes('--verify-aw-script')
@@ -9570,6 +9571,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_BARRA_COMPATTA) {
+      await verifyBarraCompatta(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -10800,6 +10806,102 @@ async function verifyGrigliaDb(page) {
   }
   check('ogni tab mostra il PROPRIO database (combo e schema vero)', tuttoOk)
   await page.screenshot('db-per-tab-dopo-rimbalzo')
+
+  const falliti = esiti.filter((e) => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-barra-compatta): la barra dei tasti dell'editor deve occupare MENO SPAZIO.
+ * Richiesta utente: "fai la barra dei tasti che occupi meno spazio, o metti delle tooltip per le
+ * icone o un'altra via".
+ * Controlli: una sola riga (altezza contenuta), ogni icona ha il suo tooltip (title), e i nomi dei
+ * comandi restano nel DOM (sr-only) per l'accessibilità e per le verifiche automatiche.
+ */
+async function verifyBarraCompatta(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  const barra = await page.eval(`(() => {
+    const b = document.querySelector('[data-barra-editor]');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    const riquadri = [...b.querySelectorAll('button')].map(x => x.getBoundingClientRect());
+    // quante "righe" occupa: raggruppo i top dei pulsanti
+    const tops = [...new Set(riquadri.map(r => Math.round(r.top)))];
+    return {
+      altezza: Math.round(r.height),
+      larghezza: Math.round(r.width),
+      pulsanti: riquadri.length,
+      righe: tops.length,
+      scrolla: b.scrollWidth > b.clientWidth,
+    };
+  })()`)
+  console.log(`  barra: ${JSON.stringify(barra)}`)
+  // "una sola riga" = tutti i pulsanti alla stessa altezza (i top differiscono solo di pochi pixel
+  // perché alcuni sono più bassi): se andassero a capo la differenza sarebbe di decine di pixel.
+  const scarto = await page.eval(`(() => {
+    const b = document.querySelector('[data-barra-editor]');
+    if (!b) return -1;
+    const tops = [...b.querySelectorAll('button')].map(x => x.getBoundingClientRect().top);
+    return Math.round(Math.max(...tops) - Math.min(...tops));
+  })()`)
+  console.log(`  scarto verticale fra i pulsanti: ${scarto}px`)
+  check('i pulsanti stanno tutti sulla stessa riga', scarto >= 0 && scarto <= 12, `${scarto}px`)
+  check('la barra è bassa (<= 44px)', barra && barra.altezza <= 44, `${barra ? barra.altezza : '?'}px`)
+  check('niente testo che va a capo: serve scorrimento orizzontale solo se necessario', !!barra)
+
+  const tooltip = await page.eval(`(() => {
+    const b = document.querySelector('[data-barra-editor]');
+    if (!b) return null;
+    const pulsanti = [...b.querySelectorAll('button')];
+    const conTitle = pulsanti.filter(x => (x.getAttribute('title') || '').length > 8);
+    const senza = pulsanti.filter(x => !(x.getAttribute('title') || '').length).map(x => (x.textContent || '').trim());
+    return { totale: pulsanti.length, conTooltip: conTitle.length, senza };
+  })()`)
+  console.log(`  tooltip: ${tooltip ? tooltip.conTooltip : '?'} su ${tooltip ? tooltip.totale : '?'} pulsanti · senza: ${JSON.stringify(tooltip ? tooltip.senza : [])}`)
+  check('ogni icona ha il suo tooltip', tooltip && tooltip.conTooltip === tooltip.totale, `${tooltip ? tooltip.conTooltip + '/' + tooltip.totale : '?'}`)
+
+  const nomi = await page.eval(`(() => {
+    const testo = document.querySelector('[data-barra-editor]')?.textContent || '';
+    const attesi = ['Esegui', 'Anteprima', 'Piano', 'Salva', 'Salva con nome', 'Apri file', 'Commenta',
+                    'Rientra', 'Fuori rientro', 'Formatta', 'Spazi e tab', 'Svuota', 'Annulla', 'Ripeti',
+                    'Autocompletamento IA', 'Verifica sintassi', 'Scrittura su più righe'];
+    return attesi.filter(n => !testo.includes(n));
+  })()`)
+  console.log(`  nomi mancanti dal DOM: ${JSON.stringify(nomi)}`)
+  check('i nomi dei comandi restano nel DOM (accessibilità e verifiche)', nomi.length === 0)
+
+  // i pulsanti si trovano ancora PER TESTO (le vecchie verifiche non devono rompersi)
+  const perTesto = await page.eval(`(() => {
+    const cerca = (t) => [...document.querySelectorAll('button')].some(b => (b.textContent || '').trim() === t);
+    return { formatta: cerca('Formatta'), spazi: [...document.querySelectorAll('button')].some(b => (b.textContent || '').includes('Spazi e tab')) };
+  })()`)
+  console.log(`  ricerca per testo: ${JSON.stringify(perTesto)}`)
+  check('il tasto "Formatta" si trova ancora per testo', perTesto.formatta)
+  check('il tasto "Spazi e tab" si trova ancora per testo', perTesto.spazi)
+
+  await page.screenshot('barra-compatta')
 
   const falliti = esiti.filter((e) => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
