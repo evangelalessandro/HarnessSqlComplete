@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_TRIGGER_INSERTED = process.argv.includes('--verify-trigger-inserted')
 const VERIFY_VERIFY_SVUOTA_ANNULLA = process.argv.includes('--verify-svuota-annulla')
 const VERIFY_VERIFY_SIDEBAR_FLOTTANTE = process.argv.includes('--verify-sidebar-flottante')
 const VERIFY_VERIFY_BARRA_COMPATTA = process.argv.includes('--verify-barra-compatta')
@@ -9588,6 +9589,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_TRIGGER_INSERTED) {
+      await verifyTriggerInserted(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -11175,6 +11181,157 @@ async function verifySvuotaAnnulla(page) {
   check('Ctrl+Z ripristina il testo', dopoCtrlZ === SQL)
 
   await page.screenshot('svuota-annulla')
+
+  const falliti = esiti.filter((e) => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-trigger-inserted): dentro un TRIGGER l'intellisense deve conoscere le tabelle
+ * logiche `inserted` e `deleted`, e dopo il punto deve proporre i campi della TABELLA del trigger.
+ * Segnalazione utente: "nei trigger devi vedere i campi per l'intellisense dall'oggetto inserted e
+ * updated, adesso non sembra vederli".
+ */
+async function verifyTriggerInserted(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // schema noto (AdventureWorks2019): il trigger sta su Sales.SalesOrderHeader
+  const cambiaDb = async (db) => {
+    const ok = await page.eval(`(() => {
+      const s = document.querySelector('select[data-db-tab]') || document.querySelector('select');
+      if (!s) return false;
+      const opt = [...s.options].find(o => (o.textContent || '').trim() === ${JSON.stringify('@@DB@@')});
+      if (!opt) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+      setter.call(s, opt.value);
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`.replace('"@@DB@@"', JSON.stringify(db)))
+    await sleep(5000)
+    return ok
+  }
+  await cambiaDb('AdventureWorks2019')
+
+  /**
+   * Scrive il testo, ASPETTA che l'app non lo sovrascriva (l'editor è condiviso fra le tab: dopo un
+   * setValue può arrivare un re-render che rimette il testo della tab), poi mette il cursore
+   * all'indice voluto e apre i suggerimenti — il tutto in un secondo momento, quando il modello è stabile.
+   */
+  const scriviEApri = async (sql, indice) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      if (!ed) return false;
+      ed.focus();
+      ed.setValue(${JSON.stringify('@@SQL@@')});
+      return true;
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+    await sleep(900)
+    const pronto = await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      if (!ed) return null;
+      const model = ed.getModel();
+      // se il testo è stato sovrascritto dall'app, lo si rimette
+      if (!model.getValue().includes('inserted.') && !model.getValue().includes('deleted.') && !model.getValue().includes('INNER JOIN ')) {
+        ed.setValue(${JSON.stringify('@@SQL@@')});
+      }
+      const i = ${JSON.stringify('@@IDX@@')};
+      const pos = model.getPositionAt(i >= 0 ? i : model.getValueLength());
+      ed.setPosition(pos);
+      ed.focus();
+      ed.trigger('test', 'editor.action.triggerSuggest', {});
+      return { testo: model.getValue().length, indice: model.getOffsetAt(pos), riga: (model.getValue().split('\\n')[pos.lineNumber - 1] || '').slice(0, 40) };
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)).replace('"@@IDX@@"', String(indice)))
+    console.log(`    (modello: ${JSON.stringify(pronto)})`)
+    await sleep(2500)
+  }
+  const voci = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.label-name') || r).textContent || '').trim())`)
+  const dettagli = async () =>
+    await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+      .map(r => ((r.querySelector('.details-label') || r).textContent || '').trim())`)
+
+  const trigger = `CREATE OR ALTER TRIGGER Sales.uSalesOrderHeader
+ON Sales.SalesOrderHeader
+AFTER UPDATE
+AS
+BEGIN
+  SET NOCOUNT ON
+  IF UPDATE(OrderDate)
+  BEGIN
+    UPDATE h
+    SET ModifiedDate = GETDATE()
+    FROM Sales.SalesOrderHeader AS h
+    INNER JOIN inserted AS i ON i.SalesOrderID = h.SalesOrderID
+  END
+END`
+
+  // --- 1) dopo "inserted." devono arrivare i CAMPI della tabella del trigger
+  const conInserted = trigger.replace('i.SalesOrderID = h.SalesOrderID', 'inserted.')
+  const idxInserted = conInserted.indexOf('inserted.') + 'inserted.'.length
+  await scriviEApri(conInserted, idxInserted)
+  const vociIns = await voci()
+  const detIns = await dettagli()
+  console.log(`  dopo "inserted.": ${JSON.stringify(vociIns.slice(0, 12))}`)
+  console.log(`  dettagli: ${JSON.stringify(detIns.slice(0, 4))}`)
+  const conteggio = await page.eval(`document.querySelectorAll('.suggest-widget .monaco-list-row').length`)
+  const tuttiDettagli = await page.eval(`[...document.querySelectorAll('.suggest-widget .monaco-list-row')]
+    .map(r => (r.textContent || '').replace(/\\s+/g, ' ').trim())`)
+  console.log(`  righe disegnate: ${conteggio}`)
+  console.log(`  prime 6 righe complete: ${JSON.stringify(tuttiDettagli.slice(0, 6))}`)
+  check('propone i campi dopo "inserted."', vociIns.length > 0, `${vociIns.length} voci`)
+  check('i campi sono quelli di SalesOrderHeader', vociIns.includes('SalesOrderID') && vociIns.includes('OrderDate'))
+  check('il dettaglio dice che è la tabella logica "inserted"', detIns.some(d => /inserted/i.test(d)))
+  check('il dettaglio nomina la tabella del trigger', detIns.some(d => /SalesOrderHeader/i.test(d)))
+  await page.screenshot('trigger-inserted-campi')
+
+  // --- 2) anche "deleted." (e "updated." come sinonimo)
+  const conDeleted = trigger.replace('i.SalesOrderID = h.SalesOrderID', 'deleted.')
+  await scriviEApri(conDeleted, conDeleted.indexOf('deleted.') + 'deleted.'.length)
+  const vociDel = await voci()
+  console.log(`  dopo "deleted.": ${JSON.stringify(vociDel.slice(0, 10))}`)
+  check('propone i campi anche dopo "deleted."', vociDel.includes('SalesOrderID') && vociDel.includes('OrderDate'))
+
+  const conUpdated = trigger.replace('i.SalesOrderID = h.SalesOrderID', 'updated.')
+  await scriviEApri(conUpdated, conUpdated.indexOf('updated.') + 'updated.'.length)
+  const vociUpd = await voci()
+  console.log(`  dopo "updated.": ${JSON.stringify(vociUpd.slice(0, 10))}`)
+  check('propone i campi anche dopo "updated." (sinonimo)', vociUpd.includes('SalesOrderID'))
+
+  // --- 3) dentro un trigger si propongono anche i nomi "inserted"/"deleted"
+  const conFrom = trigger.replace('INNER JOIN inserted AS i', 'INNER JOIN ')
+  await scriviEApri(conFrom, conFrom.indexOf('INNER JOIN ') + 'INNER JOIN '.length)
+  const vociJoin = await voci()
+  console.log(`  dopo "INNER JOIN ": ${JSON.stringify(vociJoin.slice(0, 12))}`)
+  check('in un trigger propone "inserted"', vociJoin.includes('inserted'))
+  check('in un trigger propone "deleted"', vociJoin.includes('deleted'))
 
   const falliti = esiti.filter((e) => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)

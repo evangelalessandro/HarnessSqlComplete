@@ -7,6 +7,7 @@ import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
 import { isTextOffsetInComment } from './helpers'
 import { etichettaDrago } from './dragon'
 import { contestoParteData, costruisciFinestra, finestraDigitata, suggerimentiParteData } from './funzioniSql'
+import { TABELLE_LOGICHE, colonneTabelleLogiche, eUnTrigger } from './triggerTables'
 import { buildColumnContextSuggestions, buildGroupBySuggestions, buildExecParamSnippet, buildInsertValues, buildJoinConditionSuggestions, buildJoinSuggestions, buildQualifiedColumnSuggestions, buildSelectListSuggestions, buildSelfJoinSuggestions, buildStatementSnippets, columnForInsertSlot, columnInfoMarkdown, columnsByFragment, completionFilterText, completionSortText, extractStatementTableRefs, filterUnusedParams, findExecContext, findTableRefs, insertSlotIndexAt, insertTupleAt, insertTupleInnerRange, isInsideValuesTuple, parseInsertContext, qualified, rankSelectListForTyped, rankTablesForPosition, splitUserFunctions, sqlDefaultForType, sqlIdent, starFilterText, statementRangeAt, usageDetail, groupByAllText } from './helpers'
 import { shouldSuggestSystemObjects, systemObjectsFor } from './systemObjects'
 import { TSQL_ALTER_SNIPPETS, TSQL_OPTION_HINTS, TSQL_OVER_CONTINUE, TSQL_OVER_FRAMES, TSQL_OVER_STARTS, TSQL_SET_OPTIONS, TSQL_SYSTEM_VARIABLES, TSQL_TABLE_HINTS, TSQL_TYPES, detectAlterTableContext, detectAlterTableDropContext, detectAlterTableTrigger, detectCreateIndexContext, detectCreateTableColumnContext, detectDeclareTypeContext, detectEnableDisableTriggerName, detectEnableDisableTriggerOn, detectObjectNameContext, detectOptionHintsContext, detectOverContext, detectSetContext, detectSystemVariableContext, detectTableHintsContext, detectVariableContext, dropColumnSnippet, extractDeclaredVariables, extractRoutineParameters, nomiTriggerDigitati, setOptionInsertText, setOptionLabel, systemVariablePrefixLen, tabellaDelTrigger, variablePrefixLen, vincoliCollegati } from './tsqlSnippets'
@@ -162,6 +163,45 @@ export function provideSqlCompletions({
           const push = (item: monaco.languages.CompletionItem) => {
             suggestions.push({ ...item, sortText: completionSortText(rank) })
             rank++
+          }
+
+          /**
+           * TRIGGER: `inserted` e `deleted` sono tabelle logiche con le STESSE COLONNE della tabella
+           * del trigger (segnalazione utente: "nei trigger devi vedere i campi per l'intellisense
+           * dall'oggetto inserted e updated, adesso non sembra vederli").
+           * Qui si risponde subito, prima di ogni altra logica: dopo "inserted." si propongono le
+           * colonne della tabella del trigger, e dentro un trigger si propongono anche i due nomi
+           * delle tabelle logiche.
+           */
+          const logica = colonneTabelleLogiche(textBefore, fullText, st.summary)
+          if (logica) {
+            for (const c of logica.colonne) {
+              push({
+                label: c.name,
+                detail: `${logica.logica} · ${logica.tabella.schema}.${logica.tabella.name}`,
+                documentation: `Colonna \`${c.name}\` (${c.dataType}) della tabella logica \`${logica.logica}\` del trigger su ${logica.tabella.schema}.${logica.tabella.name}.`,
+                kind: monaco.languages.CompletionItemKind.Field,
+                insertText: c.name,
+                range,
+                filterText: c.name,
+              })
+            }
+            return { suggestions }
+          }
+          if (eUnTrigger(fullText) && (isColumnContext || isTablePosition)) {
+            for (const nome of TABELLE_LOGICHE) {
+              // `updated` è accettato come sinonimo: in T-SQL la tabella delle righe nuove è `inserted`
+              const vero = nome === 'updated' ? 'inserted' : nome
+              push({
+                label: nome,
+                detail: `tabella logica del trigger${nome === 'updated' ? ' (in T-SQL è inserted)' : ''}`,
+                documentation: `\`${nome}\` contiene le righe ${vero === 'inserted' ? 'NUOVE (dopo INSERT/UPDATE)' : 'VECCHIE (prima di DELETE/UPDATE)'} con le colonne della tabella del trigger.`,
+                kind: monaco.languages.CompletionItemKind.Class,
+                insertText: nome,
+                range,
+                filterText: nome,
+              })
+            }
           }
 
           /**
