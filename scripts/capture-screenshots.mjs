@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_SIDEBAR_FLOTTANTE = process.argv.includes('--verify-sidebar-flottante')
 const VERIFY_VERIFY_BARRA_COMPATTA = process.argv.includes('--verify-barra-compatta')
 const VERIFY_VERIFY_GRIGLIA_DB = process.argv.includes('--verify-griglia-db')
 const VERIFY_FUNZIONI_DATA = process.argv.includes('--verify-funzioni-data')
@@ -9576,6 +9577,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_SIDEBAR_FLOTTANTE) {
+      await verifySidebarFlottante(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -10902,6 +10908,156 @@ async function verifyBarraCompatta(page) {
   check('il tasto "Spazi e tab" si trova ancora per testo', perTesto.spazi)
 
   await page.screenshot('barra-compatta')
+
+  const falliti = esiti.filter((e) => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-sidebar-flottante): la scheda con database e oggetti si può CHIUDERE del tutto o
+ * mettere FLOTTANTE, e i divisori hanno il POMELLO TONDO per afferrarli.
+ * Richieste utente: "dammi il modo di chiudere del tutto o mettere flottante la scheda con oggetti e
+ * database" e "c'è mettere un pulsante tondo per le splitter per poterle muovere più agilmente".
+ */
+async function verifySidebarFlottante(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const stato = async () =>
+    await page.eval(`(() => {
+      const aside = document.querySelector('[data-sidebar]');
+      const lingetta = document.querySelector('[data-sidebar-lingetta]');
+      const main = document.querySelector('main');
+      return {
+        modo: aside ? aside.getAttribute('data-sidebar') : (lingetta ? 'nascosta' : 'assente'),
+        posizione: aside ? getComputedStyle(aside).position : null,
+        larghezzaAside: aside ? Math.round(aside.getBoundingClientRect().width) : 0,
+        larghezzaEditor: main ? Math.round(main.getBoundingClientRect().width) : 0,
+        lingetta: !!lingetta,
+      };
+    })()`)
+  const clicModo = async (modo) => {
+    const fatto = await page.clickWhere(`document.querySelector('[data-sidebar-modo="${modo}"]')`)
+    await sleep(900)
+    return fatto
+  }
+  const clicLingetta = async () => {
+    const fatto = await page.clickWhere(`document.querySelector('[data-sidebar-lingetta]')`)
+    await sleep(900)
+    return fatto
+  }
+
+  // --- stato iniziale: agganciata
+  const iniziale = await stato()
+  console.log(`  iniziale: ${JSON.stringify(iniziale)}`)
+  check('si parte con la scheda agganciata', iniziale.modo === 'agganciata', iniziale.modo)
+
+  // --- FLOTTANTE: l'editor usa tutta la larghezza, la scheda si sovrappone
+  check('il pulsante "flottante" c è', await clicModo('flottante'))
+  const flottante = await stato()
+  console.log(`  flottante: ${JSON.stringify(flottante)}`)
+  check('la scheda è in modalità flottante', flottante.modo === 'flottante')
+  check('flottante: la scheda si sovrappone (position absolute)', flottante.posizione === 'absolute', String(flottante.posizione))
+  check(
+    "flottante: l'editor è più largo che da agganciata",
+    flottante.larghezzaEditor > iniziale.larghezzaEditor + 100,
+    `${iniziale.larghezzaEditor}px -> ${flottante.larghezzaEditor}px`,
+  )
+  await page.screenshot('sidebar-flottante')
+
+  // --- NASCOSTA: sparisce del tutto e resta la linguetta
+  await clicModo('nascosta')
+  const nascosta = await stato()
+  console.log(`  nascosta: ${JSON.stringify(nascosta)}`)
+  check('la scheda è chiusa del tutto', nascosta.modo === 'nascosta' && !nascosta.larghezzaAside)
+  check('resta la linguetta per riaprirla', nascosta.lingetta)
+  await page.screenshot('sidebar-nascosta')
+
+  // --- riapertura dalla linguetta
+  check('la linguetta riapre la scheda', await clicLingetta())
+  const riaperta = await stato()
+  check('dopo la linguetta la scheda torna agganciata', riaperta.modo === 'agganciata', riaperta.modo)
+
+  // --- Ctrl+B la nasconde e la rimostra
+  await page.press('b', { code: 'KeyB', vk: 66, modifiers: 2 })
+  await sleep(800)
+  const conCtrlB = await stato()
+  check('Ctrl+B nasconde la scheda', conCtrlB.modo === 'nascosta', conCtrlB.modo)
+  await page.press('b', { code: 'KeyB', vk: 66, modifiers: 2 })
+  await sleep(800)
+  const riMostrata = await stato()
+  check('Ctrl+B la rimostra', riMostrata.modo === 'agganciata', riMostrata.modo)
+
+  // --- POMELLO TONDO sui divisori
+  const maniglie = await page.eval(`(() => {
+    const out = [];
+    for (const d of document.querySelectorAll('[data-divisore]')) {
+      const pomello = d.querySelector('span[aria-hidden="true"]');
+      if (!pomello) { out.push({ divisore: d.getAttribute('data-divisore'), pomello: false }); continue; }
+      const r = pomello.getBoundingClientRect();
+      const st = getComputedStyle(pomello);
+      out.push({
+        divisore: d.getAttribute('data-divisore'),
+        pomello: true,
+        larghezza: Math.round(r.width),
+        altezza: Math.round(r.height),
+        raggio: st.borderRadius,
+        areaPresa: Math.round(d.getBoundingClientRect().width),
+      });
+    }
+    return out;
+  })()`)
+  console.log(`  maniglie: ${JSON.stringify(maniglie)}`)
+  check('ci sono le maniglie sui divisori', maniglie.length >= 2, `${maniglie.length}`)
+  check(
+    'le maniglie sono TONDE (border-radius pieno)',
+    maniglie.every((m) => m.pomello && /px|%/.test(m.raggio)),
+  )
+  check(
+    'le maniglie sono visibili (non 0x0)',
+    maniglie.every((m) => m.pomello && m.larghezza > 4 && m.altezza > 4),
+  )
+
+  // --- trascinare il pomello del divisore laterale allarga la scheda
+  const prima = await page.eval(`Math.round(document.querySelector('[data-sidebar]').getBoundingClientRect().width)`)
+  const punto = await page.eval(`(() => {
+    const p = document.querySelector('[data-divisore="sidebar"] span[aria-hidden="true"]');
+    if (!p) return null;
+    const r = p.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`)
+  if (punto) {
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: punto.x, y: punto.y, buttons: 0 })
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: punto.x, y: punto.y, button: 'left', clickCount: 1, buttons: 1 })
+    for (let i = 1; i <= 8; i++) {
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: punto.x + i * 10, y: punto.y, button: 'left', buttons: 1 })
+      await sleep(40)
+    }
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: punto.x + 80, y: punto.y, button: 'left', clickCount: 1, buttons: 0 })
+    await sleep(500)
+  }
+  const dopo = await page.eval(`Math.round(document.querySelector('[data-sidebar]').getBoundingClientRect().width)`)
+  console.log(`  larghezza scheda: ${prima}px -> ${dopo}px trascinando il pomello`)
+  check('trascinando il pomello la scheda si allarga', dopo > prima + 40, `${prima}px -> ${dopo}px`)
 
   const falliti = esiti.filter((e) => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)

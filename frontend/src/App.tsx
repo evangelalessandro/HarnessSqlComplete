@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, BookOpen, CornerDownRight, Database as DbIcon, FilePlus2, Pin, Plus, RefreshCw, Search, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
+import { AlertTriangle, AppWindow, BookOpen, CornerDownRight, Database as DbIcon, FilePlus2, PanelLeft, PanelLeftOpen, Pin, Plus, RefreshCw, Search, StickyNote, Table2, TerminalSquare, Unplug, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import monaco from './monacoSetup'
 import { api } from './api'
@@ -70,6 +70,29 @@ import { Badge, Button } from './components/ui'
 type Tab = 'results' | 'print'
 
 const firstTab = (): EditorTab => ({ id: 'tab-1', title: 'Query 1', sql: DEFAULT_SQL })
+
+/** Come è mostrata la scheda con database e oggetti. */
+type SidebarMode = 'agganciata' | 'flottante' | 'nascosta'
+/**
+ * MANIGLIA TONDA di un divisore (richiesta utente: "un pulsante tondo per le splitter per poterle
+ * muovere più agilmente"): un cerchio con tre puntini al centro del divisore. Si vede sempre, anche
+ * senza passarci sopra col mouse, e si afferra molto meglio della linea sottile.
+ */
+function ManigliaDivisore({ orientamento }: { orientamento: 'verticale' | 'orizzontale' }) {
+  const verticale = orientamento === 'verticale'
+  return (
+    <span
+      className={`pointer-events-none absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center justify-center gap-[3px] rounded-full border border-zinc-600 bg-zinc-800/95 shadow-md transition-colors group-hover:border-sky-400 group-hover:bg-sky-900/80 ${
+        verticale ? 'flex-col px-1 py-1.5' : 'flex-row px-1.5 py-1'
+      }`}
+      aria-hidden="true"
+    >
+      {[0, 1, 2].map(i => (
+        <span key={i} className="h-[3px] w-[3px] rounded-full bg-zinc-400 group-hover:bg-sky-300" />
+      ))}
+    </span>
+  )
+}
 
 export default function App() {
   const [connection, setConnection] = useState<ConnectResponse | null>(null)
@@ -232,24 +255,38 @@ export default function App() {
 
   // (Ctrl+R: vedi più sotto, dopo la definizione di "risultatiVisibili" — dipende dalla tab attiva)
 
-  // Layout dei pannelli: larghezza della sidebar e pannello agganciato a destra (persistiti)
+  /**
+   * Layout dei pannelli (persistito): larghezza della sidebar, pannello agganciato a destra e
+   * MODALITÀ DELLA SIDEBAR.
+   *
+   * RICHIESTA UTENTE: "dammi il modo di chiudere del tutto o mettere flottante la scheda con oggetti e
+   * database". Tre modi:
+   *  - 'agganciata' (default): colonna a sinistra come sempre;
+   *  - 'flottante': pannello sovrapposto all'editor (si guadagna tutta la larghezza), con ombra e
+   *    angoli arrotondati; si sposta/ridimensiona come prima e si richiude con la X;
+   *  - 'nascosta': via del tutto; resta una linguetta sul bordo per riaprirla (o Ctrl+B).
+   */
   const [layout, setLayout] = useState<{
     sidebarWidth: number
     rightDock: { panel: 'db' | 'objects'; width: number } | null
+    sidebarMode: SidebarMode
   }>(() => {
     try {
       const raw = localStorage.getItem('sql-intelli:layout')
       if (raw) {
         const p = JSON.parse(raw)
+        const modo: SidebarMode =
+          p.sidebarMode === 'flottante' || p.sidebarMode === 'nascosta' ? p.sidebarMode : 'agganciata'
         return {
           sidebarWidth: typeof p.sidebarWidth === 'number' ? Math.min(560, Math.max(220, p.sidebarWidth)) : 320,
           rightDock: p.rightDock ?? null,
+          sidebarMode: modo,
         }
       }
     } catch {
       /* ignora */
     }
-    return { sidebarWidth: 320, rightDock: null }
+    return { sidebarWidth: 320, rightDock: null, sidebarMode: 'agganciata' as SidebarMode }
   })
   const setLayoutAndPersist = useCallback(
     (updater: (prev: typeof layout) => typeof layout) => {
@@ -265,6 +302,32 @@ export default function App() {
     },
     [],
   )
+  /** Cambia la modalità della sidebar (agganciata / flottante / nascosta) e la salva. */
+  const setSidebarMode = useCallback(
+    (modo: SidebarMode) => {
+      setLayoutAndPersist(prev => ({ ...prev, sidebarMode: modo }))
+    },
+    [setLayoutAndPersist],
+  )
+
+  // Ctrl+B: mostra/nasconde la sidebar (come in VS Code). Se è flottante, la si nasconde.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
+      if (e.key.toLowerCase() !== 'b') return
+      const t = e.target as HTMLElement | null
+      // dentro l'editor Monaco Ctrl+B non deve essere rubato (Monaco non lo usa, ma per sicurezza)
+      if (t && t.closest('.monaco-editor')) return
+      e.preventDefault()
+      setLayoutAndPersist(prev => ({
+        ...prev,
+        sidebarMode: prev.sidebarMode === 'nascosta' ? 'agganciata' : 'nascosta',
+      }))
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [setLayoutAndPersist])
+
   /** Elemento della colonna destra: destinazione del portal dei pannelli agganciati a destra. */
   const [rightDockEl, setRightDockEl] = useState<HTMLElement | null>(null)
   const rightDockRefCb = useCallback((el: HTMLElement | null) => setRightDockEl(el), [])
@@ -1767,11 +1830,64 @@ export default function App() {
         </button>
       )}
 
-      <div className="flex min-h-0 flex-1">
-        <aside
-          className="relative flex shrink-0 flex-col border-r border-zinc-800 bg-zinc-900/60"
-          style={{ width: layout.sidebarWidth }}
-        >
+      {/* il contenitore è "relative": in modalità flottante la scheda si sovrappone a questo riquadro */}
+      <div className="relative flex min-h-0 flex-1">
+        {/* ------------------------------------------------------------------------------------
+            SCHEDA DATABASE/OGGETTI: agganciata, flottante o nascosta (richiesta utente).
+            - agganciata: colonna a sinistra, come sempre;
+            - flottante: pannello sovrapposto all'editor (che prende tutta la larghezza), con ombra e
+              angoli arrotondati;
+            - nascosta: resta una linguetta sul bordo sinistro per riaprirla (o Ctrl+B).
+            I tre pulsanti stanno in una striscia in cima al pannello.
+            ------------------------------------------------------------------------------------ */}
+        {layout.sidebarMode === 'nascosta' ? (
+          <button
+            onClick={() => setSidebarMode('agganciata')}
+            className="flex w-6 shrink-0 flex-col items-center justify-start gap-1 border-r border-zinc-800 bg-zinc-900/60 pt-3 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-sky-300"
+            title="Mostra la scheda con database e oggetti (Ctrl+B)"
+            data-sidebar-lingetta=""
+          >
+            <PanelLeftOpen className="h-3.5 w-3.5" />
+            <span className="mt-2 select-none text-[10px] [writing-mode:vertical-rl]">DATABASE</span>
+          </button>
+        ) : (
+          <aside
+            className={
+              layout.sidebarMode === 'flottante'
+                ? 'absolute bottom-2 left-2 top-2 z-40 flex shrink-0 flex-col overflow-hidden rounded-xl border border-zinc-600 bg-zinc-900 shadow-2xl shadow-black/70 ring-1 ring-black/40'
+                : 'relative flex shrink-0 flex-col border-r border-zinc-800 bg-zinc-900/60'
+            }
+            style={{ width: layout.sidebarWidth }}
+            data-sidebar={layout.sidebarMode}
+          >
+            {/* striscia comandi: aggancia / flottante / chiudi */}
+            <div className="flex shrink-0 items-center gap-0.5 border-b border-zinc-800 bg-zinc-900/80 px-1 py-0.5">
+              <button
+                onClick={() => setSidebarMode('agganciata')}
+                className={`rounded p-1 transition-colors hover:bg-zinc-800 ${layout.sidebarMode === 'agganciata' ? 'text-sky-300' : 'text-zinc-500 hover:text-sky-300'}`}
+                title="Aggancia la scheda a sinistra (occupa spazio fisso, l'editor si restringe)"
+                data-sidebar-modo="agganciata"
+              >
+                <PanelLeft className="h-3.5 w-3.5" />
+              </button>
+              <button
+                onClick={() => setSidebarMode('flottante')}
+                className={`rounded p-1 transition-colors hover:bg-zinc-800 ${layout.sidebarMode === 'flottante' ? 'text-sky-300' : 'text-zinc-500 hover:text-sky-300'}`}
+                title="Metti la scheda flottante: si sovrappone all'editor, che usa tutta la larghezza"
+                data-sidebar-modo="flottante"
+              >
+                <AppWindow className="h-3.5 w-3.5" />
+              </button>
+              <button
+                onClick={() => setSidebarMode('nascosta')}
+                className="ml-auto rounded p-1 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-rose-300"
+                title="Chiudi del tutto la scheda (Ctrl+B per riaprirla)"
+                data-sidebar-modo="nascosta"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+
           <div className="min-h-0 flex-1">
             <Sidebar
               summary={summary}
@@ -1793,13 +1909,17 @@ export default function App() {
               onRightDockChange={handleRightDockChange}
             />
           </div>
-          {/* Trascina per allargare/stringere la sidebar (e i pannelli ancorati a sinistra) */}
-          <div
-            onMouseDown={onSidebarResizeMouseDown}
-            className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize"
-            title="Trascina per allargare/stringere la sidebar"
-          />
-        </aside>
+            {/* MANIGLIA TONDA: si afferra col mouse molto meglio del bordo sottile */}
+            <div
+              onMouseDown={onSidebarResizeMouseDown}
+              className="group absolute inset-y-0 -right-2 z-30 w-4 cursor-col-resize"
+              title="Trascina (o afferra il pomello) per allargare/stringere la scheda"
+              data-divisore="sidebar"
+            >
+              <ManigliaDivisore orientamento="verticale" />
+            </div>
+          </aside>
+        )}
 
         <main className="flex min-w-0 flex-1 flex-col">
           {/* Barra delle tab dell'editor: a capo su 2 righe, poi elenco "»" */}
@@ -2171,10 +2291,11 @@ export default function App() {
           {risultatiVisibili && (
             <div
               onMouseDown={startSplitDrag}
-              className="group relative z-10 flex h-1.5 shrink-0 cursor-row-resize items-center justify-center border-y border-zinc-800 bg-zinc-900/80 hover:bg-sky-950/60"
-              title="Trascina per ridimensionare editor/risultati"
+              className="group relative z-10 flex h-3 shrink-0 cursor-row-resize items-center justify-center border-y border-zinc-800 bg-zinc-900/80 hover:bg-sky-950/60"
+              title="Trascina (o afferra il pomello) per ridimensionare editor e risultati"
+              data-divisore="risultati"
             >
-              <div className="h-0.5 w-10 rounded bg-zinc-700 group-hover:bg-sky-400" />
+              <ManigliaDivisore orientamento="orizzontale" />
             </div>
           )}
 
@@ -2234,11 +2355,15 @@ export default function App() {
             className="relative flex h-full shrink-0 flex-col border-l border-zinc-800 bg-zinc-900/60"
             style={{ width: layout.rightDock.width }}
           >
+            {/* MANIGLIA TONDA anche sul divisore della colonna destra (stesso pomello della sidebar) */}
             <div
               onMouseDown={onRightResizeMouseDown}
-              className="absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize"
-              title="Trascina per allargare/stringere la colonna"
-            />
+              className="group absolute inset-y-0 -left-2 z-30 w-4 cursor-col-resize"
+              title="Trascina (o afferra il pomello) per allargare/stringere la colonna"
+              data-divisore="destra"
+            >
+              <ManigliaDivisore orientamento="verticale" />
+            </div>
           </aside>
         )}
       </div>
