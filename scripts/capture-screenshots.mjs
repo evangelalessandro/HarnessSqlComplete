@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_SVUOTA_ANNULLA = process.argv.includes('--verify-svuota-annulla')
 const VERIFY_VERIFY_SIDEBAR_FLOTTANTE = process.argv.includes('--verify-sidebar-flottante')
 const VERIFY_VERIFY_BARRA_COMPATTA = process.argv.includes('--verify-barra-compatta')
 const VERIFY_VERIFY_GRIGLIA_DB = process.argv.includes('--verify-griglia-db')
@@ -9582,6 +9583,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_SVUOTA_ANNULLA) {
+      await verifySvuotaAnnulla(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -11058,6 +11064,117 @@ async function verifySidebarFlottante(page) {
   const dopo = await page.eval(`Math.round(document.querySelector('[data-sidebar]').getBoundingClientRect().width)`)
   console.log(`  larghezza scheda: ${prima}px -> ${dopo}px trascinando il pomello`)
   check('trascinando il pomello la scheda si allarga', dopo > prima + 40, `${prima}px -> ${dopo}px`)
+
+  const falliti = esiti.filter((e) => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-svuota-annulla): "se si fa svuota, premendo il tasto annulla deve ripristinare i
+ * dati" (segnalazione utente).
+ * Prima "Svuota" usava setValue(''), che azzerava la cronologia di Monaco: "Annulla" restava inerte.
+ * Ora la cancellazione passa da executeEdits (annullabile): il pulsante Annulla e Ctrl+Z devono
+ * riportare il testo ESATTAMENTE com'era, e anche il tasto Ripeti deve rifare la cancellazione.
+ */
+async function verifySvuotaAnnulla(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Testo dell'editor (dal modello di Monaco). */
+  const testo = async () =>
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      return ed ? ed.getValue() : null;
+    })()`)
+  /** Scrive il testo nell'editor (come farebbe l'utente: la modifica entra nella cronologia). */
+  const scrivi = async (sql) =>
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      if (!ed) return false;
+      ed.focus(); ed.setValue(${JSON.stringify('@@SQL@@')});
+      ed.pushUndoStop();
+      return true;
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+  const clicPulsante = async (testoBottone, selettore) => {
+    if (selettore) {
+      const fatto = await page.clickWhere(`document.querySelector(${JSON.stringify(selettore)})`)
+      await sleep(600)
+      return fatto
+    }
+    const fatto = await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === ${JSON.stringify(testoBottone)})`,
+    )
+    await sleep(600)
+    return fatto
+  }
+
+  const SQL = 'SELECT BusinessEntityID, FirstName\nFROM Person.Person\nWHERE BusinessEntityID > 10'
+  await scrivi(SQL)
+  await sleep(400)
+  const prima = await testo()
+  check('il testo di partenza è scritto', prima === SQL, JSON.stringify(String(prima).slice(0, 40)))
+
+  // --- SVUOTA
+  const svuotaTrovato = await clicPulsante('Svuota')
+  check('c è il pulsante "Svuota"', !!svuotaTrovato)
+  const dopoSvuota = await testo()
+  console.log(`  dopo "Svuota": ${JSON.stringify(dopoSvuota)}`)
+  check('dopo "Svuota" l editor è vuoto', dopoSvuota === '')
+
+  // --- ANNULLA (pulsante)
+  const annullaTrovato = await clicPulsante('Annulla')
+  check('c è il pulsante "Annulla"', !!annullaTrovato)
+  const dopoAnnulla = await testo()
+  console.log(`  dopo "Annulla": ${JSON.stringify(String(dopoAnnulla).slice(0, 60))}`)
+  check('"Annulla" RIPRISTINA il testo com era', dopoAnnulla === SQL)
+
+  // --- RIPETI (pulsante) rifà la cancellazione
+  const ripetiTrovato = await clicPulsante('Ripeti')
+  check('c è il pulsante "Ripeti"', !!ripetiTrovato)
+  const dopoRipeti = await testo()
+  console.log(`  dopo "Ripeti": ${JSON.stringify(String(dopoRipeti))}`)
+  check('"Ripeti" rifà la cancellazione', dopoRipeti === '')
+
+  // --- Ctrl+Z da tastiera ripristina di nuovo
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors();
+    const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    if (ed) ed.focus();
+  })()`)
+  await page.press('z', { code: 'KeyZ', vk: 90, modifiers: 2 })
+  await sleep(700)
+  const dopoCtrlZ = await testo()
+  console.log(`  dopo Ctrl+Z: ${JSON.stringify(String(dopoCtrlZ).slice(0, 60))}`)
+  check('Ctrl+Z ripristina il testo', dopoCtrlZ === SQL)
+
+  await page.screenshot('svuota-annulla')
 
   const falliti = esiti.filter((e) => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)

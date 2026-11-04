@@ -1175,12 +1175,27 @@ export default function SqlEditor({
           <Pilcrow className={mostraSpazi ? 'h-4 w-4 text-amber-200' : 'h-4 w-4 text-zinc-400'} />
           <span className="sr-only">Spazi e tab</span>
         </Button>
+        {/*
+          SEGNALAZIONE UTENTE: "se si fa svuota, premendo il tasto annulla deve ripristinare i dati".
+          Prima si usava setValue(''), che SOSTITUISCE il modello senza passare dall'undo: Monaco
+          azzerava la cronologia e "Annulla" non aveva niente da ripristinare. Ora si cancella con
+          executeEdits fra due pushUndoStop: la cancellazione diventa UNA modifica annullabile
+          (Ctrl+Z o il pulsante Annulla riportano il testo com'era).
+        */}
         <Button
           variant="ghost"
           size="sm"
           className="px-1.5"
-          onClick={() => editorRef.current?.setValue('')}
-          title="Svuota l'editor (la query non viene salvata)"
+          onClick={() => {
+            const ed = editorRef.current
+            const model = ed?.getModel()
+            if (!ed || !model) return
+            ed.pushUndoStop()
+            ed.executeEdits('svuota', [{ range: model.getFullModelRange(), text: '' }])
+            ed.pushUndoStop()
+            ed.focus()
+          }}
+          title="Svuota l'editor (si può annullare con Ctrl+Z)"
         >
           <Eraser className="h-4 w-4 text-rose-400" />
           <span className="sr-only">Svuota</span>
