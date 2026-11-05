@@ -1007,6 +1007,14 @@ export default function App() {
   const handleConnected = useCallback(
     async (res: ConnectResponse) => {
       setConnection(res)
+      /**
+       * Il backend si connette lo stesso anche se il DATABASE SALVATO non c'è più (tipico quando un
+       * database viene spostato su un'altra istanza): ripiega su 'master' e lo dice nel messaggio.
+       * Il messaggio va MOSTRATO, altrimenti ci si ritrova su master senza capire perché.
+       */
+      if (res.message && !/^Connessione riuscita\.?$/i.test(res.message)) {
+        setNota({ testo: res.message, tono: 'info', chiave: 'database-cambiato' })
+      }
       // tab e query sono salvate PER ISTANZA SQL: carica quelle dell'istanza appena connessa
       setTabsInstance(res.server)
       const persisted = loadPersistedTabs(res.server)

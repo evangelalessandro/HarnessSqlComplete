@@ -50,7 +50,7 @@ public class ConnectionsController(AppDbContext db, ConnectionHub hub, MetadataS
             return BadRequest(new ConnectResponse("", "", "", [], "Il server è obbligatorio."));
 
         var cs = SqlConnectionStringFactory.Build(req);
-        var (ok, message, actualDb, databases) = await TryConnectAsync(cs, req.Database, ct);
+        var (ok, message, actualDb, databases, workingCs) = await TryConnectAsync(cs, req.Database, ct);
         if (!ok)
             return BadRequest(new ConnectResponse("", req.Server, "", [], message));
 
@@ -89,7 +89,10 @@ public class ConnectionsController(AppDbContext db, ConnectionHub hub, MetadataS
             await db.SaveChangesAsync(ct);
         }
 
-        var connectionId = hub.Register(cs);
+        // si registra la connection string che ha FUNZIONATO: se il database richiesto non c'è più
+        // (spostato su un'altra istanza) si è ripiegati su 'master', e la sessione deve usare quella
+        var connectionId = hub.Register(workingCs);
+        hub.SetDatabase(connectionId, actualDb);
         return Ok(new ConnectResponse(connectionId, SqlConnectionStringFactory.ServerName(req), actualDb, databases, message));
     }
 
@@ -101,14 +104,16 @@ public class ConnectionsController(AppDbContext db, ConnectionHub hub, MetadataS
             return NotFound("Login non trovata.");
 
         var cs = SqlConnectionStringFactory.Build(saved);
-        var (ok, message, actualDb, databases) = await TryConnectAsync(cs, saved.Database, ct);
+        var (ok, message, actualDb, databases, workingCs) = await TryConnectAsync(cs, saved.Database, ct);
         if (!ok)
             return BadRequest(new ConnectResponse("", saved.Server, "", [], message));
 
         saved.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
 
-        var connectionId = hub.Register(cs);
+        // come sopra: si registra la connection string che ha funzionato (database spostato → master)
+        var connectionId = hub.Register(workingCs);
+        hub.SetDatabase(connectionId, actualDb);
         return Ok(new ConnectResponse(connectionId, saved.Server, actualDb, databases, message));
     }
 
@@ -169,7 +174,13 @@ public class ConnectionsController(AppDbContext db, ConnectionHub hub, MetadataS
         (string.IsNullOrWhiteSpace(req.Database) ? "" : $" · {req.Database}") +
         (req.UseWindowsAuth ? " (Windows)" : $" ({req.Username})");
 
-    private async Task<(bool Ok, string Message, string ActualDb, string[] Databases)> TryConnectAsync(
+    /// <summary>
+    /// Prova ad aprire la connessione. Se il database salvato NON esiste più (tipico dopo aver spostato
+    /// un database su un'altra istanza — segnalazione utente: "il db wsmalta l'ho spostato") si collega
+    /// a 'master' e restituisce la connection string che ha FUNZIONATO: è quella che va registrata
+    /// nell'hub, altrimenti la sessione successiva riproverebbe il database mancante e fallirebbe.
+    /// </summary>
+    private async Task<(bool Ok, string Message, string ActualDb, string[] Databases, string WorkingCs)> TryConnectAsync(
         string cs, string? requestedDb, CancellationToken ct)
     {
         try
@@ -177,11 +188,11 @@ public class ConnectionsController(AppDbContext db, ConnectionHub hub, MetadataS
             await using var conn = new SqlConnection(cs);
             await conn.OpenAsync(ct);
             var dbs = await metadata.ListDatabasesAsync(cs, ct);
-            return (true, "Connessione riuscita.", requestedDb ?? "master", dbs.ToArray());
+            return (true, "Connessione riuscita.", requestedDb ?? "master", dbs.ToArray(), cs);
         }
         catch (SqlException) when (!string.IsNullOrWhiteSpace(requestedDb))
         {
-            // Fallback: il database richiesto potrebbe non esistere → connetti su master
+            // Fallback: il database richiesto potrebbe non esistere (o essere stato spostato)
             var master = new SqlConnectionStringBuilder(cs) { InitialCatalog = "master" };
             try
             {
@@ -189,17 +200,17 @@ public class ConnectionsController(AppDbContext db, ConnectionHub hub, MetadataS
                 await conn.OpenAsync(ct);
                 var dbs = await metadata.ListDatabasesAsync(master.ConnectionString, ct);
                 return (true,
-                    "Connesso al server; il database richiesto non è disponibile, si usa 'master'.",
-                    "master", dbs.ToArray());
+                    "Connesso al server; il database richiesto non è disponibile, si usa 'master'. Scegli il database dalla combo.",
+                    "master", dbs.ToArray(), master.ConnectionString);
             }
             catch (SqlException ex2)
             {
-                return (false, ex2.Message, "", []);
+                return (false, ex2.Message, "", [], cs);
             }
         }
         catch (SqlException ex)
         {
-            return (false, ex.Message, "", []);
+            return (false, ex.Message, "", [], cs);
         }
     }
 }

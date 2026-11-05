@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_DB_SPOSTATO = process.argv.includes('--verify-db-spostato')
 const VERIFY_VERIFY_GO_VALIDAZIONE = process.argv.includes('--verify-go-validazione')
 const VERIFY_VERIFY_DB_CAMBIATO_DA_QUERY = process.argv.includes('--verify-db-cambiato-da-query')
 const VERIFY_VERIFY_TRIGGER_INSERTED = process.argv.includes('--verify-trigger-inserted')
@@ -9606,6 +9607,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_DB_SPOSTATO) {
+      await verifyDbSpostato(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -11560,6 +11566,90 @@ async function verifyGoValidazione(page) {
     JSON.stringify(conErrore.map(mk => mk.messaggio.slice(0, 40))),
   )
   await page.screenshot('go-validazione')
+
+  const falliti = esiti.filter((e) => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-db-spostato): il database SALVATO nella login non esiste più sull'istanza
+ * (tipico quando un database viene SPOSTATO su un'altra istanza: "i move to another instances (local)").
+ * L'app deve comunque aprirsi:
+ *  - niente schermata di errore;
+ *  - un AVVISO che spiega che si è ripiegati su master;
+ *  - la combo mostra i database dell'istanza e si può passare a uno di quelli.
+ */
+async function verifyDbSpostato(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const combo = async () =>
+    await page.eval(`(() => {
+      const s = document.querySelector('select[data-db-tab]');
+      return s ? { valore: (s.options[s.selectedIndex]?.textContent || '').trim(),
+                   opzioni: [...s.options].map(o => (o.textContent || '').trim()) } : null;
+    })()`)
+  const banner = async () =>
+    await page.eval(`(() => {
+      const el = document.querySelector('[data-nota]');
+      return el ? (el.textContent || '').replace(/\\s+/g, ' ').trim() : null;
+    })()`)
+  const tabelle = async () =>
+    await page.eval(`(() => {
+      const m = (document.body.textContent || '').match(/Schema:\\s*([\\d.]+)\\s*tabelle/);
+      return m ? Number(m[1]) : -1;
+    })()`)
+
+  // l'app è aperta (niente schermata di errore) e si è connessi
+  const connesso = await page.eval(`document.body.textContent.includes('Disconnetti')`)
+  check("l'app si apre lo stesso (connessa)", connesso === true)
+
+  const avviso = await banner()
+  console.log(`  avviso: ${JSON.stringify(avviso)}`)
+  check('spiega che il database salvato non c è più e si usa master', !!avviso && /master/i.test(avviso) && /non è disponibile/i.test(avviso))
+
+  const stato = await combo()
+  console.log(`  combo: ${JSON.stringify(stato?.valore)} · ${stato?.opzioni.length} database`)
+  check('la combo mostra i database dell istanza', !!stato && stato.opzioni.length > 3, `${stato?.opzioni.length}`)
+
+  // passare a un database che ESISTE davvero deve funzionare
+  const destinazione = stato?.opzioni.find(d => d && d !== stato.valore && !/^(master|model|msdb|tempdb)$/i.test(d))
+  check('c è un database reale su cui passare', !!destinazione, String(destinazione))
+  if (destinazione) {
+    await page.eval(`(() => {
+      const s = document.querySelector('select[data-db-tab]');
+      const opt = [...s.options].find(o => (o.textContent || '').trim() === ${JSON.stringify('@@DB@@')});
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+      setter.call(s, opt.value);
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`.replace('"@@DB@@"', JSON.stringify(destinazione)))
+    await sleep(6000)
+    const dopo = await combo()
+    const n = await tabelle()
+    console.log(`  dopo il cambio: ${JSON.stringify(dopo?.valore)} · ${n} tabelle`)
+    check('passando a un database che esiste la combo si sposta', dopo?.valore === destinazione, String(dopo?.valore))
+    check('lo schema del database scelto viene caricato', n > 0, `${n} tabelle`)
+  }
+  await page.screenshot('db-spostato')
 
   const falliti = esiti.filter((e) => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
