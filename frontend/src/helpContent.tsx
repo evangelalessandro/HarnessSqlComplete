@@ -68,6 +68,21 @@ export const HELP_SECTIONS: HelpSection[] = [
           'F5 o Ctrl+Invio esegue lo statement corrente. Supporta più batch separati da GO e, come in SSMS, "GO n" (es. "GO 5") esegue il batch n volte — i result set tornano uno per esecuzione. Cattura i PRINT e mostra più result set (limite 5000 righe per griglia).',
       },
       {
+        title: 'GO, "GO n" e la verifica di sintassi',
+        detail:
+          'Il separatore GO è del client, non di SQL Server: viene gestito prima di mandare il testo al server, quindi uno script con GO (o "GO 5") è VALIDO anche per la verifica di sintassi e non produce "Sintassi non corretta in prossimità di \'GO\'". Sono accettate la forme con commenti: "GO -- fine batch", "GO /* fine */", "/* separa */ GO". "GO SELECT" invece non è un separatore. Durante la verifica di sintassi il batch non viene ripetuto n volte (serve solo sapere se è valido).',
+      },
+      {
+        title: 'La query può cambiare database',
+        detail:
+          'Se lo script esegue USE [altro_db], la sessione si sposta su quel database: la combo in alto si aggiorna da sola, la tab che ha eseguito prende quel database, lo schema viene ricaricato e compare l\u2019avviso "La query ha impostato il database X". La sessione resta la stessa, quindi una transazione aperta o le tabelle #tmp non si perdono.',
+      },
+      {
+        title: 'Database spostato su un\u2019altra istanza',
+        detail:
+          'Se il database salvato in una login non esiste più sul server (tipico dopo averlo spostato su un\u2019altra istanza), la connessione si apre lo stesso su master e un avviso lo dice: "Connesso al server; il database richiesto non è disponibile, si usa master. Scegli il database dalla combo." Basta scegliere il database giusto dalla combo: la tab ci si lega e lo schema viene caricato.',
+      },
+      {
         title: 'File SQL',
         detail:
           'Trascina file .sql nell\u2019app o usa "Apri file" per aprirli in tab. "Salva" (Ctrl+S) sovrascrive l\u2019originale se aperto dal disco, "Salva con nome" (Ctrl+Shift+S) sceglie dove salvarlo.',
