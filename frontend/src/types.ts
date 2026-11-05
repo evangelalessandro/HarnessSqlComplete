@@ -312,6 +312,12 @@ export interface QueryResult {
    * resta aperta fra un'esecuzione e l'altra: se è > 0 le modifiche non sono ancora salvate.
    */
   trancount?: number
+  /**
+   * Database ATTIVO della sessione dopo l'esecuzione. Se la query contiene `USE [altro_db]` la sessione
+   * si sposta lì: il client aggiorna combo e schema (richiesta utente: "se dalla esecuzione della query
+   * viene cambiato il database, la combo si deve aggiornare e spostare sul db che imposta la query").
+   */
+  database?: string | null
 }
 
 /** Piano di esecuzione STIMATO: XML di showplan (uno per statement) come lo manda SQL Server. */

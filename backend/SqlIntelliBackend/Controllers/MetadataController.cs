@@ -22,6 +22,14 @@ public class MetadataController(
         return cs.Length > 0;
     }
 
+    /// <summary>
+    /// Chiave di cache dei metadati: connessione + DATABASE ATTIVO della sessione.
+    /// Serve perché il database può cambiare DENTRO un'esecuzione ("USE [altro_db]") senza cambiare
+    /// connectionId: con la sola connessione come chiave, dopo il cambio si continuava a ricevere il
+    /// sommario del database precedente (segnalazione utente: la combo si sposta ma lo schema no).
+    /// </summary>
+    private string ChiaveCache(string connectionId) => connectionId + "@" + (hub.GetDatabase(connectionId) ?? "");
+
     [HttpGet("summary")]
     public async Task<ActionResult<DatabaseSummary>> Summary(
         [FromRoute] string connectionId,
@@ -36,12 +44,12 @@ public class MetadataController(
         // riletti dal database invece di restituire la copia di due minuti prima.
         if (refresh)
         {
-            cache.Invalidate(connectionId);
+            cache.Invalidate(ChiaveCache(connectionId));
             logger.LogInformation("Metadati di {ConnectionId}: riletti dal database (refresh richiesto)", connectionId);
         }
         else
         {
-            var cached = cache.Get(connectionId);
+            var cached = cache.Get(ChiaveCache(connectionId));
             if (cached is not null)
             {
                 logger.LogInformation("Metadati di {ConnectionId}: dalla cache", connectionId);
@@ -51,7 +59,7 @@ public class MetadataController(
         }
 
         var summary = await metadata.GetSummaryAsync(cs, ct);
-        cache.Set(connectionId, summary);
+        cache.Set(ChiaveCache(connectionId), summary);
         return Ok(summary);
     }
 
@@ -161,12 +169,12 @@ public class MetadataController(
         if (!TryGetConnectionString(connectionId, out var cs))
             return NotFound("Connessione non trovata o scaduta. Riconnettiti.");
 
-        var cached = cache.GetCallGraph(connectionId);
+        var cached = cache.GetCallGraph(ChiaveCache(connectionId));
         if (cached is not null)
             return Ok(cached);
 
         var graph = await metadata.GetRoutineCallGraphAsync(cs, ct);
-        cache.SetCallGraph(connectionId, graph);
+        cache.SetCallGraph(ChiaveCache(connectionId), graph);
         return Ok(graph);
     }
 

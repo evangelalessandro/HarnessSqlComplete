@@ -72,6 +72,8 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_GO_VALIDAZIONE = process.argv.includes('--verify-go-validazione')
+const VERIFY_VERIFY_DB_CAMBIATO_DA_QUERY = process.argv.includes('--verify-db-cambiato-da-query')
 const VERIFY_VERIFY_TRIGGER_INSERTED = process.argv.includes('--verify-trigger-inserted')
 const VERIFY_VERIFY_SVUOTA_ANNULLA = process.argv.includes('--verify-svuota-annulla')
 const VERIFY_VERIFY_SIDEBAR_FLOTTANTE = process.argv.includes('--verify-sidebar-flottante')
@@ -9594,6 +9596,16 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_DB_CAMBIATO_DA_QUERY) {
+      await verifyDbCambiatoDaQuery(page)
+      return
+    }
+
+    if (VERIFY_VERIFY_GO_VALIDAZIONE) {
+      await verifyGoValidazione(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -11332,6 +11344,222 @@ END`
   console.log(`  dopo "INNER JOIN ": ${JSON.stringify(vociJoin.slice(0, 12))}`)
   check('in un trigger propone "inserted"', vociJoin.includes('inserted'))
   check('in un trigger propone "deleted"', vociJoin.includes('deleted'))
+
+  const falliti = esiti.filter((e) => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-db-cambiato-da-query): se la QUERY cambia database (USE ...), la combo deve
+ * aggiornarsi e spostarsi sul database impostato dalla query, con lo schema ricaricato.
+ * Richiesta utente: "se dalla esecuzione della query viene cambiato il database, la combo si deve
+ * aggiornare e spostare sul db che imposta la query".
+ */
+async function verifyDbCambiatoDaQuery(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const combo = async () =>
+    await page.eval(`(() => {
+      const s = document.querySelector('select[data-db-tab]') || document.querySelector('select');
+      return s ? (s.options[s.selectedIndex]?.textContent || '').trim() : '';
+    })()`)
+  const tabelle = async () =>
+    await page.eval(`(() => {
+      const m = (document.body.textContent || '').match(/Schema:\\s*([\\d.]+)\\s*tabelle/);
+      return m ? Number(m[1]) : -1;
+    })()`)
+  const esegui = async (sql) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      ed.focus(); ed.setValue(${JSON.stringify('@@SQL@@')});
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+    await sleep(800)
+    await page.press('F5', { code: 'F5', vk: 116 })
+    await sleep(6000)
+  }
+
+  // due database esistenti e diversi: si parte da uno e la query sposta sull'altro
+  // (i nomi arrivano dalle opzioni della combo, così la verifica funziona su qualunque istanza)
+  const opzioni = await page.eval(`(() => {
+    const s = document.querySelector('select[data-db-tab]') || document.querySelector('select');
+    return s ? [...s.options].map(o => (o.textContent || '').trim()) : [];
+  })()`)
+  const partenza = await combo()
+  const destinazione = opzioni.find(d => d && d !== partenza && !/^(master|model|msdb|tempdb)$/i.test(d))
+  console.log(`  database disponibili: ${JSON.stringify(opzioni.slice(0, 8))}`)
+  check('ci sono almeno due database per la prova', !!destinazione, `${partenza} -> ${destinazione}`)
+  if (!destinazione) {
+    console.log('\nesito: 0/1 (serve un secondo database)')
+    return
+  }
+
+  const tabellePartenza = await tabelle()
+  const tabellaDest = await page.eval(`(async () => {
+    // quante tabelle ha il database di destinazione, per riconoscere lo schema dopo il cambio
+    const logins = await (await fetch('/api/connections')).json();
+    const login = logins.find(l => (l.name || '').toLowerCase().includes(${JSON.stringify(LOGIN_NAME.toLowerCase())}));
+    const conn = await (await fetch('/api/connections/saved/' + login.id + '/connect', { method: 'POST' })).json();
+    let id = conn.connectionId;
+    if (conn.database !== ${JSON.stringify('@@DB@@')}) {
+      const sw = await (await fetch('/api/connections/' + id + '/switch-database', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ database: ${JSON.stringify('@@DB@@')} }),
+      })).json();
+      id = sw.connectionId;
+    }
+    const s = await (await fetch('/api/metadata/' + id + '/summary')).json();
+    return (s.tables || []).length;
+  })()`.replace(/@@DB@@/g, destinazione))
+  console.log(`  partenza ${partenza} (${tabellePartenza} tabelle) -> destinazione ${destinazione} (${tabellaDest} tabelle)`)
+
+  // --- la query CAMBIA database
+  await esegui(`USE [${destinazione}];\nSELECT DB_NAME() AS Database_Attivo`)
+  const comboDopo = await combo()
+  const tabelleDopo = await tabelle()
+  console.log(`  dopo la query: combo=${JSON.stringify(comboDopo)} · schema=${tabelleDopo} tabelle`)
+  check('la combo si sposta sul database impostato dalla query', comboDopo === destinazione, `${comboDopo}`)
+  check(
+    'lo schema viene ricaricato (tabelle del nuovo database)',
+    tabelleDopo === tabellaDest && tabelleDopo !== tabellePartenza,
+    `${tabellePartenza} -> ${tabelleDopo} (atteso ${tabellaDest})`,
+  )
+  const avviso = await page.eval(`(document.body.textContent || '').includes('La query ha impostato il database')`)
+  check("compare l'avviso che la query ha cambiato database", avviso === true)
+  await page.screenshot('db-cambiato-da-query')
+
+  // --- e si torna indietro con un'altra query
+  await esegui(`USE [${partenza}];\nSELECT DB_NAME() AS Database_Attivo`)
+  const comboTornato = await combo()
+  const tabelleTornate = await tabelle()
+  console.log(`  tornando indietro: combo=${JSON.stringify(comboTornato)} · schema=${tabelleTornate} tabelle`)
+  check('la combo torna al database di partenza', comboTornato === partenza, `${comboTornato}`)
+  check('lo schema torna quello di partenza', tabelleTornate === tabellePartenza, `${tabelleTornate}`)
+
+  const falliti = esiti.filter((e) => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-go-validazione): un GO o un "GO n" NON deve rendere invalida la query.
+ * Richiesta utente: "e se c'è un go o go seguito da un numero la query deve essere valida".
+ * Il separatore di batch è del client (SSMS), SQL Server non lo conosce: se lo script arriva intero al
+ * server si becca "Sintassi non corretta in prossimità di 'GO'". Qui si controlla, con la verifica di
+ * sintassi ACCESA, che:
+ *  - uno script con GO / GO 3 / GO con commento non abbia NESSUN errore;
+ *  - un errore vero (tabella inesistente) venga invece segnalato sulla riga giusta.
+ */
+async function verifyGoValidazione(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // verifica di sintassi ACCESA (interruttore compatto, senza testo: si trova per aria-label)
+  const acceso = await page.clickWhere(`document.querySelector('[aria-label="Verifica sintassi"]')`)
+  check('esiste l interruttore "Verifica sintassi"', !!acceso)
+  await sleep(500)
+
+  /** Scrive il testo nell'editor (come un utente) e attende la verifica. */
+  const scrivi = async (sql) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      if (!ed) return false;
+      ed.focus();
+      // modifica vera (non setValue), così la verifica di sintassi parte come quando si digita
+      const model = ed.getModel();
+      ed.executeEdits('test', [{ range: model.getFullModelRange(), text: ${JSON.stringify('@@SQL@@')} }]);
+      ed.pushUndoStop();
+      return true;
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+    await sleep(4000)
+  }
+  /** I marker della verifica di sintassi (owner 'sql-check'). */
+  const marker = async () =>
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      if (!ed) return [];
+      const model = ed.getModel();
+      return m.editor.getModelMarkers({ owner: 'sql-check', resource: model.uri })
+        .map(x => ({ riga: x.startLineNumber, messaggio: x.message }));
+    })()`)
+
+  // --- 1) script VALIDO con GO, GO 3 e GO con commento
+  await scrivi('SELECT 1 AS A\nGO\nSELECT 2 AS B\nGO 3\nSELECT 3 AS C\nGO -- fine del batch\nSELECT 4 AS D')
+  const validi = await marker()
+  console.log(`  marker con GO/GO 3/GO -- commento: ${JSON.stringify(validi)}`)
+  check('con GO la query è valida (nessun errore)', validi.length === 0, `${validi.length} marker`)
+  check(
+    'nessun errore che nomina GO',
+    !validi.some(mk => /\\bGO\\b/i.test(mk.messaggio)),
+  )
+
+  // --- 2) errore VERO: deve essere segnalato (e non scambiato con il GO)
+  await scrivi('SELECT 1 AS A\nGO\nSELECT * FROM TabellaCheNonEsiste\nGO 2')
+  const conErrore = await marker()
+  console.log(`  marker con un errore vero: ${JSON.stringify(conErrore)}`)
+  check("l'errore vero viene segnalato", conErrore.length > 0, `${conErrore.length} marker`)
+  check(
+    "l'errore è sulla riga 3 (la SELECT con la tabella inesistente)",
+    conErrore.some(mk => mk.riga === 3),
+    JSON.stringify(conErrore.map(mk => mk.riga)),
+  )
+  check(
+    "l'errore nomina la tabella inesistente",
+    conErrore.some(mk => /TabellaCheNonEsiste/i.test(mk.messaggio)),
+  )
+  check(
+    'nessun errore su GO dice "prossimità di GO"',
+    !conErrore.some(mk => /prossimit/i.test(mk.messaggio) && /GO/i.test(mk.messaggio)),
+    JSON.stringify(conErrore.map(mk => mk.messaggio.slice(0, 40))),
+  )
+  await page.screenshot('go-validazione')
 
   const falliti = esiti.filter((e) => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)

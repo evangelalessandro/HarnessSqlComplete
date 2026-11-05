@@ -157,6 +157,8 @@ public class ConnectionsController(AppDbContext db, ConnectionHub hub, MetadataS
 
         var dbs = await metadata.ListDatabasesAsync(newCs, ct);
         var newId = hub.Register(newCs);
+        // il database attivo della nuova connessione è quello scelto (le letture di metadati lo usano)
+        hub.SetDatabase(newId, req.Database.Trim());
         // la connessione vecchia (e la sua sessione SQL) viene chiusa: cambio database = nuova sessione
         await hub.RemoveAsync(connectionId);
         return Ok(new ConnectResponse(newId, builder.DataSource, req.Database.Trim(), dbs.ToArray(), "Database cambiato."));

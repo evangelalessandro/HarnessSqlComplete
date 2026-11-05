@@ -67,6 +67,10 @@ public class QueryService
                 "⚠ Sessione SQL riaperta dopo una disconnessione: le transazioni aperte e le tabelle temporanee di prima sono andate perse.");
         }
 
+        // DATABASE della sessione aggiornato dalla query ("USE [altro_db]"): lo si registra nell'hub,
+        // così le letture di METADATI (schema, oggetti, ricerche) leggono il database giusto.
+        sessione.Stato.DatabaseCorrente = result.Database ?? sessione.Connection.Database;
+
         // transazione rimasta APERTA: non si annulla (la sessione resta, come in SSMS) ma va detto
         var trancount = await TrancountAsync(sessione.Connection, ct);
         if (trancount > 0)
@@ -233,9 +237,12 @@ public class QueryService
                     currentStartLine = batch.StartLine;
                     // "GO n" (come in SSMS): lo stesso batch eseguito n volte. I result set tornano
                     // uno per esecuzione; un errore interrompe il giro come farebbe SSMS.
-                    if (batch.Repeat > 1)
+                    // la verifica di sintassi non deve ripetere il batch: serve solo sapere se è valido
+                    // (e "GO 1000" su una procedura pesante renderebbe la verifica lentissima)
+                    if (batch.Repeat > 1 && !checkSyntax)
                         messages.Add($"(GO {batch.Repeat}: batch eseguito {batch.Repeat} volte)");
-                    for (var giro = 0; giro < batch.Repeat; giro++)
+                    var giri = checkSyntax ? 1 : batch.Repeat;
+                    for (var giro = 0; giro < giri; giro++)
                     {
                         await using var cmd = conn.CreateCommand();
                         cmd.CommandText = batch.Text;
@@ -324,7 +331,19 @@ public class QueryService
         }
 
         sw.Stop();
-        return new QueryResult(sets, totalAffected, messages, sw.ElapsedMilliseconds, error, details);
+        // database attivo DOPO l'esecuzione: se lo script contiene "USE [altro_db]" la sessione si è
+        // spostata e il client deve aggiornare combo e schema (la connessione è la stessa: ADO.NET
+        // segue il cambio fatto dal server).
+        string? dbDopo = null;
+        try
+        {
+            dbDopo = conn.Database;
+        }
+        catch
+        {
+            /* se non si riesce a leggerlo, il client resta sul database che conosce */
+        }
+        return new QueryResult(sets, totalAffected, messages, sw.ElapsedMilliseconds, error, details, Trancount: 0, Database: dbDopo);
     }
 
     /// <summary>

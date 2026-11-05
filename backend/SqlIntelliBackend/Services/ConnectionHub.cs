@@ -33,6 +33,13 @@ public sealed class ConnectionHub : IAsyncDisposable
         public SqlConnection? Connessione;
         /// <summary>True quando la connessione è stata riaperta: lo stato precedente è perso.</summary>
         public bool PersaPerDisconnessione;
+        /// <summary>
+        /// Database ATTIVO della sessione. Cambia quando la query esegue "USE [altro_db]" (o con
+        /// switch-database). Serve alle letture di METADATI, che aprono connessioni brevi: senza questo
+        /// continuerebbero a leggere lo schema del database iniziale (segnalazione utente: la combo si
+        /// sposta ma lo schema resta quello di prima).
+        /// </summary>
+        public string? DatabaseCorrente;
     }
 
     private readonly ConcurrentDictionary<string, Stato> _connections = new();
@@ -44,9 +51,38 @@ public sealed class ConnectionHub : IAsyncDisposable
         return id;
     }
 
-    /// <summary>Connection string della connessione (per le letture di metadati).</summary>
-    public string? Get(string connectionId) =>
-        _connections.TryGetValue(connectionId, out var s) ? s.ConnectionString : null;
+    /// <summary>
+    /// Connection string della connessione (per le letture di metadati), con il database ATTIVO della
+    /// sessione: dopo un "USE [altro_db]" lo schema letto deve essere quello del database nuovo.
+    /// </summary>
+    public string? Get(string connectionId)
+    {
+        if (!_connections.TryGetValue(connectionId, out var s)) return null;
+        var db = s.DatabaseCorrente;
+        if (string.IsNullOrWhiteSpace(db)) return s.ConnectionString;
+        try
+        {
+            return new SqlConnectionStringBuilder(s.ConnectionString) { InitialCatalog = db }.ConnectionString;
+        }
+        catch
+        {
+            return s.ConnectionString;
+        }
+    }
+
+    /// <summary>Database attivo della sessione (null se non ancora aperta).</summary>
+    public string? GetDatabase(string connectionId) =>
+        _connections.TryGetValue(connectionId, out var s) ? s.DatabaseCorrente : null;
+
+    /// <summary>
+    /// Aggiorna il database attivo della sessione (usato dopo un'esecuzione che può contenere "USE"):
+    /// il valore arriva dalla connessione fisica, che segue il server.
+    /// </summary>
+    public void SetDatabase(string connectionId, string? database)
+    {
+        if (string.IsNullOrWhiteSpace(database)) return;
+        if (_connections.TryGetValue(connectionId, out var s)) s.DatabaseCorrente = database;
+    }
 
     public bool Exists(string connectionId) => _connections.ContainsKey(connectionId);
 
@@ -86,6 +122,7 @@ public sealed class ConnectionHub : IAsyncDisposable
             };
             await conn.OpenAsync(ct);
             stato.Connessione = conn;
+            stato.DatabaseCorrente = conn.Database;
             stato.PersaPerDisconnessione = persa;
             return new SessioneSql(conn, stato, persa);
         }
@@ -147,6 +184,12 @@ public sealed class ConnectionHub : IAsyncDisposable
         }
 
         private readonly Stato _stato;
+
+        /// <summary>
+        /// Stato della connessione (serve a registrare il database attivo dopo un'esecuzione che
+        /// contiene "USE [altro_db]").
+        /// </summary>
+        internal Stato Stato => _stato;
 
         /// <summary>Connessione fisica della sessione (aperta, riusata a ogni esecuzione).</summary>
         public SqlConnection Connection { get; }

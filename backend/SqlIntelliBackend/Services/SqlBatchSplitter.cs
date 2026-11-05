@@ -15,15 +15,25 @@ public record SqlBatch(string Text, int StartLine, int Repeat = 1);
 /// (richiesta utente). Un numero non valido (0, negativo, non numerico) vale 1, per non bloccare
 /// l'esecuzione; oltre <see cref="MaxRepeat"/> ci si ferma a quel limite (protezione: "GO 1000000"
 /// su una procedura pesante bloccherebbe l'app).
-/// Nota: non gestisce "GO" dentro stringhe letterali o commenti (limite accettato per uno strumento locale).
+/// Nota: non gestisce "GO" dentro stringhe letterali (limite accettato per uno strumento locale); i commenti sulla riga di GO sono ammessi (vedi <see cref="GoRegex"/>).
 /// </summary>
 public static partial class SqlBatchSplitter
 {
     /// <summary>Numero massimo di ripetizioni accettate da "GO n".</summary>
     public const int MaxRepeat = 1000;
 
-    /// <summary>"GO" da solo oppure seguito dal numero di ripetizioni: "GO", "GO 5", "go 12".</summary>
-    [GeneratedRegex(@"^[ \t]*GO(?:[ \t]+(\d+))?[ \t]*$", RegexOptions.IgnoreCase | RegexOptions.Multiline)]
+    /// <summary>
+    /// "GO" da solo oppure seguito dal numero di ripetizioni: "GO", "GO 5", "go 12".
+    /// Ammette anche:
+    ///  - un COMMENTO DI RIGA dopo: "GO -- fine batch" (segnalazione utente: "se c'è un go o go seguito da
+    ///    un numero la query deve essere valida": con il commento il separatore non veniva riconosciuto e
+    ///    si prendeva l'errore di SQL Server "Sintassi non corretta in prossimità di 'GO'");
+    ///  - un COMMENTO DI BLOCCO prima o dopo: "/* separa */ GO", "GO /* fine */".
+    /// Non serve nessun altro testo: "GO SELECT" NON è un separatore.
+    /// </summary>
+    [GeneratedRegex(
+        @"^[ \t]*(?:/\*(?:[^*]|\*(?!/))*\*/[ \t]*)*GO(?:[ \t]+(\d+))?[ \t]*(?:/\*(?:[^*]|\*(?!/))*\*/[ \t]*)*(?:--[^\r\n]*)?$",
+        RegexOptions.IgnoreCase | RegexOptions.Multiline)]
     private static partial Regex GoRegex();
 
     /// <summary>Solo i testi dei batch (compatibilità).</summary>

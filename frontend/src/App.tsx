@@ -151,7 +151,7 @@ export default function App() {
    * NOTA (non è un errore): messaggio breve e non invadente, es. "«dbo.X» era già aperta: sei
    * sulla tab esistente". Si chiude da sola dopo qualche secondo o con un clic.
    */
-  const [nota, setNota] = useState<{ testo: string; tono: 'info' | 'attenzione'; chiave?: 'transazione' } | null>(null)
+  const [nota, setNota] = useState<{ testo: string; tono: 'info' | 'attenzione'; chiave?: 'transazione' | 'database-cambiato' } | null>(null)
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
   /** PIANO DI ESECUZIONE: pannello, piano analizzato, errore, caricamento. */
   const [piano, setPiano] = useState<PianoEsecuzione | null>(null)
@@ -1141,6 +1141,37 @@ export default function App() {
         // nessun avviso di "versione vecchia" (lo fa controllaVersioneOggetto, che riconosce
         // l'allineamento tab↔database confrontando il testo ESEGUITO).
         if (!r.error) void controllaVersioneOggetto(tabId, true, sql)
+        /**
+         * LA QUERY HA CAMBIATO DATABASE (richiesta utente: "se dalla esecuzione della query viene
+         * cambiato il database, la combo si deve aggiornare e spostare sul db che imposta la query").
+         * Con "USE [altro_db]" la SESSIONE si sposta lì: il backend restituisce il database attivo dopo
+         * l'esecuzione. Qui si allinea tutto il resto, senza un nuovo switch (il connectionId è lo
+         * stesso: la sessione è già sul database giusto):
+         *  - il database della connessione;
+         *  - il database della TAB che ha eseguito (la combo segue la tab, quindi si sposta da sola);
+         *  - lo schema (tabelle/colonne/routine del nuovo database) e il diagramma delle chiamate.
+         */
+        const dbDopo = r.database ?? null
+        if (dbDopo && dbDopo !== connection.database) {
+          setConnection(prev => (prev ? { ...prev, database: dbDopo } : prev))
+          if (connectionRef.current) connectionRef.current = { ...connectionRef.current, database: dbDopo }
+          setEditorTabs(prev => prev.map(t => (t.id === tabId ? { ...t, database: dbDopo } : t)))
+          setCallGraph(null)
+          setCallGraphError(null)
+          setNota({
+            testo: `La query ha impostato il database ${dbDopo}: combo e schema aggiornati.`,
+            tono: 'info',
+            chiave: 'database-cambiato',
+          })
+          try {
+            setLoadingSummary(true)
+            setSummary(await api.getSummary(connection.connectionId))
+          } catch {
+            /* lo schema si può ricaricare a mano con "Aggiorna schema" */
+          } finally {
+            setLoadingSummary(false)
+          }
+        }
       } catch (e) {
         // errore di trasporto/API: conta come esecuzione fallita
         updateTabStats(tabId, s => recordExecution(s, 0, false, Date.now()))

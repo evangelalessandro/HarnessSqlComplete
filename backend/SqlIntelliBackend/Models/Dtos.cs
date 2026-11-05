@@ -265,7 +265,14 @@ public record QueryResult(
     /// resta aperta fra una richiesta e l'altra: se è &gt; 0 le modifiche NON sono salvate finché
     /// non si esegue COMMIT o ROLLBACK.
     /// </summary>
-    int Trancount = 0);
+    int Trancount = 0,
+    /// <summary>
+    /// Database ATTIVO della sessione DOPO l'esecuzione. Se la query contiene `USE [altro_db]`, la
+    /// sessione si sposta lì: il client usa questo valore per aggiornare la combo e ricaricare lo
+    /// schema (richiesta utente: "se dalla esecuzione della query viene cambiato il database, la
+    /// combo si deve aggiornare e spostare sul db che imposta la query").
+    /// </summary>
+    string? Database = null);
 
 // ---------- Piano di esecuzione ----------
 
