@@ -126,7 +126,48 @@ const CHROME_CANDIDATES = [
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 // Parametri della cattura (login salvata e query da mostrare negli screenshot)
-const LOGIN_NAME = process.env.SHOT_LOGIN ?? 'sql2019'
+let LOGIN_NAME = process.env.SHOT_LOGIN ?? 'sql2019'
+
+/**
+ * Sceglie la login da usare fra quelle SALVATE nell app: quella richiesta (SHOT_LOGIN) se c'è,
+ * altrimenti la prima disponibile. Serve dopo che i database/login vengono spostati su un'altra
+ * istanza ("i move to another instances (local)"): con un nome fisso tutte le verifiche fallivano
+ * sulla ricerca della login, non sul codice.
+ */
+async function risolviLogin(page) {
+  /** Nomi delle login salvate (prima riga di ogni riquadro), con attesa: la lista arriva dal backend. */
+  const leggi = async () =>
+    await page.eval(`[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+      .map(e => {
+        // il NOME della login è il primo blocco di testo del riquadro (font-semibold), non tutto il
+        // contenuto che include server e badge "Windows"
+        const nome = e.querySelector('.font-semibold');
+        return ((nome ? nome.textContent : e.textContent) || '').trim();
+      })`)
+  try {
+    let nomi = []
+    for (let tentativo = 0; tentativo < 30; tentativo++) {
+      nomi = (await leggi()) ?? []
+      if (Array.isArray(nomi) && nomi.length > 0) break
+      await sleep(500)
+    }
+    if (!Array.isArray(nomi) || nomi.length === 0) {
+      console.log('  (nessuna login salvata visibile: si prosegue con ' + JSON.stringify(LOGIN_NAME) + ')')
+      return
+    }
+    const cercata = LOGIN_NAME
+    const trovata = nomi.find(n => n.toLowerCase().includes(cercata.toLowerCase()))
+    if (trovata) {
+      LOGIN_NAME = trovata
+      return
+    }
+    LOGIN_NAME = nomi[0]
+    console.log(`  (login "${cercata}" non trovata fra [${nomi.join(', ')}]: uso "${LOGIN_NAME}")`)
+  } catch {
+    /* la schermata di login non c'è ancora: si prosegue col nome configurato */
+  }
+}
+
 /** Database da attivare prima degli screenshot (es. DEMO_STORE: nomi inventati, niente nomi reali su git). */
 const SHOT_DB = process.env.SHOT_DB ?? ''
 const QUERY =
@@ -9426,6 +9467,7 @@ async function main() {
     console.log(`apro ${APP_URL}`)
     await page.send('Page.navigate', { url: APP_URL })
     await sleep(3000)
+    await risolviLogin(page)
 
     if (DUMP) {
       const info = await page.eval(`(() => {
