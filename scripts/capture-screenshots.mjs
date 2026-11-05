@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_XML_SCHEDA = process.argv.includes('--verify-xml-scheda')
 const VERIFY_VERIFY_DB_SPOSTATO = process.argv.includes('--verify-db-spostato')
 const VERIFY_VERIFY_GO_VALIDAZIONE = process.argv.includes('--verify-go-validazione')
 const VERIFY_VERIFY_DB_CAMBIATO_DA_QUERY = process.argv.includes('--verify-db-cambiato-da-query')
@@ -9654,6 +9655,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_XML_SCHEDA) {
+      await verifyXmlScheda(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -11692,6 +11698,224 @@ async function verifyDbSpostato(page) {
     check('lo schema del database scelto viene caricato', n > 0, `${n} tabelle`)
   }
   await page.screenshot('db-spostato')
+
+  const falliti = esiti.filter((e) => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-xml-scheda): un valore XML della griglia si apre in una SCHEDA, indentato, con i
+ * nodi colorati e con la ricerca sopra.
+ * Richiesta utente: "se il campo è un xml aprimi una scheda che me lo faccia vedere in modo che possa
+ * capire, che sia indentato ed ogni nodo abbia un colore, e che ci possa fare delle ricerche sopra".
+ */
+async function verifyXmlScheda(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const cambiaDb = async (db) => {
+    const ok = await page.eval(`(() => {
+      const s = document.querySelector('select[data-db-tab]');
+      if (!s) return false;
+      const opt = [...s.options].find(o => (o.textContent || '').trim() === ${JSON.stringify('@@DB@@')});
+      if (!opt) return false;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+      setter.call(s, opt.value);
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`.replace('"@@DB@@"', JSON.stringify(db)))
+    await sleep(6000)
+    return ok
+  }
+  const esegui = async (sql) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      ed.focus(); ed.setValue(${JSON.stringify('@@SQL@@')});
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+    await sleep(800)
+    await page.press('F5', { code: 'F5', vk: 116 })
+    await sleep(4500)
+  }
+
+  // Si cerca una colonna XML VERA nel database attivo (niente nomi di oggetti scritti nel harness):
+  // se non c'è, si usa un XML costruito con CAST, che è comunque una colonna di tipo xml.
+  const colonnaXml = await page.eval(`(async () => {
+    const logins = await (await fetch('/api/connections')).json();
+    const login = logins.find(l => (l.name || '').toLowerCase().includes(${JSON.stringify(LOGIN_NAME.toLowerCase())}));
+    const conn = await (await fetch('/api/connections/saved/' + login.id + '/connect', { method: 'POST' })).json();
+    const r = await (await fetch('/api/query/' + conn.connectionId + '/execute', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sql: "SELECT TOP 1 s.name + '.' + t.name AS tabella, c.name AS colonna FROM sys.columns c INNER JOIN sys.tables t ON t.object_id = c.object_id INNER JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE c.system_type_id = 241 AND t.is_ms_shipped = 0 ORDER BY t.name",
+        timeoutSeconds: 30,
+      }),
+    })).json();
+    const riga = r.resultSets?.[0]?.rows?.[0];
+    return riga ? { tabella: riga[0], colonna: riga[1] } : null;
+  })()`)
+  let sqlXml
+  if (colonnaXml) {
+    console.log(`  database con una colonna XML: ${colonnaXml.tabella}.${colonnaXml.colonna}`)
+    // insieme all'XML una colonna NORMALE: serve a controllare che la voce "Apri XML" NON compaia lì
+    sqlXml = `SELECT TOP 2 1 AS Numero, [${colonnaXml.colonna}] AS Xml FROM ${colonnaXml.tabella} WHERE [${colonnaXml.colonna}] IS NOT NULL`
+  } else {
+    console.log('  nessuna colonna XML nel database: uso un XML costruito con CAST')
+    sqlXml =
+      "SELECT 1 AS Numero, CAST('<Ordine id=\"A-1\" stato=\"aperto\"><Cliente><Nome>Mario Rossi</Nome><Email>mario@example.com</Email></Cliente><Righe><Riga sku=\"X-1\" qta=\"2\"/><Riga sku=\"Y-9\" qta=\"1\"/></Righe><!-- nota --></Ordine>' AS XML) AS Xml"
+  }
+  await esegui(sqlXml)
+
+  const righeGriglia = await page.eval(`document.querySelectorAll('[data-riga]').length`)
+  check('la query restituisce righe con la colonna XML', righeGriglia >= 1, `${righeGriglia} righe`)
+
+  // una voce del menu che NON deve comparire su una cella normale (la tab XML solo per l'XML)
+  const menuNormale = await page.eval(`(async () => {
+    const righeGriglia = [...document.querySelectorAll('[data-riga]')];
+    const tr = righeGriglia[0];
+    if (!tr) return { errore: 'nessuna riga' };
+    const celle = [...tr.querySelectorAll('td')];
+    const testi = celle.map(td => (td.textContent || '').trim().slice(0, 24));
+    // una cella di DATO che non è XML (il numero di riga non ha il menu: si scarta)
+    const normale = celle
+      .filter(td => !/^\\s*</.test(td.textContent || ''))
+      .find(td => !td.className.includes('text-right'));
+    if (!normale) return { errore: 'nessuna cella normale', testi };
+    normale.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 120, clientY: 120 }));
+    await new Promise(r => setTimeout(r, 400));
+    return {
+      testi,
+      xml: !!document.querySelector('[data-copia="xml"]'),
+      valoreIntero: !!document.querySelector('[data-copia="intero"]'),
+    };
+  })()`)
+  console.log(`  menu su una cella normale: ${JSON.stringify(menuNormale)}`)
+  check('su una cella normale NON propone la scheda XML', !!menuNormale && menuNormale.xml === false, JSON.stringify(menuNormale))
+  check('su una cella normale resta "Vedi valore intero"', !!menuNormale && menuNormale.valoreIntero === true)
+  // chiude il menu aperto con un clic NEUTRO (l'overlay del menu copre la cella: senza questo il tasto
+  // destro sull'XML finirebbe sull'overlay e il menu non comparirebbe)
+  await page.clickPoint(4, 4)
+  await sleep(500)
+
+
+  // tasto destro sulla cella XML della prima riga → voce "Apri XML in una scheda"
+  const cella = await page.eval(`(() => {
+    const tr = document.querySelector('[data-riga]');
+    if (!tr) return null;
+    const celle = [...tr.querySelectorAll('td')];
+    const XML_APRE = /^\\s*</;
+    const c = celle.find(td => XML_APRE.test(td.textContent || ''));
+    if (!c) return null;
+    const r = c.getBoundingClientRect();
+    return { x: r.left + 20, y: r.top + r.height / 2 };
+  })()`)
+  check('c è una cella XML nella griglia', !!cella)
+
+  if (!cella) {
+    console.log('\nesito: 0/1 (nessuna cella XML)')
+    return
+  }
+  await page.clickPoint(cella.x, cella.y, 'right')
+  await sleep(700)
+  const voce = await page.eval(`(() => {
+    const b = document.querySelector('[data-copia="xml"]');
+    return b ? (b.textContent || '').trim() : null;
+  })()`)
+  console.log(`  voce del menu: ${JSON.stringify(voce)}`)
+  check('il menu della cella offre "Apri XML in una scheda"', !!voce && /xml/i.test(voce))
+  await page.clickWhere(`document.querySelector('[data-copia="xml"]')`)
+  await sleep(1500)
+
+  // la scheda XML
+  const scheda = await page.eval(`(() => {
+    const el = document.querySelector('[data-xml-scheda]');
+    if (!el) return null;
+    const righe = [...document.querySelectorAll('[data-riga-xml]')];
+    const titoli = [...document.querySelectorAll('.sql-tab button')].map(b => (b.textContent || '').trim());
+    const classi = new Set();
+    el.querySelectorAll('span[class*="text-"]').forEach(s => {
+      for (const c of s.classList) if (/^text-/.test(c)) classi.add(c);
+    });
+    return {
+      presente: true,
+      righe: righe.length,
+      prime: righe.slice(0, 6).map(r => (r.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 60)),
+      tabXml: titoli.filter(t => /^XML/i.test(t)),
+      classiColore: [...classi].sort(),
+    };
+  })()`)
+  console.log(`  scheda: ${JSON.stringify(scheda && { righe: scheda.righe, tabXml: scheda.tabXml })}`)
+  check('si apre una SCHEDA XML (non una finestra)', !!scheda && scheda.presente)
+  check('la scheda si chiama "XML · colonna"', !!scheda && scheda.tabXml.length > 0, JSON.stringify(scheda?.tabXml))
+  // l'indentazione sta nei caratteri veri del testo (whitespace-pre): si guarda la colonna del testo,
+  // non il numero di riga che sta accanto
+  const rientri = await page.eval(`[...document.querySelectorAll('[data-riga-xml]')]
+    .map(r => { const s = r.querySelector('span:last-child'); return (s && s.textContent) || ''; })
+    .filter(t => /^\\s{2,}</.test(t)).length`)
+  console.log(`  righe indentate: ${rientri}/${scheda ? scheda.righe : '?'}`)
+  check(
+    'il testo è indentato (più righe, con rientri)',
+    !!scheda && scheda.righe > 3 && rientri >= 2,
+    `${rientri} righe indentate`,
+  )
+  check(
+    'ogni nodo ha un colore (ci sono più classi di colore diverse)',
+    !!scheda && scheda.classiColore.length >= 3,
+    JSON.stringify(scheda?.classiColore),
+  )
+
+  // ricerca sopra l'XML
+  const cerca = async (testo) => {
+    await page.eval(`(() => {
+      const i = document.querySelector('[data-xml-cerca]');
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(i, ${JSON.stringify('@@Q@@')});
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`.replace('"@@Q@@"', JSON.stringify(testo)))
+    await sleep(700)
+    return await page.eval(`(() => {
+      const conteggio = document.querySelector('[data-xml-conteggio]');
+      const evidenziati = document.querySelectorAll('[data-xml-corpo] mark').length;
+      const righeTrovate = document.querySelectorAll('[data-riga-xml][data-riga-trovata]').length;
+      return { conteggio: conteggio ? (conteggio.textContent || '').trim() : null, evidenziati, righeTrovate };
+    })()`)
+  }
+  const ago = colonnaXml ? 'Address' : 'Riga'
+  const conAddress = await cerca(ago)
+  console.log(`  ricerca "${ago}": ${JSON.stringify(conAddress)}`)
+  check('la ricerca trova risultati', !!conAddress.conteggio && /[0-9]/.test(conAddress.conteggio), String(conAddress.conteggio))
+  check('le occorrenze sono evidenziate', conAddress.evidenziati > 0, `${conAddress.evidenziati} evidenziati`)
+  check('le righe con il risultato sono marcate', conAddress.righeTrovate > 0, `${conAddress.righeTrovate} righe`)
+
+  // ricerca senza risultati (poi si torna a una ricerca con risultati, per la foto)
+  const senza = await cerca('zzzznonesiste')
+  console.log(`  ricerca senza risultati: ${JSON.stringify(senza)}`)
+  check('con una ricerca senza risultati lo dice', !!senza.conteggio && /nessun risultato/i.test(senza.conteggio), String(senza.conteggio))
+  await cerca(ago)
+  await sleep(600)
+
+  await page.screenshot('xml-scheda')
 
   const falliti = esiti.filter((e) => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)

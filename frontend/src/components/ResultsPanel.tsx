@@ -26,6 +26,8 @@ interface Props {
    */
   continuous?: boolean
   onContinuousChange?: (v: boolean) => void
+  /** Apre un valore XML in una scheda dedicata (indentata, nodi colorati, ricerca sopra). */
+  onOpenXml?: (colonna: string, valore: string) => void
 }
 
 export default function ResultsPanel({
@@ -37,6 +39,7 @@ export default function ResultsPanel({
   onJumpToLine,
   continuous = false,
   onContinuousChange,
+  onOpenXml,
 }: Props) {
   const [setIndex, setSetIndex] = useState(0)
   const [page, setPage] = useState(1)
@@ -199,6 +202,7 @@ export default function ResultsPanel({
                     firstRowNumber={1}
                     stickyHeader={false}
                     selectableRows
+                    onOpenXml={onOpenXml}
                   />
                 ) : (
                   <div className="px-3 py-2 text-xs text-zinc-500">Nessuna riga.</div>
@@ -229,6 +233,7 @@ export default function ResultsPanel({
           rows={pageRows as CellValue[][]}
           firstRowNumber={start}
           selectableRows
+          onOpenXml={onOpenXml}
         />
       </div>
 

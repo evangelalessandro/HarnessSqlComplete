@@ -14,7 +14,7 @@
 // - colonne spostabili trascinando l'intestazione: cambia solo la vista, l'ordine dei dati
 //   resta quello originale (selezione e SQL generato continuano a usare l'ordine vero).
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ClipboardCopy, Copy, GripVertical, Maximize2, X } from "lucide-react";
+import { ClipboardCopy, Copy, FileCode2, GripVertical, Maximize2, X } from "lucide-react";
 import {
   aggiornaSelezioneRighe,
   identityOrder,
@@ -25,6 +25,7 @@ import {
   type SelezioneRighe,
 } from "../resultGrid";
 import { copiaTesto, rigaPerCopia, testoPerCopia } from "../clipboard";
+import { eXml } from "../xmlFormat";
 import type { CellValue } from "../types";
 
 export interface ResultColumnSpec {
@@ -62,6 +63,11 @@ interface Props {
    * sinistra. Non serve a generare SQL: è solo per leggere/leggere meglio i dati.
    */
   selectableRows?: boolean;
+  /**
+   * Apre il valore di una cella XML in una SCHEDA (richiesta utente). La scheda lo mostra indentato,
+   * con ogni nodo colorato e con la ricerca sopra.
+   */
+  onOpenXml?: (colonna: string, valore: string) => void;
 }
 
 export default function ResultDataTable({
@@ -72,6 +78,7 @@ export default function ResultDataTable({
   rowSelection,
   colSelection,
   selectableRows = false,
+  onOpenXml,
 }: Props) {
   /** Righe selezionate con il mouse (solo quando `selectableRows`). */
   const [selezione, setSelezione] = useState<SelezioneRighe>(() => selezioneVuota());
@@ -304,6 +311,8 @@ export default function ResultDataTable({
                     <Cell
                       key={ci}
                       value={row[ci]}
+                      colonna={columns[ci]?.name ?? ""}
+                      onOpenXml={onOpenXml}
                       onMenu={(e) => {
                         e.preventDefault();
                         setCopiato(false);
@@ -384,6 +393,24 @@ export default function ResultDataTable({
               <Copy className="h-3.5 w-3.5 text-zinc-400" /> Copia riga
               <span className="ml-auto text-[10px] text-zinc-500">TAB</span>
             </button>
+            {/*
+              XML: apre il valore in una SCHEDA (indentata, nodi colorati, ricerca sopra) invece che
+              nella finestra di testo semplice. Richiesta utente: "se il campo è un xml aprimi una
+              scheda che me lo faccia vedere in modo che possa capire, indentato, ogni nodo con un
+              colore, e che ci possa fare delle ricerche sopra".
+            */}
+            {onOpenXml && eXml(menuCella.valore) && (
+              <button
+                onClick={() => {
+                  onOpenXml(menuCella.colonna, testoPerCopia(menuCella.valore));
+                  setMenuCella(null);
+                }}
+                className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs text-zinc-200 transition-colors hover:bg-violet-900/60"
+                data-copia="xml"
+              >
+                <FileCode2 className="h-3.5 w-3.5 text-violet-400" /> Apri XML in una scheda
+              </button>
+            )}
             <button
               onClick={() => {
                 setValoreIntero({
@@ -459,10 +486,22 @@ export default function ResultDataTable({
 function Cell({
   value,
   onMenu,
+  onOpenXml,
+  colonna,
 }: {
   value: CellValue;
   onMenu: (e: React.MouseEvent) => void;
+  /** Doppio clic su una cella XML: apre la scheda dedicata (indentata, colorata, con la ricerca). */
+  onOpenXml?: (colonna: string, valore: string) => void;
+  colonna: string;
 }) {
+  const doppioClicXml =
+    onOpenXml && eXml(value)
+      ? (e: React.MouseEvent) => {
+          e.stopPropagation();
+          onOpenXml(colonna, testoPerCopia(value));
+        }
+      : undefined;
   const base = "border-b border-r border-zinc-700/70 px-3 py-1";
   if (value === null || value === undefined) {
     return (
@@ -480,6 +519,7 @@ function Cell({
       className={`${base} max-w-[440px] truncate font-mono text-zinc-200`}
       title={text}
       onContextMenu={onMenu}
+      onDoubleClick={doppioClicXml}
     >
       {text}
     </td>

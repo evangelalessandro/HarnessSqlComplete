@@ -56,6 +56,7 @@ import { hasErrorMessage, messageRevealLine, errorObjectsFor, routineStartLine }
 import type { ErrorObjectRef } from './sqlMessages'
 import CallGraphPanel from './components/CallGraphPanel'
 import SearchPanel from './components/SearchPanel'
+import XmlViewerTab from './components/XmlViewerTab'
 import TableReportPanel from './components/TableReportPanel'
 import LoginScreen from './components/LoginScreen'
 import Sidebar from './components/Sidebar'
@@ -537,7 +538,7 @@ export default function App() {
     const tabId = activeEditorTab
     const tab = editorTabs.find(t => t.id === tabId)
     // la tab di ricerca non usa Monaco: niente testo da sincronizzare
-    if (tab?.kind === 'search') return
+    if (tab?.kind === 'search' || tab?.kind === 'xml') return
     if (tab && editor.getValue() !== tab.sql) editor.setValue(tab.sql)
     // Apertura di un oggetto DA UN ERRORE: il cursore va sulla riga indicata da SQL Server,
     // così si vede subito dove ha fallito ("Procedura X, Riga N").
@@ -575,7 +576,8 @@ export default function App() {
   const saveActiveEditor = useCallback(() => {
     if (!editor) return
     // la tab di RICERCA non ha editor: non c'è niente da salvare (e l'editor non è montato)
-    if (editorTabs.find(t => t.id === activeEditorTab)?.kind === 'search') return
+    const attivaKind = editorTabs.find(t => t.id === activeEditorTab)?.kind
+    if (attivaKind === 'search' || attivaKind === 'xml') return
     setEditorTabs(prev => prev.map(t => (t.id === activeEditorTab ? { ...t, sql: editor.getValue() } : t)))
   }, [editor, activeEditorTab, editorTabs])
 
@@ -712,6 +714,32 @@ export default function App() {
   )
 
   /**
+   * VALORE XML IN UNA SCHEDA (richiesta utente: "se il campo è un xml aprimi una scheda che me lo faccia
+   * vedere … indentato, ogni nodo con un colore, e che ci possa fare delle ricerche sopra").
+   * La scheda vive sopra l'area dell'editor (come ricerca e diagrammi): si tiene aperta accanto alla
+   * query e non c'è nessuna finestra modale da chiudere.
+   */
+  const openXmlTab = useCallback(
+    (colonna: string, valore: string) => {
+      if (editorTabs.length === 0) tabCounter.current = 1
+      const n = tabCounter.current++
+      const tab: EditorTab = {
+        id: `tab-${n}`,
+        title: `XML · ${colonna || 'valore'}`,
+        sql: '',
+        pinned: false,
+        database: editorTabs.find(x => x.id === activeEditorTab)?.database || connection?.database || '',
+        resultsVisible: false,
+        kind: 'xml',
+        xml: { colonna, valore },
+      }
+      setEditorTabs(prev => insertTabAt(prev, tab, activeEditorTab, 'end'))
+      setActiveEditorTab(tab.id)
+    },
+    [editorTabs, activeEditorTab, connection],
+  )
+
+  /**
    * RICERCA GENERALE: si apre in una TAB (come gli altri strumenti), non in una finestra.
    * Se la tab di ricerca esiste già la si riporta in primo piano, senza duplicarla.
    */
@@ -768,7 +796,8 @@ export default function App() {
   /** La tab attiva è il report utilizzo tabelle? (anche lui vive in una tab, non in una finestra) */
   const activeTabIsReport = editorTabs.find(t => t.id === activeEditorTab)?.kind === 'report'
   /** In queste tab Monaco non si vede: va nascosto, altrimenti spinge il pannello fuori posto. */
-  const pannelloAlPostoDiMonaco = activeTabIsSearch || activeTabIsGraph || activeTabIsReport
+  const activeTabIsXml = editorTabs.find(t => t.id === activeEditorTab)?.kind === 'xml'
+  const pannelloAlPostoDiMonaco = activeTabIsSearch || activeTabIsGraph || activeTabIsReport || activeTabIsXml
 
   /**
    * PANNELLO RISULTATI legato alla TAB ATTIVA: ognuna ricorda se lo vuole visibile o no
@@ -2280,6 +2309,22 @@ export default function App() {
               )}
             </div>
 
+            {/* SCHEDE XML: ogni valore XML aperto dal menu della cella ha la sua tab, con il testo
+                indentato, i nodi colorati e la ricerca (richiesta utente) */}
+            {editorTabs
+              .filter(t => t.kind === 'xml' && t.xml)
+              .map(t => (
+                <div key={t.id} className={`h-full min-h-0 ${t.id === activeEditorTab ? '' : 'hidden'}`}>
+                  <XmlViewerTab
+                    colonna={t.xml!.colonna}
+                    valore={t.xml!.valore}
+                    onClose={() => {
+                      setEditorTabs(prev => prev.filter(x => x.id !== t.id))
+                    }}
+                  />
+                </div>
+              ))}
+
             {/* RICERCA GENERALE (stile Redgate SQL Search): risultati sopra, anteprima sotto */}
             {searchTabIndex(editorTabs) >= 0 && connection && (
               <div className={`h-full min-h-0 ${activeTabIsSearch ? '' : 'hidden'}`}>
@@ -2373,6 +2418,7 @@ export default function App() {
                     onJumpToLine={revealErrorLine}
                     continuous={activeSetsInSequenza}
                     onContinuousChange={setActiveSetsInSequenza}
+                    onOpenXml={openXmlTab}
                   />
                 ) : (
                   <PrintPanel
