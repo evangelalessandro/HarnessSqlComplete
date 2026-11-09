@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_FORMATTA_DROP_IF_EXISTS = process.argv.includes('--verify-formatta-drop-if-exists')
 const VERIFY_VERIFY_XML_SCHEDA = process.argv.includes('--verify-xml-scheda')
 const VERIFY_VERIFY_DB_SPOSTATO = process.argv.includes('--verify-db-spostato')
 const VERIFY_VERIFY_GO_VALIDAZIONE = process.argv.includes('--verify-go-validazione')
@@ -9660,6 +9661,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_FORMATTA_DROP_IF_EXISTS) {
+      await verifyFormattaDropIfExists(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -11916,6 +11922,92 @@ async function verifyXmlScheda(page) {
   await sleep(600)
 
   await page.screenshot('xml-scheda')
+
+  const falliti = esiti.filter((e) => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-formatta-drop-if-exists): "DROP TABLE IF EXISTS #tmp" resta su UNA riga e la
+ * tabella derivata con la UNION viene impaginata (tabella con contenuto indentato, UNION a capo).
+ * Segnalazioni utente: "sistema questa formattazione, deve stare tutto su di una riga — DROP TABLE /
+ * IF EXISTS #tmpUdc" e "non viene formattata bene questa nella parte della union".
+ */
+async function verifyFormattaDropIfExists(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  /** Scrive il testo, preme Formatta e restituisce il risultato. */
+  const formatta = async (sql) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      ed.focus(); ed.setValue(${JSON.stringify('@@SQL@@')});
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+    await sleep(600)
+    await page.clickWhere(
+      `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Formatta')`,
+    )
+    await sleep(3500)
+    return await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      return ed ? ed.getValue() : '';
+    })()`)
+  }
+
+  // --- DROP TABLE IF EXISTS su una riga
+  const conDrop = await formatta(
+    'CREATE OR ALTER PROCEDURE dbo.Prova\nAS\nDROP TABLE\nIF EXISTS #tmpUdc\nSELECT 1 AS X',
+  )
+  console.log('  output con DROP:\n' + conDrop.split('\n').map(r => '    |' + r).join('\n'))
+  check('"DROP TABLE IF EXISTS #tmpUdc" sta su una riga', /DROP TABLE IF EXISTS #tmpUdc/.test(conDrop))
+  check(
+    'non è spezzato in "DROP TABLE" + "IF EXISTS"',
+    !/DROP TABLE\s*\n\s*IF EXISTS/.test(conDrop),
+  )
+
+  // --- tabella derivata con UNION: contenuto indentato e UNION a capo
+  const sqlUnion =
+    'SELECT X_SSCC, X_SKU\nFROM (SELECT DISTINCT ESE_UDC, ESE_CAUSMISS\nFROM RUN_ESEGUI\nUNION\nSELECT DISTINCT MIS_UDC, MIS_CAUSMISS\nFROM RUN_MISSIONI WHERE MIS_GES_GESTORE LIKE \'UOMO%\'\nUNION SELECT UDC_UDC, \'ABSRP\'\nFROM dat_udc INNER JOIN MAG_CORRIDOI ON (UDC_CORRIDOIO = COR_CORRIDOIO)\nWHERE UDC_ORDINE > \'\' AND COR_AREA = \'AM\') ESE_TBL'
+  const outUnion = await formatta(sqlUnion)
+  console.log('  output con UNION:\n' + outUnion.split('\n').map(r => '    |' + r).join('\n'))
+  const righe = outUnion.split('\n')
+  const iFrom = righe.findIndex(r => r.trim() === 'FROM (')
+  check('la tabella derivata apre la parentesi su una riga', iFrom > -1)
+  check(
+    'il contenuto è indentato di un passo',
+    iFrom > -1 && righe[iFrom + 1] && righe[iFrom + 1].search(/\S/) === righe[iFrom].search(/\S/) + 2,
+  )
+  check('non c è più una riga con UNION SELECT attaccati', !righe.some(r => /UNION[ \t]+SELECT/i.test(r)))
+  check('i rami UNION sono su righe proprie', righe.filter(r => r.trim() === 'UNION').length === 2)
+  check('la chiusura con l alias è su una riga sua', /^\)\s+ESE_TBL$/.test(righe.find(r => r.trim().startsWith(')'))?.trim() ?? ''))
+  check('nessuna riga ha WHERE e AND insieme', !/WHERE .*\bAND\b/.test(outUnion))
+
+  await page.screenshot('formatta-drop-if-exists')
 
   const falliti = esiti.filter((e) => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)

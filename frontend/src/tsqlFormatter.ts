@@ -335,6 +335,36 @@ function singleStatementTokens(tokens: Token[]): boolean {
 
 /** Statement puri che meritano il layout "routine": CTE (WITH … AS (…) + statement)
  *  oppure SELECT con almeno 2 assegnazioni "@var = …" a livello top. */
+/**
+ * La query contiene una TABELLA DERIVATA, cioè una SELECT fra parentesi subito dopo FROM/JOIN
+ * ("FROM (SELECT … UNION …) X")? Il layout del motore query spezza solo a profondità 0, quindi il
+ * contenuto della parentesi resterebbe su una riga lunghissima (segnalazione utente: "non viene
+ * formattata bene questa nella parte della union"). In quel caso si usa il motore "statement", che la
+ * impagina.
+ */
+function hasDerivedTable(sql: string): boolean {
+  const tokens = tokenizeSqlText(sql).filter(t => t.type !== 'comment')
+  for (let i = 0; i < tokens.length - 2; i++) {
+    const t = tokens[i]
+    if (t.type !== 'word') continue
+    const u = t.text.toUpperCase()
+    if (u !== 'FROM' && u !== 'JOIN') continue
+    let k = i + 1
+    while (k < tokens.length && !(tokens[k].type === 'punct' && tokens[k].text === '(')) {
+      // si salta l'eventuale "ON"/alias fra JOIN e la parentesi, ma non altre keyword di clausola
+      const tk = tokens[k]
+      if (tk.type === 'word' && ['WHERE', 'GROUP', 'ORDER', 'HAVING', 'UNION', 'OPTION'].includes(tk.text.toUpperCase())) break
+      if (tk.type === 'word' && (tk.text.toUpperCase() === 'SELECT')) break
+      k++
+    }
+    if (k + 1 < tokens.length && tokens[k].type === 'punct' && tokens[k].text === '(') {
+      const dopo = tokens[k + 1]
+      if (dopo?.type === 'word' && dopo.text.toUpperCase() === 'SELECT') return true
+    }
+  }
+  return false
+}
+
 function needsStatementLayout(sql: string): boolean {
   const tokens = tokenizeSqlText(sql).filter(t => t.type !== 'comment')
   const meaningful = tokens.filter(t => t.type !== 'string')
@@ -394,7 +424,7 @@ function formatSqlConProfilo(sql: string, profile: FormatProfile): string {
   // statement "a blocchi" senza parole procedurali (es. selezione di un CTE o di una
   // SELECT TOP n @a=…): il motore delle routine ha il layout CTE/assegnazioni/condizioni
   // che il motore query non possiede
-  if (needsStatementLayout(sql)) return formatRoutineWithProfile(sql, profile)
+  if (needsStatementLayout(sql) || hasDerivedTable(sql)) return formatRoutineWithProfile(sql, profile)
   const tokens = tokenizeSqlText(sql)
   if (tokens.length === 0) return sql
 
@@ -1119,12 +1149,27 @@ function formatRoutineConProfilo(sql: string, profile: FormatProfile): string {
       upper === 'SET' && seg.length > 0 && seg[0].type === 'word' && seg[0].text.toUpperCase() === 'UPDATE'
     // valuta gli starter con il caseDepth ATTUALE (prima di aggiornarlo): l'END del CASE
     // non deve spezzare come fine blocco
+    /**
+     * "DROP TABLE IF EXISTS #tmp" / "DROP INDEX IF EXISTS …" / "ALTER TABLE … DROP COLUMN IF EXISTS …":
+     * l'IF qui NON apre uno statement nuovo, è parte del DROP e deve restare sulla stessa riga
+     * (segnalazione utente: "sistema questa formattazione, deve stare tutto su di una riga
+     * DROP TABLE IF EXISTS #tmpUdc").
+     */
+    const isIfExists = upper === 'IF' && nextMeaningfulWordAfter(body, k) === 'EXISTS'
+    const ifExistsDelDrop = (() => {
+      if (!isIfExists || seg.length === 0) return false
+      const prima = seg[0].type === 'word' ? seg[0].text.toUpperCase() : ''
+      if (prima === 'DROP') return true
+      // ALTER TABLE … DROP [COLUMN|CONSTRAINT] IF EXISTS
+      return prima === 'ALTER' && seg.some(x => x.type === 'word' && x.text.toUpperCase() === 'DROP')
+    })()
     const isStarter =
       segDepth === 0 &&
       caseDepth === 0 &&
       t.type === 'word' &&
       (ROUTINE_STARTERS.has(upper) || upper === 'END') &&
       !continuesUpdate &&
+      !ifExistsDelDrop &&
       !(seg.length > 0 && insideContainer(seg, upper))
     const isElse = segDepth === 0 && caseDepth === 0 && t.type === 'word' && upper === 'ELSE'
     const isSemi = t.type === 'punct' && t.text === ';' && segDepth === 0
@@ -1682,6 +1727,11 @@ function detailedSelectRows(
   profile?: FormatProfile,
   /** True quando questa SELECT sono i VALORI di un "INSERT … SELECT": un valore per riga. */
   unoPerRiga = false,
+  /**
+   * Livello di annidamento del layout (tabella derivata dentro FROM, ramo dopo UNION…). Serve a
+   * fermarsi prima di una ricorsione patologica su testi molto strani.
+   */
+  profondita = 0,
 ): string[] | null {
   const groups = splitStatementClauses(segment, up)
   const head = groups[0].tokens
@@ -1847,9 +1897,41 @@ function detailedSelectRows(
     const tokens = groups[g].tokens
     const first = tokens[0]
     const kw = first.type === 'word' ? first.text.toUpperCase() : ''
-    if (kw === 'FROM' || kw === 'OUTPUT' || kw === 'UNION') {
+    /**
+     * UNION / EXCEPT / INTERSECT (segnalazione utente: "non viene formattata bene … nella parte della
+     * union"): il keyword sta su una riga propria e il ramo che segue (SELECT …) si impagina come uno
+     * statement, con le sue clausole (FROM/JOIN/WHERE) su righe separate — prima restava tutto
+     * attaccato sulla riga del UNION.
+     */
+    if (kw === 'UNION' || kw === 'EXCEPT' || kw === 'INTERSECT') {
+      const resto = tokens.slice(1)
+      const haAll = resto[0]?.type === 'word' && resto[0].text.toUpperCase() === 'ALL'
+      const dopoAll = haAll ? resto.slice(1) : resto
+      out.push(`${basePad}${kw}${haAll ? ' ALL' : ''}`)
+      if (dopoAll.length > 0) {
+        const ramo =
+          profondita < 6 ? detailedSelectRows(dopoAll, up, unit, basePad, setIndent, profile, false, profondita + 1) : null
+        if (ramo) out.push(...ramo)
+        else for (const r of rowsNoDashEat(dopoAll, up)) out.push(`${basePad}${cleanInline(r)}`)
+      }
+      continue
+    }
+    if (kw === 'FROM') {
+      /**
+       * TABELLA DERIVATA: "FROM ( SELECT … UNION … ) alias" (segnalazione utente: la parte della
+       * UNION dentro la parentesi restava su una riga lunghissima). Il contenuto della parentesi si
+       * impagina come uno statement a sé, indentato di un passo, e la chiusura ")" + alias torna
+       * alla colonna del FROM.
+       */
+      const espansa = profondita < 6 ? derivedTableRows(tokens, up, unit, basePad, setIndent, profile, profondita) : null
+      if (espansa) {
+        out.push(...espansa)
+        continue
+      }
       // tutte le righe: se la clausola porta un commento "--" in coda, rowsNoDashEat ne
       // restituisce più di una e prenderne solo la prima perderebbe il commento
+      for (const r of rowsNoDashEat(tokens, up)) out.push(`${basePad}${cleanInline(r)}`)
+    } else if (kw === 'OUTPUT') {
       for (const r of rowsNoDashEat(tokens, up)) out.push(`${basePad}${cleanInline(r)}`)
     } else if (kw === 'INNER' || kw === 'LEFT' || kw === 'RIGHT' || kw === 'FULL' || kw === 'CROSS' || kw === 'JOIN' || kw === 'APPLY') {
       for (const r of rowsNoDashEat(tokens, up)) out.push(`${basePad}${' '.repeat(unit)}${cleanInline(r)}`)
@@ -1873,6 +1955,72 @@ function detailedSelectRows(
     }
   }
   return out.filter(Boolean)
+}
+
+/**
+ * TABELLA DERIVATA impaginata: "FROM ( SELECT … UNION … ) alias".
+ *
+ * SEGNALAZIONE UTENTE: "non viene formattata bene questa nella parte della union" — con
+ * FROM (SELECT … UNION SELECT …) ESE_TBL tutto il contenuto della parentesi restava su UNA riga
+ * lunghissima, con il WHERE incollato all'alias di chiusura.
+ *
+ * Qui il contenuto viene impaginato come uno statement a sé (select-list impilata, FROM/JOIN/WHERE su
+ * righe proprie, UNION con il ramo successivo a capo), indentato di un passo; la chiusura ")" e
+ * l'alias restano alla colonna del FROM. Restituisce null quando non è una tabella derivata.
+ */
+function derivedTableRows(
+  tokens: Token[],
+  up: (t: Token) => string,
+  unit: number,
+  basePad: string,
+  setIndent: number,
+  profile: FormatProfile | undefined,
+  profondita: number,
+): string[] | null {
+  let apre = -1
+  let d = 0
+  for (let i = 1; i < tokens.length; i++) {
+    const t = tokens[i]
+    if (t.type !== 'punct') continue
+    if (t.text === '(') {
+      if (d === 0) {
+        apre = i
+        break
+      }
+      d++
+    } else if (t.text === ')') d = Math.max(0, d - 1)
+  }
+  if (apre < 0) return null
+  const primoInner = tokens.slice(apre + 1).find(x => x.type !== 'comment')
+  if (!primoInner || primoInner.type !== 'word' || primoInner.text.toUpperCase() !== 'SELECT') return null
+  let chiude = -1
+  let livello = 0
+  for (let i = apre; i < tokens.length; i++) {
+    const t = tokens[i]
+    if (t.type !== 'punct') continue
+    if (t.text === '(') livello++
+    else if (t.text === ')') {
+      livello--
+      if (livello === 0) {
+        chiude = i
+        break
+      }
+    }
+  }
+  if (chiude < 0) return null
+
+  const testa = cleanInline(tokens.slice(0, apre).map(up).join(' '))
+  const interno = tokens.slice(apre + 1, chiude)
+  const coda = cleanInline(tokens.slice(chiude + 1).map(up).join(' '))
+  // le righe interne sono già complete di rientro (la ricorsione riceve il pad interno): non vanno
+  // riprefissate, altrimenti il contenuto risultava spostato di un passo in più
+  const padInterno = basePad + ' '.repeat(unit)
+  const righe: string[] = [basePad + testa + ' (']
+  const corpo = detailedSelectRows(interno, up, unit, padInterno, setIndent, profile, false, profondita + 1)
+  if (corpo) righe.push(...corpo)
+  else for (const r of rowsNoDashEat(interno, up)) righe.push(padInterno + cleanInline(r))
+  righe.push(basePad + ')' + (coda ? ' ' + coda : ''))
+  return righe
 }
 
 /**
