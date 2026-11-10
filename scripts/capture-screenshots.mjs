@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_FORMATTA_CTE_COMMENTO = process.argv.includes('--verify-formatta-cte-commento')
 const VERIFY_VERIFY_FORMATTA_DECLARE_TABLE = process.argv.includes('--verify-formatta-declare-table')
 const VERIFY_VERIFY_FORMATTA_DROP_IF_EXISTS = process.argv.includes('--verify-formatta-drop-if-exists')
 const VERIFY_VERIFY_XML_SCHEDA = process.argv.includes('--verify-xml-scheda')
@@ -9672,6 +9673,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_FORMATTA_CTE_COMMENTO) {
+      await verifyFormattaCteCommento(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -12093,6 +12099,91 @@ SELECT 1 AS X`
   })())
 
   await page.screenshot('formatta-declare-table')
+
+  const falliti = esiti.filter((e) => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-formatta-cte-commento): CTE il cui corpo comincia con un commento + WHERE con un
+ * commento in mezzo + GROUP BY dopo un AND.
+ * Segnalazione utente: il corpo della CTE restava su una riga e la GROUP BY finiva incollata alla WHERE.
+ */
+async function verifyFormattaCteCommento(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  const sql = `CREATE OR ALTER PROCEDURE dbo.Export
+AS
+;WITH UDC AS
+(
+  /* Tutte le UDC a magazzino */
+  SELECT UDC_UDC, UDC_CORRIDOIO FROM DAT_UDC INNER JOIN TIPI_CAUSALI_MISSIONI ON CAUM_CAUSMISS = UDC_CAUSMISS INNER JOIN MAG_CORRIDOI AS U ON U.COR_CORRIDOIO = UDC_CORRIDOIO WHERE UDC_FAMIUDC <> 'V' AND (
+  (U.COR_TIPOCORR IN ('A', 'M') AND UDC_UBIUDC IN ('M', 'EH')) OR
+  (UDC_UBIUDC = 'I' AND CAUM_RIENTRO = 1))
+)
+SELECT SCO_ARTICOLO AS STO_SKU, sum (SCO_GIAC + SCO_VER) AS STO_QTY
+FROM UDC
+  INNER JOIN DAT_SCOMPART ON SCO_UDC = UDC_UDC
+WHERE SCO_ARTICOLO <> ''
+      AND ART_HOST = 1
+/* nota in mezzo alla WHERE */
+AND (EXISTS (SELECT 1 FROM UTI_WORK WHERE WOR_COD = 'EXP_STOCK' AND WOR_NUM = 1) OR @checkFlag = 0) GROUP BY SCO_ARTICOLO, SCO_SUB1, udc_cella`
+
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors();
+    const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    ed.focus(); ed.setValue(${JSON.stringify('@@SQL@@')});
+  })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+  await sleep(700)
+  await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Formatta')`,
+  )
+  await sleep(3500)
+  const out = await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors();
+    const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    return ed ? ed.getValue() : '';
+  })()`)
+  const righe = out.replace(/\r\n/g, '\n').split('\n')
+  console.log('  output:\n' + righe.map(r => '    |' + r).join('\n'))
+
+  check(
+    'il corpo della CTE è impaginato (FROM e JOIN su righe proprie)',
+    righe.some(r => r.trim() === 'FROM DAT_UDC') && righe.some(r => r.trim().startsWith('INNER JOIN TIPI_CAUSALI_MISSIONI')),
+  )
+  check('la GROUP BY sta su una riga propria', righe.some(r => r.trim().startsWith('GROUP BY ')))
+  check(
+    'non è attaccata alla condizione',
+    !righe.some(r => /OR @checkFlag = 0\)[ \t]+GROUP BY/i.test(r)),
+  )
+  check('il commento dentro la WHERE è su una riga sua', righe.some(r => r.trim() === '/* nota in mezzo alla WHERE */'))
+
+  await page.screenshot('formatta-cte-commento')
 
   const falliti = esiti.filter((e) => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)

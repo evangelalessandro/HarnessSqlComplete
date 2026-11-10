@@ -1127,7 +1127,44 @@ function formatRoutineConProfilo(sql: string, profile: FormatProfile): string {
           ),
       )
     if (t.type === 'comment' && t.ownLine && segDepth === 0 && caseDepth === 0) {
-      if (statementAperto) {
+      /**
+       * Un commento su riga propria dentro una SELECT NON chiude lo statement se subito dopo
+       * continuano le clausole: con "WHERE … , commento, AND (…) GROUP BY …" lo statement veniva
+       * spezzato a metà e la GROUP BY finiva incollata all'ultima riga della WHERE
+       * (segnalazione utente).
+       */
+      const continuazione = (() => {
+        if (seg.length === 0 || seg[0]?.type !== 'word') return false
+        if (!['SELECT', 'UPDATE', 'INSERT', 'MERGE', 'DELETE'].includes(seg[0].text.toUpperCase())) return false
+        for (let m = k + 1; m < body.length; m++) {
+          const tk = body[m]
+          if (tk.type === 'comment') continue
+          const ut = tk.type === 'word' ? tk.text.toUpperCase() : tk.type === 'punct' ? tk.text : ''
+          return [
+            'AND',
+            'OR',
+            'WHERE',
+            'GROUP',
+            'ORDER',
+            'HAVING',
+            'JOIN',
+            'INNER',
+            'LEFT',
+            'RIGHT',
+            'FULL',
+            'CROSS',
+            'ON',
+            'FROM',
+            'UNION',
+            'EXCEPT',
+            'INTERSECT',
+            ')',
+            ',',
+          ].includes(ut)
+        }
+        return false
+      })()
+      if (statementAperto || continuazione) {
         seg.push(t)
         continue
       }
@@ -1494,9 +1531,35 @@ function formatRoutineConProfilo(sql: string, profile: FormatProfile): string {
       // codice dopo l'elenco delle CTE (es. lo statement principale se lo spezzatore non
       // l'ha separato): va stampato comunque, mai perso
       if (cteLayout.rest.length > 0) {
-        const resto = rowsNoDashEat(cteLayout.rest, up)
-        if (resto.length === 0) pushLine(cteLayout.rest.map(up).join(' '), lineIndent)
-        else resto.forEach(r => pushLine(r, lineIndent))
+        /**
+         * Il codice DOPO l'elenco delle CTE è di solito lo statement principale (SELECT … FROM …).
+         * Prima veniva stampato riga per riga (rowsNoDashEat) e restava tutto su una riga, con la
+         * GROUP BY incollata alla WHERE (segnalazione utente). Ora si impagina come uno statement,
+         * con select-list impilata e clausole FROM/JOIN/WHERE/GROUP BY su righe proprie.
+         */
+        const unitCte = profile.tabSize || 2
+        const padCte = ' '.repeat(lineIndent * unitCte)
+        // i commenti in TESTA al resto restano righe proprie e non entrano nello statement
+        let iPrimo = 0
+        while (iPrimo < cteLayout.rest.length && cteLayout.rest[iPrimo].type === 'comment') iPrimo++
+        for (let k = 0; k < iPrimo; k++) pushLine(up(cteLayout.rest[k]), lineIndent)
+        const tokensResto = cteLayout.rest.slice(iPrimo)
+        const primoResto = tokensResto.find(x => x.type !== 'comment')
+        const eStatement =
+          !!primoResto &&
+          primoResto.type === 'word' &&
+          ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE'].includes(primoResto.text.toUpperCase())
+        const righeResto =
+          eStatement && tokensResto.length > 0
+            ? detailedSelectRows(tokensResto, up, unitCte, padCte, profile.setIndent, profile)
+            : null
+        if (righeResto && righeResto.length > 0) {
+          righeResto.forEach(r => pushRawLine(r))
+        } else {
+          const resto = rowsNoDashEat(tokensResto, up)
+          if (resto.length === 0) pushLine(tokensResto.map(up).join(' '), lineIndent)
+          else resto.forEach(r => pushLine(r, lineIndent))
+        }
       }
       continue
     }
@@ -3451,8 +3514,10 @@ function layoutCteSegment(segment: Token[], up: (t: Token) => string, profile: F
  * semplici. Restituisce un solo gruppo se non ci sono clausole a livello top.
  */
 function splitStatementClauses(segment: Token[], _up: (t: Token) => string): { tokens: Token[] }[] {
-  const first = segment[0]
-  const firstUpper = first.type === 'word' ? first.text.toUpperCase() : ''
+  // il primo token UTILE: i commenti in testa (es. "/* Tutte le UDC … */ SELECT …") non devono
+  // nascondere lo statement, altrimenti il corpo della CTE restava su una riga sola
+  const first = segment.find(x => x.type !== 'comment')
+  const firstUpper = first?.type === 'word' ? first.text.toUpperCase() : ''
   if (!['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE'].includes(firstUpper)) return [{ tokens: segment }]
 
   // attiva il layout a clausole se c'è almeno FROM/JOIN/APPLY a livello top, oppure
@@ -3462,6 +3527,7 @@ function splitStatementClauses(segment: Token[], _up: (t: Token) => string): { t
   let hasClause = false
   const isUpdate = firstUpper === 'UPDATE'
   for (const t of segment) {
+    if (t.type === 'comment') continue
     if (t.type === 'punct') {
       if (t.text === '(') depth++
       else if (t.text === ')') depth = Math.max(0, depth - 1)
