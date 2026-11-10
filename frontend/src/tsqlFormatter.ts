@@ -1562,23 +1562,134 @@ function formatRoutineConProfilo(sql: string, profile: FormatProfile): string {
         }
         return false
       })()
+      /**
+       * Il tokenizer non conserva la '@' nei nomi: "SELECT @x = CASE …" arrivava qui senza
+       * riconoscere l'assegnazione, quindi la testata veniva impilata e il CASE riceveva una virgola
+       * in testa che non esiste (token inventato, 3 virgole in più sui fixture reali).
+       * Qui l'assegnazione si riconosce dalla FORMA: un "=" di primo livello prima di qualsiasi
+       * virgola di primo livello.
+       */
+      const assegnazionePerForma = (() => {
+        if (!caseParts) return false
+        let d = 0
+        for (const t of caseParts.head) {
+          if (t.type !== 'punct') continue
+          if (t.text === '(') d++
+          else if (t.text === ')') d = Math.max(0, d - 1)
+          else if (d === 0 && t.text === ',') return false
+          else if (d === 0 && t.text === '=') return true
+        }
+        return false
+      })()
+      const testaConAssegnazione = testaAssegnazione || assegnazionePerForma
       if (caseLines.length > 1 || (caseParts && caseParts.tail.length > 0)) {
         // SELECT con CASE nella testata: testa, blocco CASE, poi coda con le clausole
         // (FROM/JOIN/WHERE) su righe proprie — la coda non resta attaccata a "END"
         if (caseParts) {
+          /**
+           * SEGNALAZIONE UTENTE (identazione): con un CASE nella select-list, la PARTE PRIMA del CASE
+           * restava tutta su una riga lunghissima mentre il resto veniva impilato. Ora si impila anche
+           * la testata (stesse regole del resto: virgola in testa, un elemento per riga).
+           */
+          const padTesta = ' '.repeat(lineIndent * unit)
+          // è una select-list solo se la testata comincia con SELECT ("RETURN CASE", "SET @x = CASE" no)
+          const primaTesta = caseParts.head.find(x => x.type !== 'comment')
+          const testaSelectList =
+            !!primaTesta && primaTesta.type === 'word' && primaTesta.text.toUpperCase() === 'SELECT'
+          const testaImpilata = !!profile?.stackSelectColumns && testaSelectList && !testaConAssegnazione
+          // la virgola che separa l'ultimo campo dal CASE sta IN TESTA al CASE: se è rimasta dentro
+          // la testata va tolta, altrimenti comparirebbe due volte (token inventato)
+          const testaSenzaVirgola = (() => {
+            const h = [...caseParts.head]
+            let k = h.length - 1
+            while (k >= 0 && h[k].type === 'comment') k--
+            if (k >= 0 && h[k].type === 'punct' && h[k].text === ',') h.splice(k, 1)
+            return h
+          })()
+          const righeTesta = testaImpilata
+            ? stackSelectList(testaSenzaVirgola, up, padTesta, profile)
+            : rowsNoDashEat(caseParts.head, up)
           // la virgola che separa l'ultimo campo della testata dal CASE va IN TESTA alla riga
-          // del CASE (stile del resto del formattatore), non lasciata in coda alla testata
-          const righeTesta = rowsNoDashEat(caseParts.head, up)
-          let virgolaCaso = false
-          if (righeTesta.length > 0 && righeTesta[righeTesta.length - 1].trimEnd().endsWith(',')) {
-            righeTesta[righeTesta.length - 1] = righeTesta[righeTesta.length - 1].trimEnd().replace(/,$/, '')
-            virgolaCaso = true
+          // del CASE (stile del resto del formattatore). Con le righe impilate la virgola è già in
+          // testa ai singoli campi, quindi il CASE la riceve sempre (se c'è una testata).
+          /**
+           * La virgola prima del CASE serve solo se PRIMA del CASE c'è almeno un campo.
+           * "SELECT CASE WHEN …" (CASE come primo elemento) non deve riceverla: prima compariva una
+           * virgola inventata. Si saltano SELECT/DISTINCT/ALL e l'eventuale "TOP n".
+           */
+          const haCampoPrimaDelCase = (() => {
+            const x = testaSenzaVirgola.filter(tk => tk.type !== 'comment')
+            let i = 0
+            while (i < x.length && x[i].type === 'word' && ['SELECT', 'DISTINCT', 'ALL'].includes(x[i].text.toUpperCase())) i++
+            if (i < x.length && x[i].type === 'word' && x[i].text.toUpperCase() === 'TOP') {
+              i++
+              if (i < x.length && x[i].type === 'punct' && x[i].text === '(') {
+                let d = 0
+                for (; i < x.length; i++) {
+                  if (x[i].type !== 'punct') continue
+                  if (x[i].text === '(') d++
+                  else if (x[i].text === ')') {
+                    d--
+                    if (d === 0) {
+                      i++
+                      break
+                    }
+                  }
+                }
+              } else if (i < x.length) i++
+            }
+            return i < x.length
+          })()
+          let virgolaCaso = haCampoPrimaDelCase && testaSelectList && !testaConAssegnazione
+          if (!profile?.stackSelectColumns && righeTesta.length > 0) {
+            if (righeTesta[righeTesta.length - 1].trimEnd().endsWith(',')) {
+              righeTesta[righeTesta.length - 1] = righeTesta[righeTesta.length - 1].trimEnd().replace(/,$/, '')
+            } else {
+              virgolaCaso = false
+            }
           }
-          righeTesta.forEach(r => pushLine(r, lineIndent))
-          splitCaseLines(caseParts.casePart, up).forEach((cl, idx) =>
-            pushLine(idx === 0 && virgolaCaso ? `,${cl.text.trimStart()}` : cl.text, lineIndent + cl.delta),
-          )
-          const groups = splitClauseGroups(caseParts.tail)
+          righeTesta.forEach(r => (testaImpilata ? pushRawLine(r) : pushLine(r, lineIndent)))
+          /**
+           * "END AS X_MODULO": l'alias dopo il CASE resta SULLA RIGA DELL'END (prima finiva su una
+           * riga sua, "END" e "AS X_MODULO" separati).
+           */
+          const righeCase = splitCaseLines(caseParts.casePart, up)
+          let coda = caseParts.tail
+          const primoCoda = coda.find(t => t.type !== 'comment')
+          if (primoCoda && primoCoda.type === 'word' && primoCoda.text.toUpperCase() === 'AS') {
+            const iAs = coda.indexOf(primoCoda)
+            const dopoAs = coda.slice(iAs + 1).find(t => t.type !== 'comment')
+            if (dopoAs && (dopoAs.type === 'word' || dopoAs.type === 'string') && righeCase.length > 0) {
+              const iAlias = coda.indexOf(dopoAs)
+              righeCase[righeCase.length - 1] = {
+                text: `${righeCase[righeCase.length - 1].text} AS ${up(dopoAs)}`,
+                delta: righeCase[righeCase.length - 1].delta,
+              }
+              coda = [...coda.slice(0, iAs), ...coda.slice(iAlias + 1)]
+            }
+          }
+          /**
+           * Il CASE (e le sue WHEN/ELSE/END) si allinea alla COLONNA DELLE VIRGOLE della lista
+           * impilata, non a un rientro fisso: così ",CASE" e i campi ",campo" stanno sulla stessa
+           * verticale (segnalazione utente sull'identazione di una SELECT con CASE e INTO).
+           */
+          const colonnaCaso = (() => {
+            if (!testaImpilata) return null
+            const conVirgola = righeTesta.slice(1).find(r => r.trimStart().startsWith(','))
+            if (conVirgola) return conVirgola.length - conVirgola.trimStart().length
+            // testata con UN SOLO campo: non c'è una virgola a cui allinearsi → un passo in dentro
+            return padTesta.length + unit
+          })()
+          righeCase.forEach((cl, idx) => {
+            if (colonnaCaso === null) {
+              pushLine(idx === 0 && virgolaCaso ? `,${cl.text.trimStart()}` : cl.text, lineIndent + cl.delta)
+              return
+            }
+            const rientro = ' '.repeat(Math.max(0, colonnaCaso + (cl.delta - 1) * unit))
+            const testo = idx === 0 && virgolaCaso ? `,${cl.text.trimStart()}` : cl.text
+            pushRawLine(rientro + cleanInline(testo))
+          })
+          const groups = splitClauseGroups(coda)
           groups.forEach((g, gi) => {
             const kw = g[0]?.type === 'word' ? g[0].text.toUpperCase() : ''
             const isJoin = ['JOIN', 'APPLY', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS'].includes(kw)
