@@ -1389,6 +1389,18 @@ function formatRoutineConProfilo(sql: string, profile: FormatProfile): string {
     //   DECLARE @nDestinationType INT
     //          ,@nSourceBay       INT
     if (firstUpper === 'DECLARE') {
+      /**
+       * SEGNALAZIONE UTENTE (identazione): "DECLARE @table TABLE (col tipo, col tipo, …)" restava
+       * tutta su una riga. Con una tabella dichiarata inline si usa lo stesso layout di CREATE
+       * TABLE: una colonna per riga, indentata.
+       */
+      const unitD = profile.tabSize || 2
+      const tabellaDichiarata = createTableRows(segment, up, unitD, ' '.repeat(lineIndent * unitD))
+      if (tabellaDichiarata) {
+        flushLine()
+        for (const row of tabellaDichiarata) pushRawLine(row)
+        continue
+      }
       const vars: string[][] = []
       let cur: string[] = []
       let par = 0
@@ -2660,7 +2672,8 @@ function createTableRows(
   basePad: string,
 ): string[] | null {
   const first = segment[0]
-  if (!(first?.type === 'word' && first.text.toUpperCase() === 'CREATE')) return null
+  // vale per CREATE TABLE e per DECLARE @t TABLE ( … ): stessa forma di lista colonne
+  if (!(first?.type === 'word' && ['CREATE', 'DECLARE'].includes(first.text.toUpperCase()))) return null
   // CREATE TABLE / CREATE TABLE #t / CREATE GLOBAL TEMPORARY… (basta la parola TABLE a livello 0)
   let depth = 0
   let tableAt = -1

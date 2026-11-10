@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_FORMATTA_DECLARE_TABLE = process.argv.includes('--verify-formatta-declare-table')
 const VERIFY_VERIFY_FORMATTA_DROP_IF_EXISTS = process.argv.includes('--verify-formatta-drop-if-exists')
 const VERIFY_VERIFY_XML_SCHEDA = process.argv.includes('--verify-xml-scheda')
 const VERIFY_VERIFY_DB_SPOSTATO = process.argv.includes('--verify-db-spostato')
@@ -9666,6 +9667,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_FORMATTA_DECLARE_TABLE) {
+      await verifyFormattaDeclareTable(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -12008,6 +12014,85 @@ async function verifyFormattaDropIfExists(page) {
   check('nessuna riga ha WHERE e AND insieme', !/WHERE .*\bAND\b/.test(outUnion))
 
   await page.screenshot('formatta-drop-if-exists')
+
+  const falliti = esiti.filter((e) => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-formatta-declare-table): "DECLARE @t TABLE ( … )" con molte colonne deve venire
+ * indentata una colonna per riga (segnalazione utente: "sistema questa, andrebbe tutta identata").
+ */
+async function verifyFormattaDeclareTable(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  const sql = `CREATE OR ALTER PROCEDURE dbo.Prova
+AS
+IF @retVal <> 0
+  GOTO lblExit
+DECLARE @table TABLE (ORD_ORDINE NVARCHAR(50), ORD_SPEDIZIONE NVARCHAR(50), ESE_BPRIO INT, ESE_PRIO INT, ORD_USER_POCKET NVARCHAR(50), X_PK INT, X_UDS_TO_INFEED INT, X_SU_CODE DECIMAL(15, 0), X_TIME DATETIME, X_PKNUM INT)
+SELECT 1 AS X`
+
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors();
+    const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    ed.focus(); ed.setValue(${JSON.stringify('@@SQL@@')});
+  })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+  await sleep(700)
+  await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Formatta')`,
+  )
+  await sleep(3500)
+  const out = await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors();
+    const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    return ed ? ed.getValue() : '';
+  })()`)
+  console.log('  output:\n' + out.split('\n').map(r => '    |' + r).join('\n'))
+
+  const righe = out.replace(/\r\n/g, '\n').split('\n')
+  const iTesta = righe.findIndex(r => /DECLARE @table TABLE \($/.test(r.trim()))
+  check('la parentesi si apre su una riga propria', iTesta > -1, String(iTesta))
+  check(
+    'le colonne sono una per riga, indentate',
+    iTesta > -1 &&
+      righe[iTesta + 1]?.search(/\S/) === righe[iTesta].search(/\S/) + 2 &&
+      righe[iTesta + 2]?.trim().startsWith(',ORD_SPEDIZIONE'),
+  )
+  check('la lista non resta su una riga sola', !/DECLARE @table TABLE \(.*X_PKNUM.*\)/.test(out))
+  check('la chiusura è su una riga propria', righe.some(r => r.trim() === ')'))
+  check('le righe della tabella sono 12 (testa + 10 colonne + chiusura)', (() => {
+    if (iTesta < 0) return false
+    const ultima = righe.findIndex((r, i) => i > iTesta && r.trim() === ')')
+    return ultima - iTesta === 11
+  })())
+
+  await page.screenshot('formatta-declare-table')
 
   const falliti = esiti.filter((e) => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
