@@ -1095,6 +1095,29 @@ export function provideSqlCompletions({
             const contextTables = findTableRefs(stmtBefore)
             const summaryTables = st.summary.tables
 
+            // Colonne qualificate con alias/tabella: dopo "r." o "RUN_MISSIONI." suggerisce
+            // le colonne di quella tabella (es. "FROM RUN_MISSIONI r WHERE r."). Sta PRIMA dei
+            // rami per contesto perché vale ovunque: nella select-list il ramo dedicato ritorna
+            // subito e l'alias non veniva mai considerato (segnalato dall'utente: "nella select
+            // non torna per primi i campi della tabella" dopo "from #tmpMission dd").
+            {
+              const qualified = buildQualifiedColumnSuggestions(stmtText, textBefore, st.summary)
+              if (qualified.length > 0) {
+                for (const col of qualified) {
+                  push({
+                    label: col.name,
+                    detail: [columnTypeText(col.dataType, col.isNullable), 'colonna qualificata'].filter(Boolean).join(' · '),
+                    documentation: col.documentation,
+                    kind: monaco.languages.CompletionItemKind.Field,
+                    insertText: col.insertText,
+                    range,
+                    filterText: col.name,
+                  })
+                }
+                return { suggestions }
+              }
+            }
+
             // ORDER BY: SOLO colonne delle tabelle dello statement + ASC/DESC.
             // Niente tabelle, viste, procedure o funzioni: nella ORDER BY non si possono usare.
             if (inOrderBy) {
@@ -1148,29 +1171,6 @@ export function provideSqlCompletions({
               // ripiego: nessun campo da proporre → almeno le direzioni (mai popup vuoto)
               if (!mostraSubito && suggestions.length === 0) directions()
               return { suggestions }
-            }
-
-            // Colonne qualificate con alias/tabella: dopo "r." o "RUN_MISSIONI." suggerisce
-            // le colonne di quella tabella (es. "FROM RUN_MISSIONI r WHERE r."). Sta PRIMA dei
-            // rami per contesto perché vale ovunque: nella select-list il ramo dedicato ritorna
-            // subito e l'alias non veniva mai considerato (segnalato dall'utente: "nella select
-            // non torna per primi i campi della tabella" dopo "from #tmpMission dd").
-            {
-              const qualified = buildQualifiedColumnSuggestions(stmtText, textBefore, st.summary)
-              if (qualified.length > 0) {
-                for (const col of qualified) {
-                  push({
-                    label: col.name,
-                    detail: [columnTypeText(col.dataType, col.isNullable), 'colonna qualificata'].filter(Boolean).join(' · '),
-                    documentation: col.documentation,
-                    kind: monaco.languages.CompletionItemKind.Field,
-                    insertText: col.insertText,
-                    range,
-                    filterText: col.name,
-                  })
-                }
-                return { suggestions }
-              }
             }
 
             // Aiuto SELECT: se il cursore è nella select-list (tra SELECT e FROM dello statement),

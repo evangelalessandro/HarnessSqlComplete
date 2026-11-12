@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_TVF_ORDERBY = process.argv.includes('--verify-tvf-orderby')
 const VERIFY_VERIFY_FORMATTA_CASE_ANNIDATO = process.argv.includes('--verify-formatta-case-annidato')
 const VERIFY_VERIFY_FORMATTA_CTE_COMMENTO = process.argv.includes('--verify-formatta-cte-commento')
 const VERIFY_VERIFY_FORMATTA_DECLARE_TABLE = process.argv.includes('--verify-formatta-declare-table')
@@ -9684,6 +9685,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_TVF_ORDERBY) {
+      await verifyTvfOrderBy(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -12284,6 +12290,120 @@ async function verifyFormattaCaseAnnidato(page) {
   await page.screenshot('formatta-case-annidato')
 
   const falliti = esiti.filter((e) => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-tvf-orderby): alias di una FUNZIONE TABELLARE nell'ORDER BY.
+ *
+ * Segnalazione utente: "perché l'intellisense con questa funzione non torna niente? al punto ,t." —
+ * il ramo ORDER BY del provider ritornava prima di considerare le colonne qualificate, quindi ",t."
+ * restava senza suggerimenti (mentre "o." di una tabella funzionava).
+ *
+ * La funzione si prende da SHOT_TVF (default FUNZIONE_TABELLARE, la stessa di --verify-alias): se il
+ * database attivo non la contiene, il controllo viene saltato con un messaggio esplicito.
+ */
+async function verifyTvfOrderBy(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  // SHOT_DB: si passa al database indicato (le tabelle/funzioni di prova devono esistere)
+  if (SHOT_DB) {
+    await page.eval(`(() => {
+      const sel = document.querySelector('select');
+      if (!sel) return false;
+      const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB)});
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(4000)
+  }
+
+  const rett = await page.eval(`(() => {
+    const d = document.querySelector('.monaco-editor').getBoundingClientRect();
+    return { x: d.left, y: d.top };
+  })()`)
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.monaco-editor .suggest-widget .monaco-list-row')]
+      .map(r => (r.querySelector('.label-name') || r).textContent.trim())`)
+  /** Scrive il testo (Ctrl+A + digitazione), clic in fondo all'ultima riga e digita la lettera. */
+  const prova = async (sql, lettera) => {
+    await page.clickPoint(rett.x + 120, rett.y + 18)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1200)
+    const punto = await page.eval(`(() => {
+      const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')];
+      const ultima = linee[linee.length - 1];
+      if (!ultima) return null;
+      const spans = [...ultima.querySelectorAll('span')];
+      const s = spans[spans.length - 1];
+      if (!s) return null;
+      const r = s.getBoundingClientRect();
+      return { x: r.right - 1, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) return []
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(500)
+    await page.typeText(lettera)
+    await sleep(2000)
+    return await vociPopup()
+  }
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const minuscole = v => v.map(x => x.toLowerCase())
+
+  // 1) alias di TABELLA nell'ORDER BY: comportamento che deve restare
+  const vociTabella = await prova(`SELECT TOP 1 * INTO #tmpOrd FROM DAT_ORDINI o ORDER BY o.`, 'O')
+  console.log(`  alias di tabella nell'ORDER BY: ${JSON.stringify(vociTabella.slice(0, 6))}`)
+  check('alias di tabella nell ORDER BY: propone i campi', minuscole(vociTabella).some(v => v.startsWith('ord_')))
+
+  // 2) alias di FUNZIONE TABELLARE nell'ORDER BY (il caso segnalato)
+  const fn = FUNZIONE_TABELLARE
+  const vociFunzione = await prova(
+    `SELECT TOP 1 *
+INTO #tmpOrd
+FROM @table
+  left JOIN dbo.${fn}() t on  t.A = 0
+ORDER BY iif (1 = 1, 0, 1)
+         ,t.`,
+    FUNZIONE_TABELLARE_CAMPO.slice(0, 2) || 'X',
+  )
+  console.log(`  alias di funzione tabellare nell'ORDER BY: ${JSON.stringify(vociFunzione.slice(0, 6))}`)
+  if (vociFunzione.length === 0) {
+    console.log(`  (funzione ${fn} non presente in questo database oppure nessun campo: verifica saltata)`)
+  } else {
+    check(
+      `alias di funzione tabellare nell ORDER BY: propone i campi di ${fn}`,
+      minuscole(vociFunzione).includes(FUNZIONE_TABELLARE_CAMPO.toLowerCase()),
+      vociFunzione.slice(0, 5).join(', '),
+    )
+  }
+
+  await page.screenshot('tvf-orderby')
+
+  const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
 }
