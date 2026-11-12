@@ -1849,6 +1849,13 @@ function splitCaseLines(segment: Token[], up: (t: Token) => string): CaseLine[] 
   let depth = 0
   let cur: Token[] = []
   let curDelta = 1
+  /**
+   * Livelli dei CASE annidati: ogni CASE aperto ricorda il rientro della riga in cui compare.
+   * WHEN/ELSE stanno a base+1, THEN a base+2, END torna alla base. Senza questo stack un CASE
+   * dentro un THEN veniva indentato come quello esterno e il suo END chiudeva al livello sbagliato
+   * (segnalazione utente).
+   */
+  const caseStack: number[] = []
   const flush = (delta: number) => {
     // ogni "--" in mezzo ai token chiude la riga: il codice prosegue sulla successiva
     for (const row of rowsNoDashEat(cur, up)) out.push({ text: row, delta })
@@ -1862,25 +1869,29 @@ function splitCaseLines(segment: Token[], up: (t: Token) => string): CaseLine[] 
       else if (t.text === ')') depth = Math.max(0, depth - 1)
     }
     // separatori del CASE a profondità 0
-    const isWhen = upper === 'WHEN' && depth === 0 && cur.length > 0
+    const isWhen = upper === 'WHEN' && depth === 0
     const isThen = upper === 'THEN' && depth === 0 && cur.length > 0
-    const isElse = upper === 'ELSE' && depth === 0 && cur.length > 0
+    const isElse = upper === 'ELSE' && depth === 0
     const isEnd = upper === 'END' && depth === 0
     if (isWhen || isThen || isElse || isEnd) {
       flush(curDelta)
-      if (upper === 'WHEN') curDelta = 2
-      else if (upper === 'THEN') curDelta = 3
-      else if (upper === 'ELSE') curDelta = 2
-      else curDelta = 1
+      const base = caseStack.length > 0 ? caseStack[caseStack.length - 1] : 1
+      if (upper === 'WHEN') curDelta = base + 1
+      else if (upper === 'THEN') curDelta = base + 2
+      else if (upper === 'ELSE') curDelta = base + 1
+      else curDelta = base
       cur.push(t)
       if (isEnd) {
-        // END chiude: flush immediato e il resto continua sullo stesso livello
-        flush(1)
-        curDelta = 0
+        // END chiude il CASE: flush al livello della base e si torna al CASE esterno
+        flush(curDelta)
+        caseStack.pop()
+        curDelta = caseStack.length > 0 ? caseStack[caseStack.length - 1] : 0
         continue
       }
       continue
     }
+    // un CASE a profondità 0 apre un livello nuovo: il suo rientro è quello della riga corrente
+    if (upper === 'CASE' && depth === 0) caseStack.push(curDelta)
     cur.push(t)
   }
   if (cur.length > 0) flush(curDelta)

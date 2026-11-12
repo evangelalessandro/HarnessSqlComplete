@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_FORMATTA_CASE_ANNIDATO = process.argv.includes('--verify-formatta-case-annidato')
 const VERIFY_VERIFY_FORMATTA_CTE_COMMENTO = process.argv.includes('--verify-formatta-cte-commento')
 const VERIFY_VERIFY_FORMATTA_DECLARE_TABLE = process.argv.includes('--verify-formatta-declare-table')
 const VERIFY_VERIFY_FORMATTA_DROP_IF_EXISTS = process.argv.includes('--verify-formatta-drop-if-exists')
@@ -9678,6 +9679,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_FORMATTA_CASE_ANNIDATO) {
+      await verifyFormattaCaseAnnidato(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -12184,6 +12190,98 @@ AND (EXISTS (SELECT 1 FROM UTI_WORK WHERE WOR_COD = 'EXP_STOCK' AND WOR_NUM = 1)
   check('il commento dentro la WHERE è su una riga sua', righe.some(r => r.trim() === '/* nota in mezzo alla WHERE */'))
 
   await page.screenshot('formatta-cte-commento')
+
+  const falliti = esiti.filter((e) => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-formatta-case-annidato): CASE dentro un THEN — il CASE interno deve stare un
+ * livello più dentro e il WHEN successivo del CASE esterno deve tornare al suo livello.
+ */
+async function verifyFormattaCaseAnnidato(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  const sql = `SELECT ESE_ID, RIG_RIGA,
+     CASE
+       WHEN NOT MIS_MISSIONE IS NULL
+         THEN iif (BCO_USOBAIA LIKE '%,KITPK,%', 1, 0)
+       ELSE 0
+     END,
+     CASE
+       WHEN BCO_USOBAIA LIKE '%,KITPK,%'
+         THEN CASE
+       WHEN BCO_SKU = ''
+         THEN 'IN TRANSIT BAY'
+       ELSE 'IN MOVING'
+     END
+     WHEN UDC_CELLA > 0
+         THEN 'RACK'
+       ELSE 'NOT READY'
+     END
+  FROM DAT_ORDINI_RIGHE
+  WHERE RIG_ORDINE = @ordine`
+
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors();
+    const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    ed.focus(); ed.setValue(${JSON.stringify('@@SQL@@')});
+  })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+  await sleep(700)
+  await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Formatta')`,
+  )
+  await sleep(3500)
+  const out = await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors();
+    const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    return ed ? ed.getValue() : '';
+  })()`)
+  const righe = out.replace(/\r\n/g, '\n').split('\n')
+  const rientro = r => r.length - r.trimStart().length
+  console.log('  output:\n' + righe.map(r => '    |' + r).join('\n'))
+
+  const iThenCaso = righe.findIndex(r => r.trim().startsWith('THEN CASE'))
+  const iWhenInterno = righe.findIndex((r, i) => i > iThenCaso && r.trim().startsWith('WHEN BCO_SKU'))
+  const end = righe.map((r, i) => ({ i, t: r.trim() })).filter(x => x.t === 'END')
+
+  check('il CASE interno sta su una riga col THEN', iThenCaso > -1)
+  check(
+    'il WHEN interno è un passo più dentro del THEN',
+    iWhenInterno > iThenCaso && rientro(righe[iWhenInterno]) === rientro(righe[iThenCaso]) + 2,
+  )
+  check('ci sono tre END (due CASE annidati + il primo elemento)', end.length === 3, String(end.length))
+  check(
+    "l'END interno sta dentro quello esterno",
+    end.length === 3 && rientro(righe[end[1].i]) === rientro(righe[end[2].i]) + 4,
+  )
+
+  await page.screenshot('formatta-case-annidato')
 
   const falliti = esiti.filter((e) => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
