@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_TVF_SENZA_ALIAS = process.argv.includes('--verify-tvf-senza-alias')
 const VERIFY_VERIFY_INTO_TEMP = process.argv.includes('--verify-into-temp')
 const VERIFY_VERIFY_TVF_ORDERBY = process.argv.includes('--verify-tvf-orderby')
 const VERIFY_VERIFY_FORMATTA_CASE_ANNIDATO = process.argv.includes('--verify-formatta-case-annidato')
@@ -9696,6 +9697,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_TVF_SENZA_ALIAS) {
+      await verifyTvfSenzaAlias(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -12525,6 +12531,108 @@ select * from #tmpEsequi t where t.`,
   check('la temp usata come sorgente propone i suoi campi', r2.voci.some(v => v.toLowerCase().startsWith('ese_')))
 
   await page.screenshot('into-temp')
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-tvf-senza-alias): con "FROM dbo.<funzione tabellare>() tt" i campi della funzione
+ * devono essere proposti anche SENZA alias.
+ *
+ * Segnalazione utente: "perché nella select o where devo usare l'alias della funzione e non mi torna i
+ * nomi colonna? Vedi quello dentro la count o la join che senza tt non torna x_ordine".
+ *
+ * Qui si verifica la WHERE (frammento in fondo al testo, come lo scrive l'utente) e si controlla che
+ * "tt." continui a funzionare. SELECT e count(…) sono coperti dai test unitari
+ * (tvfUnqualifiedColumns.test.ts) sullo stesso percorso (statementSourceTables).
+ */
+async function verifyTvfSenzaAlias(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  if (SHOT_DB) {
+    await page.eval(`(() => {
+      const sel = document.querySelector('select');
+      if (!sel) return false;
+      const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB)});
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(4000)
+  }
+
+  const rett = await page.eval(`(() => {
+    const d = document.querySelector('.monaco-editor').getBoundingClientRect();
+    return { x: d.left, y: d.top };
+  })()`)
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.monaco-editor .suggest-widget .monaco-list-row')]
+      .map(r => (r.querySelector('.label-name') || r).textContent.trim())`)
+  const prova = async (sql, lettera) => {
+    await page.clickPoint(rett.x + 120, rett.y + 18)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1200)
+    const punto = await page.eval(`(() => {
+      const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')];
+      const ultima = linee[linee.length - 1];
+      if (!ultima) return null;
+      const spans = [...ultima.querySelectorAll('span')];
+      const s = spans[spans.length - 1];
+      if (!s) return null;
+      const r = s.getBoundingClientRect();
+      return { x: r.right - 1, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) return []
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(500)
+    await page.typeText(lettera)
+    await sleep(2000)
+    return await vociPopup()
+  }
+
+  const fn = FUNZIONE_TABELLARE
+  const campo = FUNZIONE_TABELLARE_CAMPO
+  const frammento = campo.slice(0, 2)
+  const resto = campo.slice(2, 4).toLowerCase()
+  const minuscole = v => v.map(x => x.toLowerCase())
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // 1) WHERE senza alias (il caso segnalato: "senza tt non torna x_ordine")
+  const vociWhere = await prova(
+    `select count(1)\nfrom dbo.${fn}('') tt\n  inner join DAT_ORDINI on ORD_ORDINE = tt.X_ORDINE\nwhere ${frammento}`,
+    resto,
+  )
+  console.log(`  WHERE senza alias: ${JSON.stringify(vociWhere.slice(0, 6))}`)
+  check(`WHERE senza alias: propone ${campo}`, minuscole(vociWhere).includes(campo.toLowerCase()))
+
+  // 2) alias esplicito: deve continuare a funzionare
+  const vociAlias = await prova(`select 1\nfrom dbo.${fn}('') tt\nwhere tt.${frammento}`, resto)
+  console.log(`  alias esplicito: ${JSON.stringify(vociAlias.slice(0, 6))}`)
+  check(`"tt." propone ${campo}`, minuscole(vociAlias).includes(campo.toLowerCase()))
+
+  await page.screenshot('tvf-senza-alias')
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

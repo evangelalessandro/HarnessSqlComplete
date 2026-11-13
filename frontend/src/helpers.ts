@@ -2103,10 +2103,7 @@ export function buildColumnContextSuggestions(
 ): ColumnContextSuggestion[] {
   // il BERSAGLIO di "SELECT … INTO #tmp" non è una sorgente: senza questo filtro le colonne del
   // temp venivano proposte qualificate ("[#tmpEsequi].COLONNA") dentro lo stesso statement
-  const refTables = extractStatementTableRefs(stmtText)
-    .filter(r => r.kind !== 'into')
-    .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
-    .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined)
+  const refTables = statementSourceTables(stmtText, summary)
 
   // proprietari per nome colonna (label = alias o nome tabella) e chiave per alias/tabella.
   // I riferimenti ripetuti alla STESSA tabella+alias non contano due volte (sotto-query).
@@ -2327,6 +2324,40 @@ export function extractTableValuedFunctionRefs(stmtText: string): TableValuedFun
         ? aliasGrezzo
         : null
     out.push({ schema, name: nome, alias })
+  }
+  return out
+}
+
+/**
+ * SORGENTI di colonne dello statement: tabelle/viste (FROM/JOIN) PIÙ le FUNZIONI TABELLARI
+ * richiamate con un alias ("FROM dbo.fn_x() tt").
+ *
+ * SEGNALAZIONE UTENTE: con "FROM dbo.fn_Custom_PK_ReadyLine('') tt INNER JOIN DAT_ORDINI …" solo
+ * "tt.colonna" funzionava: scrivendo il nome del campo senza alias (nella SELECT, nella WHERE o dentro
+ * count(…)) l'intellisense non proponeva nulla, perché le colonne restituite dalla funzione non
+ * entravano fra le "tabelle dello statement".
+ */
+export function statementSourceTables(
+  stmtText: string,
+  summary: DatabaseSummary,
+): { r: StatementTableRef; table: TableInfo }[] {
+  const out: { r: StatementTableRef; table: TableInfo }[] = []
+  for (const r of extractStatementTableRefs(stmtText).filter(x => x.kind !== 'into')) {
+    const table = summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase())
+    if (table) out.push({ r, table })
+  }
+  // funzioni tabellari: la "tabella" è la funzione stessa, con il nome = alias della query
+  for (const f of extractTableValuedFunctionRefs(stmtText)) {
+    const fn =
+      summary.functions.find(
+        x => x.name.toLowerCase() === f.name.toLowerCase() && (!f.schema || x.schema.toLowerCase() === f.schema.toLowerCase()),
+      ) ?? summary.functions.find(x => x.name.toLowerCase() === f.name.toLowerCase())
+    if (!fn || !fn.columns || fn.columns.length === 0) continue
+    const nome = f.alias ?? fn.name
+    out.push({
+      r: { tableName: nome, alias: f.alias, kind: 'from' },
+      table: { schema: fn.schema, name: nome, columns: fn.columns } as TableInfo,
+    })
   }
   return out
 }
@@ -3095,11 +3126,7 @@ export function buildSelectListSuggestions(
     }
   }
 
-  const refTables = dedupRefs(
-    extractStatementTableRefs(stmtText).filter(r => r.kind !== 'into')
-      .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
-      .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined),
-  )
+  const refTables = dedupRefs(statementSourceTables(stmtText, summary))
 
   /** Proprietari (tabella+alias) di ogni colonna, per decidere se qualificarla. */
   const colOwners = new Map<string, ColOwner[]>()
