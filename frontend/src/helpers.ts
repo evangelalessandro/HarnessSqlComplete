@@ -1814,7 +1814,7 @@ export function buildJoinConditionSuggestions(
   stmtBefore: string,
   summary: DatabaseSummary,
 ): JoinConditionSuggestion[] {
-  const refs = extractStatementTableRefs(stmtText)
+  const refs = extractStatementTableRefs(stmtText).filter(r => r.kind !== 'into')
     .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
     .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined)
   if (refs.length < 2) return []
@@ -2101,7 +2101,10 @@ export function buildColumnContextSuggestions(
   summary: DatabaseSummary,
   columnHistoryBoost: (columnName: string) => number = () => 0,
 ): ColumnContextSuggestion[] {
+  // il BERSAGLIO di "SELECT … INTO #tmp" non è una sorgente: senza questo filtro le colonne del
+  // temp venivano proposte qualificate ("[#tmpEsequi].COLONNA") dentro lo stesso statement
   const refTables = extractStatementTableRefs(stmtText)
+    .filter(r => r.kind !== 'into')
     .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
     .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined)
 
@@ -2251,7 +2254,7 @@ export function buildQualifiedColumnSuggestions(
   if (!qualifier) return []
 
   // mappa alias/tabella → TableInfo per lo statement
-  const refs = extractStatementTableRefs(stmtText)
+  const refs = extractStatementTableRefs(stmtText).filter(r => r.kind !== 'into')
     .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
     .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined)
 
@@ -2596,6 +2599,15 @@ export function statementIndexAt(starts: number[], offset: number): number {
 export interface StatementTableRef {
   tableName: string
   alias: string | null
+  /**
+   * Keyword che ha introdotto il riferimento: 'from' | 'join' | 'into' | 'update' | 'table'.
+   *
+   * Serve a distinguere le SORGENTI di uno statement dal suo BERSAGLIO: "SELECT … INTO #tmpX"
+   * elenca #tmpX come riferimento, ma non è una tabella da cui leggere le colonne — usarla come
+   * proprietario faceva proporre "[#tmpX].COLONNA" già dentro lo stesso statement (segnalazione
+   * utente: "mi scrive #tmpEsequi.colonna").
+   */
+  kind?: 'from' | 'join' | 'into' | 'update' | 'table'
 }
 
 /** Parole riservate SQL: mai usate come alias di tabella né come identificatori senza parentesi. */
@@ -3084,7 +3096,7 @@ export function buildSelectListSuggestions(
   }
 
   const refTables = dedupRefs(
-    extractStatementTableRefs(stmtText)
+    extractStatementTableRefs(stmtText).filter(r => r.kind !== 'into')
       .map(r => ({ r, table: summary.tables.find(t => t.name.toLowerCase() === r.tableName.toLowerCase()) }))
       .filter((x): x is { r: StatementTableRef; table: TableInfo } => x.table !== undefined),
   )
@@ -3357,7 +3369,7 @@ const TABLE_ALIAS_BLOCK =
  * così "FROM a JOIN b" NON cattura JOIN come alias di a (bug che nascondeva b).
  */
 const TABLE_REF_RE = new RegExp(
-  '\\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\\s+' +
+  '\\b(FROM|JOIN|UPDATE|INTO|TABLE)\\s+' +
     // '#'/'@' ammessi: tabelle temporanee (#temp, ##globale) e variabili tabella (@t)
     '((?:[@#][A-Za-z0-9_#]+|\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*(?:\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_]*))?)' +
     '(?:\\s+(?:AS\\s+)?(?!(?:' + TABLE_ALIAS_BLOCK + ')\\b)([A-Za-z_][A-Za-z0-9_]*))?',
@@ -3369,11 +3381,13 @@ export function extractStatementTableRefs(text: string): StatementTableRef[] {
   const re = TABLE_REF_RE
   const out: StatementTableRef[] = []
   for (const m of text.matchAll(re)) {
-    const parts = m[1].replace(/[\[\]\s]/g, '').split('.')
-    const maybeAlias = m[2] ?? null
+    const kind = (m[1] ?? '').toUpperCase() as 'FROM' | 'JOIN' | 'UPDATE' | 'INTO' | 'TABLE' | ''
+    const parts = (m[2] ?? '').replace(/[\[\]\s]/g, '').split('.')
+    const maybeAlias = m[3] ?? null
     out.push({
       tableName: parts[parts.length - 1],
       alias: maybeAlias && !isSqlReserved(maybeAlias) ? maybeAlias : null,
+      kind: (kind.toLowerCase() || 'from') as StatementTableRef['kind'],
     })
   }
   return out
@@ -3434,13 +3448,14 @@ export function colorizeSqlTokens(text: string, summary: DatabaseSummary): Color
     const re = TABLE_REF_RE
     let m: RegExpExecArray | null
     while ((m = re.exec(slice)) !== null) {
-      const parts = m[1].replace(/[\[\]\s]/g, '').split('.')
+      // gruppi: 1 = keyword (FROM/JOIN/INTO/…), 2 = nome, 3 = alias
+      const parts = (m[2] ?? '').replace(/[\[\]\s]/g, '').split('.')
       const tableName = parts[parts.length - 1].toLowerCase()
       const table = tableByLower.get(tableName)
       if (!table) continue
       const key = `${table.schema}.${table.name}`
       tables.add(key)
-      const maybeAlias = m[2] ?? null
+      const maybeAlias = m[3] ?? null
       aliases.set(maybeAlias && !isSqlReserved(maybeAlias) ? maybeAlias.toLowerCase() : tableName, key)
     }
     refCache.set(stmtIdx, { tables, aliases })
@@ -3733,7 +3748,7 @@ export interface SelfJoinSuggestion {
  * riferimento esistente (alias o nome) sul lato contesto e un nuovo alias sull'altro.
  */
 export function buildSelfJoinSuggestions(stmtText: string, summary: DatabaseSummary): SelfJoinSuggestion[] {
-  const refs = extractStatementTableRefs(stmtText)
+  const refs = extractStatementTableRefs(stmtText).filter(r => r.kind !== 'into')
   const tablesByLower = new Map<string, TableInfo>()
   for (const t of summary.tables) tablesByLower.set(t.name.toLowerCase(), t)
   const existingAliases = new Set(refs.filter(r => r.alias).map(r => r.alias!.toLowerCase()))

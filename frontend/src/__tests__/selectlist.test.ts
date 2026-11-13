@@ -27,14 +27,16 @@ describe('SELECT: colonne nella select-list ed espansione *', () => {
 
   it('extractStatementTableRefs: inner/on non sono alias (bug)', () => {
     const refs = extractStatementTableRefs(SQL)
+    // "kind" indica la keyword che ha introdotto il riferimento (le sorgenti FROM/JOIN si
+    // distinguono dal BERSAGLIO di un INTO: vedi il caso "[#tmp].COLONNA")
     expect(refs).toEqual([
-      { tableName: 'RUN_MISSIONI', alias: null },
-      { tableName: 'DAT_UDC', alias: null },
+      { tableName: 'RUN_MISSIONI', alias: null, kind: 'from' },
+      { tableName: 'DAT_UDC', alias: null, kind: 'join' },
     ])
     const refs2 = extractStatementTableRefs('SELECT FROM dbo.Ordini o JOIN dbo.Clienti AS c ON o.id = c.id;')
     expect(refs2).toEqual([
-      { tableName: 'Ordini', alias: 'o' },
-      { tableName: 'Clienti', alias: 'c' },
+      { tableName: 'Ordini', alias: 'o', kind: 'from' },
+      { tableName: 'Clienti', alias: 'c', kind: 'join' },
     ])
   })
 
