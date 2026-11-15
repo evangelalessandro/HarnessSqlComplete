@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_CREA_STORE_TMP = process.argv.includes('--verify-crea-store-tmp')
 const VERIFY_VERIFY_INTELLISENSE_SENSATA = process.argv.includes('--verify-intellisense-sensata')
 const VERIFY_VERIFY_TVF_SENZA_ALIAS = process.argv.includes('--verify-tvf-senza-alias')
 const VERIFY_VERIFY_INTO_TEMP = process.argv.includes('--verify-into-temp')
@@ -9708,6 +9709,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_CREA_STORE_TMP) {
+      await verifyCreaStoreTmp(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -12780,6 +12786,102 @@ async function verifyIntellisenseSensata(page) {
 
   console.log('  LOG str: ' + JSON.stringify(page.consoleLogs('[str]').slice(0, 4)))
   await page.screenshot('intellisense-sensata')
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-crea-store-tmp): creare una stored procedure deve funzionare anche se nella
+ * SESSIONE c'è già una tabella temporanea con lo stesso nome ma forma diversa.
+ *
+ * Segnalazione utente: "perché questa query su ssms 22 va bene invece qui no?" con
+ *   Msg 207 … Il nome di colonna 'W_GIAC' non è valido.
+ * Su SSMS la query parte in una finestra nuova (nessuna #tmp), qui la sessione persiste: la #tmpSwap
+ * di un'esecuzione precedente faceva fallire la compilazione della procedura.
+ */
+async function verifyCreaStoreTmp(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  if (SHOT_DB) {
+    await page.eval(`(() => {
+      const sel = document.querySelector('select');
+      if (!sel) return false;
+      const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB)});
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(4000)
+  }
+
+  const rett = await page.eval(`(() => {
+    const d = document.querySelector('.monaco-editor').getBoundingClientRect();
+    return { x: d.left, y: d.top };
+  })()`)
+  const testoPagina = async () => await page.eval(`document.body.textContent || ''`)
+
+  /** Scrive il testo nell'editor e preme Esegui (F5), poi aspetta la fine. */
+  const esegui = async (sql) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      ed.focus();
+      ed.setValue(${JSON.stringify('@@SQL@@')});
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+    await sleep(700)
+    await page.clickPoint(rett.x + 120, rett.y + 18)
+    await sleep(300)
+    await page.press('F5', { code: 'F5', vk: 116 })
+    await sleep(4500)
+  }
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // 1) sporco la SESSIONE: una #tmpSwap senza la colonna W_GIAC
+  await esegui('SELECT 1 AS W_UDC INTO #tmpSwap')
+  const dopoSporca = await testoPagina()
+  check('la #tmpSwap di prova viene creata (nessun errore)',
+    !/Msg 2714|già esistente|already exists|Msg 207/i.test(dopoSporca))
+
+  // 2) creo una procedura che ricrea #tmpSwap con W_GIAC: se la #tmp residua viene usata per la
+  //    compilazione, SQL Server risponde "Il nome di colonna 'W_GIAC' non è valido"
+  await esegui(`CREATE OR ALTER PROCEDURE dbo.ProvaTmpSwap
+AS
+  SET NOCOUNT ON
+  SELECT UDC_UDC W_UDC, UDC_GIAC W_GIAC INTO #tmpSwap FROM DAT_UDC
+  IF EXISTS (SELECT 1 FROM #tmpSwap WHERE W_GIAC > 0)
+    PRINT 'ok'`)
+  const dopoStore = await testoPagina()
+  const errore207 = /Il nome di colonna 'W_GIAC' non è valido|Msg 207/i.test(dopoStore)
+  console.log(`  messaggi con "Msg 207": ${errore207}`)
+  check('la procedura viene creata anche con la #tmp residua', !errore207)
+
+  // pulizia: via la procedura di prova
+  await esegui('DROP PROCEDURE IF EXISTS dbo.ProvaTmpSwap')
+  await page.screenshot('crea-store-tmp')
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

@@ -55,6 +55,31 @@ public class QueryService
     /// </summary>
     public async Task<QueryResult> EseguiInSessioneAsync(ConnectionHub.SessioneSql sessione, string sql, int? timeoutSeconds, CancellationToken ct = default)
     {
+        /**
+         * CREAZIONE/MODIFICA DI UN MODULO (procedura, funzione, vista, trigger) → connessione NUOVA,
+         * come aprire una query nuova in SSMS.
+         *
+         * Nella sessione persistente, invece, le tabelle temporanee di un'esecuzione precedente sono
+         * ancora vive: il CREATE OR ALTER PROCEDURE compila il corpo contro quelle #tmp, e se una di
+         * esse ha una forma diversa (versione precedente della store) SQL Server risponde
+         * "Il nome di colonna 'W_GIAC' non è valido" anche quando la stessa store in SSMS viene
+         * creata senza problemi. Su una connessione nuova non ci sono #tmp residue.
+         */
+        if (SqlBatchSplitter.ContieneDdlDiModulo(sql))
+        {
+            var pulito = await ExecuteAsync(sessione.Connection.ConnectionString, sql, timeoutSeconds, ct);
+            var messaggiPulito = new List<string>(pulito.Messages);
+            var trancountSessione = await TrancountAsync(sessione.Connection, ct);
+            if (trancountSessione > 0)
+            {
+                var riga = trancountSessione == 1 ? "1 transazione aperta" : $"{trancountSessione} transazioni annidate aperte";
+                messaggiPulito.Add(
+                    $"⚠ Transazione ancora aperta sulla sessione ({riga}): le modifiche NON sono salvate. " +
+                    "Chiudila con COMMIT TRANSACTION oppure ROLLBACK TRANSACTION.");
+            }
+            return pulito with { Messages = messaggiPulito, Trancount = trancountSessione };
+        }
+
         var result = await EseguiBatchAsync(sessione.Connection, null, sql, timeoutSeconds, checkSyntax: false, ct);
 
         var messaggi = new List<string>(result.Messages);

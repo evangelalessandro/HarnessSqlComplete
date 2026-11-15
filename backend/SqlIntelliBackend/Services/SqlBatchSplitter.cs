@@ -36,6 +36,59 @@ public static partial class SqlBatchSplitter
         RegexOptions.IgnoreCase | RegexOptions.Multiline)]
     private static partial Regex GoRegex();
 
+    /// <summary>
+    /// True se il testo CREA o MODIFICA un MODULO (procedura, funzione, vista, trigger).
+    ///
+    /// Serve a eseguire questi statement su una connessione NUOVA (come aprire una query in SSMS):
+    /// nella sessione persistente le tabelle temporanee di un'esecuzione precedente restano vive e il
+    /// CREATE OR ALTER PROCEDURE compila il corpo contro quelle #tmp — se una ha una forma diversa
+    /// (versione precedente della store) SQL Server risponde "Il nome di colonna 'W_GIAC' non è valido"
+    /// anche quando in SSMS la stessa store viene creata senza problemi.
+    /// </summary>
+    public static bool ContieneDdlDiModulo(string sql)
+    {
+        foreach (var batch in SplitWithLines(sql))
+        {
+            var testo = StripLeadingComments(batch.Text).TrimStart();
+            if (ModuleDdlRegex().IsMatch(testo)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Rimuove i commenti iniziali (-- e /* */) da un batch, per guardarne il primo statement.</summary>
+    private static string StripLeadingComments(string text)
+    {
+        var s = text.TrimStart();
+        while (true)
+        {
+            if (s.StartsWith("--", StringComparison.Ordinal))
+            {
+                var eol = s.IndexOf('\n');
+                if (eol < 0) return string.Empty;
+                s = s[(eol + 1)..].TrimStart();
+                continue;
+            }
+            if (s.StartsWith("/*", StringComparison.Ordinal))
+            {
+                var end = s.IndexOf("*/", StringComparison.Ordinal);
+                if (end < 0) return string.Empty;
+                s = s[(end + 2)..].TrimStart();
+                continue;
+            }
+            return s;
+        }
+    }
+
+    /// <summary>
+    /// CREATE/ALTER [OR ALTER] PROCEDURE|PROC|FUNCTION|VIEW|TRIGGER all'inizio del batch (le parole
+    /// chiave possono essere precedute da SET NOCOUNT/ANSI_NULLS: quelle sono istruzioni a sé e il
+    /// modulo viene dopo, quindi si guarda anche oltre una SET iniziale).
+    /// </summary>
+    [GeneratedRegex(
+        @"^(?:SET\s+\w+\s+(?:ON|OFF)\s*;?\s*)*(?:CREATE|ALTER)\s+(?:OR\s+ALTER\s+)?(?:PROC|PROCEDURE|FUNCTION|VIEW|TRIGGER)\b",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex ModuleDdlRegex();
+
     /// <summary>Solo i testi dei batch (compatibilità).</summary>
     public static List<string> Split(string sql)
     {
