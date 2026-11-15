@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_INTELLISENSE_SENSATA = process.argv.includes('--verify-intellisense-sensata')
 const VERIFY_VERIFY_TVF_SENZA_ALIAS = process.argv.includes('--verify-tvf-senza-alias')
 const VERIFY_VERIFY_INTO_TEMP = process.argv.includes('--verify-into-temp')
 const VERIFY_VERIFY_TVF_ORDERBY = process.argv.includes('--verify-tvf-orderby')
@@ -9702,6 +9703,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_INTELLISENSE_SENSATA) {
+      await verifyIntellisenseSensata(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -12633,6 +12639,147 @@ async function verifyTvfSenzaAlias(page) {
   check(`"tt." propone ${campo}`, minuscole(vociAlias).includes(campo.toLowerCase()))
 
   await page.screenshot('tvf-senza-alias')
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-intellisense-sensata): l'intellisense deve proporre cose sensate nel contesto
+ * giusto e NIENTE nei contesti chiusi.
+ *
+ * Segnalazione utente: "riesci a fare dei test sull'intellisense che dia risultati sensati e non
+ * proponga cose senza senso al momento sbagliato? tipo quando faccio un begin e scrivo la end mi
+ * propone invece una exec di una store procedure".
+ */
+async function verifyIntellisenseSensata(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  if (SHOT_DB) {
+    await page.eval(`(() => {
+      const sel = document.querySelector('select');
+      if (!sel) return false;
+      const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB)});
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(4000)
+  }
+
+  const rett = await page.eval(`(() => {
+    const d = document.querySelector('.monaco-editor').getBoundingClientRect();
+    return { x: d.left, y: d.top };
+  })()`)
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.monaco-editor .suggest-widget .monaco-list-row')]
+      .map(r => (r.querySelector('.label-name') || r).textContent.trim())`)
+
+  /** Scrive il testo con setValue (niente auto-chiusura degli apici) e digita in fondo. */
+  const provaGrezza = async (sql, lettera) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      ed.focus();
+      ed.setValue(${JSON.stringify('@@SQL@@')});
+      const model = ed.getModel();
+      const ultima = model.getLineCount();
+      ed.setPosition({ lineNumber: ultima, column: model.getLineMaxColumn(ultima) });
+      ed.focus();
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+    await sleep(700)
+    await page.typeText(lettera)
+    await sleep(1800)
+    return await vociPopup()
+  }
+
+  /** Scrive il testo e digita la lettera in fondo (l'ultima riga contiene il punto del cursore). */
+  const prova = async (sql, lettera) => {
+    await page.clickPoint(rett.x + 120, rett.y + 18)
+    await sleep(400)
+    await page.press('a', { code: 'KeyA', vk: 65, modifiers: 2 })
+    await page.typeText(sql)
+    await sleep(1200)
+    const punto = await page.eval(`(() => {
+      const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')];
+      const ultima = linee[linee.length - 1];
+      if (!ultima) return null;
+      const spans = [...ultima.querySelectorAll('span')];
+      const s = spans[spans.length - 1];
+      if (!s) return null;
+      const r = s.getBoundingClientRect();
+      return { x: r.right - 1, y: r.top + r.height / 2 };
+    })()`)
+    if (!punto) return []
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(500)
+    await page.typeText(lettera)
+    await sleep(1800)
+    return await vociPopup()
+  }
+
+  const minuscole = v => v.map(x => x.toLowerCase())
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // 1) dentro una STRINGA: niente suggerimenti (prima uscivano NEWID/RAND/funzioni)
+  const vociStringa = await provaGrezza(`select 'E`, 'ND')
+  console.log(`  stringa: ${JSON.stringify(vociStringa.slice(0, 6))}`)
+  check('dentro una stringa NON propone nulla', vociStringa.length === 0, `${vociStringa.length} voci`)
+
+  // 2) dentro un COMMENTO: niente suggerimenti
+  const vociCommento = await prova(`-- prova E`, 'ND')
+  console.log(`  commento: ${JSON.stringify(vociCommento.slice(0, 6))}`)
+  check('dentro un commento NON propone nulla', vociCommento.length === 0, `${vociCommento.length} voci`)
+
+  // 3) dopo BEGIN, digitando "E": END/EXEC/ELSE (keyword) e NON procedure sciolte
+  const vociBegin = await prova('BEGIN\n  E', 'ND')
+  console.log(`  dopo BEGIN: ${JSON.stringify(vociBegin.slice(0, 8))}`)
+  check('dopo BEGIN la prima voce è END', (vociBegin[0] || '').toUpperCase() === 'END', vociBegin[0] ?? '')
+  check(
+    'dopo BEGIN non propone procedure ("dbo.ws_…")',
+    !vociBegin.some(v => /^dbo\./i.test(v)),
+    vociBegin.slice(0, 5).join(', '),
+  )
+
+  // 4) posizione FROM: tabelle e NIENTE procedure
+  const vociFrom = await prova('select * from DAT', '_UDC')
+  console.log(`  FROM: ${JSON.stringify(vociFrom.slice(0, 6))}`)
+  check('nella FROM propone tabelle (DAT_UDC)', minuscole(vociFrom).some(v => v.includes('dat_udc')))
+  check('nella FROM non propone procedure', !vociFrom.some(v => /^dbo\.ws_/i.test(v)))
+
+  // 5) posizione WHERE: colonne della tabella
+  const vociWhere = await prova('select * from DAT_UDC where U', 'DC_')
+  console.log(`  WHERE: ${JSON.stringify(vociWhere.slice(0, 6))}`)
+  check('nella WHERE propone le colonne (UDC_…)', minuscole(vociWhere).some(v => v.startsWith('udc_')))
+
+  // 6) dopo EXEC: procedure
+  const vociExec = await prova('EXEC ', 'w')
+  console.log(`  EXEC: ${JSON.stringify(vociExec.slice(0, 6))}`)
+  check('dopo EXEC propone le stored procedure', vociExec.some(v => /^dbo\./i.test(v)))
+
+  console.log('  LOG str: ' + JSON.stringify(page.consoleLogs('[str]').slice(0, 4)))
+  await page.screenshot('intellisense-sensata')
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

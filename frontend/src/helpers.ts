@@ -1338,6 +1338,67 @@ export function detectPrintMagic(sql: string): 'drago' | 'fuoco' | null {
  *  identificatori tra [] e stringhe tra "". Un solo costrutto "sballato" in un file lungo
  *  (es. un apostrofo dentro [un'identificatore]) faceva credere di essere dentro un
  *  commento → il provider restituiva lista vuota ("No suggestions."). */
+/**
+ * L'offset cade DENTRO una stringa ('…' o "…")? In quel caso l'intellisense non deve proporre nulla:
+ * si sta scrivendo un VALORE, non codice (segnalazione utente: "propone cose senza senso al momento
+ * sbagliato" — dentro 'E uscivano funzioni come NEWID/RAND).
+ *
+ * Usa la stessa scansione di isTextOffsetInComment (parentesi quadre = identificatori, '' = escape).
+ */
+export function isTextOffsetInString(text: string, offset: number): boolean {
+  let i = 0
+  let block = false
+  let quote: string | null = null
+  const n = Math.min(offset, text.length)
+  while (i < n) {
+    const c = text[i]
+    const nx = i + 1 < text.length ? text[i + 1] : ''
+    if (block) {
+      if (c === '*' && nx === '/') {
+        block = false
+        i += 2
+        continue
+      }
+      i++
+      continue
+    }
+    if (quote) {
+      if (c === quote) {
+        if (nx === quote) {
+          i += 2
+          continue
+        }
+        quote = null
+      }
+      i++
+      continue
+    }
+    if (c === '[') {
+      const end = text.indexOf(']', i + 1)
+      i = end === -1 ? i + 1 : end + 1
+      continue
+    }
+    if (c === '-' && nx === '-') {
+      const eol = text.indexOf('\n', i)
+      if (eol === -1 || eol >= n) break
+      i = eol + 1
+      continue
+    }
+    if (c === '/' && nx === '*') {
+      block = true
+      i += 2
+      continue
+    }
+    if (c === "'" || c === '"') {
+      quote = c
+      i++
+      continue
+    }
+    i++
+  }
+  return quote !== null
+}
+
 export function isTextOffsetInComment(text: string, offset: number): boolean {
   let i = 0
   let lineComment = false

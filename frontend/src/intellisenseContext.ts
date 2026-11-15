@@ -111,7 +111,17 @@ export function classifyContext({ prefix, stmtBefore }: ClassifyInput): Intellis
     if (/(?:FROM|JOIN|INTO|UPDATE|TABLE)\b/i.test(after)) return false
     return !isTablePosition && !isJoinPosition && !isExecPosition
   })()
-  const statementStart = /(?:^|;|\bGO\b|\n\s*\n)\s*$/i.test(prefix)
+  /**
+   * Inizio di uno statement: inizio testo, dopo ";" o GO, dopo una riga vuota, dopo "BEGIN" (con o
+   * senza riga nuova: si sta aprendo un blocco) e dopo THEN/ELSE di un IF.
+   * Prima "BEGIN\n  " NON era un inizio statement: il popup proponeva tabelle e procedure invece
+   * delle keyword (segnalazione utente: "quando faccio un begin e scrivo la end mi propone invece una
+   * exec di una stored procedure").
+   */
+  const dopoBegin = /\bBEGIN(?!\s+(?:TRAN|TRANSACTION)\b)\s*$/i.test(prefix) || /\bBEGIN\s*\n\s*$/i.test(prefix)
+  const dopoThenElse = /\b(?:THEN|ELSE|BEGIN|END)\s*$/i.test(prefix) && /\n\s*$/i.test(prefix)
+  const statementStart =
+    /(?:^|;|\bGO\b|\n\s*\n)\s*$/i.test(prefix) || dopoBegin || dopoThenElse
 
   // ORDER BY: se l'ULTIMA clausola di column-list dello statement è "ORDER BY" e non
   // sono comparse clausole successive (WHERE/GROUP/HAVING/UNION/SET/FROM), il cursore
@@ -293,7 +303,7 @@ export function filterKeywordsForContext(ctx: IntellisenseContext, keywords: str
     if (ctx.kind === 'statementStart') {
       // statement ufficiali T-SQL (riferimento Microsoft): DML/DDL/permessi/backup/sessione/controllo
       return keywords.filter(k =>
-        /^(SELECT|INSERT|UPDATE|DELETE|MERGE|EXEC|EXECUTE|DECLARE|CREATE|ALTER|DROP|USE|GO|BEGIN|WITH|BACKUP|RESTORE|GRANT|REVOKE|DENY|TRUNCATE|SET|PRINT|IF|WHILE|COMMIT|ROLLBACK|SAVE|TRANSACTION|RAISERROR|THROW|RETURN|KILL|DBCC|CHECKPOINT|BULK|EXCEPT|INTERSECT|BREAK|CONTINUE|GOTO|WAITFOR)$/i.test(k),
+        /^(SELECT|INSERT|UPDATE|DELETE|MERGE|EXEC|EXECUTE|DECLARE|CREATE|ALTER|DROP|USE|GO|BEGIN|WITH|BACKUP|RESTORE|GRANT|REVOKE|DENY|TRUNCATE|SET|PRINT|IF|WHILE|COMMIT|ROLLBACK|SAVE|TRANSACTION|RAISERROR|THROW|RETURN|KILL|DBCC|CHECKPOINT|BULK|EXCEPT|INTERSECT|BREAK|CONTINUE|GOTO|WAITFOR|END|ELSE)$/i.test(k),
       )
     }
   }

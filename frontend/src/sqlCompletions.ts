@@ -4,7 +4,7 @@
 // reali e fallisce se lancia un errore o se non propone nulla nel codice.
 import * as monaco from 'monaco-editor'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
-import { isTextOffsetInComment } from './helpers'
+import { isTextOffsetInComment, isTextOffsetInString } from './helpers'
 import { etichettaDrago } from './dragon'
 import { contestoParteData, costruisciFinestra, finestraDigitata, suggerimentiParteData } from './funzioniSql'
 import { TABELLE_LOGICHE, colonneTabelleLogiche, eUnTrigger } from './triggerTables'
@@ -122,6 +122,9 @@ export function provideSqlCompletions({
           const cursorOffset = model.getOffsetAt(position)
           // dentro un commento non si propone alcun suggerimento
           if (isTextOffsetInComment(fullText, cursorOffset)) return { suggestions: [] }
+          // dentro una STRINGA nemmeno: si sta scrivendo un valore, non codice (uscivano NEWID, RAND,
+          // funzioni e procedure mentre si scriveva il valore di un campo)
+          if (isTextOffsetInString(fullText, cursorOffset)) return { suggestions: [] }
           // Tabelle TEMPORANEE (#t) e CTE definite nel testo: senza aggiungerle al sommario
           // le loro colonne non sarebbero proponibili ("... LEFT JOIN #t ON 1 = 1 WHERE ",
           // "from c pippo where pippo."). Le CTE stanno PRIMA delle tabelle dello schema:
@@ -1573,9 +1576,10 @@ export function provideSqlCompletions({
                   : ''
                 push({
                   label: `${p.schema}.${p.name}`,
-                  detail: 'stored procedure',
+                  detail: 'stored procedure (chiamata con EXEC)',
                   kind: monaco.languages.CompletionItemKind.Function,
-                  insertText: qualified(p.schema, p.name) + suffix,
+                  // a INIZIO STATEMENT un nome di procedura da solo non è T-SQL valido: serve EXEC
+                  insertText: (ctx.statementStart ? 'EXEC ' : '') + qualified(p.schema, p.name) + suffix,
                   insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                   range,
                 })
