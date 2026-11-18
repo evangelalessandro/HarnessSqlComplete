@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_COLONNE_TMP_ACTIONS = process.argv.includes('--verify-colonne-tmp-actions')
 const VERIFY_VERIFY_FORMATTA_CASE_LUNGO = process.argv.includes('--verify-formatta-case-lungo')
 const VERIFY_VERIFY_SEGNO_VARIABILI = process.argv.includes('--verify-segno-variabili')
 const VERIFY_SONDA_EXEC_SWAP_REALE = process.argv.includes('--sonda-exec-swap-reale')
@@ -9762,6 +9763,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_COLONNE_TMP_ACTIONS) {
+      await verifyColonneTmpActions(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -13744,6 +13750,135 @@ WHERE UDC_UDC > 0 AND UDC_CELLA > 0`
   check('il CASE di un assegnazione non ha la virgola davanti', !/=\s*\n\s*,CASE/m.test(out))
 
   await page.screenshot('formatta-case-lungo')
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-colonne-tmp-actions): le colonne di una temporanea creata con
+ * "SELECT … INTO #TMP_ACTIONS" (select-list con assegnazioni "X_CAMPO = …") devono essere proposte.
+ *
+ * Segnalazione utente: "in questa query sotto l'intellisense non mi suggerisce i nomi colonna dalla
+ * tabella #TMP_ACTIONS".
+ *
+ * Nota: il popup si apre digitando in fondo a "WHERE X_" (come nella verifica --verify-temp-hash, che
+ * funziona): il carattere digitato filtra, quindi si controlla X_MSGKO (campo nato da un'assegnazione con
+ * CASE, il caso che prima non veniva riconosciuto). Gli altri campi sono coperti dai test unitari.
+ */
+async function verifyColonneTmpActions(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  if (SHOT_DB) {
+    await page.eval(`(() => {
+      const sel = document.querySelector('select');
+      if (!sel) return false;
+      const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB)});
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(4000)
+  }
+
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.monaco-editor .suggest-widget .monaco-list-row')]
+      .map(r => (r.querySelector('.label-name') || r).textContent.trim())`)
+  const testoEditor = async () =>
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      return ed ? ed.getValue() : '';
+    })()`)
+
+  const sql = `CREATE OR ALTER PROCEDURE dbo.p
+AS
+SELECT DISTINCT ROW_NUMBER () OVER (ORDER BY UDC_UDC) AS X_ID
+   ,X_PROCESSED = 0
+   ,X_TYPE = 'CC_KIT'
+   ,X_MSGKO =
+   CASE
+     WHEN UDC_CELLA = 0 THEN '#12.' + dbo.fn_td ('LU not available')
+     ELSE '' END
+  ,X_NOTE = 'cc'
+INTO #TMP_ACTIONS
+FROM DAT_UDC
+WHERE UDC_UDC > 0
+
+UPDATE #TMP_ACTIONS
+  SET X_PROCESSED = 1
+WHERE X_`
+
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors();
+    const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    ed.focus();
+    ed.setValue(${JSON.stringify('@@SQL@@')});
+    const model = ed.getModel();
+    const ultima = model.getLineCount();
+    ed.setPosition({ lineNumber: ultima, column: model.getLineMaxColumn(ultima) });
+    ed.focus();
+  })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+  await sleep(1200)
+  const rett = await page.eval(`(() => {
+    const d = document.querySelector('.monaco-editor').getBoundingClientRect();
+    return { x: d.left, y: d.top };
+  })()`)
+  await page.clickPoint(rett.x + 120, rett.y + 18)
+  await sleep(400)
+  const punto = await page.eval(`(() => {
+    const linee = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')];
+    const ultima = linee[linee.length - 1];
+    if (!ultima) return null;
+    const spans = [...ultima.querySelectorAll('span')];
+    const s = spans[spans.length - 1];
+    if (!s) return null;
+    const r = s.getBoundingClientRect();
+    return { x: r.right - 1, y: r.top + r.height / 2 };
+  })()`)
+  if (punto) {
+    await page.clickPoint(punto.x, punto.y)
+    await sleep(400)
+  }
+  await page.typeText('M')
+  await sleep(2200)
+  const voci = await vociPopup()
+  console.log(`  popup nella WHERE di #TMP_ACTIONS: ${JSON.stringify(voci.slice(0, 8))}`)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const minuscole = v => v.map(x => x.toLowerCase())
+  check('propone X_MSGKO (campo da assegnazione con CASE)', minuscole(voci).includes('x_msgko'), voci.slice(0, 6).join(', '))
+
+  await page.press('Enter', { code: 'Enter', vk: 13 })
+  await sleep(1000)
+  const dopo = (await testoEditor()).trim().split('\n').slice(-1)[0]
+  console.log(`  riga dopo l'accettazione: ${JSON.stringify(dopo)}`)
+  check('il campo viene inserito senza qualificatori', /WHERE X_MSGKO\b/i.test(dopo), dopo)
+
+  await page.screenshot('colonne-tmp-actions')
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

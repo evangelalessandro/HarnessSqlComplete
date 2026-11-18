@@ -242,6 +242,18 @@ export function selectListInfo(list: string): { names: string[]; star: boolean }
     }
     const words = tokenizeSql(item)
     if (words.length === 0) continue
+    /**
+     * ASSEGNAZIONE: "X_PROCESSED = 0", "X_MSGKO = CASE … END", "X_DEST_CELL = dest.CEL_CELLA".
+     * In una SELECT … INTO il nome della colonna è il lato SINISTRO dell'uguale (stile "alias = valore").
+     * Prima questi campi venivano persi: la temporanea risultava senza quelle colonne e l'intellisense
+     * non le proponeva (segnalazione utente: "non mi suggerisce i nomi colonna dalla tabella #TMP_ACTIONS").
+     */
+    const assegna = /^\s*(\[[^\]]+\]|[A-Za-z_#@][\w#$@]*)\s*=(?!=)/.exec(item)
+    if (assegna) {
+      const nome = assegna[1].replace(/^\[|\]$/g, '')
+      if (!NON_ALIAS.has(nome.toLowerCase())) names.push(nome)
+      continue
+    }
     const asAt = topLevelAs(item)
     if (asAt !== -1) {
       const afterAs = item.slice(asAt + 2)
