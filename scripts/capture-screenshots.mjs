@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_SEGNO_VARIABILI = process.argv.includes('--verify-segno-variabili')
 const VERIFY_SONDA_EXEC_SWAP_REALE = process.argv.includes('--sonda-exec-swap-reale')
 const VERIFY_VERIFY_EXEC_SWAP = process.argv.includes('--verify-exec-swap')
 const VERIFY_VERIFY_TEMP_HASH = process.argv.includes('--verify-temp-hash')
@@ -9750,6 +9751,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_SEGNO_VARIABILI) {
+      await verifySegnoVariabili(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -13533,6 +13539,109 @@ async function verifyExecSwapReale(page) {
   console.log(`  con "swap" nel popup: ${JSON.stringify(conSwap)} (posizioni: ${voci.map((v, i) => (/swap/i.test(v) ? i : -1)).filter(i => i >= 0).join(',')})`)
   console.log('  LOG exec: ' + JSON.stringify(page.consoleLogs('[exec2]').slice(-2)))
   await page.screenshot('exec-swap-reale')
+}
+
+
+/**
+ * VERIFICA (--verify-segno-variabili): il segno digitato non deve sparire.
+ * "@@ROWCOUNT" e "@variabile" devono restare completi; solo per le temporanee ("#") il segno resta nel
+ * testo e non va ripetuto.
+ *
+ * Segnalazione utente: "se provo a scrivere @@rowcount non scrive solo rowcount usando l'intellisense, così
+ * anche per le variabili, metti un test per non romperlo più".
+ */
+async function verifySegnoVariabili(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  if (SHOT_DB) {
+    await page.eval(`(() => {
+      const sel = document.querySelector('select');
+      if (!sel) return false;
+      const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB)});
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(4000)
+  }
+
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.monaco-editor .suggest-widget .monaco-list-row')]
+      .map(r => (r.querySelector('.label-name') || r).textContent.trim())`)
+  const testo = async () =>
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      return ed ? ed.getValue() : '';
+    })()`)
+
+  /** Scrive il testo, digita la lettera in fondo e accetta il primo suggerimento. */
+  const prova = async (sql, lettera) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      ed.focus();
+      ed.setValue(${JSON.stringify('@@SQL@@')});
+      const model = ed.getModel();
+      const ultima = model.getLineCount();
+      ed.setPosition({ lineNumber: ultima, column: model.getLineMaxColumn(ultima) });
+      ed.focus();
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+    await sleep(800)
+    await page.typeText(lettera)
+    await sleep(2000)
+    const voci = await vociPopup()
+    await page.press('Enter', { code: 'Enter', vk: 13 })
+    await sleep(1200)
+    return { voci, dopo: (await testo()).trim() }
+  }
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // 1) @@ROWCOUNT
+  const r1 = await prova(`select\n@@ro`, 'wc')
+  console.log(`  @@ROWCOUNT → voci=${JSON.stringify(r1.voci.slice(0, 3))} · testo=${JSON.stringify(r1.dopo)}`)
+  check('@@ROWCOUNT viene proposto', r1.voci.some(v => /@@rowcount/i.test(v)), r1.voci[0] ?? '')
+  check('inserendo @@ROWCOUNT i due segni restano', /@@ROWCOUNT\b/i.test(r1.dopo), r1.dopo)
+
+  // 2) variabile
+  const r2 = await prova(`declare @pippo int\nselect @pi`, 'p')
+  console.log(`  @variabile → voci=${JSON.stringify(r2.voci.slice(0, 3))} · testo=${JSON.stringify(r2.dopo)}`)
+  check('la variabile viene proposta con la @', r2.voci.some(v => /@pippo/i.test(v)), r2.voci[0] ?? '')
+  check('inserendo la variabile la @ resta', /select\s+@pippo\b/i.test(r2.dopo), r2.dopo)
+
+  // 3) temporanea: il # resta nel testo e NON si raddoppia
+  const r3 = await prova(`SELECT TOP 1 * INTO #tmpRows FROM DAT_ORDINI\nSELECT * FROM #t`, 'm')
+  console.log(`  #temporanea → voci=${JSON.stringify(r3.voci.slice(0, 3))} · testo=${JSON.stringify(r3.dopo.split('\n').slice(-1)[0])}`)
+  check('la temporanea non raddoppia il #', !/##tmprows/i.test(r3.dopo), r3.dopo)
+  check('la riga resta "SELECT * FROM #tmpRows"', /from\s+#tmpRows\s*$/i.test(r3.dopo.trim()), r3.dopo)
+
+  await page.screenshot('segno-variabili')
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
 }
 
 

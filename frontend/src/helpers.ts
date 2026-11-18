@@ -2822,6 +2822,19 @@ function searchSelectKeyword(text: string, from: number): number {
 }
 
 /** Ordina i suggerimenti Monaco: rank minore = prima (sortText ascendente, 5 cifre). */
+/**
+ * insertText corretto rispetto al segno già digitato:
+ *  - "#" (tabelle temporanee): il segno resta FUORI dal range della parola → va tolto dall'insert,
+ *    altrimenti si ottiene "##tmpRows";
+ *  - "@" e "@@" (variabili, @@ROWCOUNT, funzioni di sistema): il segno fa parte della parola, quindi
+ *    l'insertText lo deve CONTENERE — togliendolo si otteneva "ROWCOUNT"/"pippo" (segnalazione utente).
+ */
+export function insertSenzaSegnoLocale(prefix: string, insertText: string): string {
+  const locale = /(#+)\s*$/.exec(prefix)
+  if (locale && insertText.startsWith(locale[1])) return insertText.slice(locale[1].length)
+  return insertText
+}
+
 export function completionSortText(rank: number): string {
   return String(rank).padStart(5, '0')
 }

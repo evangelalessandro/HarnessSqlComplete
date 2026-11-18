@@ -4,7 +4,7 @@
 // reali e fallisce se lancia un errore o se non propone nulla nel codice.
 import * as monaco from 'monaco-editor'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
-import { isTextOffsetInComment, isTextOffsetInString, objectMatchScore } from './helpers'
+import { insertSenzaSegnoLocale, isTextOffsetInComment, isTextOffsetInString, objectMatchScore } from './helpers'
 import { isLocalTableName } from './localTables'
 import { etichettaDrago } from './dragon'
 import { contestoParteData, costruisciFinestra, finestraDigitata, suggerimentiParteData } from './funzioniSql'
@@ -171,11 +171,10 @@ export function provideSqlCompletions({
              * "#[#tmpRows]"): il carattere fa parte del testo prima del cursore, non della parola.
              */
             let voce = item
-            // il carattere locale è quello PRIMA della parola in corso ("FROM #t" porta a "#"), non in
-            // fondo al testo: senza questo si otteneva "##tmpRows"
-            const prefisso = /([@#]{1,2})\s*$/.exec(prefix)
-            if (prefisso && typeof voce.insertText === 'string' && voce.insertText.startsWith(prefisso[1])) {
-              voce = { ...voce, insertText: voce.insertText.slice(prefisso[1].length) }
+            // il segno già digitato: per le temporanee ("#") va tolto dall'insert (resta nel testo),
+            // per @/@@ (variabili e @@ROWCOUNT) NO: fa parte della parola (vedi insertSenzaSegnoLocale)
+            if (typeof voce.insertText === 'string') {
+              voce = { ...voce, insertText: insertSenzaSegnoLocale(prefix, voce.insertText) }
             }
             // il sortText esplicito (ordinamento per "vicinanza" alla parola) vince sull'indice di push
             // il resto va DOPO la banda riservata agli oggetti ordinati per vicinanza (0..900)
