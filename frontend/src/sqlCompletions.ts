@@ -5,6 +5,7 @@
 import * as monaco from 'monaco-editor'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
 import { isTextOffsetInComment, isTextOffsetInString, objectMatchScore } from './helpers'
+import { isLocalTableName } from './localTables'
 import { etichettaDrago } from './dragon'
 import { contestoParteData, costruisciFinestra, finestraDigitata, suggerimentiParteData } from './funzioniSql'
 import { TABELLE_LOGICHE, colonneTabelleLogiche, eUnTrigger } from './triggerTables'
@@ -164,8 +165,20 @@ export function provideSqlCompletions({
           const suggestions: monaco.languages.CompletionItem[] = []
           let rank = 0
           const push = (item: monaco.languages.CompletionItem) => {
+            /**
+             * TEMPORANEE (#tmp) e variabili tabella (@t): quando il carattere è GIÀ stato digitato non
+             * va ripetuto nell'insertText, altrimenti confermando si ottiene "##tmpRows" (o
+             * "#[#tmpRows]"): il carattere fa parte del testo prima del cursore, non della parola.
+             */
+            let voce = item
+            // il carattere locale è quello PRIMA della parola in corso ("FROM #t" porta a "#"), non in
+            // fondo al testo: senza questo si otteneva "##tmpRows"
+            const prefisso = /([@#]{1,2})\s*$/.exec(prefix)
+            if (prefisso && typeof voce.insertText === 'string' && voce.insertText.startsWith(prefisso[1])) {
+              voce = { ...voce, insertText: voce.insertText.slice(prefisso[1].length) }
+            }
             // il sortText esplicito (ordinamento per "vicinanza" alla parola) vince sull'indice di push
-            suggestions.push({ ...item, sortText: item.sortText ?? completionSortText(rank) })
+            suggestions.push({ ...voce, sortText: voce.sortText ?? completionSortText(rank) })
             rank++
           }
           /**
@@ -1342,8 +1355,37 @@ export function provideSqlCompletions({
             // isTablePosition=true (JOIN chiude la regex di FROM/JOIN) e azzerando il contesto le
             // voci restavano senza clausola ON (niente drago e niente join pronto da inserire).
             const clausolaNuova = (isTablePosition && !isJoinPosition) || ctx.statementStart
+            /**
+             * Prefisso LOCALE digitato ("#", "##", "@"): si stanno cercando tabelle temporanee o
+             * variabili tabella. Le tabelle dello schema non vanno proposte (si otterrebbe
+             * "#DAT_ORDINI", che non esiste) e si propongono solo i nomi locali del testo.
+             */
+            const prefissoLocale = /^[@#]{1,2}/.test(word.word) || /[@#]{1,2}\s*$/.test(prefix)
+            /**
+             * Prefisso LOCALE digitato ("#", "##", "@"): si stanno cercando tabelle temporanee o
+             * variabili tabella. Si propongono DIRETTAMENTE (senza il ranking per JOIN, che lavora sulle
+             * statistiche delle tabelle vere e le scarterebbe): le tabelle dello schema non c'entrano.
+             */
+            if (prefissoLocale) {
+              for (const loc of ordinaPerVicinanza(
+                st.summary.tables.filter(x => isLocalTableName(x.name)),
+                x => x.name,
+              )) {
+                push({
+                  label: loc.name,
+                  detail: `${(loc.columns ?? []).length} col.`,
+                  documentation: columnInfoMarkdown(loc, null),
+                  kind: monaco.languages.CompletionItemKind.Variable,
+                  insertText: loc.name,
+                  range,
+                  filterText: loc.name,
+                })
+              }
+              return { suggestions }
+            }
+            const tabelleCandidato = st.summary.tables
             const rankedTables = rankTablesForPosition(
-              st.summary.tables,
+              tabelleCandidato,
               st.summary.foreignKeys,
               contextTables,
               clausolaNuova,

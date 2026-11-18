@@ -6,6 +6,9 @@ import type { CellValue, CheckConstraintInfo, ColumnInfo, DatabaseSummary, Forei
  * altrimenti lo racchiude tra [parentesi quadre].
  */
 export function sqlIdent(name: string): string {
+  // tabelle temporanee (#tmp, ##globale) e variabili tabella (@t): si scrivono SENZA parentesi quadre
+  // (segnalazione utente: con "#" già digitato il suggerimento inseriva "[#tmpRows]")
+  if (/^[@#]{1,2}[A-Za-z0-9_#]+$/.test(name)) return name
   if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !isSqlReserved(name)) return name
   return `[${name}]`
 }
