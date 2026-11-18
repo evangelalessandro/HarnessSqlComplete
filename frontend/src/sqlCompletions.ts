@@ -192,6 +192,28 @@ export function provideSqlCompletions({
 
           /** sortText per ordinare dal più VICINO alla parola digitata (vedi objectMatchScore). */
           const sortTextForScore = (score: number) => completionSortText(Math.max(0, 900 - Math.round(score / 6)))
+          /**
+           * Procedure da proporre: con una parola digitata si tengono SOLO quelle con affinità (parola
+           * contenuta, pezzo del nome, o lettere in ordine). Senza filtro l elenco ha centinaia di voci e le
+           * procedure giuste finiscono fuori dalla finestra del popup (segnalazione utente: "scrivendo exec
+           * swap mi aspetto quello con la parola completa e poi gli altri").
+           */
+          /**
+           * filterText per gli OGGETTI: la parola digitata in testa, poi il nome.
+           * Il filtro fuzzy del client è greedy e scartava nomi in cui la parola cercata sta in mezzo
+           * ("ws_CUSTOM_Handheld_KittingPicking_St1_Swap" con "swap"): con la parola in testa il match è
+           * immediato e l'ordinamento resta il nostro (sortText per vicinanza).
+           */
+          const objectFilterText = (parola: string, nome: string) =>
+            parola.trim().length >= 2 ? `${parola.trim().toLowerCase()} ${nome}` : nome
+
+          const procedureDaProporre = <T extends { name: string }>(proc: T[], parola: string): T[] => {
+            if (parola.trim().length < 2) return proc
+            const affini = proc.filter(p => objectMatchScore(parola, p.name) > 0)
+            // nessuna affinità (es. "dbo." mentre si scrive il nome qualificato): si tengono tutte,
+            // così il popup non resta mai vuoto
+            return affini.length > 0 ? affini : proc
+          }
 
           /**
            * TRIGGER: `inserted` e `deleted` sono tabelle logiche con le STESSE COLONNE della tabella
@@ -744,7 +766,7 @@ export function provideSqlCompletions({
                   kind,
                   insertText,
                   range,
-                  filterText: label.split('.').pop() ?? label,
+                  filterText: objectFilterText(word.word, label.split('.').pop() ?? label),
                   // "swap" deve trovare prima XX_swap_ecccc che nomi con le sole lettere sparse
                   sortText: sortTextForScore(objectMatchScore(word.word, label.split('.').pop() ?? label)),
                 })
@@ -1396,7 +1418,7 @@ export function provideSqlCompletions({
 
             // Dopo EXEC: SOLO le stored procedure (chiamabili)
             if (isExecPosition) {
-              for (const p of ordinaPerVicinanza(st.summary.procedures, x => x.name)) {
+              for (const p of ordinaPerVicinanza(procedureDaProporre(st.summary.procedures, word.word), x => x.name)) {
                 const params = p.parameters ?? []
                 const suffix = params.length
                   ? ' ' + params.map((par, i) => (par.mode === 'OUTPUT' ? `@${par.name} OUTPUT` : `@${par.name}=${'$'}{${i + 1}:${par.name}}`)).join(', ')
@@ -1410,7 +1432,7 @@ export function provideSqlCompletions({
                   insertText: qualified(p.schema, p.name) + suffix,
                   insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                   range,
-                  filterText: p.name,
+                  filterText: objectFilterText(word.word, p.name),
                 })
               }
               return { suggestions }
@@ -1626,7 +1648,7 @@ export function provideSqlCompletions({
 
             // Stored procedure: solo se il contesto le ammette (statementStart/generic, non dopo tabella)
             if (!isExecPosition && ctx.allowed.includes('procedures')) {
-              for (const p of ordinaPerVicinanza(st.summary.procedures, x => x.name)) {
+              for (const p of ordinaPerVicinanza(procedureDaProporre(st.summary.procedures, word.word), x => x.name)) {
                 const params = p.parameters ?? []
                 const suffix = params.length
                   ? ' ' + params.map((par, i) => (par.mode === 'OUTPUT' ? `@${par.name} OUTPUT` : `@${par.name}=${'$'}{${i + 1}:${par.name}}`)).join(', ')

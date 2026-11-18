@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_SONDA_EXEC_SWAP_REALE = process.argv.includes('--sonda-exec-swap-reale')
 const VERIFY_VERIFY_EXEC_SWAP = process.argv.includes('--verify-exec-swap')
 const VERIFY_VERIFY_TEMP_HASH = process.argv.includes('--verify-temp-hash')
 const VERIFY_VERIFY_ORDINE_VICINANZA = process.argv.includes('--verify-ordine-vicinanza')
@@ -9744,6 +9745,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_SONDA_EXEC_SWAP_REALE) {
+      await verifyExecSwapReale(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -13465,6 +13471,68 @@ DROP PROCEDURE IF EXISTS dbo.${SPARSE}`)
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * SONDA: cosa mostra davvero "EXEC swap" con le procedure REALI del database (5 oggetti con "Swap").
+ */
+async function verifyExecSwapReale(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  if (SHOT_DB) {
+    await page.eval(`(() => {
+      const sel = document.querySelector('select');
+      if (!sel) return false;
+      const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB)});
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(4000)
+  }
+
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.monaco-editor .suggest-widget .monaco-list-row')]
+      .map(r => (r.querySelector('.label-name') || r).textContent.trim())`)
+  const prova = async (testo, lettera) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      ed.focus();
+      ed.setValue(${JSON.stringify('@@T@@')});
+      const model = ed.getModel();
+      ed.setPosition({ lineNumber: 1, column: model.getLineMaxColumn(1) });
+      ed.focus();
+    })()`.replace('"@@T@@"', JSON.stringify(testo)))
+    await sleep(700)
+    await page.typeText(lettera)
+    await sleep(2200)
+    return await vociPopup()
+  }
+
+  const voci = await prova('EXEC swa', 'p')
+  console.log(`  EXEC swap → ${JSON.stringify(voci.slice(0, 12))}`)
+  const conSwap = voci.filter(v => /swap/i.test(v))
+  console.log(`  con "swap" nel popup: ${JSON.stringify(conSwap)} (posizioni: ${voci.map((v, i) => (/swap/i.test(v) ? i : -1)).filter(i => i >= 0).join(',')})`)
+  console.log('  LOG exec: ' + JSON.stringify(page.consoleLogs('[exec2]').slice(-2)))
+  await page.screenshot('exec-swap-reale')
 }
 
 
