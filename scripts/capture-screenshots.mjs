@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_ORDINE_VICINANZA = process.argv.includes('--verify-ordine-vicinanza')
 const VERIFY_VERIFY_RICARICA_DB = process.argv.includes('--verify-ricarica-db')
 const VERIFY_VERIFY_UPDATE_TABVAR = process.argv.includes('--verify-update-tabvar')
 const VERIFY_VERIFY_CREA_STORE_TMP = process.argv.includes('--verify-crea-store-tmp')
@@ -9726,6 +9727,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_ORDINE_VICINANZA) {
+      await verifyOrdineVicinanza(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -13109,6 +13115,126 @@ async function verifyRicaricaDb(page) {
 
   await page.screenshot('ricarica-db')
 
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-ordine-vicinanza): cercando "swap" l'intellisense mette in alto i nomi che CONTENGONO
+ * la parola, non quelli che hanno solo le singole lettere sparse.
+ *
+ * Segnalazione utente: "se cerco qualcosa, ordina per quello che è più vicino: una store che si chiama
+ * XX_swap_ecccc e cerco swap deve stare più in alto rispetto alle singole lettere trovate in altri nomi".
+ *
+ * La verifica crea una procedura temporanea con "swap" nel nome (e una con le sole lettere sparse),
+ * aggiorna lo schema, cerca "swap" e controlla l'ordine; poi le elimina.
+ */
+async function verifyOrdineVicinanza(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  if (SHOT_DB) {
+    await page.eval(`(() => {
+      const sel = document.querySelector('select');
+      if (!sel) return false;
+      const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB)});
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(4000)
+  }
+
+  const rett = await page.eval(`(() => {
+    const d = document.querySelector('.monaco-editor').getBoundingClientRect();
+    return { x: d.left, y: d.top };
+  })()`)
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.monaco-editor .suggest-widget .monaco-list-row')]
+      .map(r => (r.querySelector('.label-name') || r).textContent.trim())`)
+  const eseguiSql = async (sql) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      ed.focus();
+      ed.setValue(${JSON.stringify('@@SQL@@')});
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+    await sleep(600)
+    await page.press('F5', { code: 'F5', vk: 116 })
+    await sleep(4000)
+  }
+  const cercaConExec = async (parola) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      ed.focus();
+      ed.setValue('EXEC ');
+      const model = ed.getModel();
+      ed.setPosition({ lineNumber: 1, column: model.getLineMaxColumn(1) });
+      ed.focus();
+    })()`)
+    await sleep(700)
+    await page.typeText(parola)
+    await sleep(2200)
+    return await vociPopup()
+  }
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  const CON_SWAP = 'zz_Prova_swap_verifica'
+  // nome che viene PRIMA in ordine alfabetico e ha solo le lettere s-w-a-p sparse: senza ordinamento per
+  // vicinanza finirebbe sopra alla procedura che contiene "swap"
+  const SPARSE = 'aa_salva_ws_pronta_pk'
+  await eseguiSql(`CREATE OR ALTER PROCEDURE dbo.${CON_SWAP} AS SELECT 1 AS X
+GO
+CREATE OR ALTER PROCEDURE dbo.${SPARSE} AS SELECT 2 AS X`)
+  // schema aggiornato: le nuove procedure devono comparire nell'intellisense
+  await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Aggiorna schema'))`,
+  )
+  await sleep(6000)
+
+  const voci = await cercaConExec('swap')
+  console.log(`  prime voci per "swap": ${JSON.stringify(voci.slice(0, 8))}`)
+  const iConSwap = voci.findIndex(v => v.toLowerCase().includes('swap'))
+  const iSparse = voci.findIndex(v => v.toLowerCase().includes('salva_ws_pronta_pk'))
+  check('la procedura con "swap" è proposta', iConSwap > -1, `posizione ${iConSwap}`)
+  check('la procedura con "swap" è la PRIMA', iConSwap === 0, `posizione ${iConSwap}`)
+  check(
+    'la procedura con le sole lettere sparse viene DOPO',
+    iSparse === -1 || iSparse > iConSwap,
+    `sparse=${iSparse} swap=${iConSwap}`,
+  )
+
+  // pulizia
+  await eseguiSql(`DROP PROCEDURE IF EXISTS dbo.${CON_SWAP}
+GO
+DROP PROCEDURE IF EXISTS dbo.${SPARSE}`)
+
+  await page.screenshot('ordine-vicinanza')
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

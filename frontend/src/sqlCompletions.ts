@@ -4,7 +4,7 @@
 // reali e fallisce se lancia un errore o se non propone nulla nel codice.
 import * as monaco from 'monaco-editor'
 import type { ColumnInfo, DatabaseSummary, TableInfo } from './types'
-import { isTextOffsetInComment, isTextOffsetInString } from './helpers'
+import { isTextOffsetInComment, isTextOffsetInString, objectMatchScore } from './helpers'
 import { etichettaDrago } from './dragon'
 import { contestoParteData, costruisciFinestra, finestraDigitata, suggerimentiParteData } from './funzioniSql'
 import { TABELLE_LOGICHE, colonneTabelleLogiche, eUnTrigger } from './triggerTables'
@@ -164,9 +164,20 @@ export function provideSqlCompletions({
           const suggestions: monaco.languages.CompletionItem[] = []
           let rank = 0
           const push = (item: monaco.languages.CompletionItem) => {
-            suggestions.push({ ...item, sortText: completionSortText(rank) })
+            // il sortText esplicito (ordinamento per "vicinanza" alla parola) vince sull'indice di push
+            suggestions.push({ ...item, sortText: item.sortText ?? completionSortText(rank) })
             rank++
           }
+          /**
+           * Elenco ordinato dal più VICINO alla parola digitata (objectMatchScore): il primo elemento è
+           * il migliore. Serve perché l'ordine del nostro array è quello che il client mostra a parità
+           * di punteggio (e comunque dà la priorità giusta).
+           */
+          const ordinaPerVicinanza = <T,>(voci: T[], testo: (v: T) => string): T[] =>
+            [...voci].sort((a, b) => objectMatchScore(word.word, testo(b)) - objectMatchScore(word.word, testo(a)))
+
+          /** sortText per ordinare dal più VICINO alla parola digitata (vedi objectMatchScore). */
+          const sortTextForScore = (score: number) => completionSortText(Math.max(0, 5000 - score))
 
           /**
            * TRIGGER: `inserted` e `deleted` sono tabelle logiche con le STESSE COLONNE della tabella
@@ -720,15 +731,17 @@ export function provideSqlCompletions({
                   insertText,
                   range,
                   filterText: label.split('.').pop() ?? label,
+                  // "swap" deve trovare prima XX_swap_ecccc che nomi con le sole lettere sparse
+                  sortText: sortTextForScore(objectMatchScore(word.word, label.split('.').pop() ?? label)),
                 })
               if (objKind === 'table') {
-                for (const t of st.summary.tables) pushObj(qualified(t.schema, t.name), `${t.columnCount} col.`, qualified(t.schema, t.name), monaco.languages.CompletionItemKind.Struct)
+                for (const t of ordinaPerVicinanza(st.summary.tables, x => x.name)) pushObj(qualified(t.schema, t.name), `${t.columnCount} col.`, qualified(t.schema, t.name), monaco.languages.CompletionItemKind.Struct)
               } else if (objKind === 'view') {
-                for (const v of st.summary.views) pushObj(qualified(v.schema, v.name), 'vista', qualified(v.schema, v.name), monaco.languages.CompletionItemKind.Interface)
+                for (const v of ordinaPerVicinanza(st.summary.views, x => x.name)) pushObj(qualified(v.schema, v.name), 'vista', qualified(v.schema, v.name), monaco.languages.CompletionItemKind.Interface)
               } else if (objKind === 'procedure') {
-                for (const p of st.summary.procedures) pushObj(qualified(p.schema, p.name), `proc · ${p.parameters?.length ?? 0} param.`, qualified(p.schema, p.name), monaco.languages.CompletionItemKind.Function)
+                for (const p of ordinaPerVicinanza(st.summary.procedures, x => x.name)) pushObj(qualified(p.schema, p.name), `proc · ${p.parameters?.length ?? 0} param.`, qualified(p.schema, p.name), monaco.languages.CompletionItemKind.Function)
               } else if (objKind === 'function') {
-                for (const f of st.summary.functions) pushObj(qualified(f.schema, f.name), f.type, qualified(f.schema, f.name), monaco.languages.CompletionItemKind.Method)
+                for (const f of ordinaPerVicinanza(st.summary.functions, x => x.name)) pushObj(qualified(f.schema, f.name), f.type, qualified(f.schema, f.name), monaco.languages.CompletionItemKind.Method)
               } else if (objKind === 'trigger') {
                 for (const tr of st.summary.triggers) pushObj(qualified(tr.schema, tr.name), `tabella ${tr.tableName}`, qualified(tr.schema, tr.name), monaco.languages.CompletionItemKind.Event)
                 // "DISABLE TRIGGER ALL ON t": la sintassi accetta anche ALL (scrivendo "ALL"
@@ -1340,7 +1353,7 @@ export function provideSqlCompletions({
 
             // Dopo EXEC: SOLO le stored procedure (chiamabili)
             if (isExecPosition) {
-              for (const p of st.summary.procedures) {
+              for (const p of ordinaPerVicinanza(st.summary.procedures, x => x.name)) {
                 const params = p.parameters ?? []
                 const suffix = params.length
                   ? ' ' + params.map((par, i) => (par.mode === 'OUTPUT' ? `@${par.name} OUTPUT` : `@${par.name}=${'$'}{${i + 1}:${par.name}}`)).join(', ')
@@ -1348,6 +1361,7 @@ export function provideSqlCompletions({
                 push({
                   label: `${p.schema}.${p.name}`,
                   detail: 'stored procedure',
+                  sortText: sortTextForScore(objectMatchScore(word.word, p.name)),
                   documentation: `**${p.schema}.${p.name}**${params.length ? `\n\nParametri: ${params.map(x => `@${x.name} ${x.dataType}${x.mode === 'OUTPUT' ? ' OUTPUT' : ''}`).join(', ')}` : ''}`,
                   kind: monaco.languages.CompletionItemKind.Function,
                   insertText: qualified(p.schema, p.name) + suffix,
@@ -1569,7 +1583,7 @@ export function provideSqlCompletions({
 
             // Stored procedure: solo se il contesto le ammette (statementStart/generic, non dopo tabella)
             if (!isExecPosition && ctx.allowed.includes('procedures')) {
-              for (const p of st.summary.procedures) {
+              for (const p of ordinaPerVicinanza(st.summary.procedures, x => x.name)) {
                 const params = p.parameters ?? []
                 const suffix = params.length
                   ? ' ' + params.map((par, i) => (par.mode === 'OUTPUT' ? `@${par.name} OUTPUT` : `@${par.name}=${'$'}{${i + 1}:${par.name}}`)).join(', ')
@@ -1577,6 +1591,7 @@ export function provideSqlCompletions({
                 push({
                   label: `${p.schema}.${p.name}`,
                   detail: 'stored procedure (chiamata con EXEC)',
+                  sortText: sortTextForScore(objectMatchScore(word.word, p.name)),
                   kind: monaco.languages.CompletionItemKind.Function,
                   // a INIZIO STATEMENT un nome di procedura da solo non è T-SQL valido: serve EXEC
                   insertText: (ctx.statementStart ? 'EXEC ' : '') + qualified(p.schema, p.name) + suffix,

@@ -1777,6 +1777,68 @@ function nameTokens(name: string): string[] {
  * - allineamento ordinato dei token separati da "_" (es. "mis_corr" → "mis_d_corridoio").
  * Restituisce 0 quando non c'è alcuna affinità.
  */
+/**
+ * PUNTEGGIO di "vicinanza" fra la parola digitata e il nome di un OGGETTO (procedura, funzione, vista,
+ * tabella): più alto = più vicino, e il popup ordina dal più alto.
+ *
+ * SEGNALAZIONE UTENTE: "se cerco qualcosa, ordina per quello che è più vicino: una store che si chiama
+ * XX_swap_ecccc e cerco swap deve stare più in alto rispetto alle singole lettere trovate in altri nomi".
+ *
+ * Scala:
+ *   nome identico                    5000
+ *   inizia con la parola              4000 + lunghezza
+ *   la parola è un PEZZO del nome     3000 + lunghezza   ("_swap_" in "XX_swap_ecccc")
+ *   la parola compare dentro          2000 + lunghezza   (contigua, non a inizio)
+ *   tutti i pezzi digitati come prefissi di pezzi del nome   1000 (meno i buchi)
+ *   solo le lettere in ordine (sparse)  400 - penalità: è l'ultima risorsa
+ *   niente                         0
+ */
+export function objectMatchScore(typed: string, name: string): number {
+  const t = typed.trim().toLowerCase()
+  if (!t) return 0
+  const n = name.toLowerCase()
+  // si confronta sul nome senza schema ("dbo.xx_swap" → "xx_swap")
+  const base = n.includes('.') ? n.slice(n.lastIndexOf('.') + 1) : n
+  const lenBonus = Math.min(60, t.length * 6)
+  /** Dove compare la parola: più è all'inizio, più il nome è "vicino" (e i nomi corti valgono di più). */
+  const idx = base.indexOf(t)
+  const posBonus = idx <= 0 ? 40 : Math.max(0, 40 - idx * 3)
+  const cortoBonus = Math.max(0, 30 - Math.floor(base.length / 8))
+  if (base === t) return 5000 + lenBonus
+  if (base.startsWith(t)) return 4000 + lenBonus + cortoBonus
+  if (base.includes(`_${t}_`) || base.includes(`_${t}`) || base.includes(`${t}_`))
+    return 3000 + lenBonus + posBonus + cortoBonus
+  if (idx >= 0) return 2000 + lenBonus + posBonus + cortoBonus
+  // pezzi (separati da _ . o maiuscole) che iniziano con i pezzi digitati
+  const tt = nameTokens(t)
+  const nt = nameTokens(base)
+  if (tt.length > 0 && nt.length > 0) {
+    let i = 0
+    let j = 0
+    let score = 0
+    let gaps = 0
+    while (i < tt.length && j < nt.length) {
+      if (nt[j].startsWith(tt[i])) {
+        score += 100 + Math.min(40, tt[i].length * 4)
+        i++
+        j++
+      } else {
+        gaps++
+        j++
+      }
+    }
+    if (i === tt.length) return Math.max(50, 1000 + score - gaps * 25)
+  }
+  // solo le lettere, in ordine ma sparse: va bene che ci siano, ma in fondo
+  let k = 0
+  for (const ch of base) {
+    if (ch === t[k]) k++
+    if (k === t.length) break
+  }
+  if (k === t.length) return Math.max(1, 400 - Math.min(300, (base.length - t.length) * 4))
+  return 0
+}
+
 export function columnMatchScore(typed: string, columnName: string): number {
   const t = typed.trim().toLowerCase()
   const n = columnName.toLowerCase()
