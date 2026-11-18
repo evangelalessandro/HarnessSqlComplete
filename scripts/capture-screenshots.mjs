@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_FORMATTA_CASE_LUNGO = process.argv.includes('--verify-formatta-case-lungo')
 const VERIFY_VERIFY_SEGNO_VARIABILI = process.argv.includes('--verify-segno-variabili')
 const VERIFY_SONDA_EXEC_SWAP_REALE = process.argv.includes('--sonda-exec-swap-reale')
 const VERIFY_VERIFY_EXEC_SWAP = process.argv.includes('--verify-exec-swap')
@@ -9756,6 +9757,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_FORMATTA_CASE_LUNGO) {
+      await verifyFormattaCaseLungo(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -13639,6 +13645,105 @@ async function verifySegnoVariabili(page) {
   check('la riga resta "SELECT * FROM #tmpRows"', /from\s+#tmpRows\s*$/i.test(r3.dopo.trim()), r3.dopo)
 
   await page.screenshot('segno-variabili')
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-formatta-case-lungo): una SELECT con CASE lungo (più WHEN sulla stessa riga) e
+ * commenti prima dell'INTO deve formattarsi con OGNI WHEN a capo.
+ *
+ * Segnalazione utente: "perché il format non riesce a mettere i when a capo di questa query?".
+ */
+async function verifyFormattaCaseLungo(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  if (SHOT_DB) {
+    await page.eval(`(() => {
+      const sel = document.querySelector('select');
+      if (!sel) return false;
+      const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB)});
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(4000)
+  }
+
+  const sql = `SELECT DISTINCT ROW_NUMBER () OVER (ORDER BY UDC_UDC) AS X_ID
+   ,X_UDC = UDC_UDC
+   ,X_MSGKO =
+   CASE
+     WHEN BCO_ABI = 0
+       THEN 'Bay disabled'
+   WHEN UDC_STADISPUDC <> 'D' OR NOT UDC_UBIUDC IN ('M', 'I')
+   THEN '#10.' + dbo.fn_td ('LU not available')
+    WHEN UDC_CELLA = 0 THEN '#12.' + dbo.fn_td ('LU not available') WHEN NOT (UDC_UBIUDC = 'I' OR (CEL_CELLA > 0 AND CEL_STACELLA IN ('O', 'L', 'IP', 'IV'))) OR COR_GEST_LGV_USER = 1 THEN '#23.' + dbo.fn_td ('Stato cella o ubicazione non valida per l''operazione') WHEN UDC_NESE > 0 OR UDC_CAUSMISS > '' THEN '#25.' + dbo.fn_td ('LU occupy')
+   ELSE '' /* Scomparto ancora candidato */ END
+   ,X_NOTE = 'refilling'
+--,X_TARGET_MIN
+--,X_TARGET
+INTO #TMP_ACTIONS FROM MAG_BAIE INNER JOIN DAT_UDC ON BCO_USOBAIA LIKE '%,VNABS,%' --solo baie
+  INNER JOIN DAT_SCOMPART ON SCO_UDC = UDC_UDC /*and SCO_STAMATE='U'*/ INNER JOIN DAT_ARTICOLI ON ART_ARTICOLO = SCO_ARTICOLO
+WHERE UDC_UDC > 0 AND UDC_CELLA > 0`
+
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors();
+    const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    ed.focus();
+    ed.setValue(${JSON.stringify('@@SQL@@')});
+    const model = ed.getModel();
+    ed.setPosition({ lineNumber: model.getLineCount(), column: model.getLineMaxColumn(model.getLineCount()) });
+    ed.focus();
+  })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+  await sleep(900)
+  await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === 'Formatta')`,
+  )
+  await sleep(4000)
+  const out = await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors();
+    const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    return ed ? ed.getValue() : '';
+  })()`)
+  const righe = out.replace(/\r\n/g, '\n').split('\n')
+  console.log('  output:\n' + righe.map(r => '    |' + r).join('\n'))
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  const when = righe.filter(r => /^\s*WHEN /.test(r))
+  check('i cinque WHEN sono su righe proprie', when.length === 5, `${when.length} WHEN`)
+  check('tutti i WHEN hanno lo stesso rientro', new Set(when.map(r => r.length - r.trimStart().length)).size === 1)
+  check('nessuna riga con due WHEN', !righe.some(r => (r.match(/\bWHEN\b/g) ?? []).length > 1))
+  check('INTO su riga propria', righe.some(r => /^INTO #TMP_ACTIONS$/.test(r.trim())))
+  check('FROM su riga propria', righe.some(r => /^FROM MAG_BAIE$/.test(r.trim())))
+  check('il CASE di un assegnazione non ha la virgola davanti', !/=\s*\n\s*,CASE/m.test(out))
+
+  await page.screenshot('formatta-case-lungo')
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

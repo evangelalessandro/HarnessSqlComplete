@@ -1155,6 +1155,14 @@ function formatRoutineConProfilo(sql: string, profile: FormatProfile): string {
             'CROSS',
             'ON',
             'FROM',
+            'INTO',
+            'OPTION',
+            'OUTPUT',
+            'SET',
+            'VALUES',
+            'FOR',
+            'PIVOT',
+            'UNPIVOT',
             'UNION',
             'EXCEPT',
             'INTERSECT',
@@ -1647,7 +1655,14 @@ function formatRoutineConProfilo(sql: string, profile: FormatProfile): string {
       const assegnazionePerForma = (() => {
         if (!caseParts) return false
         let d = 0
+        // la virgola INIZIALE fa parte della lista di campi, non dell'assegnazione
+        let primo = true
         for (const t of caseParts.head) {
+          if (primo && t.type === 'punct' && t.text === ',') {
+            primo = false
+            continue
+          }
+          primo = false
           if (t.type !== 'punct') continue
           if (t.text === '(') d++
           else if (t.text === ')') d = Math.max(0, d - 1)
@@ -1755,6 +1770,11 @@ function formatRoutineConProfilo(sql: string, profile: FormatProfile): string {
             // testata con UN SOLO campo: non c'è una virgola a cui allinearsi → un passo in dentro
             return padTesta.length + unit
           })()
+          /**
+           * ",X_MSGKO = CASE …": la testata finisce con "=", quindi il CASE è il VALORE dell'assegnazione
+           * e NON va messa una virgola davanti (ne compariva una in più: ",CASE").
+           */
+          if (/=\s*$/.test(righeTesta[righeTesta.length - 1] ?? '')) virgolaCaso = false
           righeCase.forEach((cl, idx) => {
             if (colonnaCaso === null) {
               pushLine(idx === 0 && virgolaCaso ? `,${cl.text.trimStart()}` : cl.text, lineIndent + cl.delta)
