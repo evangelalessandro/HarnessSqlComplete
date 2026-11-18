@@ -178,7 +178,8 @@ export function provideSqlCompletions({
               voce = { ...voce, insertText: voce.insertText.slice(prefisso[1].length) }
             }
             // il sortText esplicito (ordinamento per "vicinanza" alla parola) vince sull'indice di push
-            suggestions.push({ ...voce, sortText: voce.sortText ?? completionSortText(rank) })
+            // il resto va DOPO la banda riservata agli oggetti ordinati per vicinanza (0..900)
+            suggestions.push({ ...voce, sortText: voce.sortText ?? completionSortText(1000 + rank) })
             rank++
           }
           /**
@@ -190,7 +191,7 @@ export function provideSqlCompletions({
             [...voci].sort((a, b) => objectMatchScore(word.word, testo(b)) - objectMatchScore(word.word, testo(a)))
 
           /** sortText per ordinare dal più VICINO alla parola digitata (vedi objectMatchScore). */
-          const sortTextForScore = (score: number) => completionSortText(Math.max(0, 5000 - score))
+          const sortTextForScore = (score: number) => completionSortText(Math.max(0, 900 - Math.round(score / 6)))
 
           /**
            * TRIGGER: `inserted` e `deleted` sono tabelle logiche con le STESSE COLONNE della tabella

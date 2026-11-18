@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_EXEC_SWAP = process.argv.includes('--verify-exec-swap')
 const VERIFY_VERIFY_TEMP_HASH = process.argv.includes('--verify-temp-hash')
 const VERIFY_VERIFY_ORDINE_VICINANZA = process.argv.includes('--verify-ordine-vicinanza')
 const VERIFY_VERIFY_RICARICA_DB = process.argv.includes('--verify-ricarica-db')
@@ -9738,6 +9739,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_EXEC_SWAP) {
+      await verifyExecSwap(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -13340,6 +13346,122 @@ SELECT * FROM #`
 
   console.log('  LOG loc: ' + JSON.stringify(page.consoleLogs('[loc]').slice(-3)))
   await page.screenshot('temp-hash')
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-exec-swap): dopo "EXEC swap" devono venire PRIMA le procedure che contengono la
+ * parola completa e POI le altre; in mezzo non devono infilarsi keyword o funzioni.
+ *
+ * Segnalazione utente: "scrivendo exec swap mi aspetto che mi dia l'intellisense quello che ha la parola
+ * completa e poi gli altri".
+ */
+async function verifyExecSwap(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  if (SHOT_DB) {
+    await page.eval(`(() => {
+      const sel = document.querySelector('select');
+      if (!sel) return false;
+      const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB)});
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(4000)
+  }
+
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.monaco-editor .suggest-widget .monaco-list-row')]
+      .map(r => (r.querySelector('.label-name') || r).textContent.trim())`)
+  const eseguiSql = async (sql) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      ed.focus();
+      ed.setValue(${JSON.stringify('@@SQL@@')});
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+    await sleep(600)
+    await page.press('F5', { code: 'F5', vk: 116 })
+    await sleep(4000)
+  }
+  /** Scrive "EXEC swap" e legge il popup (la parola è già nel testo: si apre col carattere finale). */
+  const execSwap = async () => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      ed.focus();
+      ed.setValue('EXEC swa');
+      const model = ed.getModel();
+      ed.setPosition({ lineNumber: 1, column: model.getLineMaxColumn(1) });
+      ed.focus();
+    })()`)
+    await sleep(700)
+    await page.typeText('p')
+    await sleep(2200)
+    return await vociPopup()
+  }
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  const CON_SWAP = 'zz_Prova_swap_exec'
+  const SPARSE = 'aa_salva_ws_pronta_exec'
+  await eseguiSql(`CREATE OR ALTER PROCEDURE dbo.${CON_SWAP} AS SELECT 1 AS X
+GO
+CREATE OR ALTER PROCEDURE dbo.${SPARSE} AS SELECT 2 AS X`)
+  await page.clickWhere(
+    `[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Aggiorna schema'))`,
+  )
+  await sleep(6000)
+
+  const voci = await execSwap()
+  console.log(`  prime voci per "EXEC swap": ${JSON.stringify(voci.slice(0, 8))}`)
+  const iConSwap = voci.findIndex(v => v.toLowerCase().includes('swap'))
+  const iSparse = voci.findIndex(v => v.toLowerCase().includes('salva_ws_pronta_exec'))
+  check('la procedura con "swap" è proposta', iConSwap > -1, `posizione ${iConSwap}`)
+  check('la procedura con "swap" è la PRIMA', iConSwap === 0, `posizione ${iConSwap}`)
+  check(
+    'le altre (lettere sparse) vengono dopo',
+    iSparse === -1 || iSparse > iConSwap,
+    `sparse=${iSparse} swap=${iConSwap}`,
+  )
+  const prime3 = voci.slice(0, 3).map(v => v.toLowerCase())
+  check(
+    'fra le prime 3 non ci sono keyword/funzioni',
+    !prime3.some(v => !v.includes('swap') && !v.startsWith('dbo.')),
+    prime3.join(', '),
+  )
+
+  await eseguiSql(`DROP PROCEDURE IF EXISTS dbo.${CON_SWAP}
+GO
+DROP PROCEDURE IF EXISTS dbo.${SPARSE}`)
+  await page.screenshot('exec-swap')
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
