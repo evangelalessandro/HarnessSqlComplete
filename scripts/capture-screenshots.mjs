@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_RICARICA_DB = process.argv.includes('--verify-ricarica-db')
 const VERIFY_VERIFY_UPDATE_TABVAR = process.argv.includes('--verify-update-tabvar')
 const VERIFY_VERIFY_CREA_STORE_TMP = process.argv.includes('--verify-crea-store-tmp')
 const VERIFY_VERIFY_INTELLISENSE_SENSATA = process.argv.includes('--verify-intellisense-sensata')
@@ -9720,6 +9721,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_RICARICA_DB) {
+      await verifyRicaricaDb(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -12990,6 +12996,119 @@ set `
   check('DECLARE @t TABLE: propone DESCRIZIONE', minuscole(vociDeclare).includes('descrizione'))
 
   await page.screenshot('update-tabvar')
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-ricarica-db): dopo il RICARICAMENTO della pagina la combo e la SESSIONE devono
+ * essere d'accordo sul database.
+ *
+ * Segnalazione utente: "al ricaricamento della pagina, anche se la combo ha un db impostato,
+ * effettivamente non lo è: la tree dà i dati del master e se provo una query non trova le tabelle del db
+ * in cui dovrebbe essere".
+ */
+async function verifyRicaricaDb(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const combo = async () =>
+    await page.eval(`(() => {
+      const sel = document.querySelector('select');
+      return sel ? sel.options[sel.selectedIndex].textContent.trim() : '';
+    })()`)
+  /**
+   * La barra in alto dice "Schema: N tabelle" per il database della SESSIONE: se la sessione è su
+   * master N è 0 (o comunque non quello del database vero). È la stessa cosa che l'utente chiama
+   * "la tree dà i dati del master".
+   */
+  const schemaTabelle = async () =>
+    await page.eval(`(() => {
+      const t = document.body.textContent || '';
+      const m = /Schema:\\s*(\\d+)\\s+tabelle/i.exec(t);
+      return m ? Number(m[1]) : -1;
+    })()`)
+
+  const db = SHOT_DB || 'WSGSDMALTA'
+  // 1) si passa al database di prova
+  await page.eval(`(() => {
+    const sel = document.querySelector('select');
+    if (!sel) return false;
+    const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB || 'WSGSDMALTA')});
+    if (!opt) return false;
+    sel.value = opt.value;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`)
+  await sleep(5000)
+  const dbPrima = await combo()
+  const tabellePrima = await schemaTabelle()
+  console.log(`  prima del ricaricamento: db=${dbPrima} tabelle=${tabellePrima}`)
+  check(`prima del ricaricamento la combo è ${db}`, dbPrima === db, dbPrima)
+  check('prima del ricaricamento lo schema ha tabelle (NON master)', tabellePrima > 0, String(tabellePrima))
+
+  // 2) RICARICO la pagina e mi riconnetto con la stessa login
+  await page.send('Page.reload', { ignoreCache: false })
+  await sleep(4000)
+  await page.waitFor(`document.querySelector('input')`, 20000, 'login dopo il ricaricamento')
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata dopo il ricaricamento',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto dopo il ricaricamento')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema dopo il ricaricamento')
+  await sleep(6000)
+
+  const dbDopo = await combo()
+  const tabelleDopo = await schemaTabelle()
+  console.log(`  dopo il ricaricamento:    db=${dbDopo} tabelle=${tabelleDopo}`)
+  check(`dopo il ricaricamento la combo resta ${db}`, dbDopo === db, dbDopo)
+  check('dopo il ricaricamento lo schema è ancora quello del db (NON master)', tabelleDopo > 0, String(tabelleDopo))
+
+  // 3) una query sulle tabelle di QUEL database deve funzionare
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors();
+    const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    ed.focus();
+    ed.setValue('select top 1 ORD_ORDINE from DAT_ORDINI');
+  })()`)
+  await sleep(700)
+  await page.press('F5', { code: 'F5', vk: 116 })
+  await sleep(6000)
+  const testo = await page.eval(`document.body.textContent || ''`)
+  const errore = /Oggetto non valido|Invalid object name|non esiste|Msg 208/i.test(testo)
+  console.log(`  query dopo il ricaricamento: errore=${errore}`)
+  check('la query sul database ripristinato non dà "oggetto non valido"', !errore)
+
+  await page.screenshot('ricarica-db')
+
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

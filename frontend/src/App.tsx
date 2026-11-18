@@ -1078,6 +1078,31 @@ export default function App() {
       } catch {
         setAiStatus(null)
       }
+      /**
+       * SEGNALAZIONE UTENTE: "al ricaricamento della pagina, anche se la combo ha un db impostato,
+       * effettivamente non lo è: la tree dà i dati di master e una query non trova le tabelle".
+       *
+       * Le tab vengono ripristinate con il LORO database, ma la connessione appena aperta è su quello
+       * della login salvata (spesso master): senza questo riallineamento combo e sessione dicono cose
+       * diverse. Si cambia database sulla connessione nuova (e si rilegge lo schema). Se il database
+       * non c'è più su questa istanza si resta su quello della login e lo si dice.
+       */
+      const dbTab = (persistedTabs.find(x => x.id === (persistedTabs.some(y => y.id === persisted?.active) ? persisted!.active : 'tab-1')) ?? persistedTabs[0])?.database
+      if (dbTab && dbTab !== res.database) {
+        try {
+          const res2 = await api.switchDatabase(res.connectionId, dbTab)
+          setConnection(res2)
+          connectionRef.current = res2
+          setSummary(await api.getSummary(res2.connectionId))
+        } catch (e) {
+          setNota({
+            testo: `Il database "${dbTab}" non è disponibile su questa istanza: si resta su "${res.database}". ${e instanceof Error ? e.message : ''}`.trim(),
+            tono: 'info',
+            chiave: 'database-cambiato',
+          })
+          setEditorTabs(prev => prev.map(x => ({ ...x, database: res.database })))
+        }
+      }
     },
     [],
   )
