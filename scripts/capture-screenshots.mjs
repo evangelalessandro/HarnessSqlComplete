@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_UPDATE_TABVAR = process.argv.includes('--verify-update-tabvar')
 const VERIFY_VERIFY_CREA_STORE_TMP = process.argv.includes('--verify-crea-store-tmp')
 const VERIFY_VERIFY_INTELLISENSE_SENSATA = process.argv.includes('--verify-intellisense-sensata')
 const VERIFY_VERIFY_TVF_SENZA_ALIAS = process.argv.includes('--verify-tvf-senza-alias')
@@ -9714,6 +9715,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_UPDATE_TABVAR) {
+      await verifyUpdateTabvar(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -12882,6 +12888,108 @@ AS
   await esegui('DROP PROCEDURE IF EXISTS dbo.ProvaTmpSwap')
   await page.screenshot('crea-store-tmp')
 
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-update-tabvar): "update @tab set X_" propone le colonne della variabile tabella.
+ *
+ * Segnalazione utente: "quando provo a fare l'update non mi suggerisce il nome delle colonne, vedi
+ * questa funzione" — la tabella restituita da una funzione multi-istruzione (RETURNS @tab TABLE (…))
+ * non era fra le tabelle note.
+ */
+async function verifyUpdateTabvar(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  if (SHOT_DB) {
+    await page.eval(`(() => {
+      const sel = document.querySelector('select');
+      if (!sel) return false;
+      const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB)});
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(4000)
+  }
+
+  const rett = await page.eval(`(() => {
+    const d = document.querySelector('.monaco-editor').getBoundingClientRect();
+    return { x: d.left, y: d.top };
+  })()`)
+  const vociPopup = async () =>
+    await page.eval(`[...document.querySelectorAll('.monaco-editor .suggest-widget .monaco-list-row')]
+      .map(r => (r.querySelector('.label-name') || r).textContent.trim())`)
+  const prova = async (sql, lettera) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      ed.focus();
+      ed.setValue(${JSON.stringify('@@SQL@@')});
+      const model = ed.getModel();
+      const ultima = model.getLineCount();
+      ed.setPosition({ lineNumber: ultima, column: model.getLineMaxColumn(ultima) });
+      ed.focus();
+    })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+    await sleep(800)
+    await page.typeText(lettera)
+    await sleep(1800)
+    return await vociPopup()
+  }
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const minuscole = v => v.map(x => x.toLowerCase())
+
+  // 1) la funzione dell'utente: la tabella di ritorno ha queste colonne, l'update sta in fondo
+  const funzione = `CREATE OR ALTER FUNCTION [dbo].[fn_Prova_ReadyLine]
+(
+        @ordine NVARCHAR(50) = ''
+)
+RETURNS @tab TABLE (X_ESE_ID INT, X_RIGA INT, X_READY INT, X_NOTE_STATUS NVARCHAR(50), X_ORDINE NVARCHAR(50), X_TO_SWAP INT)
+AS
+BEGIN
+  INSERT INTO @tab
+  SELECT ESE_ID, RIG_RIGA, 0, 'nota', ORD_ORDINE, 0 FROM DAT_ORDINI
+
+  update @tab
+  set `
+  const vociUpdate = await prova(funzione, 'X')
+  console.log(`  update @tab set X_: ${JSON.stringify(vociUpdate.slice(0, 6))}`)
+  check('propone X_TO_SWAP (colonna della variabile tabella)', minuscole(vociUpdate).includes('x_to_swap'))
+  check('propone anche X_NOTE_STATUS', minuscole(vociUpdate).includes('x_note_status'))
+
+  // 2) DECLARE @t TABLE (…) + UPDATE: stesso comportamento
+  const dichiarata = `DECLARE @t TABLE (CODICE INT, DESCRIZIONE NVARCHAR(50))
+update @t
+set `
+  const vociDeclare = await prova(dichiarata, 'D')
+  console.log(`  DECLARE @t / set D_: ${JSON.stringify(vociDeclare.slice(0, 6))}`)
+  check('DECLARE @t TABLE: propone DESCRIZIONE', minuscole(vociDeclare).includes('descrizione'))
+
+  await page.screenshot('update-tabvar')
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

@@ -578,6 +578,23 @@ export function extractLocalTables(text: string, knownTables: TableInfo[] = []):
       continue
     }
 
+    // 2b) RETURNS @t TABLE (…): tabella di ritorno di una funzione multi-istruzione
+    if (tk.lower === 'returns') {
+      for (let k = i + 1; k < tokens.length && tokens[k].lower !== 'begin' && tokens[k].lower !== 'as'; k++) {
+        if (tokens[k].lower === 'table') {
+          const nameTok = tokens[k - 1]
+          const name = nameTok ? nameAt(text, nameTok) : ''
+          if (nameTok && name.startsWith('@')) {
+            const cols = columnListOf(text, tokens[k].end)
+            const table = ensure(name)
+            for (const c of cols) addColumn(table, c)
+          }
+          break
+        }
+      }
+      continue
+    }
+
     // 2) DECLARE @t TABLE (…)
     if (tk.lower === 'declare') {
       for (let k = i + 1; k < tokens.length && tokens[k].lower !== 'select'; k++) {
