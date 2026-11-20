@@ -862,11 +862,58 @@ export function updateCorrespondingTarget(text: string, cursorOffset: number): H
  * coppie di SET e di ON), INSERT (colonne ↔ valori), UPDATE (colonne ↔ espressioni della SET).
  */
 export function pairHighlightTarget(text: string, cursorOffset: number): HighlightRange | null {
-  return (
+  /**
+   * Solo INSERT / UPDATE / MERGE: sono le istruzioni in cui una colonna ha un "corrispondente" (la
+   * colonna della lista ↔ il valore, la colonna della SET ↔ l'espressione).
+   *
+   * Nelle SELECT (comprese le assegnazioni "SELECT @var = colonna") non c'è nessuna coppia da
+   * evidenziare: prima uscivano evidenziazioni sbagliate, a volte su più righe, perché il pairing
+   * guardava anche gli statement precedenti (le store qui non hanno ";" a separarli).
+   */
+  /**
+   * CONTESTO: la coppia da evidenziare esiste solo nelle istruzioni che assegnano valori a colonne —
+   * INSERT (lista colonne ↔ valori/select-list), UPDATE (SET), MERGE (USING/SET/ON/rami).
+   *
+   * Fuori da lì non si evidenzia niente: nelle SELECT (comprese le assegnazioni "SELECT @var = colonna")
+   * e negli EXEC non c'è nessuna coppia, e il pairing produceva evidenziazioni sbagliate anche su più
+   * righe (segnalazione utente: riga 199, "parte dopo l'uguale").
+   */
+  const inizi = findSqlStatementStarts(text)
+  const corrente = [...inizi].filter(s => s <= cursorOffset).pop() ?? 0
+  const parola = /^\s*(?:;\s*)?(\w+)/.exec(text.slice(corrente))?.[1]?.toUpperCase() ?? ''
+  let dml = ['INSERT', 'UPDATE', 'MERGE'].includes(parola)
+  if (!dml && parola === 'SELECT') {
+    // select-list di un INSERT … SELECT: la clausola INSERT sta subito prima di questa SELECT
+    const prima = text.slice(Math.max(0, corrente - 4000), corrente)
+    const m = /\bINSERT\b[^;]*$/i.exec(prima)
+    dml =
+      !!m &&
+      /^\s*INSERT\b/i.test(m[0]) &&
+      // una sola SELECT (quella dell'INSERT) e nessuna FROM già chiusa: siamo nella sua select-list
+      !/\bSELECT\b/i.test(m[0].replace(/\bSELECT\b/i, '')) &&
+      !/\bFROM\b/i.test(m[0])
+  }
+  if (!dml) return null
+  // INSERT … SELECT: solo fra lista colonne e select-list (non in FROM/WHERE/JOIN, dove non c'è coppia)
+  const selPrima = /\bSELECT\b/i.exec(text.slice(corrente))
+  if (selPrima) {
+    const from = /\bFROM\b/i.exec(text.slice(corrente + selPrima.index))
+    if (from && cursorOffset > corrente + selPrima.index + from.index) return null
+  }
+  const grezzo =
     mergeCorrespondingTarget(text, cursorOffset) ??
     insertCorrespondingTarget(text, cursorOffset) ??
     updateCorrespondingTarget(text, cursorOffset)
-  )
+  if (!grezzo) return null
+  // niente evidenziazioni multi-riga: si taglia alla prima riga (e si tolgono gli spazi finali)
+  const testo = text.slice(grezzo.start, grezzo.end)
+  const aCapo = testo.indexOf('\n')
+  if (aCapo === -1) return grezzo
+  const primaRiga = testo.slice(0, aCapo)
+  const ripulita = primaRiga.replace(/[\s,]+$/, '')
+  return ripulita.length > 0
+    ? { start: grezzo.start, end: grezzo.start + ripulita.length }
+    : { start: grezzo.start, end: grezzo.start + (primaRiga.trimEnd().length || 1) }
 }
 
 // ---------- Valori di default per INSERT (aiuto sui VALUES) ----------

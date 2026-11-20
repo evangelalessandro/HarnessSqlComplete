@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_HIGHLIGHT_COPPIA = process.argv.includes('--verify-highlight-coppia')
 const VERIFY_VERIFY_COLONNE_TMP_ACTIONS = process.argv.includes('--verify-colonne-tmp-actions')
 const VERIFY_VERIFY_FORMATTA_CASE_LUNGO = process.argv.includes('--verify-formatta-case-lungo')
 const VERIFY_VERIFY_SEGNO_VARIABILI = process.argv.includes('--verify-segno-variabili')
@@ -9768,6 +9769,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_HIGHLIGHT_COPPIA) {
+      await verifyHighlightCoppia(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -13879,6 +13885,134 @@ WHERE X_`
   check('il campo viene inserito senza qualificatori', /WHERE X_MSGKO\b/i.test(dopo), dopo)
 
   await page.screenshot('colonne-tmp-actions')
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-highlight-coppia): l'evidenziazione della coppia (colonna ↔ valore) deve valere SOLO
+ * per INSERT/UPDATE/MERGE, mai nelle SELECT o negli EXEC — e con più statement senza ";" non deve
+ * evidenziare pezzi di altri statement.
+ *
+ * Segnalazione utente: "se seleziono la parte dopo l'uguale a riga 199 fa un highlight sbagliato e se lo
+ * faccio a destra ancora. l'highlight deve funzionare per insert e non ha senso nelle select".
+ */
+async function verifyHighlightCoppia(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  if (SHOT_DB) {
+    await page.eval(`(() => {
+      const sel = document.querySelector('select');
+      if (!sel) return false;
+      const opt = [...sel.options].find(o => (o.textContent || '').trim() === ${JSON.stringify(SHOT_DB)});
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`)
+    await sleep(4000)
+  }
+
+  /**
+   * Testo con lo stesso "intreccio" della store dell'utente: un UPDATE, poi una SELECT con assegnazione,
+   * un EXEC e infine un INSERT … SELECT. Nessun ";" fra gli statement, come nelle store reali.
+   */
+  const sql = `UPDATE DAT_UDC
+  SET UDC_TAG = 'KREPL'
+FROM DAT_UDC
+
+SELECT @sco = X_SCO
+FROM #tmpMission
+
+EXEC @retVal = dbo.ws_Test @pSco = @sco
+
+INSERT INTO DAT_ORDINI_RIGHE (RIG_ORDINE
+                              ,RIG_UDC
+                              ,RIG_QTAR)
+SELECT '_IMM.VERSAMENTO_'
+   ,X_UDC_SOURCE
+   ,1
+FROM #tmpMission`
+
+  await page.eval(`(async () => {
+    const m = (await import('/src/monacoSetup.ts')).default;
+    const eds = m.editor.getEditors();
+    const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+    const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+    ed.focus();
+    ed.setValue(${JSON.stringify('@@SQL@@')});
+  })()`.replace('"@@SQL@@"', JSON.stringify(sql)))
+  await sleep(900)
+
+  /** Posiziona il cursore a un offset e legge i decori dell'evidenziazione. */
+  const evidenziaA = async (offset) => {
+    await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      const model = ed.getModel();
+      ed.setPosition(model.getPositionAt(${offset}));
+      ed.focus();
+    })()`)
+    await sleep(700)
+    // le decorazioni si leggono dal MODELLO: testo evidenziato (stringa vuota = nessuna)
+    return await page.eval(`(async () => {
+      const m = (await import('/src/monacoSetup.ts')).default;
+      const eds = m.editor.getEditors();
+      const area = e => { const d = e.getDomNode().getBoundingClientRect(); return d.width * d.height };
+      const ed = [...eds].sort((a, b) => area(b) - area(a))[0];
+      const model = ed.getModel();
+      return model.getAllDecorations()
+        .filter(d => (d.options.className || '').includes('sql-pair-highlight'))
+        .map(d => model.getValueInRange(d.range).trim());
+    })()`)
+  }
+
+  const offsetDi = (frammento) => sql.indexOf(frammento) + frammento.length
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+
+  // 1) nella SELECT con assegnazione (@sco = X_SCO): nessuna evidenziazione
+  const suSelect = await evidenziaA(offsetDi('@sco = X_'))
+  console.log(`  SELECT con assegnazione → ${JSON.stringify(suSelect)}`)
+  check('nella SELECT (dopo l\'uguale) NON evidenzia', suSelect.length === 0)
+
+  // 2) nell'EXEC: nessuna evidenziazione
+  const suExec = await evidenziaA(offsetDi('@pSco = @'))
+  console.log(`  EXEC → ${JSON.stringify(suExec)}`)
+  check('nell EXEC NON evidenzia', suExec.length === 0)
+
+  // 3) nell'INSERT: evidenzia la colonna corrispondente al valore
+  const suInsert = await evidenziaA(offsetDi("'_IMM.VERSAMENTO_'"))
+  console.log(`  INSERT (valore) → ${JSON.stringify(suInsert)}`)
+  check('nell INSERT (su un valore) evidenzia la colonna', suInsert.length === 1 && /RIG_ORDINE/i.test(suInsert[0]), suInsert.join(', '))
+
+  // 4) nella lista colonne dell'INSERT: evidenzia il valore
+  const suColonna = await evidenziaA(offsetDi('RIG_UDC'))
+  console.log(`  INSERT (colonna) → ${JSON.stringify(suColonna)}`)
+  check('nell INSERT (su una colonna) evidenzia il valore', suColonna.length === 1 && /X_UDC_SOURCE/i.test(suColonna[0]), suColonna.join(', '))
+
+  await page.screenshot('highlight-coppia')
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
