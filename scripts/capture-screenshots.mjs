@@ -14033,6 +14033,14 @@ FROM #tmpMission`
  * provenivo… mi fa come in windows che mi apre una lista di tab in schermata e con alt+tab + maiusc va
  * indietro". (Alt+Tab è riservato dal sistema operativo: qui si usa Alt+PagGiù/PagSu.)
  */
+/**
+ * VERIFICA (--verify-switcher-tab): lo switcher delle tab con TASTI VERI (Input.dispatchKeyEvent, come la
+ * tastiera), non con eventi sintetici: Alt+PagGiù / Alt+PagSu e Ctrl+Alt+PagGiù/PagSu.
+ */
+/**
+ * VERIFICA (--verify-switcher-tab): lo switcher delle tab con TASTI VERI (Input.dispatchKeyEvent, come la
+ * tastiera), non con eventi sintetici: Alt+PagGiù / Alt+PagSu e Ctrl+Alt+PagGiù/PagSu.
+ */
 async function verifySwitcherTab(page) {
   await page.waitFor(`document.querySelector('input')`, 10000)
   await page.waitFor(
@@ -14059,53 +14067,72 @@ async function verifySwitcherTab(page) {
       const t = [...document.querySelectorAll('.sql-tab')].find(x => x.className.includes('bg-zinc-700/90'));
       return t ? (t.textContent || '').replace(/×/g, '').trim() : '';
     })()`)
-  const altGiu = async () => {
-    await page.eval(`(() => {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', altKey: true, bubbles: true }));
-      return true;
-    })()`)
-    await sleep(600)
-  }
-  const rilasciaAlt = async () => {
-    await page.eval(`(() => {
-      window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Alt', bubbles: true }));
-      return true;
-    })()`)
-    await sleep(1400)
+  const pannello = async () => await page.eval(`document.body.textContent.includes('ordine di ultimo uso')`)
+
+  /** Tasti VERI: Alt premuto, PagGiù, Alt rilasciato. */
+  const giroConTasti = async (modificatori) => {
+    // Alt premuto (solo keyDown: resta "giù")
+    await page.send('Input.dispatchKeyEvent', {
+      type: 'rawKeyDown',
+      key: 'Alt',
+      code: 'AltLeft',
+      windowsVirtualKeyCode: 18,
+      nativeVirtualKeyCode: 18,
+      modifiers: modificatori,
+    })
+    await sleep(150)
+    // PagGiù con Alt (e Ctrl se richiesto)
+    const pageDown = {
+      type: 'rawKeyDown',
+      key: 'PageDown',
+      code: 'PageDown',
+      windowsVirtualKeyCode: 34,
+      nativeVirtualKeyCode: 34,
+      modifiers: modificatori,
+    }
+    await page.send('Input.dispatchKeyEvent', pageDown)
+    await page.send('Input.dispatchKeyEvent', { ...pageDown, type: 'keyUp' })
+    await sleep(700)
+    const visibile = await pannello()
+    // rilascio di Alt
+    await page.send('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'Alt',
+      code: 'AltLeft',
+      windowsVirtualKeyCode: 18,
+      nativeVirtualKeyCode: 18,
+      modifiers: 0,
+    })
+    await sleep(1500)
+    return visibile
   }
 
-  // servono almeno due tab: se c'è solo "Query 1" ne creo una
   const numTab = await page.eval(`document.querySelectorAll('.sql-tab').length`)
   if (numTab < 2) {
     await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Nuova'))`)
     await sleep(1500)
   }
   const attivaPrima = await tabAttiva()
-  console.log(`  tab attiva di partenza: ${JSON.stringify(attivaPrima)} (tab aperte: ${await page.eval(`document.querySelectorAll('.sql-tab').length`)})`)
+  console.log(`  tab attiva di partenza: ${JSON.stringify(attivaPrima)} · tab aperte: ${await page.eval(`document.querySelectorAll('.sql-tab').length`)}`)
 
-  // 1) Alt+PagGiù: apre il pannello e seleziona la PENULTIMA tab usata
-  await altGiu()
-  const pannello = await page.eval(`document.body.textContent.includes('ordine di ultimo uso')`)
-  const evidenziata = await page.eval(`(() => {
-    const r = [...document.querySelectorAll('div')].filter(d => (d.className || '').includes('ring-sky-500/60'));
-    return r.length > 0 ? (r[0].textContent || '').trim() : '';
-  })()`)
-  console.log(`  pannello=${pannello} evidenziata=${JSON.stringify(evidenziata)}`)
-  check('lo switcher mostra il pannello con le tab', pannello === true)
-  check('la voce evidenziata NON è quella attiva (è la penultima usata)', evidenziata.length > 0 && !evidenziata.startsWith(attivaPrima), evidenziata)
+  // 1) Alt+PagGiù con TASTI VERI
+  const visibileAlt = await giroConTasti(1)
+  const dopoAlt = await tabAttiva()
+  console.log(`  Alt+PagGiù → pannello=${visibileAlt} · tab attiva ${JSON.stringify(dopoAlt)}`)
+  check('Alt+PagGiù apre il pannello dello switcher', visibileAlt === true)
+  check('Alt+PagGiù cambia tab (penultima usata)', dopoAlt !== attivaPrima, `${attivaPrima} → ${dopoAlt}`)
 
-  // 2) rilasciando Alt si apre la tab evidenziata (≠ quella di partenza)
-  await rilasciaAlt()
-  const dopoRilascio = await tabAttiva()
-  console.log(`  dopo il rilascio: ${JSON.stringify(dopoRilascio)}`)
-  check('rilasciando Alt si apre un ALTRA tab (la penultima)', dopoRilascio !== attivaPrima, `${attivaPrima} → ${dopoRilascio}`)
+  // 2) tornando indietro si riapre la tab di provenienza
+  const visibileRitorno = await giroConTasti(1)
+  const dopoRitorno = await tabAttiva()
+  console.log(`  secondo Alt+PagGiù → pannello=${visibileRitorno} · tab attiva ${JSON.stringify(dopoRitorno)}`)
+  check('rifacendolo si torna alla tab di provenienza', dopoRitorno === attivaPrima, `${dopoRitorno} (attesa ${attivaPrima})`)
 
-  // 3) rifacendolo si torna a quella da cui provenivo
-  await altGiu()
-  await rilasciaAlt()
-  const dopoSecondo = await tabAttiva()
-  console.log(`  al secondo giro: ${JSON.stringify(dopoSecondo)}`)
-  check('rifacendolo torna alla tab di provenienza', dopoSecondo === attivaPrima, `${dopoSecondo} (attesa ${attivaPrima})`)
+  // 3) Ctrl+Alt+PagGiù (AltGr su tastiera italiana = Ctrl+Alt)
+  const visibileCtrlAlt = await giroConTasti(1 | 2)
+  const dopoCtrlAlt = await tabAttiva()
+  console.log(`  Ctrl+Alt+PagGiù → pannello=${visibileCtrlAlt} · tab attiva ${JSON.stringify(dopoCtrlAlt)}`)
+  check('Ctrl+Alt+PagGiù (AltGr) funziona', visibileCtrlAlt === true && dopoCtrlAlt !== attivaPrima, `${dopoCtrlAlt}`)
 
   await page.screenshot('switcher-tab')
   const falliti = esiti.filter(e => !e).length

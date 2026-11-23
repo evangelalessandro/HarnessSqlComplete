@@ -517,8 +517,18 @@ export default function App() {
       }
     }
     const onKeyDown = (e: KeyboardEvent) => {
-      const avanti = e.altKey && (e.key === 'PageDown' || (e.shiftKey && e.key === 'PageUp'))
-      const indietro = e.altKey && e.key === 'PageUp'
+      /**
+       * Combinazioni accettate (tutte "libere" nel browser):
+       *  - Alt+PagGiù / Alt+PagSu
+       *  - Ctrl+Alt+PagGiù / Ctrl+Alt+PagSu  (con AltGr della tastiera italiana, che è Ctrl+Alt)
+       * Shift inverte il verso.
+       */
+      const paginaGiu = e.key === 'PageDown'
+      const paginaSu = e.key === 'PageUp'
+      const conAlt = e.altKey
+      const conAltECtrl = e.altKey && e.ctrlKey
+      const avanti = (conAlt || conAltECtrl) && (paginaGiu || (e.shiftKey && paginaSu))
+      const indietro = (conAlt || conAltECtrl) && paginaSu
       if (e.key === 'Escape' && switcherRef.current) {
         e.preventDefault()
         chiudi(false)
@@ -539,12 +549,17 @@ export default function App() {
     const onBlur = () => {
       if (switcherRef.current) chiudi(true)
     }
-    window.addEventListener('keydown', onKeyDown)
-    window.addEventListener('keyup', onKeyUp)
+    /**
+     * CAPTURE su DOCUMENT (uno solo!): nessun componente, Monaco compreso, può fermare l'evento prima di
+     * noi. Registrarlo anche su window lo farebbe gestire DUE volte per lo stesso tasto (la selezione
+     * avanzava di due e con due tab si tornava a quella di partenza).
+     */
+    document.addEventListener('keydown', onKeyDown, true)
+    document.addEventListener('keyup', onKeyUp, true)
     window.addEventListener('blur', onBlur)
     return () => {
-      window.removeEventListener('keydown', onKeyDown)
-      window.removeEventListener('keyup', onKeyUp)
+      document.removeEventListener('keydown', onKeyDown, true)
+      document.removeEventListener('keyup', onKeyUp, true)
       window.removeEventListener('blur', onBlur)
     }
   }, [])
