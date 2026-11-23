@@ -9,6 +9,7 @@ import { loadDbColors, saveDbColors } from './dbColors'
 import { loadSettings, saveSettings } from './settings'
 import type { EditorSettings } from './settings'
 import { loadPersistedTabs, persistTabs } from './tabStorage'
+import { ordineMru, prossimaSelezione } from './tabSwitcher'
 import { buildTabClosePlan, countClosableTabs, graphTabIndex, insertTabAt, reportTabIndex, risultatiVisibiliPer, searchTabIndex } from './tabOps'
 import type { MotoreFormattazione, OpzioniSqlFluff } from './formatEngine'
 import {
@@ -459,6 +460,15 @@ export default function App() {
   const [tabsInstance, setTabsInstance] = useState<string | null>(null)
   const [editorTabs, setEditorTabs] = useState<EditorTab[]>(() => [firstTab()])
   const [activeEditorTab, setActiveEditorTab] = useState('tab-1')
+  /**
+   * Switcher delle tab (stile Alt+Tab di Windows): elenco delle tab in ordine di ULTIMO USO (MRU).
+   * Con Alt+PagSu/PagGiù tenuto premuto si scorre la lista; rilasciando Alt si apre la tab scelta.
+   * (Alt+Tab è del sistema operativo: il browser non lo passa alla pagina.)
+   */
+  const [switcher, setSwitcher] = useState<{ ids: string[]; sel: number } | null>(null)
+  const switcherRef = useRef<{ ids: string[]; sel: number } | null>(null)
+  /** Tab in ordine di ultimo uso (la prima è quella attiva). */
+  const mruRef = useRef<string[]>([activeEditorTab])
   const tabCounter = useRef(2)
   for (const t of editorTabs) {
     const n = Number(t.id.replace(/^tab-/, ''))
@@ -479,6 +489,65 @@ export default function App() {
   connectionRef.current = connection ?? null
   editorTabsRef.current = editorTabs
   activeEditorTabRef.current = activeEditorTab
+
+  // MRU: la tab appena attivata va in testa; le tab chiuse escono dalla lista
+  useEffect(() => {
+    const esistenti = new Set(editorTabsRef.current.map(x => x.id))
+    const pulita = mruRef.current.filter(id => esistenti.has(id) && id !== activeEditorTab)
+    mruRef.current = [activeEditorTab, ...pulita]
+  }, [activeEditorTab, editorTabs])
+
+  /**
+   * Tastiera dello switcher:
+   *  - Alt+PagGiù  → tab successiva nella lista MRU (la prima volta è la PENULTIMA toccata);
+   *  - Alt+PagSu   → indietro nella lista (Shift+Alt+PagGiù fa lo stesso);
+   *  - rilascio di Alt → si apre la tab evidenziata (come Alt+Tab di Windows);
+   *  - Esc → annulla.
+   * Alt+Tab non è utilizzabile: è il selettore di finestre del sistema operativo e il browser non lo
+   * consegna alla pagina.
+   */
+  useEffect(() => {
+    const chiudi = (apri: boolean) => {
+      const corrente = switcherRef.current
+      switcherRef.current = null
+      setSwitcher(null)
+      if (apri && corrente) {
+        const id = corrente.ids[corrente.sel]
+        if (id) switchEditorTabRef.current(id)
+      }
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      const avanti = e.altKey && (e.key === 'PageDown' || (e.shiftKey && e.key === 'PageUp'))
+      const indietro = e.altKey && e.key === 'PageUp'
+      if (e.key === 'Escape' && switcherRef.current) {
+        e.preventDefault()
+        chiudi(false)
+        return
+      }
+      if (!avanti && !indietro) return
+      e.preventDefault()
+      const ordine = ordineMru(editorTabsRef.current.map(x => x.id), mruRef.current)
+      if (ordine.length < 2) return
+      const sel = prossimaSelezione(ordine.length, switcherRef.current?.sel ?? null, indietro)
+      const nuovo = { ids: ordine, sel }
+      switcherRef.current = nuovo
+      setSwitcher(nuovo)
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Alt' || e.key === 'AltGraph') chiudi(true)
+    }
+    const onBlur = () => {
+      if (switcherRef.current) chiudi(true)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [])
 
   // Salva le tab (ultima query inclusa) a ogni modifica, nella chiave dell'istanza connessa
   useEffect(() => {
@@ -652,6 +721,8 @@ export default function App() {
     },
     [connection, activeEditorTab],
   )
+  /** Riferimento stabile a switchEditorTab per l'handler tastiera dello switcher. */
+  const switchEditorTabRef = useRef<(id: string) => void>(() => {})
   const switchEditorTab = useCallback(
     (id: string) => {
       if (id === activeEditorTab) return
@@ -665,6 +736,7 @@ export default function App() {
     },
     [activeEditorTab, editorTabs, connection, saveActiveEditor, switchDatabase],
   )
+  switchEditorTabRef.current = switchEditorTab
 
   const newEditorTab = useCallback(
     (
@@ -2623,6 +2695,39 @@ export default function App() {
             </div>
           )
         })()}
+      {/* SWITCHER delle tab (Alt+PagGiù / Alt+PagSu): elenco in ordine di ultimo uso */}
+      {switcher && (
+        <div className="pointer-events-none fixed inset-0 z-[200] flex items-center justify-center">
+          <div className="min-w-[420px] max-w-[640px] rounded-lg border border-zinc-600 bg-zinc-900/95 p-3 shadow-2xl ring-1 ring-black/40">
+            <div className="mb-2 flex items-center justify-between px-1 text-[11px] uppercase tracking-wide text-zinc-500">
+              <span>Schede · ordine di ultimo uso</span>
+              <span>Alt+PagGiù / Alt+PagSu · rilascia Alt per aprire</span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              {switcher.ids.map((id, i) => {
+                const tab = editorTabs.find(x => x.id === id)
+                if (!tab) return null
+                return (
+                  <div
+                    key={id}
+                    className={`flex items-center gap-2 rounded px-2 py-1.5 text-xs ${
+                      i === switcher.sel ? 'bg-sky-600/30 text-white ring-1 ring-sky-500/60' : 'text-zinc-300'
+                    }`}
+                  >
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: dbTabColor(tab.database ?? connection.database, dbColors) }}
+                    />
+                    <span className="flex-1 truncate">{tab.title}</span>
+                    <span className="shrink-0 text-[10px] text-zinc-500">{tab.database ?? connection.database}</span>
+                    {i === 0 && <span className="shrink-0 text-[10px] text-sky-400">attiva</span>}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
       {/* Menu contestuale della tab (tasto destro): chiusure multiple in stile SSMS */}
       {tabMenu &&
         (() => {

@@ -72,6 +72,7 @@ const VERIFY_DB_TAB = process.argv.includes('--verify-db-tab')
 const VERIFY_AW = process.argv.includes('--verify-aw')
 const VERIFY_ETICHETTA_IA = process.argv.includes('--verify-etichetta-ia')
 const VERIFY_NUOVA_TAB_RISULTATI = process.argv.includes('--verify-nuova-tab-risultati')
+const VERIFY_VERIFY_SWITCHER_TAB = process.argv.includes('--verify-switcher-tab')
 const VERIFY_VERIFY_HIGHLIGHT_COPPIA = process.argv.includes('--verify-highlight-coppia')
 const VERIFY_VERIFY_COLONNE_TMP_ACTIONS = process.argv.includes('--verify-colonne-tmp-actions')
 const VERIFY_VERIFY_FORMATTA_CASE_LUNGO = process.argv.includes('--verify-formatta-case-lungo')
@@ -9774,6 +9775,11 @@ async function main() {
       return
     }
 
+    if (VERIFY_VERIFY_SWITCHER_TAB) {
+      await verifySwitcherTab(page)
+      return
+    }
+
     if (VERIFY_NUOVA_TAB_RISULTATI) {
       await verifyNuovaTabRisultati(page)
       return
@@ -14013,6 +14019,95 @@ FROM #tmpMission`
   check('nell INSERT (su una colonna) evidenzia il valore', suColonna.length === 1 && /X_UDC_SOURCE/i.test(suColonna[0]), suColonna.join(', '))
 
   await page.screenshot('highlight-coppia')
+  const falliti = esiti.filter(e => !e).length
+  console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
+  if (falliti > 0) throw new Error(`${falliti} controlli falliti`)
+}
+
+
+/**
+ * VERIFICA (--verify-switcher-tab): Alt+PagGiù / Alt+PagSu scorrono le tab in ordine di ULTIMO USO e il
+ * rilascio di Alt apre quella scelta (comportamento di Alt+Tab di Windows).
+ *
+ * Richiesta utente: "al primo mi apre la penultima toccata, e se lo rifaccio mi apre quella da cui
+ * provenivo… mi fa come in windows che mi apre una lista di tab in schermata e con alt+tab + maiusc va
+ * indietro". (Alt+Tab è riservato dal sistema operativo: qui si usa Alt+PagGiù/PagSu.)
+ */
+async function verifySwitcherTab(page) {
+  await page.waitFor(`document.querySelector('input')`, 10000)
+  await page.waitFor(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .some(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+    20000,
+    'login salvata',
+  )
+  await page.clickWhere(
+    `[...document.querySelectorAll('[title="Clicca per connetterti con questa login"]')]
+       .find(e => (e.textContent || '').includes(${JSON.stringify(LOGIN_NAME)}))`,
+  )
+  await page.waitFor(`document.querySelector('.monaco-editor')`, 30000, 'editor pronto')
+  await page.waitFor(`document.body.textContent.includes('Schema:')`, 60000, 'schema caricato')
+  await sleep(2500)
+
+  const esiti = []
+  const check = (nome, ok, extra = '') => {
+    esiti.push(ok)
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${nome}${extra ? `  (${extra})` : ''}`)
+  }
+  const tabAttiva = async () =>
+    await page.eval(`(() => {
+      const t = [...document.querySelectorAll('.sql-tab')].find(x => x.className.includes('bg-zinc-700/90'));
+      return t ? (t.textContent || '').replace(/×/g, '').trim() : '';
+    })()`)
+  const altGiu = async () => {
+    await page.eval(`(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', altKey: true, bubbles: true }));
+      return true;
+    })()`)
+    await sleep(600)
+  }
+  const rilasciaAlt = async () => {
+    await page.eval(`(() => {
+      window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Alt', bubbles: true }));
+      return true;
+    })()`)
+    await sleep(1400)
+  }
+
+  // servono almeno due tab: se c'è solo "Query 1" ne creo una
+  const numTab = await page.eval(`document.querySelectorAll('.sql-tab').length`)
+  if (numTab < 2) {
+    await page.clickWhere(`[...document.querySelectorAll('button')].find(b => (b.textContent || '').includes('Nuova'))`)
+    await sleep(1500)
+  }
+  const attivaPrima = await tabAttiva()
+  console.log(`  tab attiva di partenza: ${JSON.stringify(attivaPrima)} (tab aperte: ${await page.eval(`document.querySelectorAll('.sql-tab').length`)})`)
+
+  // 1) Alt+PagGiù: apre il pannello e seleziona la PENULTIMA tab usata
+  await altGiu()
+  const pannello = await page.eval(`document.body.textContent.includes('ordine di ultimo uso')`)
+  const evidenziata = await page.eval(`(() => {
+    const r = [...document.querySelectorAll('div')].filter(d => (d.className || '').includes('ring-sky-500/60'));
+    return r.length > 0 ? (r[0].textContent || '').trim() : '';
+  })()`)
+  console.log(`  pannello=${pannello} evidenziata=${JSON.stringify(evidenziata)}`)
+  check('lo switcher mostra il pannello con le tab', pannello === true)
+  check('la voce evidenziata NON è quella attiva (è la penultima usata)', evidenziata.length > 0 && !evidenziata.startsWith(attivaPrima), evidenziata)
+
+  // 2) rilasciando Alt si apre la tab evidenziata (≠ quella di partenza)
+  await rilasciaAlt()
+  const dopoRilascio = await tabAttiva()
+  console.log(`  dopo il rilascio: ${JSON.stringify(dopoRilascio)}`)
+  check('rilasciando Alt si apre un ALTRA tab (la penultima)', dopoRilascio !== attivaPrima, `${attivaPrima} → ${dopoRilascio}`)
+
+  // 3) rifacendolo si torna a quella da cui provenivo
+  await altGiu()
+  await rilasciaAlt()
+  const dopoSecondo = await tabAttiva()
+  console.log(`  al secondo giro: ${JSON.stringify(dopoSecondo)}`)
+  check('rifacendolo torna alla tab di provenienza', dopoSecondo === attivaPrima, `${dopoSecondo} (attesa ${attivaPrima})`)
+
+  await page.screenshot('switcher-tab')
   const falliti = esiti.filter(e => !e).length
   console.log(`\nesito: ${esiti.length - falliti}/${esiti.length} controlli superati`)
   if (falliti > 0) throw new Error(`${falliti} controlli falliti`)

@@ -294,6 +294,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       { title: 'Alt+E / pulsante Piano', detail: 'Piano di esecuzione STIMATO dello statement (SET SHOWPLAN_XML ON: la query NON viene eseguita): operatori con righe stimate e costo, e — quando SQL Server lo propone — l\u2019indice mancante con lo script CREATE INDEX pronto da aprire in una tab.' },
       { title: 'Ctrl+rotella mouse', detail: 'Ingrandisce/riduce il testo dell\u2019editor.' },
       { title: 'Ctrl+Spazio', detail: 'Forza l\u2019apertura dell\u2019autocompletamento.' },
+      { title: 'Alt+PagGiù / Alt+PagSu', detail: 'Passa da una tab all\u2019altra in ordine di ULTIMO USO, come Alt+Tab di Windows: il primo colpo apre la penultima tab toccata, rifacendolo si torna a quella da cui si proveniva. Mentre si tiene premuto Alt compare l\u2019elenco delle tab aperte (Shift+Alt+PagGiù scorre all\u2019indietro); rilasciando Alt si apre quella evidenziata, Esc annulla. Nota: Alt+Tab non si può usare in una pagina web perché \u00e8 il selettore di finestre di Windows.' },
     ],
   },
 ]
